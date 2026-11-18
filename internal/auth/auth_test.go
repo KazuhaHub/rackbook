@@ -281,3 +281,63 @@ func TestKelvinSignIdentityIsNotAnASCIIAdmin(t *testing.T) {
 		t.Fatal(id.Role)
 	}
 }
+
+type fakeSessions struct{ rejected bool }
+
+func (f *fakeSessions) Identify(http.ResponseWriter, *http.Request) (*Identity, error) {
+	return nil, ErrUnauthenticated
+}
+func (f *fakeSessions) Public(r *http.Request) bool { return strings.HasPrefix(r.URL.Path, "/auth/") }
+func (f *fakeSessions) Reject(w http.ResponseWriter, r *http.Request, _ error) {
+	f.rejected = true
+	http.Redirect(w, r, "/auth/login", http.StatusFound)
+}
+func (f *fakeSessions) NoRole(http.ResponseWriter, *http.Request, *Identity) {}
+
+type fakeBearer struct{}
+
+func (fakeBearer) AuthenticateBearer(r *http.Request) (*Identity, error) {
+	if r.Header.Get("Authorization") == "Bearer good" && strings.HasPrefix(r.URL.Path, "/mcp") {
+		return &Identity{ID: "bot@example.com", Method: MethodOAuth, Role: roles.Editor}, nil
+	}
+	return nil, nil
+}
+func (fakeBearer) Challenge(r *http.Request) string {
+	if strings.HasPrefix(r.URL.Path, "/mcp") {
+		return `Bearer resource_metadata="https://x/.well-known/oauth-protected-resource"`
+	}
+	return ""
+}
+
+// In oidc mode /mcp is answered with an OAuth challenge (or a bearer identity),
+// never a redirect to the login page; console routes still redirect.
+func TestOIDCModeKeepsMCPOutOfTheLoginRedirect(t *testing.T) {
+	sess := &fakeSessions{}
+	a, err := New(context.Background(), Config{Mode: ModeOIDC, Sessions: sess})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.SetBearer(fakeBearer{})
+	h := a.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) }))
+	do := func(path, authz string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest("GET", path, nil)
+		if authz != "" {
+			r.Header.Set("Authorization", authz)
+		}
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		return w
+	}
+	if w := do("/mcp", "Bearer good"); w.Code != http.StatusOK {
+		t.Fatalf("bearer on /mcp: %d", w.Code)
+	}
+	if w := do("/mcp", ""); w.Code != http.StatusUnauthorized || !strings.Contains(w.Header().Get("WWW-Authenticate"), "resource_metadata") || sess.rejected {
+		t.Fatalf("anonymous /mcp: %d %v rejected=%v", w.Code, w.Header(), sess.rejected)
+	}
+	if w := do("/c/devices", ""); w.Code != http.StatusFound || !sess.rejected {
+		t.Fatalf("console route: %d", w.Code)
+	}
+	if w := do("/auth/login", ""); w.Code != http.StatusOK {
+		t.Fatalf("public path: %d", w.Code)
+	}
+}
