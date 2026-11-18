@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -56,6 +57,9 @@ type WriteResult struct {
 	// Commit is the short commit hash, the pull request URL in pr mode, or ""
 	// when nothing was committed (no Git, or nothing changed).
 	Commit string
+	// PullRequest says Commit is a pull request URL: nothing reached the
+	// tracked branch.
+	PullRequest bool
 }
 
 // Store serves the current ledger and applies writes.
@@ -294,15 +298,35 @@ func (s *Store) authorFor(ctx context.Context, who *auth.Identity) Identity {
 	return s.opts.Committer
 }
 
-// Write applies op on behalf of who (nil = anonymous). Without Git the files
-// are edited in place. With Git the edit is committed (author = who, committer
-// = service identity; message built by CommitMessage, with a Record trailer) and
-// pushed; if the push is rejected because the remote moved, the same edit is
-// replayed on the new tip, at most MaxAttempts times.
+// WriteOptions adjusts how one write reaches the repository.
+type WriteOptions struct {
+	// ForcePR sends this write through a pull request even when write.mode is
+	// push. It never turns a pr-mode repository into a push one.
+	ForcePR bool
+	// BranchPrefix is the pull request branch up to the timestamp, e.g.
+	// "rackbook/mcp/alice". Default: "rackbook/<author>".
+	BranchPrefix string
+}
+
+// Write applies op on behalf of who (nil = anonymous) with the default options;
+// see WriteWith.
 func (s *Store) Write(ctx context.Context, op edit.Op, who *auth.Identity) (*WriteResult, error) {
+	return s.WriteWith(ctx, op, who, WriteOptions{})
+}
+
+// WriteWith applies op on behalf of who. Without Git the files are edited in
+// place. With Git the edit is committed (author = who, committer = service
+// identity; message built by CommitMessage, with a Record trailer) and pushed;
+// if the push is rejected because the remote moved, the same edit is replayed on
+// the new tip, at most MaxAttempts times. In pr mode (or with opts.ForcePR) the
+// commit goes to a new branch and a pull request is opened instead.
+func (s *Store) WriteWith(ctx context.Context, op edit.Op, who *auth.Identity, opts WriteOptions) (*WriteResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if !s.git {
+		if opts.ForcePR {
+			return nil, errPRNeedsGit
+		}
 		if err := s.reload(); err != nil {
 			return nil, err
 		}
@@ -315,47 +339,84 @@ func (s *Store) Write(ctx context.Context, op edit.Op, who *auth.Identity) (*Wri
 		}
 		return &WriteResult{Result: res}, nil
 	}
-	pr := s.cur.Load().Config.Write.Mode == "pr"
+	var res *edit.Result
+	commit, pr, err := s.commitLoop(ctx, who, opts, func() (*change, error) {
+		r, err := edit.Apply(s.cur.Load().Config, op)
+		if err != nil {
+			return nil, err
+		}
+		res = r
+		return &change{Files: r.Files, Subject: r.Subject(), Record: r.Record()}, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &WriteResult{Result: res, Commit: commit, PullRequest: pr}, nil
+}
+
+// ErrPRUnavailable is matched by errors.Is when a write must go through a pull
+// request but the server cannot open one (no Git remote, or no GitHub token).
+var ErrPRUnavailable = errors.New("pull requests are unavailable")
+
+var errPRNeedsGit = fmt.Errorf("%w: this write must go through a pull request, but the data directory is not a Git repository with an origin remote", ErrPRUnavailable)
+
+// change is what an apply function did to the work tree.
+type change struct {
+	Files   []string // config-relative files written; empty = nothing changed
+	Subject string
+	Record  string   // Record trailer value, "" for none
+	Created []string // absolute paths that did not exist before (removed again when the commit is dropped)
+}
+
+// commitLoop is the Git write path shared by record edits and state files:
+// sync the clone to origin, apply, commit, then push (replaying apply on a
+// moved remote) or open a pull request. Callers hold mu and have checked s.git.
+// It returns the short commit hash, or the pull request URL with pr set.
+func (s *Store) commitLoop(ctx context.Context, who *auth.Identity, opts WriteOptions, apply func() (*change, error)) (commit string, pr bool, err error) {
+	pr = opts.ForcePR || s.cur.Load().Config.Write.Mode == "pr"
 	if pr && s.token == "" {
-		return nil, errors.New("write.mode is pr but RACKBOOK_GITHUB_TOKEN is not set")
+		return "", false, fmt.Errorf("%w: write.mode is pr or this write must be a pull request, but RACKBOOK_GITHUB_TOKEN is not set", ErrPRUnavailable)
 	}
 	if pr && !s.HasRemote() {
-		return nil, errors.New("write.mode is pr but the repository has no origin remote")
+		if opts.ForcePR {
+			return "", false, errPRNeedsGit
+		}
+		return "", false, errors.New("write.mode is pr but the repository has no origin remote")
 	}
 	author := s.authorFor(ctx, who)
 	var lastErr error
 	for attempt := 1; attempt <= MaxAttempts; attempt++ {
 		if err := s.syncLocked(ctx); err != nil {
-			return nil, err
+			return "", false, err
 		}
-		res, err := edit.Apply(s.cur.Load().Config, op)
+		ch, err := apply()
 		if err != nil {
-			return nil, err
+			return "", false, err
 		}
-		if !res.Changed() {
-			return &WriteResult{Result: res}, nil
+		if len(ch.Files) == 0 {
+			return "", false, nil
 		}
 		parent, _ := s.repo.Head(ctx)
-		msg := CommitMessage(res.Subject(), who, s.via, res.Record())
-		short, err := s.repo.Commit(ctx, res.Files, msg, author, s.opts.Committer)
+		msg := CommitMessage(ch.Subject, who, s.via, ch.Record)
+		short, err := s.repo.Commit(ctx, ch.Files, msg, author, s.opts.Committer)
 		if err != nil {
-			s.discard(ctx, parent, res.Files)
-			return nil, err
+			s.discard(ctx, parent, ch.Files, ch.Created)
+			return "", false, err
 		}
 		if !s.HasRemote() {
 			if err := s.reload(); err != nil {
-				return nil, err
+				return "", false, err
 			}
-			return &WriteResult{Result: res, Commit: short}, nil
+			return short, false, nil
 		}
 		if pr {
-			url, err := s.openPR(ctx, res, author, msg)
-			s.discard(ctx, parent, res.Files)
+			url, err := s.openPR(ctx, ch.Subject, opts.BranchPrefix, author, msg)
+			s.discard(ctx, parent, ch.Files, ch.Created)
 			if err != nil {
-				return nil, err
+				return "", false, err
 			}
 			_ = s.reload()
-			return &WriteResult{Result: res, Commit: url}, nil
+			return url, true, nil
 		}
 		if s.beforePush != nil {
 			s.beforePush()
@@ -372,32 +433,32 @@ func (s *Store) Write(ctx context.Context, op edit.Op, who *auth.Identity) (*Wri
 				if _, aerr := s.repo.git(ctx, "merge-base", "--is-ancestor", "HEAD", "origin/"+s.branch); aerr == nil {
 					s.advanceToHead(ctx)
 					if err := s.reload(); err != nil {
-						return nil, err
+						return "", false, err
 					}
-					return &WriteResult{Result: res, Commit: short}, nil
+					return short, false, nil
 				}
 			}
 			// A moved remote means replay; anything else is a real failure.
 			tip, _ := s.repo.git(ctx, "rev-parse", "origin/"+s.branch)
-			s.discard(ctx, parent, res.Files)
+			s.discard(ctx, parent, ch.Files, ch.Created)
 			if ferr != nil || tip == parent {
-				return nil, fmt.Errorf("push failed: %w", err)
+				return "", false, fmt.Errorf("push failed: %w", err)
 			}
 			s.log.Info("push rejected, replaying edit on the new tip", "attempt", attempt)
 			continue
 		}
 		s.advanceToHead(ctx)
 		if err := s.reload(); err != nil {
-			return nil, err
+			return "", false, err
 		}
-		return &WriteResult{Result: res, Commit: short}, nil
+		return short, false, nil
 	}
-	return nil, fmt.Errorf("giving up after %d attempts, the remote keeps changing: %w", MaxAttempts, lastErr)
+	return "", false, fmt.Errorf("giving up after %d attempts, the remote keeps changing: %w", MaxAttempts, lastErr)
 }
 
 // discard drops our unpushed commit and restores only the files the edit
 // touched; changes the store did not make are never reset.
-func (s *Store) discard(ctx context.Context, parent string, files []string) {
+func (s *Store) discard(ctx context.Context, parent string, files, created []string) {
 	if parent == "" {
 		return
 	}
@@ -405,8 +466,22 @@ func (s *Store) discard(ctx context.Context, parent string, files []string) {
 		s.log.Error("could not reset the index", "err", err)
 		return
 	}
-	if len(files) > 0 {
-		if _, err := s.repo.git(ctx, append([]string{"checkout", "--quiet", "--"}, files...)...); err != nil {
+	// Files the change created are untracked again after the reset: remove them.
+	gone := map[string]bool{}
+	for _, p := range created {
+		if err := os.Remove(p); err != nil && !errors.Is(err, os.ErrNotExist) {
+			s.log.Error("could not remove a file the dropped commit created", "path", p, "err", err)
+		}
+		gone[p] = true
+	}
+	var restore []string
+	for _, f := range files {
+		if !gone[filepath.Join(s.cur.Load().Config.Dir, filepath.FromSlash(f))] {
+			restore = append(restore, f)
+		}
+	}
+	if len(restore) > 0 {
+		if _, err := s.repo.git(ctx, append([]string{"checkout", "--quiet", "--"}, restore...)...); err != nil {
 			s.log.Error("could not restore the edited files", "err", err)
 		}
 	}
@@ -414,23 +489,40 @@ func (s *Store) discard(ctx context.Context, parent string, files []string) {
 
 var slugRe = regexp.MustCompile(`[^a-z0-9]+`)
 
-// openPR pushes HEAD to rackbook/<user>/<timestamp> and opens a pull request.
-func (s *Store) openPR(ctx context.Context, res *edit.Result, author Identity, msg string) (string, error) {
-	user := strings.Trim(slugRe.ReplaceAllString(strings.ToLower(strings.SplitN(author.Email, "@", 2)[0]), "-"), "-")
-	if user == "" {
-		user = "editor"
+// Slug turns a name into a branch-name part: ASCII letters and digits, with
+// runs of anything else as a single "-". Empty input gives "user".
+func Slug(name string) string {
+	out := strings.Trim(slugRe.ReplaceAllString(strings.ToLower(name), "-"), "-")
+	if out == "" {
+		return "user"
+	}
+	if len(out) > 40 {
+		out = strings.Trim(out[:40], "-")
+	}
+	return out
+}
+
+// openPR pushes HEAD to <prefix>/<timestamp> and opens a pull request. The
+// default prefix is rackbook/<author>.
+func (s *Store) openPR(ctx context.Context, title, prefix string, author Identity, msg string) (string, error) {
+	if prefix == "" {
+		user := Slug(strings.SplitN(author.Email, "@", 2)[0])
+		if user == "user" {
+			user = "editor"
+		}
+		prefix = "rackbook/" + user
 	}
 	now := time.Now().UTC().Truncate(time.Second)
 	if !now.After(s.lastStamp) {
 		now = s.lastStamp.Add(time.Second)
 	}
 	s.lastStamp = now
-	branch := fmt.Sprintf("rackbook/%s/%s", user, now.Format("20060102-150405"))
+	branch := fmt.Sprintf("%s/%s", prefix, now.Format("20060102-150405"))
 	if err := s.repo.Push(ctx, branch); err != nil {
 		return "", fmt.Errorf("push %s: %w", branch, err)
 	}
 	body := strings.SplitN(msg, "\n\n", 2)[1]
-	return s.createPR(ctx, branch, s.branch, res.Subject(), body)
+	return s.createPR(ctx, branch, s.branch, title, body)
 }
 
 // History lists recent commits, optionally only those touching a collection's

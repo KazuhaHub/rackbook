@@ -196,3 +196,40 @@ func TestMatchingDependsOnTheAuthMethod(t *testing.T) {
 		}
 	}
 }
+
+func TestOAuthEntries(t *testing.T) {
+	spec := &Spec{Admin: []string{"oauth:kc:root"}, Editor: []string{"oauth:entra:Alice@Example.com", "oauth:kc:*"}, Viewer: []string{"bob@example.com", "*@example.org"}}
+	p, err := Compile(spec, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ev := func(m Subject) Role { return p.Evaluate(m) }
+	if ev(Subject{ID: "alice@example.com", Method: "oauth", Issuer: "entra"}) != Editor {
+		t.Fatal("oauth:entra:<user>")
+	}
+	if ev(Subject{ID: "alice@example.com", Method: "oauth", Issuer: "kc"}) != Editor { // oauth:kc:*
+		t.Fatal("oauth:kc:*")
+	}
+	if ev(Subject{ID: "root", Method: "oauth", Issuer: "kc"}) != Admin {
+		t.Fatal("admin")
+	}
+	if ev(Subject{ID: "root", Method: "oauth", Issuer: "other"}) != None {
+		t.Fatal("the alias must match")
+	}
+	// Plain e-mail entries need match_email; mcphub entries never match oauth, nor the reverse.
+	if ev(Subject{ID: "bob@example.com", Method: "oauth", Issuer: "entra"}) != None {
+		t.Fatal("e-mail entries need match_email")
+	}
+	if ev(Subject{ID: "root", Method: "mcphub"}) != None {
+		t.Fatal("oauth entries must not match mcphub users")
+	}
+	pe, _ := Compile(spec, Options{MCPMatchEmail: true})
+	if pe.Evaluate(Subject{ID: "bob@example.com", Method: "oauth", Issuer: "entra"}) != Viewer || pe.Evaluate(Subject{ID: "x@example.org", Method: "oauth", Issuer: "entra"}) != Viewer {
+		t.Fatal("match_email")
+	}
+	for _, bad := range []string{"oauth:", "oauth:kc", "oauth:kc:", "oauth::bob"} {
+		if _, err := Compile(&Spec{Editor: []string{bad}}, Options{}); err == nil {
+			t.Errorf("%q accepted", bad)
+		}
+	}
+}

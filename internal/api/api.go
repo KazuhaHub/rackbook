@@ -20,14 +20,15 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/kazuhahub/rackbook/internal/apierr"
 	"github.com/kazuhahub/rackbook/internal/auth"
 	"github.com/kazuhahub/rackbook/internal/edit"
 	"github.com/kazuhahub/rackbook/internal/export"
 	"github.com/kazuhahub/rackbook/internal/gitstore"
 	"github.com/kazuhahub/rackbook/internal/ledger"
 	"github.com/kazuhahub/rackbook/internal/roles"
+	"github.com/kazuhahub/rackbook/internal/tokens"
 	"github.com/kazuhahub/rackbook/internal/validate"
-	"github.com/kazuhahub/rackbook/internal/yamledit"
 )
 
 const maxBody = 1 << 20
@@ -44,6 +45,12 @@ type Options struct {
 	// of BaseURL (DNS-rebinding protection for --auth none).
 	RestrictHost bool
 	Logger       *slog.Logger
+
+	// Public are exact paths served without authentication (the OAuth
+	// protected resource metadata).
+	Public map[string]http.Handler
+	// Tokens enables the admin token endpoints (/api/admin/tokens).
+	Tokens *tokens.Registry
 }
 
 type server struct {
@@ -76,6 +83,7 @@ func New(o Options) http.Handler {
 	mux.HandleFunc("PUT /api/c/{collection}/{id}", s.put)
 	mux.HandleFunc("DELETE /api/c/{collection}/{id}", s.del)
 	mux.HandleFunc("POST /api/admin/accept-remote", s.acceptRemote)
+	s.tokenRoutes(mux) // tokens.go
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "not_found", "no such API endpoint")
 	})
@@ -93,6 +101,10 @@ func New(o Options) http.Handler {
 	var h http.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/healthz" {
 			mux.ServeHTTP(w, r)
+			return
+		}
+		if ph, ok := s.o.Public[r.URL.Path]; ok {
+			ph.ServeHTTP(w, r)
 			return
 		}
 		authed.ServeHTTP(w, r)
@@ -400,48 +412,34 @@ func (s *server) writable(w http.ResponseWriter, r *http.Request, action roles.A
 	return true
 }
 
+// permits applies a credential's own narrowing (an API token's collections and
+// actions) on top of the role.
+func (s *server) permits(w http.ResponseWriter, r *http.Request, action, collection string) bool {
+	if s.who(r).Permits(action, collection) {
+		return true
+	}
+	writeError(w, http.StatusForbidden, "forbidden", fmt.Sprintf("this token may not %s records in %s", action, collection))
+	return false
+}
+
 func (s *server) apply(w http.ResponseWriter, r *http.Request, op edit.Op) *gitstore.WriteResult {
-	res, err := s.o.Store.Write(r.Context(), op, s.who(r))
+	// Tokens are contributor level: their writes open pull requests unless granted otherwise.
+	opts := gitstore.WriteOptionsFor(s.who(r), s.o.Store.Config(), op.Kind, op.Collection)
+	res, err := s.o.Store.WriteWith(r.Context(), op, s.who(r), opts)
 	if err == nil {
 		return res
 	}
-	var ce *edit.ConflictError
-	var ie *edit.InvalidError
-	switch {
-	case errors.As(err, &ce):
-		var cur any
-		if ce.Current != nil {
-			cur = ce.Current
-		}
-		writeError(w, http.StatusConflict, "conflict", ce.Message, "current", cur)
-	case errors.As(err, &ie):
-		writeError(w, http.StatusUnprocessableEntity, "invalid", ie.Error(), "errors", ie.Issues)
-	case errors.Is(err, edit.ErrUnknownCollection):
-		writeError(w, http.StatusNotFound, "not_found", err.Error())
-	case errors.Is(err, edit.ErrBadRequest):
-		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
-	case errors.Is(err, gitstore.ErrHistoryRewritten):
-		s.historyRewritten(w, err)
-	case errors.Is(err, gitstore.ErrConfig):
-		writeError(w, http.StatusServiceUnavailable, "config_error", err.Error())
-	case errors.Is(err, gitstore.ErrRepoDirty):
-		writeError(w, http.StatusServiceUnavailable, "repo_dirty", err.Error())
-	case errors.Is(err, gitstore.ErrRepoDiverged):
-		writeError(w, http.StatusServiceUnavailable, "repo_diverged", err.Error())
-	case errors.Is(err, yamledit.ErrUnsupported):
-		writeError(w, http.StatusUnprocessableEntity, "unsupported", err.Error())
-	default:
+	info := apierr.Classify(err)
+	if info.Status == http.StatusInternalServerError {
 		s.internal(w, err)
+		return nil
 	}
+	extra := make([]any, 0, 2*len(info.Extra))
+	for k, v := range info.Extra {
+		extra = append(extra, k, v)
+	}
+	writeError(w, info.Status, info.Code, info.Message, extra...)
 	return nil
-}
-
-// historyRewritten answers 503: writes are paused until an admin accepts the
-// remote's new history.
-func (s *server) historyRewritten(w http.ResponseWriter, err error) {
-	var he *gitstore.HistoryRewrittenError
-	errors.As(err, &he)
-	writeError(w, http.StatusServiceUnavailable, "history_rewritten", err.Error(), "lastGood", he.LastGood, "remote", he.Remote)
 }
 
 func (s *server) acceptRemote(w http.ResponseWriter, r *http.Request) {
@@ -482,7 +480,11 @@ func (s *server) acceptRemote(w http.ResponseWriter, r *http.Request) {
 }
 
 func recordResponse(res *gitstore.WriteResult) map[string]any {
-	return map[string]any{"id": res.ID, "hash": res.Hash, "data": res.Data, "commit": res.Commit}
+	out := map[string]any{"id": res.ID, "hash": res.Hash, "data": res.Data, "commit": res.Commit}
+	if res.PullRequest {
+		out["pullRequest"] = true
+	}
+	return out
 }
 
 func (s *server) add(w http.ResponseWriter, r *http.Request) {
@@ -495,6 +497,9 @@ func (s *server) add(w http.ResponseWriter, r *http.Request) {
 	}
 	b, ok := s.readBody(w, r)
 	if !ok {
+		return
+	}
+	if !s.permits(w, r, auth.ActCreate, c.Name) {
 		return
 	}
 	if res := s.apply(w, r, edit.Op{Kind: edit.Add, Collection: c.Name, Data: b.Data}); res != nil {
@@ -518,6 +523,9 @@ func (s *server) put(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_request", "hash is required: send the hash of the record you started from")
 		return
 	}
+	if !s.permits(w, r, auth.ActUpdate, c.Name) {
+		return
+	}
 	if res := s.apply(w, r, edit.Op{Kind: edit.Edit, Collection: c.Name, ID: r.PathValue("id"), Hash: b.Hash, Data: b.Data}); res != nil {
 		writeJSON(w, http.StatusOK, recordResponse(res))
 	}
@@ -536,8 +544,15 @@ func (s *server) del(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_request", "hash is required: send the hash of the record you started from")
 		return
 	}
+	if !s.permits(w, r, auth.ActDelete, c.Name) {
+		return
+	}
 	if res := s.apply(w, r, edit.Op{Kind: edit.Delete, Collection: c.Name, ID: r.PathValue("id"), Hash: hash}); res != nil {
-		writeJSON(w, http.StatusOK, map[string]any{"commit": res.Commit})
+		out := map[string]any{"commit": res.Commit}
+		if res.PullRequest {
+			out["pullRequest"] = true
+		}
+		writeJSON(w, http.StatusOK, out)
 	}
 }
 

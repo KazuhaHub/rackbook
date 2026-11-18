@@ -46,6 +46,11 @@ func AuthorOf(who *auth.Identity) Identity {
 //
 //	Edited-by: <id>
 //	Edited-via: <via> (<method>[, client <client>])
+//
+// For a request to /mcp (Identity.Via "mcp") the line reads
+// "mcp (MCPHub, client <client_id>)" or "mcp (token:<name>)"; a token on the
+// API reads "rackbook (token:<name>)".
+//
 //	Record: <collection>/<id>
 //
 // Edited-by is left out for an anonymous caller, the parenthesis for an
@@ -57,9 +62,20 @@ func Trailers(who *auth.Identity, via, record string) []string {
 		t = append(t, "Edited-by: "+oneLine(who.ID))
 	}
 	v := via
+	if who != nil && oneLine(who.Via) != "" {
+		v = oneLine(who.Via)
+	}
 	if who != nil && who.Method != "" {
 		detail := oneLine(who.Method)
-		if c := oneLine(who.Client); c != "" {
+		switch {
+		case who.Method == auth.MethodMCPHub && who.Via != "":
+			detail = "MCPHub"
+		case who.Method == auth.MethodOAuth && who.Via != "" && oneLine(who.Issuer) != "":
+			detail = oneLine(who.Issuer)
+		case who.Method == auth.MethodToken && oneLine(who.Token) != "":
+			detail = "token:" + oneLine(who.Token)
+		}
+		if c := oneLine(who.Client); c != "" && who.Method != auth.MethodToken {
 			detail += ", client " + c
 		}
 		v += " (" + detail + ")"

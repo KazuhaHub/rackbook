@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/mail"
+	"strconv"
 	"strings"
 	"sync/atomic"
 
@@ -58,7 +59,45 @@ type Authenticator struct {
 	verifier *oidc.IDTokenVerifier
 	fixed    *Identity // none mode with an editor
 	cached   atomic.Pointer[cachedPolicy]
+	bearer   atomic.Pointer[bearerHolder]
 }
+
+type bearerHolder struct{ b BearerAuthenticator }
+
+// BearerAuthenticator authenticates "Authorization: Bearer" credentials that
+// the built-in modes do not know: Rackbook API tokens and MCPHub access tokens.
+// It is consulted before the mode's own authentication, in every mode.
+type BearerAuthenticator interface {
+	// AuthenticateBearer returns (nil, nil) when the request carries no
+	// credential it handles on this path (the mode's own authentication then
+	// applies), an identity whose Role it has set with Evaluate or EvaluateSubject, or a
+	// *RequestError when a credential was presented and is wrong.
+	AuthenticateBearer(r *http.Request) (*Identity, error)
+	// Challenge is the WWW-Authenticate value to send with a 401 on this
+	// request, or "".
+	Challenge(r *http.Request) string
+}
+
+// SetBearer installs the bearer authenticator.
+func (a *Authenticator) SetBearer(b BearerAuthenticator) { a.bearer.Store(&bearerHolder{b}) }
+
+func (a *Authenticator) bearerAuth() BearerAuthenticator {
+	if h := a.bearer.Load(); h != nil {
+		return h.b
+	}
+	return nil
+}
+
+// RequestError is an authentication failure with its own HTTP answer.
+type RequestError struct {
+	Status     int    // 401 when zero
+	Code       string // JSON error code; "unauthorized" when empty
+	Msg        string
+	Challenge  string // WWW-Authenticate value
+	RetryAfter int    // seconds, for 429
+}
+
+func (e *RequestError) Error() string { return e.Msg }
 
 type cachedPolicy struct {
 	cfg    *config.Config
@@ -140,7 +179,31 @@ func (a *Authenticator) Policy() *roles.Policy {
 // (auth none without --editor: there is nobody to authenticate) never ends up
 // below viewer, so a local server stays readable.
 func (a *Authenticator) Evaluate(id *Identity) *Identity {
-	id.Role = a.Policy().Evaluate(id.Subject())
+	return a.EvaluateSubject(id, id.Subject())
+}
+
+// RoleFor is the role auth.roles grants to a plain identity string (an e-mail
+// or UPN), as it is now. It is how an API token's creator is evaluated.
+func (a *Authenticator) RoleFor(identity string) roles.Role {
+	id := roles.FoldASCII(identity)
+	r := a.Policy().Evaluate(roles.Subject{ID: id, Email: emailOf(id), Method: MethodNone})
+	if a.cfg.Degraded != nil && a.cfg.Degraded() {
+		r = roles.Lower(r, roles.Viewer)
+	}
+	return r
+}
+
+func emailOf(id string) string {
+	if strings.Contains(id, "@") {
+		return id
+	}
+	return ""
+}
+
+// EvaluateSubject is Evaluate with the role looked up for s instead of for the
+// identity itself (a token takes its creator's role).
+func (a *Authenticator) EvaluateSubject(id *Identity, s roles.Subject) *Identity {
+	id.Role = a.Policy().Evaluate(s)
 	if a.cfg.Degraded != nil && a.cfg.Degraded() {
 		id.Role = roles.Lower(id.Role, roles.Viewer)
 	}
@@ -156,6 +219,15 @@ var ErrUnauthenticated = errors.New("authentication required")
 // Authenticate identifies the caller of r and evaluates its role. In none
 // mode it returns the configured editor, or an anonymous identity.
 func (a *Authenticator) Authenticate(r *http.Request) (*Identity, error) {
+	if b := a.bearerAuth(); b != nil {
+		id, err := b.AuthenticateBearer(r)
+		if err != nil {
+			return nil, err
+		}
+		if id != nil {
+			return id, nil
+		}
+	}
 	if a.cfg.Mode == ModeNone {
 		id := &Identity{Method: MethodNone}
 		if a.fixed != nil {
@@ -202,6 +274,7 @@ func (a *Authenticator) Authenticate(r *http.Request) (*Identity, error) {
 
 func writeJSONError(w http.ResponseWriter, status int, code, msg string) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(map[string]string{"error": code, "message": msg})
 }
@@ -212,10 +285,37 @@ func (a *Authenticator) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		id, err := a.Authenticate(r)
 		if err != nil {
-			writeJSONError(w, http.StatusUnauthorized, "unauthorized", err.Error())
+			var re *RequestError
+			status, code := http.StatusUnauthorized, "unauthorized"
+			challenge := ""
+			if b := a.bearerAuth(); b != nil {
+				challenge = b.Challenge(r)
+			}
+			if errors.As(err, &re) {
+				if re.Status != 0 {
+					status = re.Status
+				}
+				if re.Code != "" {
+					code = re.Code
+				}
+				if re.Challenge != "" {
+					challenge = re.Challenge
+				}
+				if re.RetryAfter > 0 {
+					w.Header().Set("Retry-After", strconv.Itoa(re.RetryAfter))
+				}
+			}
+			if challenge != "" && status == http.StatusUnauthorized {
+				w.Header().Set("WWW-Authenticate", challenge)
+			}
+			writeJSONError(w, status, code, err.Error())
 			return
 		}
 		if id.EffectiveRole() == roles.None {
+			if id.Method == MethodMCPHub || id.Method == MethodOAuth || id.Method == MethodToken {
+				// A valid credential that grants nothing here: RFC 6750 insufficient_scope.
+				w.Header().Set("WWW-Authenticate", `Bearer error="insufficient_scope"`)
+			}
 			writeJSONError(w, http.StatusForbidden, "no_role", "you are not allowed to use this ledger")
 			return
 		}

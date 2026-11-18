@@ -134,7 +134,9 @@ the data repository and pushes every edit.
    everyone else Access lets in can read.
 4. **AI agents.** Give an agent an Access service token and point its MCP
    client at `https://<host>/mcp`, sending `CF-Access-Client-Id` /
-   `CF-Access-Client-Secret`. Or run `rackbook mcp` locally against a clone.
+   `CF-Access-Client-Secret`. Or run `rackbook mcp` locally against a clone. To
+   let people and agents sign in through an OAuth provider (MCPHub, Entra ID,
+   Keycloak, ...) see [Any OAuth provider](#any-oauth-provider-mcp-and-mcphub).
 
 Rackbook fetches the remote every minute, so changes pushed from elsewhere
 appear without a restart. If someone changed the same record in the meantime,
@@ -160,6 +162,171 @@ MCPHub users match only `mcphub:<username>` entries (or `mcphub:*`), plus
 exact/`*@domain` entries for e-mail usernames if `auth.mcp.match_email: true`. Roles are read from the
 current config on every request, so a change pulled from Git applies at once.
 `/api/meta` reports `user.role`, `user.canEdit` and `user.canAdmin`.
+
+### Any OAuth provider: MCP and MCPHub
+
+`/mcp` is an OAuth 2.0 **protected resource** (RFC 9728). Users sign in to an
+authorization server you already run; Rackbook never sees a password and has no
+authorization server of its own. It verifies the access tokens the server
+issues, offline, and applies the same `auth.roles` as the console. Tokens are
+accepted **only on `/mcp`** (never as a console login, never on `/api`).
+
+```yaml
+# rackbook.yml
+auth:
+  roles:
+    admin:  [owner@example.com]
+    editor: ["mcphub:alice", "oauth:entra:bob@example.com"]
+    viewer: ["mcphub:*"]
+  mcp:
+    resource: https://ledger.example.com/mcp      # the public URL of /mcp
+    trusted_issuers:
+      - issuer: https://mcp.example.com            # MCPHub
+        kind: mcphub                               # alias defaults to "mcphub"
+      - issuer: https://login.microsoftonline.com/<tenant-id>/v2.0   # Entra ID
+        alias: entra
+        audience: api://<application-id>           # Entra's aud; default: resource
+        require_typ_at_jwt: false                  # Entra access tokens have typ JWT
+        username_claim: preferred_username
+      - issuer: https://sso.example.com/realms/ledger                # Keycloak
+        alias: keycloak
+        username_claim: preferred_username
+    scopes: {write: "rackbook:write"}              # default; read: "" = no scope needed
+    match_email: false
+    direct_push: []                                # see "What agents may write"
+```
+
+Per issuer: `algorithms` (default ES256, RS256, PS256, EdDSA; `HS*` and `none` are
+a config error), `require_typ_at_jwt` (default true: RFC 9068 `typ: at+jwt`;
+with false `typ: JWT` or none is accepted too, but an ID token is still
+refused: its `aud` is not the configured audience, or it has a `nonce` and no
+scope), `audience`, `username_claim` (default `sub`), `scope_claim` (default:
+`scope`, then `scp`, as a space-separated string or an array), `jwks_url`
+(default: `jwks_uri` from the issuer's metadata).
+
+**Verification.** `iss` and `aud` must match exactly (`aud` may be an array
+that contains it), `exp` and `sub` are required, `iat`/`nbf` are honoured with 60 s
+of skew. The issuer's metadata is fetched from RFC 8414
+`/.well-known/oauth-authorization-server`, then OIDC
+`/.well-known/openid-configuration` (path rules for issuers with a path like
+`/v2.0` or `/realms/x` are followed), over HTTPS (plain HTTP only for
+localhost); its `issuer` must equal the configured one. Keys are cached and
+refetched at most once a minute, on an unknown `kid`.
+
+**Opaque tokens (RFC 7662 introspection)** are supported per issuer:
+
+```yaml
+        introspection: {client_id: rackbook, client_secret_env: RACKBOOK_INTROSPECTION_SECRET}
+```
+
+(`endpoint` defaults to `introspection_endpoint` from the metadata.) The token
+must be `active` with matching `iss`, `aud`, `exp`; answers are cached for 60 s.
+
+**Roles.** The user is the `username_claim` (folded to ASCII lower case) and is
+matched like a console identity, with entries that name the issuer:
+`mcphub:<user>` for `kind: mcphub`, `oauth:<alias>:<user>` for others (`*`
+matches anyone of that issuer). Plain e-mail and `*@domain` entries match
+these users only with `match_email: true`. A scope can only narrow the role:
+without the write scope the write tools are refused; viewers never write.
+`/mcp` still accepts console users (Cloudflare Access) as before.
+
+**Responses.** A missing or invalid token gets `401` with
+`WWW-Authenticate: Bearer resource_metadata="https://ledger.example.com/.well-known/oauth-protected-resource"`;
+a valid token that grants no role gets `403` with `error="insufficient_scope"`.
+The metadata (`/.well-known/oauth-protected-resource`, also under `/mcp`
+as RFC 9728 asks) lists the resource, the issuers, the scopes and
+`bearer_methods_supported: ["header"]`.
+
+#### MCPHub
+
+1. In MCPHub add the Rackbook URL to `systemConfig.oauthServer.externalResources`:
+   `{"resource": "https://ledger.example.com/mcp", "name": "Rackbook", "allowedClients": []}`
+   (empty `allowedClients` = any registered client).
+2. Set MCPHub's public base URL (`install.baseUrl` / `INSTALL_BASE_URL`); it
+   issues tokens only then, because that is the `iss` Rackbook checks.
+3. Register Rackbook as an upstream: type `streamable-http`, URL
+   `https://ledger.example.com/mcp`, OAuth with `identityMode: personal`, so every
+   user calls Rackbook with their own token.
+4. Put users in `auth.roles` as `mcphub:<username>`.
+
+**Network.** `/mcp` validates tokens itself, so it must not sit behind
+Cloudflare Access login. Add an Access **Bypass** policy for exactly `/mcp`,
+`/.well-known/oauth-protected-resource` and `/.well-known/oauth-protected-resource/mcp`
+(the rest stays protected), or have MCPHub call Rackbook over the local
+network or Tailscale and keep Access in front of everything else.
+
+#### Entra ID and Keycloak
+
+Entra: register an API (Expose an API, application ID URI `api://<id>`, scope
+`rackbook.write`), set `accessTokenAcceptedVersion` to 2 in the manifest, and
+use the issuer `https://login.microsoftonline.com/<tenant>/v2.0`, `audience:
+api://<id>` and `scopes: {write: rackbook.write}`. Keycloak: use the realm URL
+as issuer, add an audience mapper for the resource and a client scope
+`rackbook:write`.
+
+#### Connecting clients
+
+Clients discover the authorization server from the protected resource
+metadata, so they need only the URL. They must support OAuth for MCP with
+dynamic client registration or a pre-registered client at your issuer.
+
+```sh
+# Claude Code
+claude mcp add --transport http rackbook https://ledger.example.com/mcp
+# then /mcp inside Claude Code to sign in
+
+# MCP Inspector
+npx @modelcontextprotocol/inspector
+#   Transport: Streamable HTTP, URL: https://ledger.example.com/mcp, then "Open Auth Settings"
+```
+
+#### What agents may write
+
+MCP offers `create_record`, `update_record` and `delete_record` (same
+validation and conflict rules as the API, `hash` from `get_record`), plus the
+read tools `record_history` and `list_problems`. Writes by an OAuth user or an
+API token are **contributor level**: each one opens its own pull request from
+`rackbook/mcp/<user>/<yyyymmdd-hhmmss>` (needs `RACKBOOK_GITHUB_TOKEN` with
+pull-request permission), and the commit carries `Edited-by: <user>` and
+`Edited-via: mcp (MCPHub, client <client_id>)` (`mcp (<alias>, client ...)`
+for other issuers). **Deletes are always pull requests.** Create and update can
+go straight to the tracked branch only where an admin allows it:
+
+```yaml
+auth:
+  mcp:
+    direct_push:
+      - {users: ["mcphub:alice"], collections: [todo]}
+      - {roles: [admin], collections: ["*"]}
+```
+
+If the server is in `history_rewritten`, `config_error` or dirty state, the
+tools return the API's errors and writes are paused.
+
+### API tokens
+
+For scripts that do not use an OAuth provider, admins create tokens in the
+console (**令牌**) or with `POST /api/admin/tokens`. A token is `rbk_` and 43
+random base62 characters, shown once; `.rackbook/tokens.yml` in the data repo keeps
+only its SHA-256 (committed as `rackbook(auth): create token <name>` /
+`revoke token <name>`). Send it as `Authorization: Bearer rbk_...` to `/api/*`,
+`/mcp`, `/export.*` and `/llms*`; it is never a console login.
+
+- Scope `read`, or `write` (create/update/delete, optionally narrowed to
+  `collections` and `actions`). A token never exceeds its **creator's current
+  role**: if the creator is demoted the token shrinks, if the creator loses
+  every role it stops working (the token list warns). Tokens never manage tokens,
+  data types or users.
+- Writes by a token are pull requests (`rackbook/token/<name>/<time>`) and
+  deletes always are. An admin may give a token `write_mode: push` for
+  create and update on named collections; it only counts while the creator is
+  still an admin. Trailers: `Edited-by: <creator>`, `Edited-via: rackbook
+  (token:<name>)` (`mcp (token:<name>)` over `/mcp`).
+- Failed attempts are rate-limited per client IP (10 per minute, then `429`).
+  The IP is the connecting address; `CF-Connecting-IP` is believed only from
+  proxies listed in `--trusted-proxy` (CIDRs).
+- `rackbook token list` and `rackbook token revoke <name> [--commit|--push]`
+  work on the file directly; "last used" is kept in memory only.
 
 ### Rackbook never force-pushes
 

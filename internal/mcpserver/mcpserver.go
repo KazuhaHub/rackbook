@@ -1,11 +1,13 @@
-// Package mcpserver exposes the ledger to AI agents over MCP. All tools are
-// read-only.
+// Package mcpserver exposes the ledger to AI agents over MCP: read tools
+// always, and create_record, update_record and delete_record over HTTP for
+// callers whose role and credential allow writing (see write.go).
 package mcpserver
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"sort"
 	"strings"
@@ -27,10 +29,23 @@ Start with list_collections to see what exists. Records are addressed by id (the
 - "Who uses port N?": search query="N" (substring over every field of every collection), or list_records on ports for the port convention.
 - "Is the ledger consistent?": check.`
 
-// New builds the MCP server.
+// New builds a read-only MCP server.
 func New(src Source, version string) *mcp.Server {
-	s := mcp.NewServer(&mcp.Implementation{Name: "rackbook", Version: version}, &mcp.ServerOptions{Instructions: instructions})
-	t := &tools{src: src}
+	return NewWithOptions(Options{Source: src, Version: version})
+}
+
+// NewWithOptions builds the MCP server.
+func NewWithOptions(o Options) *mcp.Server {
+	ins := instructions
+	writes := o.Backend != nil && !o.ReadOnly
+	if writes {
+		ins += writeInstructions
+	}
+	s := mcp.NewServer(&mcp.Implementation{Name: "rackbook", Version: o.Version}, &mcp.ServerOptions{Instructions: ins})
+	t := &tools{src: o.Source, backend: o.Backend, readOnly: o.ReadOnly, log: o.Logger}
+	if t.log == nil {
+		t.log = slog.New(slog.DiscardHandler)
+	}
 	readOnly := &mcp.ToolAnnotations{ReadOnlyHint: true}
 
 	mcp.AddTool(s, &mcp.Tool{Name: "list_collections", Annotations: readOnly,
@@ -54,6 +69,17 @@ func New(src Source, version string) *mcp.Server {
 	mcp.AddTool(s, &mcp.Tool{Name: "export_markdown", Annotations: readOnly,
 		Description: "Return the whole ledger as one Markdown document (a table per collection). Large; prefer list_records, get_record or search for targeted questions."},
 		t.exportMarkdown)
+	mcp.AddTool(s, &mcp.Tool{Name: "list_problems", Annotations: readOnly,
+		Description: "List what is wrong with the ledger: validation errors (collection, record id, field path, message) and any store state that pauses writes (history_rewritten, config_error). Check this before writing, and after."},
+		t.listProblems)
+	if o.Backend != nil {
+		mcp.AddTool(s, &mcp.Tool{Name: "record_history", Annotations: readOnly,
+			Description: "List the commits that changed one record (newest first: hash, author, date, subject), falling back to the collection's file history for records edited before per-record history existed."},
+			t.recordHistory)
+	}
+	if writes {
+		t.addWriteTools(s)
+	}
 	return s
 }
 
@@ -71,7 +97,12 @@ func RunStdio(ctx context.Context, s *mcp.Server) error {
 	return s.Run(ctx, &mcp.StdioTransport{})
 }
 
-type tools struct{ src Source }
+type tools struct {
+	src      Source
+	backend  Backend
+	readOnly bool
+	log      *slog.Logger
+}
 
 func (t *tools) collection(name string) (*ledger.Ledger, *ledger.Collection, error) {
 	l := t.src()

@@ -78,3 +78,28 @@ export type CheckError = {
 export type CheckResult = { ok: boolean; errors: CheckError[] }
 
 export type Commit = { hash: string; author: string; email?: string; date: string; subject: string }
+
+export type ApiToken = {
+  name: string
+  prefix: string
+  scope: 'read' | 'write'
+  collections?: string[]
+  actions?: string[]
+  writeMode?: 'push'
+  createdBy: string
+  created: string
+  expires?: string
+  revoked?: string
+  revokedBy?: string
+  status: 'active' | 'revoked' | 'expired'
+  lastUsed?: string
+  creatorRole: string
+  warnings: string[]
+}
+export type CreatedToken = {
+  token: ApiToken
+  secret: string
+  pullRequest?: boolean
+  snippet: unknown
+  claudeCode: string
+}
