@@ -545,10 +545,9 @@ modules:
   entra:
     token: entra-sync
     collection: credentials
-    fields: [kind, purpose, expires, kid, revoked]
+    fields: [kind, self_signed, purpose, expires, not_before, kid, ids, revoked]
     direct_push: true
 ```
-
 
 ## Branding and the sign-in button
 
