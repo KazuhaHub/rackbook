@@ -156,3 +156,57 @@ func TestEditingARecordThatAlreadyHoldsASecretOnlyRefusesNewOnes(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestAnnotatedPublicFieldPassesOnlyWithTheStrictFormat(t *testing.T) {
+	dir := refLedger(t)
+	testutil.Replace(t, dir, "schemas/people.json", `"name": {"type": "string"}`, `"name": {"type": "string"}, "ssh": {"type": "string", "x-rackbook": {"public": "ssh_public_key"}}, "note": {"type": "string"}`)
+	cfg := testutil.LoadConfig(t, dir)
+	pub := "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl admin@host"
+	if _, err := edit.Apply(cfg, edit.Op{Kind: edit.Add, Collection: "people", Data: map[string]any{"name": "dee", "ssh": pub}}); err != nil {
+		t.Fatalf("a valid public key in an annotated field: %v", err)
+	}
+	// the same value in an unannotated field is text, with no exemption
+	// (a bare public key matches no rule, so use one that does)
+	_, err := edit.Apply(cfg, edit.Op{Kind: edit.Add, Collection: "people", Data: map[string]any{"name": "eve", "ssh": "password: hunter2hunter2"}})
+	asSecretErr(t, err)
+	_, err = edit.Apply(cfg, edit.Op{Kind: edit.Add, Collection: "people", Data: map[string]any{"name": "fay", "note": "ssh-ed25519 AAAA key: " + strings.Repeat("ab", 16)}})
+	asSecretErr(t, err)
+}
+
+func TestIDWithASecretIsRedactedInCommitsErrorsAndEveryIssueKind(t *testing.T) {
+	dir := refLedger(t)
+	testutil.Replace(t, dir, "data/people.yml", "- {name: cy}", "- {name: cy}\n- {name: \"zed "+ghToken+"\"}")
+	cfg := testutil.LoadConfig(t, dir)
+	redacted := ledger.SafeID(cfg, "people", "zed "+ghToken)
+	if strings.Contains(redacted, ghToken[:10]) || !strings.Contains(redacted, "~") {
+		t.Fatal(redacted)
+	}
+	// every kind of issue shows the redacted id: the record is missing a required field
+	testutil.Replace(t, dir, "schemas/people.json", `"required": ["name"]`, `"required": ["name", "x"]`)
+	cfg = testutil.LoadConfig(t, dir)
+	n := 0
+	for _, i := range validate.Run(ledger.Load(cfg, nil)) {
+		if strings.Contains(i.ID, ghToken[:10]) || strings.Contains(i.String(), ghToken) {
+			t.Fatalf("issue shows the secret id: %+v", i)
+		}
+		if i.Collection == "people" && i.ID == redacted {
+			n++
+		}
+	}
+	if n == 0 {
+		t.Fatal("expected issues on the redacted id")
+	}
+	res, err := edit.Apply(cfg, edit.Op{Kind: edit.Delete, Collection: "people", ID: "zed " + ghToken})
+	var ie *edit.InvalidError
+	if errors.As(err, &ie) { // the required field x makes other records invalid: undo that for the delete
+		testutil.Replace(t, dir, "schemas/people.json", `"required": ["name", "x"]`, `"required": ["name"]`)
+		cfg = testutil.LoadConfig(t, dir)
+		res, err = edit.Apply(cfg, edit.Op{Kind: edit.Delete, Collection: "people", ID: "zed " + ghToken})
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(res.Subject(), ghToken[:10]) || strings.Contains(res.Record(), ghToken[:10]) || !strings.Contains(res.Record(), redacted) {
+		t.Fatalf("%q %q", res.Subject(), res.Record())
+	}
+}

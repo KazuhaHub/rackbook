@@ -526,16 +526,50 @@ and so does everything inside it. The matched value is the whole match, except f
 `url-credentials` (`user:password`) and extra patterns with a capture group
 (group 1); quotes and a trailing `,` or `;` are not part of it. Compute it with
 `printf %s 'the value' | shasum -a 256`. An invalid pattern or an unknown rule
-ID is a config error. References to where a secret lives are not flagged:
-`password: op://vault/item`, `token: env:NAME`, `secret: $NAME`, a file path.
+ID is a config error.
+
+#### Public fields, placeholders and free text
+
+Free text has no exemptions. Notes, descriptions and any other unannotated
+string are scanned in full, with no "near a fingerprint" or "stored in
+1Password" leniency, after being split into tokens so that a leading `*`, `/`,
+quote or bracket never hides a match. The only ways out are:
+
+1. **A schema annotation** on a property that is public by design:
+
+   ```json
+   "ssh_key": {"type": "string", "x-rackbook": {"public": "ssh_public_key"}}
+   ```
+
+   Kinds: `ssh_public_key` (`ssh-ed25519 AAAA...` and the other OpenSSH public
+   key algorithms), `fingerprint` (SHA256 or MD5), `nodekey` (`nodekey:`,
+   `machinekey:` or `discokey:` plus 64 hex), `age_recipient` (`age1...`),
+   `pem_public_key`, `jwk_public` (no private members), `hex_id` and
+   `secret_reference` (`op://...`, `vault:...`, `env:NAME`, `${NAME}` or a path
+   without spaces). Only an annotated field whose whole value has the strict
+   format of its kind is exempt; any other value in it is scanned as text. On an
+   array, or on its `items`, every item is checked. Remember that `$HUNTER2`
+   has the shape of an environment variable reference.
+2. **Exact placeholders** (`待补`, `TBD`, `-`, `***`, `n/a`, `none`, or an empty
+   string), matched as the whole value.
+3. **The allow list** above.
+
+A field named like a secret (`password`, `passphrase`, `secret_key`,
+`api_key`, `client_secret`, `signing_key`, `private_token`, `access_token`,
+anything ending in `_secret`, `_password` or `_token`, ...) counts its whole
+value, spaces included, and so does every string and map key inside it, unless
+it is an exact placeholder or an annotated `secret_reference`. Expect some false
+positives in notes; that is intended.
 
 This is pattern based. It catches secrets with a recognisable shape or a
 telltale label, not arbitrary high-entropy strings, and it is not a replacement
 for an entropy-based scanner such as gitleaks or trufflehog in CI over the
 whole repository. Known false-positive risks: free text such as
-`password: required-for-ssh` after a keyword, hostnames that start with `sk-`
-and contain a digit, and long hex values assigned to a name ending in `key`
-that are not secret.
+`password: required-for-ssh` after a keyword, hostnames that start with `sk-`,
+and long hex values assigned to a name ending in `key` that are not secret;
+annotate the field or add an allow entry. A record id built from a secret is
+shown redacted (4 characters and a short hash) in findings, check output, commit
+subjects and `Record:` trailers.
 
 ## Development
 

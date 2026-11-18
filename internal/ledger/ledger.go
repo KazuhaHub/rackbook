@@ -15,6 +15,7 @@ import (
 	"go.yaml.in/yaml/v3"
 
 	"github.com/kazuhahub/rackbook/internal/config"
+	"github.com/kazuhahub/rackbook/internal/secretscan"
 	"github.com/kazuhahub/rackbook/internal/yamledit"
 )
 
@@ -274,4 +275,31 @@ func Match(r *Record, where map[string]string) bool {
 func (l *Ledger) AbsFile(c *Collection) string {
 	abs, _ := l.Config.Resolve(c.File)
 	return abs
+}
+
+// SafeID is the id to show in anything that is reported, logged or committed: a
+// record whose key fields hold a secret (a value a rule flags, or the value of
+// a secret-named key field) is shown as secretscan.RedactID of its id. The id
+// parts are compared unescaped.
+func SafeID(cfg *config.Config, collection, id string) string {
+	sc := cfg.SecretScanner()
+	if !sc.Enabled() || id == "" {
+		return id
+	}
+	col := cfg.Collection(collection)
+	if col == nil || len(col.Key) == 0 {
+		return id
+	}
+	parts := strings.Split(id, "/")
+	un := strings.NewReplacer("%2F", "/", "%25", "%")
+	for i, p := range parts {
+		name := ""
+		if len(parts) == len(col.Key) {
+			name = col.Key[i]
+		}
+		if sc.Sensitive(name, un.Replace(p)) {
+			return secretscan.RedactID(id)
+		}
+	}
+	return id
 }

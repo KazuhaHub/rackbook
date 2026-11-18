@@ -242,8 +242,34 @@ type hit struct {
 	value string
 }
 
-// matches runs every rule over text.
+var tokenSplit = regexp.MustCompile("[\\s,;()\\[\\]{}<>\"'`|]+")
+
+// matches runs every rule over the whole text and over each token of it (text
+// split on whitespace, punctuation, quotes and brackets), so that a leading
+// "*", "/", quote or bracket never prevents a match. Duplicates are dropped.
 func (s *Scanner) matches(text string) []hit {
+	out := s.matchText(text)
+	toks := tokenSplit.Split(text, -1)
+	if len(toks) <= 1 {
+		return out
+	}
+	seen := map[hit]bool{}
+	for _, h := range out {
+		seen[h] = true
+	}
+	for _, t := range toks {
+		for _, h := range s.matchText(t) {
+			if !seen[h] {
+				seen[h] = true
+				out = append(out, h)
+			}
+		}
+	}
+	return out
+}
+
+// matchText runs every rule over one piece of text.
+func (s *Scanner) matchText(text string) []hit {
 	if len(text) < s.minLen {
 		return nil
 	}
@@ -258,9 +284,6 @@ func (s *Scanner) matches(text string) []hit {
 			if g > 0 {
 				value = strings.Trim(value, `"',;`)
 			}
-			if r.accept != nil && !r.accept(value, text[:m[0]]) {
-				continue
-			}
 			out = append(out, hit{r.id, value})
 		}
 	}
@@ -268,14 +291,12 @@ func (s *Scanner) matches(text string) []hit {
 }
 
 // namedHit applies the "field named like a secret" rule: the whole string
-// value counts, spaces included ("correct horse battery staple"), except
-// references to where a secret lives and empty or placeholder values.
+// value counts, spaces included ("correct horse battery staple"). Only the
+// exact placeholders (and, upstream, an annotated secret_reference field) are
+// exempt.
 func (s *Scanner) namedHit(value string) (hit, bool) {
-	if len(value) < 6 || !s.ruleOn(RuleSecretAssign) {
-		return hit{}, false
-	}
 	v := strings.TrimSpace(value)
-	if !notPlaceholder(v, "") {
+	if len(v) < 6 || isPlaceholder(v) || !s.ruleOn(RuleSecretAssign) {
 		return hit{}, false
 	}
 	return hit{RuleSecretAssign, v}, true
@@ -307,9 +328,6 @@ func (s *Scanner) pairMatches(name, value string) []hit {
 				continue
 			}
 			v := strings.Trim(text[m[2]:m[3]], `"',;`)
-			if r.accept != nil && !r.accept(v, text[:m[0]]) {
-				continue
-			}
 			out = append(out, hit{r.id, v})
 		}
 	}
@@ -345,6 +363,7 @@ type collector struct {
 	id         string
 	seen       map[string]bool
 	out        []Finding
+	ann        Annotations
 }
 
 func (c *collector) add(h hit, path, in string) {
@@ -360,7 +379,22 @@ func (c *collector) add(h hit, path, in string) {
 	c.out = append(c.out, f)
 }
 
+// exempt says the string at path needs no scan: an exact placeholder, or an
+// annotated field holding the strict format of its kind.
+func (c *collector) exempt(text, path string) bool {
+	if isPlaceholder(text) {
+		return true
+	}
+	k := c.ann.kindOf(path)
+	return k != "" && c.s.validFor(k, text)
+}
+
 func (c *collector) text(text, path, in string, named bool) {
+	// An annotated field whose whole value has its kind's strict format is the
+	// one exemption there is; any other value is scanned as text.
+	if in == "" && c.exempt(text, path) {
+		return
+	}
 	if named {
 		if h, ok := c.s.namedHit(text); ok {
 			c.add(h, path, in)
@@ -411,14 +445,20 @@ func (c *collector) walk(v any, path string, named bool) {
 		sort.Strings(keys)
 		for _, k := range keys {
 			seg := ptr(k)
-			if hs := c.s.matches(k); len(hs) > 0 {
+			hs := c.s.matches(k)
+			if named { // under a secret-named map the keys are values
+				if h, ok := c.s.namedHit(k); ok {
+					hs = append(hs, h)
+				}
+			}
+			if len(hs) > 0 {
 				for _, h := range hs {
 					c.add(h, path, "key")
 				}
 				seg = "*"
 			}
 			val := byKey[k].Interface()
-			if s, ok := val.(string); ok {
+			if s, ok := val.(string); ok && !c.exempt(s, path+"/"+seg) {
 				for _, h := range c.s.pairMatches(k, s) {
 					c.add(h, path+"/"+seg, "")
 				}
@@ -439,17 +479,39 @@ func (c *collector) walk(v any, path string, named bool) {
 	}
 }
 
+// RedactID is how a record id that carries a secret is shown everywhere: at
+// most 4 characters of it, and a short hash so that it stays stable and
+// distinct (history lookups use it too).
+func RedactID(id string) string { return Excerpt(id) + "~" + Hash(id)[:8] }
+
+// Sensitive reports whether the value of a key field called name would be
+// flagged: it matches a rule, or the field is named like a secret.
+func (s *Scanner) Sensitive(name, value string) bool {
+	s = s.get()
+	if !s.enabled || isPlaceholder(value) {
+		return false
+	}
+	if len(s.matches(value)) > 0 {
+		return true
+	}
+	if isSecretName(name) {
+		_, ok := s.namedHit(value)
+		return ok
+	}
+	return false
+}
+
 // safeID keeps a secret that is part of a record id out of a report: an id that
 // matches a rule, or that is built from the value of a secret-named top-level
 // field, is cut to an excerpt.
 func (s *Scanner) safeID(id string, data any) string {
 	if len(s.matches(id)) > 0 {
-		return Excerpt(id)
+		return RedactID(id)
 	}
 	if m, ok := data.(map[string]any); ok {
 		for k, v := range m {
-			if str, ok := v.(string); ok && isSecretName(k) && strings.TrimSpace(str) != "" && strings.Contains(id, str) {
-				return Excerpt(id)
+			if str, ok := v.(string); ok && isSecretName(k) && strings.TrimSpace(str) != "" && (strings.Contains(id, str) || strings.Contains(id, strings.NewReplacer("%", "%25", "/", "%2F").Replace(str))) {
+				return RedactID(id)
 			}
 		}
 	}
@@ -459,11 +521,16 @@ func (s *Scanner) safeID(id string, data any) string {
 // ScanRecord scans one record's data. id is the record id (cut to an excerpt
 // when it is itself a secret).
 func (s *Scanner) ScanRecord(collection, id string, data any) []Finding {
+	return s.ScanRecordWith(collection, id, data, nil)
+}
+
+// ScanRecordWith is ScanRecord with the schema's public-kind annotations.
+func (s *Scanner) ScanRecordWith(collection, id string, data any, ann Annotations) []Finding {
 	s = s.get()
 	if !s.enabled {
 		return nil
 	}
-	c := &collector{s: s, collection: collection, id: s.safeID(id, data), seen: map[string]bool{}}
+	c := &collector{s: s, collection: collection, id: s.safeID(id, data), seen: map[string]bool{}, ann: ann}
 	c.walk(data, "", false)
 	return c.out
 }
@@ -498,10 +565,18 @@ func (s *Scanner) ScanSchema(collection string, schema []byte) []Finding {
 				keys = append(keys, k)
 			}
 			sort.Strings(keys)
+			kind := ""
+			if xr, ok := x["x-rackbook"].(map[string]any); ok {
+				kind, _ = xr["public"].(string)
+			}
 			if props, ok := x["properties"].(map[string]any); ok { // a property called password with a default
 				for name, p := range props {
 					if pm, ok := p.(map[string]any); ok {
-						if d, ok := pm["default"].(string); ok {
+						pk := ""
+						if xr, ok := pm["x-rackbook"].(map[string]any); ok {
+							pk, _ = xr["public"].(string)
+						}
+						if d, ok := pm["default"].(string); ok && !(pk != "" && s.validFor(pk, d)) && !isPlaceholder(d) {
 							dp := path + "/properties/" + ptr(name) + "/default"
 							for _, h := range s.pairMatches(name, d) {
 								c.add(h, dp, "")
@@ -517,7 +592,7 @@ func (s *Scanner) ScanSchema(collection string, schema []byte) []Finding {
 				if str, ok := x[k].(string); ok && (k == "title" || k == "description") {
 					c.text(str, path+"/"+ptr(k), "", false)
 				} else if schemaKeys[k] {
-					c.walk(x[k], path+"/"+ptr(k), false)
+					c.walk(s.dropValid(kind, x[k]), path+"/"+ptr(k), false)
 				} else {
 					visit(x[k], path+"/"+ptr(k))
 				}
@@ -530,6 +605,30 @@ func (s *Scanner) ScanSchema(collection string, schema []byte) []Finding {
 	}
 	visit(doc, "/schema")
 	return c.out
+}
+
+// dropValid removes from a default, example or enum the values that have the
+// strict format of the property's annotated kind.
+func (s *Scanner) dropValid(kind string, v any) any {
+	if kind == "" {
+		return v
+	}
+	switch x := v.(type) {
+	case string:
+		if s.validFor(kind, x) {
+			return nil
+		}
+	case []any:
+		out := make([]any, 0, len(x))
+		for _, e := range x {
+			if str, ok := e.(string); ok && s.validFor(kind, str) {
+				continue
+			}
+			out = append(out, e)
+		}
+		return out
+	}
+	return v
 }
 
 // ScanYAML scans every value of a YAML file the way a record is scanned. It is

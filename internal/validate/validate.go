@@ -19,6 +19,7 @@ import (
 
 	"github.com/kazuhahub/rackbook/internal/config"
 	"github.com/kazuhahub/rackbook/internal/ledger"
+	"github.com/kazuhahub/rackbook/internal/secretscan"
 	"github.com/kazuhahub/rackbook/internal/yamledit"
 )
 
@@ -47,6 +48,12 @@ func Run(l *ledger.Ledger) []ledger.Issue {
 			issues = append(issues, sameSetIssues(l, r.SameSet)...)
 		}
 	}
+	// An id that carries a secret is never shown, whatever the kind of issue.
+	for i := range issues {
+		if issues[i].ID != "" && issues[i].Collection != "" {
+			issues[i].ID = ledger.SafeID(l.Config, issues[i].Collection, issues[i].ID)
+		}
+	}
 	return issues
 }
 
@@ -58,8 +65,9 @@ func secretIssues(l *ledger.Ledger, c *ledger.Collection) []ledger.Issue {
 		return nil
 	}
 	var out []ledger.Issue
+	ann := secretscan.AnnotationsOf(c.SchemaRaw)
 	for _, r := range c.Records {
-		for _, f := range sc.ScanRecord(c.Name, r.ID, r.Data) {
+		for _, f := range sc.ScanRecordWith(c.Name, ledger.SafeID(l.Config, c.Name, r.ID), r.Data, ann) {
 			out = append(out, ledger.Issue{Collection: c.Name, ID: f.ID, Path: f.Path, Rule: ledger.RuleSecret, Message: f.Message(), Hash: r.Hash})
 		}
 	}

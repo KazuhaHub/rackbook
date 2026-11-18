@@ -2,6 +2,7 @@ package secretscan
 
 import (
 	"encoding/json"
+	"math/rand"
 	"strings"
 	"testing"
 )
@@ -61,7 +62,7 @@ func TestEveryRuleFiresAndKeepsQuietOnNearMisses(t *testing.T) {
 			[]string{"github_pat_short", "my_github_pat_" + strings.Repeat("a", 30)}},
 		{RuleAIKey,
 			[]string{openai, "sk" + "-ant-" + "api03-Ab12Cd34Ef56Gh78Ij90", "use sk" + "-" + "Ab12Cd34Ef56Gh78Ij90Kl12 here"},
-			[]string{"task-management-system-service-account", "disk-usage-monitoring-dashboard-v", "sk-short", "sk-prod-database-primary-host-name", "risk-assessment-for-all-the-hosts"}},
+			[]string{"task-management-system-service-account", "disk-usage-monitoring-dashboard-v", "sk-short", "risk-assessment-for-all-the-hosts"}},
 		{RuleSlackToken,
 			[]string{slack, "xox" + "p-" + "1234567890-abcdefghij"},
 			[]string{"xoxb-short", "xoxz-1234567890-abcdefghij", "boxb-1234567890-abcdefghij"}},
@@ -78,14 +79,14 @@ func TestEveryRuleFiresAndKeepsQuietOnNearMisses(t *testing.T) {
 			[]string{jwt, "Authorization: " + jwt},
 			[]string{"eyJhbGciOi.notjwt", "eyJhbGciOiJIUzI1.eyJ", "a.b.c"}},
 		{RuleSecretAssign,
-			[]string{"password: hunter2hunter2", "{\"password\": \"Hunter2Hunter2x\"}", "password: $uperS3cretPass", "db password = correcthorse", "API_KEY=abcdefgh12345", "api-key: abcdefgh12345", "client_secret: abcdefgh", "my token: abcdefgh", "privkey=abcdefgh", "passwd:abcdefgh", "notes: root password: changeme123!"},
-			[]string{"password: short", "token: 1234567", "the password is stored in the vault", "passwords: rotated-quarterly", "token_count: 12345678", "password: ********", "password: ${DB_PASSWORD}", "password: op://Infra/db/password", "token: env:GITHUB_TOKEN", "password: vault:kv/db#pw", "secret: /run/secrets/db_password", "token: $GITHUB_TOKEN", "password: %DB_PASSWORD%", "api_key: https://vault.example.com/ui/kv", "password: <redacted>", "secret: {{ vault }}", "password: xxxxxxxxxx", "token_ttl: 3600 seconds"}},
+			[]string{"password: hunter2hunter2", "{\"password\": \"Hunter2Hunter2x\"}", "password: $uperS3cretPass", "db password = correcthorse", "API_KEY=abcdefgh12345", "api-key: abcdefgh12345", "client_secret: abcdefgh", "my token: abcdefgh", "privkey=abcdefgh", "passwd:abcdefgh", "notes: root password: changeme123!", "password: ********", "password: ${DB_PASSWORD}", "password: op://Infra/db/password", "token: env:GITHUB_TOKEN", "password: vault:kv/db#pw", "secret: /run/secrets/db_password", "token: $GITHUB_TOKEN", "password: %DB_PASSWORD%", "api_key: https://vault.example.com/ui/kv", "password: <redacted>", "password: xxxxxxxxxx", `password: "*K9q!vR2#mZx7"`, "notes: password: *K9q!vR2#mZx7", "password: /Tr0ub4dor&3xyz", "password: ssh-Tr0ub4dor&3xyz", "token: ssh-Tr0ub4dor3xyzQ", "password: ~/Tr0ub4dor&3xyz", "pw is password: '[K9q!vR2#mZx7]'", "password: (K9q!vR2#mZx7)", "password: <K9q!vR2#mZx7>"},
+			[]string{"password: short", "token: 1234567", "the password is stored in the vault", "passwords: rotated-quarterly", "token_count: 12345678", "password: ***", "password: TBD", "token_ttl: 3600 seconds"}},
 		{RuleHexKey,
-			[]string{"key: " + hex32, "preshared key: " + hex32, "privkey=" + hex32, "KEY:" + strings.ToUpper(hex32)},
-			[]string{"key: " + hex32[:31], "fingerprint: " + hex32 + hex32, "sha256: " + hex32 + hex32, "key: " + hex32 + "zz", "public key: " + hex32, "key_fingerprint: " + hex32, "host_pub_key: " + hex32, "ssh host key = " + hex32, "hostkey: " + hex32, "nodekey: " + hex32, "machinekey=" + hex32, "discokey:" + hex32, "gpg key: " + hex32, "pgp key " + "= " + hex32}},
+			[]string{"key: " + hex32, "preshared key: " + hex32, "host nas01 luks key: " + hex32, "node n1 wg key=" + hex32, "public key: " + hex32, "hostkey: " + hex32, "gpg key: " + hex32, "nodekey:" + hex32, "'" + "key: " + hex32 + "'", "privkey=" + hex32, "KEY:" + strings.ToUpper(hex32)},
+			[]string{"key: " + hex32[:31], "fingerprint: " + hex32 + hex32, "sha256: " + hex32 + hex32, "key: " + hex32 + "zz", "key_fingerprint: " + hex32}},
 		{RuleURLPassword,
-			[]string{urlPw, "see https://bob:pw@example.com/x", "ssh://git:token@host"},
-			[]string{"https://example.com/path", "https://host:8080/path", "ssh://git@github.com/org/repo.git", "git@github.com:org/repo.git", "https://example.com:8080", "https://user:${PASSWORD}@host/", "https://user:<password>@host/", "mailto:admin@example.com"}},
+			[]string{urlPw, "see https://bob:pw@example.com/x", "ssh://git:token@host", "https://user:${PASSWORD}@host/"},
+			[]string{"https://example.com/path", "https://host:8080/path", "ssh://git@github.com/org/repo.git", "git@github.com:org/repo.git", "https://example.com:8080", "mailto:admin@example.com"}},
 	}
 	s := Default()
 	for _, c := range cases {
@@ -164,7 +165,7 @@ func TestRecordWalkPathsKeysAndSecretIDs(t *testing.T) {
 	}
 	// A secret used as the record id is cut to an excerpt in the report.
 	for _, f := range Default().ScanRecord("c", ghp, map[string]any{"name": ghp}) {
-		if strings.Contains(f.ID, "a1B2a1B2") || f.ID != Excerpt(ghp) {
+		if strings.Contains(f.ID, "a1B2a1B2") || f.ID != RedactID(ghp) {
 			t.Fatalf("id %q", f.ID)
 		}
 	}
@@ -176,7 +177,7 @@ func TestFieldNamedPasswordIsCaught(t *testing.T) {
 	for _, f := range fs {
 		paths = append(paths, f.Path)
 	}
-	if strings.Join(paths, ",") != "/password,/ssh_key" {
+	if strings.Join(paths, ",") != "/password,/public_key,/ssh_key" {
 		t.Fatalf("%v", paths)
 	}
 }
@@ -413,17 +414,17 @@ func TestSecretNamedFieldsCountTheWholeValue(t *testing.T) {
 		{"private_key", "some words here", true},
 		{"psk", "tailscale rules ok", true},
 		{"auth_tokens", "abc def ghi", true},
-		{"password", "op://Infra/db/password", false},
-		{"password", "env:DB_PASSWORD", false},
-		{"password", "$DB_PASSWORD", false},
-		{"password", "vault:kv/db#pw", false},
-		{"password", "/run/secrets/db", false},
+		{"password", "op://Infra/db/password", true},
+		{"password", "env:DB_PASSWORD", true},
+		{"password", "$DB_PASSWORD", true},
+		{"password", "vault:kv/db#pw", true},
+		{"password", "/run/secrets/db", true},
 		{"password", "待补", false},
 		{"password", "TBD", false},
 		{"password", "-", false},
 		{"password", "***", false},
-		{"password", "********", false},
-		{"token", "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMq", false},
+		{"password", "********", true},
+		{"token", "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMq", true},
 		{"public_key", "some words here", false},
 		{"password_hint", "my dog's name", false},
 		{"notes", "correct horse battery staple", false},
@@ -455,7 +456,7 @@ func TestIDBuiltFromASecretNamedFieldIsRedacted(t *testing.T) {
 		t.Fatal("no finding")
 	}
 	for _, f := range fs {
-		if strings.Contains(f.ID, "horse") || len([]rune(strings.TrimSuffix(f.ID, "…"))) > 4 {
+		if strings.Contains(f.ID, "horse") || !strings.Contains(f.ID, "…~") {
 			t.Fatalf("id %q", f.ID)
 		}
 	}
@@ -486,7 +487,7 @@ func TestMoreKeywordsAndRules(t *testing.T) {
 		RuleTailscaleKey: {"tskey-short", "tskey-auth-short"},
 		RuleSendGridKey:  {"SG.short.short"},
 		RuleAzureKey:     {"AccountKey=short", "AccountKey="},
-		RuleBearer:       {"Bearer short", "the bearer authentication-with-the-gateway-service", "Bearer <token>", "Bearer " + strings.Repeat("a", 30)},
+		RuleBearer:       {"Bearer short", "Bearer <token>"},
 		RuleSecretAssign: {"psk: short", "mypsk is set", "the pre-shared key is stored in the vault"},
 	} {
 		for _, v := range vals {
@@ -495,17 +496,189 @@ func TestMoreKeywordsAndRules(t *testing.T) {
 			}
 		}
 	}
-	// public values under secret-looking labels
-	for _, v := range []string{"tailscale nodekey: " + hex32, "host_key: " + hex32, "gpg key: " + hex32} {
-		if got := rules(t, d, v); len(got) != 0 {
-			t.Errorf("%q fired %v", v, got)
-		}
-	}
 }
 
 func TestScanYAMLWalksEveryValue(t *testing.T) {
 	fs := Default().ScanYAML("rackbook.yml", []byte("collections:\n  x:\n    title: ok\n    description: \"login with "+ghp+"\"\nrules:\n  - ref: {from: a.b, to: c.d, message: \"password: hunter2hunter2\"}\n"))
 	if len(fs) != 2 || fs[0].Collection != "rackbook.yml" {
 		t.Fatalf("%+v", fs)
+	}
+}
+
+func TestExactPlaceholdersAreNeverSecrets(t *testing.T) {
+	for _, v := range []string{"待补", "TBD", "tbd", "-", "***", "n/a", "N/A", "none", "empty", ""} {
+		if fs := Default().ScanRecord("c", "i", map[string]any{"password": v, "notes": v, "token": []any{v}}); len(fs) != 0 {
+			t.Errorf("%q: %+v", v, fs)
+		}
+	}
+	// only the exact value: anything around it is scanned
+	for _, v := range []string{"password: *** and more words", "TBD123456", "none of your business"} {
+		if fs := Default().ScanRecord("c", "i", map[string]any{"password": v}); len(fs) == 0 {
+			t.Errorf("%q must be scanned", v)
+		}
+	}
+}
+
+const sshPubKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl"
+
+func TestAnnotatedPublicFieldsPassOnlyWithTheStrictFormat(t *testing.T) {
+	schema := []byte(`{"properties":{
+	 "ssh_key":{"x-rackbook":{"public":"ssh_public_key"}},
+	 "fp":{"x-rackbook":{"public":"fingerprint"}},
+	 "node":{"x-rackbook":{"public":"nodekey"}},
+	 "age":{"x-rackbook":{"public":"age_recipient"}},
+	 "pem":{"x-rackbook":{"public":"pem_public_key"}},
+	 "jwk":{"x-rackbook":{"public":"jwk_public"}},
+	 "hid":{"x-rackbook":{"public":"hex_id"}},
+	 "password":{"x-rackbook":{"public":"secret_reference"}},
+	 "keys":{"type":"array","items":{"x-rackbook":{"public":"ssh_public_key"}}},
+	 "peers":{"type":"array","x-rackbook":{"public":"age_recipient"}},
+	 "users":{"type":"array","items":{"properties":{"key":{"x-rackbook":{"public":"hex_id"}}}}}}}`)
+	ann := AnnotationsOf(schema)
+	hex64 := strings.Repeat("ab", 32)
+	age := "age1" + strings.Repeat("q", 58)
+	pubPEM := "-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE\n-----END PUBLIC KEY-----"
+	good := map[string]any{
+		"ssh_key": sshPubKey + " admin@host", "fp": "SHA256:" + strings.Repeat("aB1/", 10) + "aB1", "node": "nodekey:" + hex64,
+		"age": age, "pem": pubPEM, "jwk": `{"kty":"EC","crv":"P-256","x":"f83OJ3D2xF1Bg8vub9tLe1gHMzV76e8Tus9uPHvRVEU","y":"x_FEzRu9m36HLN_tue659LNpXW6pCyStikYjKIWI5a0"}`,
+		"hid": strings.Repeat("0123", 4), "password": "op://Infra/db/password",
+		"keys":  []any{sshPubKey, sshPubKey + " a@b"},
+		"peers": []any{age, age},
+		"users": []any{map[string]any{"key": hex64}},
+	}
+	d := Default()
+	if fs := d.ScanRecordWith("c", "i", good, ann); len(fs) != 0 {
+		t.Fatalf("valid annotated values must pass: %+v", fs)
+	}
+	// without the annotations the same record is scanned as text
+	if fs := d.ScanRecord("c", "i", good); len(fs) == 0 {
+		t.Fatal("no annotations, no exemption")
+	}
+	bad := map[string]any{
+		"ssh_key":  "ssh-ed25519 AAAA ghp_" + strings.Repeat("a1B2", 9), // secret in the comment
+		"fp":       "password: hunter2hunter2",                          // not a fingerprint
+		"node":     "nodekey:" + hex64 + " password: hunter2hunter2",    // trailing text
+		"age":      "AGE-SECRET-KEY-1" + strings.Repeat("Q", 58),        // the private key
+		"pem":      pemHead + "\nMIIE\n",                                // private block
+		"hid":      "key: " + hex32,                                     // not a bare hex id
+		"password": "correct horse battery staple",                      // not a reference
+		"keys":     []any{sshPubKey, "password: hunter2hunter2"},
+		"peers":    []any{age, "AGE-SECRET-KEY-1" + strings.Repeat("Q", 58)},
+		"users":    []any{map[string]any{"key": "key: " + hex32}},
+	}
+	got := map[string]bool{}
+	for _, f := range d.ScanRecordWith("c", "i", bad, ann) {
+		got[strings.SplitN(strings.TrimPrefix(f.Path, "/"), "/", 2)[0]] = true
+	}
+	for k := range bad {
+		if !got[k] {
+			t.Errorf("an invalid value in %s must still be scanned", k)
+		}
+	}
+	// a JWK with a private member is not "public"
+	if d.validFor(KindJWKPublic, `{"kty":"RSA","n":"abc","d":"privateprivateprivate"}`) || d.validFor(KindJWKPublic, `{"kty":"oct","k":"abc"}`) || d.validFor(KindJWKPublic, `{"x":"1"}`) {
+		t.Fatal("private JWK members must not be exempt")
+	}
+	// secret_reference shapes
+	for v, ok := range map[string]bool{"op://v/i/f": true, "vault:kv/db#pw": true, "env:DB_PASSWORD": true, "${DB_PASSWORD}": true, "/run/secrets/db": true, "env:lower": false, "op://a b": false, "/tmp/a b": false, "hunter2hunter2": false, "$(cat x)": false} {
+		got := len(d.ScanRecordWith("c", "i", map[string]any{"password": v}, ann)) == 0
+		if got != ok {
+			t.Errorf("secret_reference %q: pass=%v want %v", v, got, ok)
+		}
+	}
+}
+
+func TestSchemaDefaultsOfAnnotatedFieldsFollowTheSameRule(t *testing.T) {
+	ok := `{"properties":{"k":{"default":"` + sshPubKey + `","x-rackbook":{"public":"ssh_public_key"}}}}`
+	if fs := Default().ScanSchema("c", []byte(ok)); len(fs) != 0 {
+		t.Fatalf("%+v", fs)
+	}
+	bad := `{"properties":{"k":{"default":"password: hunter2hunter2","x-rackbook":{"public":"ssh_public_key"}}}}`
+	if fs := Default().ScanSchema("c", []byte(bad)); len(fs) == 0 {
+		t.Fatal("an invalid default must be scanned")
+	}
+}
+
+func TestMapKeysUnderASecretNamedMapAreValues(t *testing.T) {
+	fs := Default().ScanRecord("c", "i", map[string]any{"passwords": map[string]any{"correct horse battery staple": "x"}})
+	if len(fs) != 1 || fs[0].In != "key" || fs[0].Path != "/passwords" || strings.Contains(fs[0].Excerpt, "horse") {
+		t.Fatalf("%+v", fs)
+	}
+}
+
+func TestSecretNamesAndCaseInsensitiveBearer(t *testing.T) {
+	for _, n := range []string{"secret_key", "aws_secret_access_key", "encryption_key", "client_secret", "signing_key", "private_token", "access_token", "refresh_token", "db_secret", "mysql_password", "deploy_token", "accesstoken", "secretKey", "encryptionKey", "signingKey"} {
+		if fs := Default().ScanRecord("c", "i", map[string]any{n: "correct horse"}); len(fs) == 0 {
+			t.Errorf("%s must be a secret name", n)
+		}
+	}
+	for _, n := range []string{"notes", "name", "key", "public_key", "token_hint", "password_policy"} {
+		if fs := Default().ScanRecord("c", "i", map[string]any{n: "correct horse"}); len(fs) != 0 {
+			t.Errorf("%s must not be a secret name", n)
+		}
+	}
+	for _, v := range []string{"bearer " + strings.Repeat("aB1.", 6), "BEARER " + strings.Repeat("aB1.", 6), "secret_key: abcdefgh1234", "aws_secret_access_key=abcdefgh1234", "encryption_key: abcdefgh1234", "signing_key = abcdefgh1234", "access_token: abcdefgh1234"} {
+		if got := rules(t, Default(), v); len(got) == 0 {
+			t.Errorf("%q not caught", v)
+		}
+	}
+}
+
+func TestRedactedIDIsStableShortAndDistinct(t *testing.T) {
+	a, b := RedactID("alice/hunter2hunter2"), RedactID("alice/hunter3hunter3")
+	if a == b || !strings.HasPrefix(a, "alic…~") || len(a) > len("alic…~")+8 {
+		t.Fatal(a, b)
+	}
+}
+
+// Each secret is wrapped in random punctuation, quotes, brackets, CJK text and
+// prefixes and suffixes; every variant must still be caught.
+func TestWrappedSecretsAreAlwaysCaught(t *testing.T) {
+	corpus := map[string]string{
+		RulePrivateKey:   pemHead + "\nb3BlbnNzaC1rZXk\n-----END " + "OPENSSH PRIVATE KEY-----",
+		RuleAgeKey:       age,
+		RuleGitHubToken:  ghp,
+		RuleGitHubPAT:    ghPAT,
+		RuleAIKey:        openai,
+		RuleSlackToken:   slack,
+		RuleAWSKeyID:     aws,
+		RuleGoogleKey:    google,
+		RuleStripeKey:    stripe,
+		RuleJWT:          jwt,
+		RuleSecretAssign: "password: *K9q!vR2#mZx7",
+		RuleHexKey:       "key: " + hex32,
+		RuleURLPassword:  urlPw,
+		RuleGitLabToken:  "glpat" + "-" + strings.Repeat("aB1_", 6),
+		RuleNPMToken:     "npm" + "_" + strings.Repeat("aB1", 12),
+		RuleHFToken:      "hf" + "_" + strings.Repeat("aBcD", 9),
+		RuleTailscaleKey: "tskey" + "-auth-" + "kABCDE1CNTRL-abcdefghij",
+		RuleSendGridKey:  "SG" + "." + strings.Repeat("aB1_", 6)[:22] + "." + strings.Repeat("cD2-", 11)[:43],
+		RuleAzureKey:     "AccountKey=" + strings.Repeat("aB1/", 11) + "==",
+		RuleBearer:       "Bearer " + strings.Repeat("aB1.", 6) + "==",
+	}
+	pre := []string{"", " ", "*", "/", "'", "\"", "[", "<", "(", "{", "`", "，", "密码是：", "注意！", "-", "= ", ": ", "; ", "# ", "> ", "~", "\n", "\t", "– ", "“", "「", "·", "see ", "note: ", "login with "}
+	suf := []string{"", " ", "*", "/", "'", "\"", "]", ">", ")", "}", "`", "。", "，请勿外传", "!", ".", ",", ";", "\n", "\t", " (prod)", "”", "」", "·", " and more words"}
+	rng := rand.New(rand.NewSource(7))
+	d := Default()
+	n := 0
+	for rule, secret := range corpus {
+		for i := 0; i < 120; i++ {
+			text := pre[rng.Intn(len(pre))] + pre[rng.Intn(len(pre))] + secret + suf[rng.Intn(len(suf))] + suf[rng.Intn(len(suf))]
+			if !has(rules(t, d, text), rule) {
+				t.Errorf("%s not caught in %q", rule, text)
+			}
+			n++
+		}
+	}
+	if n < 2000 {
+		t.Fatalf("only %d variants", n)
+	}
+}
+
+func TestAllowListIsTheOnlyEscapeInFreeText(t *testing.T) {
+	for _, v := range []string{"stored in 1Password: password: hunter2hunter2", "host_key: " + hex32, "near fingerprint " + "key: " + hex32, "see vault; token: " + ghp} {
+		if fs := Default().ScanRecord("c", "i", map[string]any{"notes": v}); len(fs) == 0 {
+			t.Errorf("free text %q has no exemptions", v)
+		}
 	}
 }

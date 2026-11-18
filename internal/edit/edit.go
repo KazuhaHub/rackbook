@@ -57,6 +57,9 @@ type Result struct {
 	Hash       string
 	Data       map[string]any
 	Files      []string // config-relative files that were written; empty when nothing changed
+	// SubjectID is the id shown in the commit subject and the Record trailer: ID,
+	// or its redacted form when the key fields hold a secret.
+	SubjectID string
 
 	// SubjectText and RecordText replace the commit subject and the Record
 	// trailer for changes that are not record edits (data type changes).
@@ -74,7 +77,7 @@ func (r *Result) Subject() string {
 	if r.SubjectText != "" {
 		return r.SubjectText
 	}
-	return fmt.Sprintf("ledger(%s): %s %s", r.Collection, r.Kind, sanitizeSubject(r.ID))
+	return fmt.Sprintf("ledger(%s): %s %s", r.Collection, r.Kind, sanitizeSubject(r.shownID()))
 }
 
 // Record is the value of the "Record:" commit trailer for this change.
@@ -82,7 +85,14 @@ func (r *Result) Record() string {
 	if r.SubjectText != "" {
 		return r.RecordText
 	}
-	return RecordRef(r.Collection, r.ID)
+	return RecordRef(r.Collection, r.shownID())
+}
+
+func (r *Result) shownID() string {
+	if r.SubjectID != "" {
+		return r.SubjectID
+	}
+	return r.ID
 }
 
 // maxRecordID is how many characters of an id the trailer keeps.
@@ -234,12 +244,13 @@ func Apply(cfg *config.Config, op Op) (*Result, error) {
 			id = ledger.ID(c.Collection, len(c.Records), op.Data)
 		}
 		sc := cfg.SecretScanner()
-		bad := sc.ScanRecord(c.Name, id, op.Data)
+		ann := secretscan.AnnotationsOf(c.SchemaRaw)
+		bad := sc.ScanRecordWith(c.Name, ledger.SafeID(cfg, c.Name, id), op.Data, ann)
 		if op.Kind == Edit && len(bad) > 0 {
 			// A secret the record already holds is for `rackbook check` to report;
 			// refusing every edit of such a record would also lock out the fix.
 			if cur, err := findRecord(c, Op{Kind: Edit, ID: op.ID}); err == nil {
-				bad = secretscan.Introduced(sc.ScanRecord(c.Name, id, cur.Data), bad)
+				bad = secretscan.Introduced(sc.ScanRecordWith(c.Name, ledger.SafeID(cfg, c.Name, id), cur.Data, ann), bad)
 			}
 		}
 		if len(bad) > 0 {
@@ -256,7 +267,7 @@ func Apply(cfg *config.Config, op Op) (*Result, error) {
 	case Add:
 		newID = ledger.ID(c.Collection, len(c.Records), op.Data)
 		if ex := c.Get(newID); ex != nil && len(c.Key) > 0 {
-			return nil, &ConflictError{Message: fmt.Sprintf("%s %q already exists", c.Name, newID), Current: ex}
+			return nil, &ConflictError{Message: fmt.Sprintf("%s %q already exists", c.Name, ledger.SafeID(cfg, c.Name, newID)), Current: ex}
 		}
 		out, err = yamledit.Add(src, c.Path, op.Data, opts)
 	case Edit, Delete:
@@ -266,7 +277,7 @@ func Apply(cfg *config.Config, op Op) (*Result, error) {
 		if op.Kind == Edit {
 			newID = ledger.ID(c.Collection, cur.Index, op.Data)
 			if ex := c.Get(newID); ex != nil && ex != cur && len(c.Key) > 0 {
-				return nil, &ConflictError{Message: fmt.Sprintf("%s %q already exists", c.Name, newID), Current: ex}
+				return nil, &ConflictError{Message: fmt.Sprintf("%s %q already exists", c.Name, ledger.SafeID(cfg, c.Name, newID)), Current: ex}
 			}
 			out, err = yamledit.Edit(src, c.Path, cur.Index, op.Data, opts)
 		} else {
@@ -297,7 +308,7 @@ func Apply(cfg *config.Config, op Op) (*Result, error) {
 	if err != nil {
 		return nil, err
 	}
-	res := &Result{Kind: op.Kind, Collection: op.Collection, ID: newID, Data: op.Data, Cleared: cleared}
+	res := &Result{Kind: op.Kind, Collection: op.Collection, ID: newID, Data: op.Data, Cleared: cleared, SubjectID: ledger.SafeID(cfg, op.Collection, newID)}
 	if string(out) == string(src) && len(files) == 0 {
 		res.Hash = ledger.Hash(op.Data)
 		return res, nil
@@ -376,9 +387,10 @@ func clearReferences(l *ledger.Ledger, refs []ledger.Reference, sc *secretscan.S
 				}
 			}
 		}
+		ann := secretscan.AnnotationsOf(c.SchemaRaw)
 		// Rewriting a record must not slip a secret in; one that was already
 		// there is for `rackbook check` to report, not a reason to refuse.
-		bad = append(bad, secretscan.Introduced(sc.ScanRecord(k.coll, k.id, rec.Data), sc.ScanRecord(k.coll, k.id, data))...)
+		bad = append(bad, secretscan.Introduced(sc.ScanRecordWith(k.coll, ledger.SafeID(l.Config, k.coll, k.id), rec.Data, ann), sc.ScanRecordWith(k.coll, ledger.SafeID(l.Config, k.coll, k.id), data, ann))...)
 		src, ok := files[c.File]
 		if !ok {
 			var err error

@@ -567,7 +567,7 @@ func (s *Store) History(ctx context.Context, limit int, collection, id string) (
 		file = filepath.FromSlash(c.File)
 	}
 	if id != "" {
-		want := edit.RecordRef(collection, id)
+		want := edit.RecordRef(collection, ledger.SafeID(s.Config(), collection, id))
 		// --fixed-strings makes the prefilter literal whatever grep.patternType
 		// says; it is a substring match, so the exact value is checked below.
 		commits, err := s.gitLog(ctx, limit, want, "--fixed-strings", "--grep=Record: "+want)
