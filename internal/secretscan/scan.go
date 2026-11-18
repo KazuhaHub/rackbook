@@ -293,7 +293,13 @@ type hit struct {
 func (s *Scanner) matches(text string) []hit { return s.matchText(text) }
 
 // matchText runs every rule over one piece of text.
-func (s *Scanner) matchText(text string) []hit {
+func (s *Scanner) matchText(text string) []hit { return s.run(text, false) }
+
+// blockMatches runs only the block-tier regexp rules: the check applied to the
+// remainder of a reference, which never recurses into the keyword rule.
+func (s *Scanner) blockMatches(text string) []hit { return s.run(text, true) }
+
+func (s *Scanner) run(text string, blockOnly bool) []hit {
 	if len(text) < s.minLen {
 		return nil
 	}
@@ -308,6 +314,9 @@ func (s *Scanner) matchText(text string) []hit {
 	}
 	var out []hit
 	for _, r := range s.rules {
+		if blockOnly && (r.tier != TierBlock || r.proc != nil) {
+			continue
+		}
 		if len(r.hints) > 0 { // cheap prefilter: skip the regexp unless a literal is there
 			hay := text
 			if r.ci {
@@ -351,15 +360,21 @@ func (s *Scanner) matchText(text string) []hit {
 // dropCovered removes a high-entropy hit that is only another rule's match seen
 // again (a token, or the body of a private key).
 func dropCovered(hits []hit) []hit {
-	if len(hits) < 2 {
-		return hits
+	var others []hit
+	for _, h := range hits {
+		if h.rule != RuleEntropy {
+			others = append(others, h)
+		}
+	}
+	if len(others) == len(hits) || len(others) == 0 {
+		return hits // nothing to compare, or no other rule matched at all
 	}
 	out := hits[:0:0]
 	for _, h := range hits {
 		covered := false
-		if h.rule == RuleEntropy {
-			for _, g := range hits {
-				if g.rule != RuleEntropy && (strings.Contains(g.value, h.value) || strings.Contains(h.value, g.value)) {
+		if h.rule == RuleEntropy { // entropy hits are only compared with the others
+			for _, g := range others {
+				if strings.Contains(g.value, h.value) || strings.Contains(h.value, g.value) {
 					covered = true
 					break
 				}
@@ -554,6 +569,14 @@ func (c *collector) walk(v any, path string, named bool) {
 			byKey[k] = it.Value()
 		}
 		sort.Strings(keys)
+		// a private JWK stored as an object (kty and d members) is block tier wherever it is
+		if _, ok := byKey["kty"]; ok {
+			if dv, ok := byKey["d"]; ok {
+				if d, ok := dv.Interface().(string); ok && len(d) >= 8 && c.s.ruleOn(RulePrivateJWK) {
+					c.add(hit{RulePrivateJWK, d, TierBlock}, path, "")
+				}
+			}
+		}
 		for _, k := range keys {
 			seg := ptr(k)
 			hs := c.s.matches(k)

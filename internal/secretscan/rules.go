@@ -65,7 +65,7 @@ const (
 	RuleEntropy      = "high-entropy"
 )
 
-const hexAssign = `(?i)(?:key|privkey)\s*[:=]\s*([0-9a-f]{32,})\b`
+const hexAssign = `(?i)(?:key|privkey)\s*[:=]\s*["']?([0-9a-f]{32,})\b`
 
 // pemB64 is the base64 of "-----BEGIN <label> PRIVATE KEY-----" as it starts a
 // base64-encoded PEM file (kubeconfig client-key-data and the like): only the
@@ -88,12 +88,12 @@ func builtin() []*rule {
 		{id: RuleAgeKey, tier: TierBlock, description: "age secret key", hints: []string{"AGE-SECRET-KEY-1"}, re: regexp.MustCompile(`AGE-SECRET-KEY-1[0-9A-Z]{58}`)},
 		{id: RuleGitHubToken, tier: TierBlock, description: "GitHub token", hints: []string{"ghp_", "gho_", "ghu_", "ghs_", "ghr_"}, re: regexp.MustCompile(`gh[pousr]_[A-Za-z0-9]{36,}`)},
 		{id: RuleGitHubPAT, tier: TierBlock, description: "GitHub fine-grained token", hints: []string{"github_pat_"}, re: regexp.MustCompile(`github_pat_[A-Za-z0-9_]{22,}`)},
-		{id: RuleAIKey, tier: TierBlock, description: "OpenAI or Anthropic style API key", hints: []string{"sk-"}, re: regexp.MustCompile(`(?:sk-(?:ant-|proj-)|\bsk-)[A-Za-z0-9_-]{20,}`)},
+		{id: RuleAIKey, tier: TierBlock, description: "OpenAI or Anthropic style API key", hints: []string{"sk-"}, re: regexp.MustCompile(`sk-(?:ant-|proj-)?[A-Za-z0-9_-]{20,}`), filter: skKey},
 		{id: RuleSlackToken, tier: TierBlock, description: "Slack token", hints: []string{"xox"}, re: regexp.MustCompile(`xox[abposr]-[A-Za-z0-9-]{10,}`)},
 		{id: RuleAWSKeyID, tier: TierBlock, description: "AWS access key ID", hints: []string{"AKIA", "ASIA"}, re: regexp.MustCompile(`(?:AKIA|ASIA)[0-9A-Z]{16}\b`)},
 		{id: RuleGoogleKey, tier: TierBlock, description: "Google API key", hints: []string{"AIza"}, re: regexp.MustCompile(`AIza[0-9A-Za-z_-]{35}`)},
-		{id: RuleStripeKey, tier: TierBlock, description: "Stripe live secret key", hints: []string{"_live_"}, re: regexp.MustCompile(`\b(?:sk|rk)_live_[0-9a-zA-Z]{24,}`)},
-		{id: RuleJWT, tier: TierBlock, description: "JSON Web Token", hints: []string{"eyJ"}, re: regexp.MustCompile(`\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}`)},
+		{id: RuleStripeKey, tier: TierBlock, description: "Stripe live secret key", hints: []string{"_live_"}, re: regexp.MustCompile(`(?:sk|rk)_live_[0-9a-zA-Z]{24,}`)},
+		{id: RuleJWT, tier: TierBlock, description: "JSON Web Token", hints: []string{"eyJ"}, re: regexp.MustCompile(`eyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}`)},
 		{id: RuleGitLabToken, tier: TierBlock, description: "GitLab personal access token", hints: []string{"glpat-"}, re: regexp.MustCompile(`glpat-[0-9A-Za-z_-]{20,}`)},
 		{id: RuleNPMToken, tier: TierBlock, description: "npm access token", hints: []string{"npm_"}, re: regexp.MustCompile(`npm_[A-Za-z0-9]{36}`)},
 		{id: RuleHFToken, tier: TierBlock, description: "Hugging Face token", hints: []string{"hf_"}, re: regexp.MustCompile(`hf_[A-Za-z]{34,}`)},
@@ -119,6 +119,13 @@ func builtinIDs() map[string]bool {
 		m[r.id] = true
 	}
 	return m
+}
+
+// skKey: an "sk-ant-" or "sk-proj-" key always counts; a plain "sk-" needs a
+// digit or an upper-case letter, so that words like "task-management-system-
+// service-account" (no word boundary is required before "sk-") do not fire.
+func skKey(v string) bool {
+	return strings.HasPrefix(v, "sk-ant-") || strings.HasPrefix(v, "sk-proj-") || strings.ContainsAny(v, "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ")
 }
 
 // credLike says a value looks like a credential: it contains a digit, or mixes
@@ -147,7 +154,7 @@ func credLike(v string) bool {
 // password, passphrase, secret, token, api key, private key, psk, secret_key,
 // encryption_key, signing_key, 密码 and the like, as the last word of the name,
 // with or without a separator (client_secret, db-password, authTokens).
-var secretName = regexp.MustCompile(`(?i)(?:password|passwd|passphrase|secrets?|tokens?)s?$|(?:^|[^a-z])(?:pwd|pass|api[_ -]?keys?|apikey|private[_ -]?keys?|privkey|psk|pre[_-]?shared[_-]?keys?|wpa[_ -]?passphrase|secret[_ -]?(?:access[_ -]?)?keys?|encryption[_ -]?keys?|signing[_ -]?keys?)$|(?:ApiKey|PrivateKey|SecretKey|EncryptionKey|SigningKey|Psk)s?$|(?:密码|口令|密钥|令牌|秘钥|凭据|凭证|授权码|私钥|访问密钥|パスワード|비밀번호)$`)
+var secretName = regexp.MustCompile(`(?i)(?:password|passwd|passphrase|secrets?|tokens?)s?$|(?:^|[^a-z])(?:pwd|pass|api[_ -]?keys?|apikey|private[_ -]?keys?|privkey|psk|pre[_-]?shared[_-]?keys?|wpa[_ -]?passphrase|secret[_ -]?(?:access[_ -]?)?keys?|encryption[_ -]?keys?|signing[_ -]?keys?)$|(?-i:(?:^|[A-Za-z0-9_ -])(?:ApiKey|PrivateKey|SecretKey|EncryptionKey|SigningKey|Psk|Pwd|Pass)s?$)|(?:密码|密碼|口令|密钥|令牌|秘钥|凭据|凭证|授权码|私钥|访问密钥|パスワード|비밀번호|암호|패스워드)$`)
 
 func isSecretName(name string) bool { return secretName.MatchString(normalizeText(name)) }
 

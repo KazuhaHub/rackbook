@@ -56,3 +56,64 @@ func TestScanMegabyteIsFastAndLight(t *testing.T) {
 		t.Errorf("1 MB allocated %d bytes", alloc)
 	}
 }
+
+// Pathological inputs: each must scan in under a second per megabyte.
+func pathological() map[string]string {
+	rep := func(unit string, n int) string { return strings.Repeat(unit, n/len(unit)+1)[:n] }
+	rng := rand.New(rand.NewSource(3))
+	const alnum = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!#$%"
+	var toks strings.Builder
+	for toks.Len() < 1<<20 {
+		for i := 0; i < 24; i++ {
+			toks.WriteByte(alnum[rng.Intn(len(alnum))])
+		}
+		toks.WriteByte(' ')
+	}
+	zh := "今天我们讨论服务器维护计划和备份窗口，请大家准备。密码："
+	return map[string]string{
+		"password=op:// repeated": rep("password=op://", 1<<20),
+		"密码： every 54 bytes":      rep(zh, 1<<20),
+		"password= repeated":      rep("password=", 1<<20),
+		"?token= repeated":        rep("?token=", 1<<20),
+		"random 24-char tokens":   toks.String(),
+	}
+}
+
+func BenchmarkPathological(b *testing.B) {
+	d := Default()
+	for name, text := range pathological() {
+		b.Run(name, func(b *testing.B) {
+			b.SetBytes(int64(len(text)))
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				d.matches(text)
+			}
+		})
+	}
+}
+
+func TestPathologicalInputsStayUnderASecondPerMegabyte(t *testing.T) {
+	if raceEnabled {
+		t.Skip("the race detector slows everything several times")
+	}
+	d := Default()
+	for name, text := range pathological() {
+		best := time.Hour
+		for i := 0; i < 2; i++ {
+			start := time.Now()
+			d.matches(text)
+			if el := time.Since(start); el < best {
+				best = el
+			}
+		}
+		if best > time.Second {
+			t.Errorf("%s: %d bytes took %v", name, len(text), best)
+		}
+	}
+	// the exponential case was 560 bytes of this
+	start := time.Now()
+	d.matches(strings.Repeat("password=op://", 40))
+	if el := time.Since(start); el > time.Second {
+		t.Errorf("560 bytes of password=op:// took %v", el)
+	}
+}

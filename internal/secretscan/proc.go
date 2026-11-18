@@ -24,10 +24,11 @@ func normalizeText(s string) string {
 	if ascii {
 		return s
 	}
-	if strings.ContainsAny(s, "\u200b\u200c\u200d\u2060\ufeff") {
+	// zero-width and invisible formatting characters
+	if strings.ContainsAny(s, "\u200b\u200c\u200d\u200e\u200f\u00ad\u2060\u2061\u2062\u2063\u2064\ufeff") {
 		s = strings.Map(func(r rune) rune {
 			switch {
-			case r >= 0x200B && r <= 0x200D, r == 0x2060, r == 0xFEFF:
+			case r >= 0x200B && r <= 0x200F, r == 0x00AD, r >= 0x2060 && r <= 0x2064, r == 0xFEFF:
 				return -1
 			}
 			return r
@@ -39,7 +40,7 @@ func normalizeText(s string) string {
 	return norm.NFKC.String(s)
 }
 
-var cjkKeywords = []string{"访问密钥", "密码", "口令", "密钥", "令牌", "秘钥", "凭据", "凭证", "授权码", "私钥", "パスワード", "비밀번호"}
+var cjkKeywords = []string{"访问密钥", "密码", "密碼", "口令", "密钥", "令牌", "秘钥", "凭据", "凭证", "授权码", "私钥", "パスワード", "비밀번호", "패스워드", "암호"}
 
 // asciiLower lowercases ASCII letters byte by byte, so indices stay aligned.
 func asciiLower(s string) string {
@@ -152,12 +153,21 @@ func assignments(s *Scanner, text, lt string) []string {
 				continue
 			}
 		}
-		if v, ok := assignedValue(s, text[e:]); ok {
+		// each keyword reads a bounded window, so a long run of "password=" stays linear
+		win := text[e:min(len(text), e+maxWindow)]
+		if v, ok := assignedValue(s, win); ok {
 			out = append(out, v)
 		}
 	}
 	return out
 }
+
+// maxWindow bounds how far after a keyword the value is looked for; the value
+// itself is at most maxValue bytes.
+const (
+	maxWindow = 320
+	maxValue  = 256
+)
 
 func assignedValue(s *Scanner, rest string) (string, bool) {
 	pos := 0
@@ -176,7 +186,7 @@ func assignedValue(s *Scanner, rest string) (string, bool) {
 		switch {
 		case r == ':' || r == '=':
 			pos += size
-		case r == '→' || r == '是' || r == '为' || r == '為':
+		case r == '→' || r == '是' || r == '为' || r == '為' || r == 'は' || r == '는' || r == '은':
 			pos += size
 			wordSep = true
 		case isWordAt(rest, pos, "is") || isWordAt(rest, pos, "was"):
@@ -207,7 +217,7 @@ func assignedValue(s *Scanner, rest string) (string, bool) {
 		break
 	}
 	end := pos
-	for end < len(rest) {
+	for end < len(rest) && end-pos < maxValue {
 		r, size := utf8.DecodeRuneInString(rest[end:])
 		if unicode.IsSpace(r) {
 			break
@@ -260,12 +270,18 @@ func isPathValue(v string) bool {
 // env:NAME, ${NAME} or secrets/path#key. What follows the prefix is scanned
 // again, so "op://ghp_..." is not a reference.
 func (s *Scanner) isReference(v string) bool {
-	if refEnv.MatchString(v) || refStore.MatchString(v) && len(s.matchText(v)) == 0 {
+	// the remainder is checked with the block-tier rules only, once: never with
+	// the keyword rule again (that would recurse on "password=op://password=op://...")
+	if refEnv.MatchString(v) || refStore.MatchString(v) && len(s.blockMatches(v)) == 0 {
 		return true
 	}
 	for _, re := range []*regexp.Regexp{refOP, refVault} {
 		if m := re.FindStringSubmatch(v); m != nil {
-			return len(s.matchText(m[1])) == 0
+			rem := m[1]
+			if len(rem) > 128 { // a token is far shorter; keeps long runs cheap
+				rem = rem[:128]
+			}
+			return len(s.blockMatches(rem)) == 0
 		}
 	}
 	return false
@@ -307,10 +323,12 @@ func entropyOK(tok string) bool {
 		return false
 	}
 	// hyphenated or dotted names are made of short words, not of a key
-	longest := 0
-	for _, seg := range strings.FieldsFunc(tok, func(r rune) bool { return r == '-' || r == '_' || r == '.' }) {
-		if len(seg) > longest {
-			longest = len(seg)
+	longest, run := 0, 0
+	for i := 0; i < len(tok); i++ {
+		if c := tok[i]; c == '-' || c == '_' || c == '.' {
+			run = 0
+		} else if run++; run > longest {
+			longest = run
 		}
 	}
 	if longest < 12 {

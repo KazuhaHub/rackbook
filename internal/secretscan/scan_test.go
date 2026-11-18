@@ -903,3 +903,71 @@ func TestRedactIDIsShortStableAndDistinct(t *testing.T) {
 		t.Fatal(a, b)
 	}
 }
+
+func TestRoundFiveFixes(t *testing.T) {
+	d := Default()
+	// hex after a quote
+	for _, v := range []string{`key: "` + hex32 + `"`, `ssh_key = '` + hex32 + `'`, `privkey="` + hex32 + `"`} {
+		if got := rules(t, d, v); !has(got, RuleHexKey) {
+			t.Errorf("%q: %v", v, got)
+		}
+	}
+	// leading boundaries: sk-, live keys and JWTs inside a longer word
+	for _, c := range []struct{ rule, text string }{
+		{RuleAIKey, "xsk" + "-" + "Ab12Cd34Ef56Gh78Ij90Kl12"}, {RuleAIKey, "1sk" + "-ant-" + "api03-Ab12Cd34Ef56Gh78Ij90"},
+		{RuleStripeKey, "my" + stripe}, {RuleStripeKey, "x" + "rk_live_" + strings.Repeat("a1B2c3", 4)}, {RuleJWT, "tok" + jwt}, {RuleJWT, "1" + jwt},
+	} {
+		if got := rules(t, d, c.text); !has(got, c.rule) {
+			t.Errorf("%s not caught in %q: %v", c.rule, c.text, got)
+		}
+	}
+	for _, w := range []string{"task-management-system-service-account", "disk-usage-monitoring-dashboard-v", "risk-assessment-for-all-the-hosts"} {
+		if got := rules(t, d, w); has(got, RuleAIKey) {
+			t.Errorf("%q fired", w)
+		}
+	}
+	// a private JWK stored as an object is block tier wherever it is
+	jwk := map[string]any{"kty": "RSA", "n": "abc", "e": "AQAB", "d": "MXx3vN0sG2iPz8WqL1dUfKq"}
+	for _, rec := range []map[string]any{{"k": jwk}, {"list": []any{map[string]any{"deep": jwk}}}, {"kty": "EC", "d": "MXx3vN0sG2iPz8WqL1dUfKq"}} {
+		var jwkHits int
+		for _, f := range d.ScanRecord("c", "i", rec) {
+			if f.Rule == RulePrivateJWK {
+				jwkHits++
+				if f.Tier != TierBlock || len(strings.TrimSuffix(f.Excerpt, "…")) > 4 {
+					t.Errorf("%v: %+v", rec, f)
+				}
+			}
+		}
+		if jwkHits != 1 {
+			t.Errorf("%v: %d private-jwk findings", rec, jwkHits)
+		}
+	}
+	for _, f := range d.ScanRecord("c", "i", map[string]any{"k": map[string]any{"kty": "EC", "crv": "P-256", "x": "f83OJ3D2xF1Bg8vub9tLe1gHMzV76e8Tus9uPHvRVEU"}}) {
+		if f.Tier == TierBlock { // a public JWK is at most a heuristic hit (annotate it jwk_public)
+			t.Errorf("a public JWK object is not block tier: %+v", f)
+		}
+	}
+	// more invisible characters inside the keyword
+	for _, v := range []string{"pass‎word: Hunter2Hunter2", "pass‏word: Hunter2Hunter2", "pass­word: Hunter2Hunter2", "pass⁡⁢⁣⁤word: Hunter2Hunter2"} {
+		if got := rules(t, d, v); !has(got, RuleSecretAssign) {
+			t.Errorf("%q: %v", v, got)
+		}
+	}
+	// more keywords and particles
+	for _, v := range []string{"密碼：Hunter2Hunter2", "암호: Hunter2Hunter2", "패스워드: Hunter2Hunter2", "パスワードは Hunter2Hunter2", "パスワードはHunter2Hunter2", "비밀번호는 Hunter2Hunter2", "암호는 Hunter2Hunter2", "비밀번호은 Hunter2Hunter2"} {
+		if tier, ids := tierOf(t, v); tier != TierConfirm || !has(ids, RuleSecretAssign) {
+			t.Errorf("%q: %q %v", v, tier, ids)
+		}
+	}
+	// camelCase names
+	for _, n := range []string{"adminPwd", "dbPass", "wifiPsk", "dbPassword", "apiKey", "密碼", "암호"} {
+		if fs := d.ScanRecord("c", "i", map[string]any{n: "correct horse"}); len(fs) == 0 {
+			t.Errorf("%s must be a secret name", n)
+		}
+	}
+	for _, n := range []string{"compass", "bypass", "Compass", "passenger", "password_policy"} {
+		if fs := d.ScanRecord("c", "i", map[string]any{n: "correct horse"}); len(fs) != 0 {
+			t.Errorf("%s must not be a secret name", n)
+		}
+	}
+}
