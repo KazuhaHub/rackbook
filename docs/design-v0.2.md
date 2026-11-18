@@ -685,3 +685,21 @@ See README, "Versioning and compatibility".
       a 409 with the current text, as for records.
     - **Documentation:** a README section for open-source users (layout,
       config, safety rules).
+
+### Decision 16 (2026-11-18): MCP surface design
+
+16. **The MCP surface is designed as a whole before 1.0**, because tool names,
+    arguments and result shapes are covered by the SemVer promise. The full
+    design is in [mcp-surface.md](mcp-surface.md):
+    - generic tools named `<family>_<verb>`;
+    - families: ledger, collections, records, docs, history, changes, and
+      later facts and admin;
+    - `ledger_info` for feature detection;
+    - resources and prompts;
+    - full annotations, structured output, cursors and shared error codes;
+    - `dry_run`, `expected_hash` and idempotency keys on writes;
+    - scopes per family, limits, a deprecation policy and golden-file
+      contract tests.
+
+    The renames of the v0.2 tools ship in v0.3.0, with deprecated aliases that
+    are removed in v0.4.0.
