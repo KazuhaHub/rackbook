@@ -640,3 +640,48 @@ See README, "Versioning and compatibility".
     - Tests: a fake GitHub API issues installation tokens. They cover expiry and
       refresh, a token that must not appear in argv or logs, push over HTTPS to
       a local smart-HTTP test server, and PRs.
+
+### Decision 15 (2026-11-18): record documents (v0.3.0)
+
+15. **A Markdown document per record**, for runbooks, history and anything
+    else that doesn't fit fields. Generic for every collection.
+    - **Location:** `docs/<collection>/<key>.md` in the data repo, linked by
+      record key with no field needed. The root is configurable
+      (`documents.root`, default `docs`) and so is the per-collection
+      directory. A composite key uses the record id with its usual escaping,
+      and the file name is made safe for every OS: Windows reserved names and
+      characters are escaped. Owner's first real example: KazuhaHub/ledger
+      `docs/devices/development-ovh-hillsboro-or-us-dc.md`.
+    - **Lifecycle:**
+      - renaming a record (a key change) moves its document in the same commit
+        (`git mv` semantics);
+      - deleting a record whose document exists asks whether to delete the
+        document too or keep it as an orphan; nothing is removed silently;
+      - `rackbook check` reports orphaned documents.
+    - **Rendering:** on the record page, CommonMark + GFM tables and task lists.
+      **No raw HTML** (stripped, not rendered). Links are limited to
+      `http(s)`, `mailto` and relative links (relative links resolve to
+      records or documents). Images come only from relative paths in the data
+      repo or `https`; there are no `javascript:` or `data:` URLs.
+      - Server side: the API returns the Markdown source, and the console
+        renders it with a sanitizing renderer (react-markdown + rehype-sanitize
+        with a strict schema).
+      - Exports and MCP get the source.
+    - **Editing:** in the console, with the same roles as record edits
+      (editor+). Commits go through the same Git write path with the never-force
+      rules, history detection and identity trailers. Commit subject:
+      `ledger(<collection>): edit document <id>`.
+    - **Secret scan:** covers documents too, as whole-text scanning with the
+      same rules and allow-list keyed on the document path.
+    - **Search and AI:**
+      - full-text search covers documents;
+      - `export markdown` and `llms-full.txt` include each document under its
+        record;
+      - `llms.txt` links to them;
+      - MCP read tool `get_document(collection, id)`;
+      - MCP write tool `put_document(collection, id, markdown, base_hash)`,
+        which follows the PR-by-default rule (deletes always a PR).
+    - **Concurrency:** writes carry the document's content hash. A mismatch is
+      a 409 with the current text, as for records.
+    - **Documentation:** a README section for open-source users (layout,
+      config, safety rules).
