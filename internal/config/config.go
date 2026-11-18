@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 
 	"go.yaml.in/yaml/v3"
@@ -465,7 +466,7 @@ func (c *Config) Resolve(rel string) (string, error) {
 	if rel == "" {
 		return "", errors.New("empty path")
 	}
-	if filepath.IsAbs(rel) {
+	if filepath.IsAbs(rel) || (runtime.GOOS == "windows" && windowsNonRelative(rel)) {
 		return "", fmt.Errorf("path %q must be relative to the config directory", rel)
 	}
 	abs := filepath.Join(c.Dir, rel)
@@ -495,6 +496,16 @@ func (c *Config) Resolve(rel string) (string, error) {
 		}
 	}
 	return abs, nil
+}
+
+// windowsNonRelative reports whether rel is, on Windows, anything but a plain
+// relative path: a drive ("C:\x", "C:x"), a UNC or device path ("\\host\share",
+// "\\?\C:\x"), a path rooted on the current drive ("\x", "/x"), or a name with
+// a colon (an NTFS alternate data stream, "a.yml:stream"). filepath.IsAbs misses
+// the rooted and drive-relative forms, and filepath.Join would glue them onto
+// the config directory. It is plain string logic so it can be tested anywhere.
+func windowsNonRelative(rel string) bool {
+	return strings.HasPrefix(rel, `\`) || strings.HasPrefix(rel, "/") || strings.Contains(rel, ":")
 }
 
 func within(root, p string) bool {

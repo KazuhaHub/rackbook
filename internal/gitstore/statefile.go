@@ -10,6 +10,7 @@ import (
 
 	"github.com/kazuhahub/rackbook/internal/auth"
 	"github.com/kazuhahub/rackbook/internal/config"
+	"github.com/kazuhahub/rackbook/internal/fsutil"
 )
 
 // StateResult is the outcome of MutateStateFile.
@@ -78,7 +79,7 @@ func (s *Store) MutateStateFile(ctx context.Context, rel, subject string, who *a
 		if err := os.WriteFile(tmp, nw, 0o644); err != nil {
 			return nil, err
 		}
-		if err := os.Rename(tmp, abs); err != nil {
+		if err := fsutil.Rename(tmp, abs); err != nil {
 			_ = os.Remove(tmp)
 			return nil, err
 		}

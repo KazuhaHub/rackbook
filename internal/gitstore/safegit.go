@@ -37,7 +37,7 @@ func pushArgs(branch string) ([]string, error) {
 var errDestructive = errors.New("refusing a git command that could rewrite or delete history")
 
 // allowedConfigKeys are the only "-c key=value" settings Rackbook passes.
-var allowedConfigKeys = map[string]bool{"commit.gpgsign": true, "safe.directory": true, "core.quotepath": true}
+var allowedConfigKeys = map[string]bool{"commit.gpgsign": true, "safe.directory": true, "core.quotepath": true, "core.autocrlf": true}
 
 // subcommand returns the git subcommand and its arguments. Only the global
 // options Rackbook itself uses may precede it: -C <dir>, -c <allowed key>=<value>

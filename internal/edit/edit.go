@@ -16,6 +16,7 @@ import (
 	"strings"
 
 	"github.com/kazuhahub/rackbook/internal/config"
+	"github.com/kazuhahub/rackbook/internal/fsutil"
 	"github.com/kazuhahub/rackbook/internal/ledger"
 	"github.com/kazuhahub/rackbook/internal/validate"
 	"github.com/kazuhahub/rackbook/internal/yamledit"
@@ -421,5 +422,5 @@ func writeFile(path string, data []byte) error {
 	if err := os.Chmod(tmp.Name(), mode); err != nil {
 		return err
 	}
-	return os.Rename(tmp.Name(), path)
+	return fsutil.Rename(tmp.Name(), path)
 }
