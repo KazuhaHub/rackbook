@@ -591,6 +591,12 @@ Verify by digest (`ghcr.io/kazuhahub/rackbook@sha256:...`) when you pin the
 image. A release is published only after the test suite passed natively on
 Linux, macOS and Windows (amd64 and arm64 each).
 
+Releases are immutable. GoReleaser creates a **draft** release with every
+archive. The image is pushed only after that, and a final job publishes the
+draft once the archives and the image are attested and signed. If any step
+fails, the release stays a draft (not visible as a release) and can be
+re-run. A published release's assets can never change.
+
 ## License
 
 [Apache-2.0](LICENSE)
