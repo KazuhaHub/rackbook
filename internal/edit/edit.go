@@ -18,6 +18,7 @@ import (
 	"github.com/kazuhahub/rackbook/internal/config"
 	"github.com/kazuhahub/rackbook/internal/fsutil"
 	"github.com/kazuhahub/rackbook/internal/ledger"
+	"github.com/kazuhahub/rackbook/internal/secretscan"
 	"github.com/kazuhahub/rackbook/internal/validate"
 	"github.com/kazuhahub/rackbook/internal/yamledit"
 )
@@ -47,6 +48,12 @@ type Op struct {
 	// asked for every collection whose records ClearReferences would edit; nil
 	// means yes. A "no" refuses the delete with a *ForbiddenError.
 	MayUpdate func(collection string) bool
+	// ConfirmNotSecret accepts confirm-tier secret findings (heuristics) on add and
+	// edit: the editor said "this is not a secret". Block-tier findings ignore
+	// it. Callers set it only when they may accept it (never for a token write
+	// that becomes a pull request). ConfirmedBy names who confirmed.
+	ConfirmNotSecret bool
+	ConfirmedBy      string
 }
 
 // Result describes a successful change.
@@ -57,6 +64,11 @@ type Result struct {
 	Hash       string
 	Data       map[string]any
 	Files      []string // config-relative files that were written; empty when nothing changed
+	// Trailers are extra commit trailers: Secret-scan when a confirmation was used.
+	Trailers []string
+	// SubjectID is the id shown in the commit subject and the Record trailer: ID,
+	// or its redacted form when the key fields hold a secret.
+	SubjectID string
 
 	// SubjectText and RecordText replace the commit subject and the Record
 	// trailer for changes that are not record edits (data type changes).
@@ -74,7 +86,7 @@ func (r *Result) Subject() string {
 	if r.SubjectText != "" {
 		return r.SubjectText
 	}
-	return fmt.Sprintf("ledger(%s): %s %s", r.Collection, r.Kind, sanitizeSubject(r.ID))
+	return fmt.Sprintf("ledger(%s): %s %s", r.Collection, r.Kind, sanitizeSubject(r.shownID()))
 }
 
 // Record is the value of the "Record:" commit trailer for this change.
@@ -82,7 +94,14 @@ func (r *Result) Record() string {
 	if r.SubjectText != "" {
 		return r.RecordText
 	}
-	return RecordRef(r.Collection, r.ID)
+	return RecordRef(r.Collection, r.shownID())
+}
+
+func (r *Result) shownID() string {
+	if r.SubjectID != "" {
+		return r.SubjectID
+	}
+	return r.ID
 }
 
 // maxRecordID is how many characters of an id the trailer keeps.
@@ -222,11 +241,39 @@ func Apply(cfg *config.Config, op Op) (*Result, error) {
 	if len(c.Key) > 0 {
 		opts.GroupField = c.Key[0]
 	}
+	var confirmed []string
 	if op.Kind != Delete {
 		if len(op.Data) == 0 {
 			return nil, fmt.Errorf("%w: data must not be empty", ErrBadRequest)
 		}
 		op.Data = Normalize(op.Data)
+		// Before anything is read further or written: Rackbook runs Git without
+		// hooks, so no pre-commit scanner would see this record.
+		id := op.ID
+		if op.Kind == Add {
+			id = ledger.ID(c.Collection, len(c.Records), op.Data)
+		}
+		sc := cfg.SecretScanner()
+		ann := secretscan.AnnotationsOf(c.SchemaRaw)
+		bad := sc.ScanRecordWith(c.Name, ledger.SafeID(cfg, c.Name, id), op.Data, ann)
+		if op.Kind == Edit && len(bad) > 0 {
+			// A secret the record already holds is for `rackbook check` to report;
+			// refusing every edit of such a record would also lock out the fix.
+			if cur, err := findRecord(c, Op{Kind: Edit, ID: op.ID}); err == nil {
+				bad = secretscan.Introduced(sc.ScanRecordWith(c.Name, ledger.SafeID(cfg, c.Name, id), cur.Data, ann), bad)
+			}
+		}
+		if len(bad) > 0 {
+			block, confirm := secretscan.Split(bad)
+			if len(block) > 0 || !op.ConfirmNotSecret {
+				return nil, &secretscan.Error{Findings: bad}
+			}
+			by := strings.TrimSpace(op.ConfirmedBy)
+			if by == "" {
+				by = "unknown"
+			}
+			confirmed = []string{"Secret-scan: confirmed-not-secret by " + by + " (" + strings.Join(secretscan.RuleIDs(confirm), ", ") + ")"}
+		}
 	}
 
 	var out []byte
@@ -238,7 +285,7 @@ func Apply(cfg *config.Config, op Op) (*Result, error) {
 	case Add:
 		newID = ledger.ID(c.Collection, len(c.Records), op.Data)
 		if ex := c.Get(newID); ex != nil && len(c.Key) > 0 {
-			return nil, &ConflictError{Message: fmt.Sprintf("%s %q already exists", c.Name, newID), Current: ex}
+			return nil, &ConflictError{Message: fmt.Sprintf("%s %q already exists", c.Name, ledger.SafeID(cfg, c.Name, newID)), Current: ex}
 		}
 		out, err = yamledit.Add(src, c.Path, op.Data, opts)
 	case Edit, Delete:
@@ -248,7 +295,7 @@ func Apply(cfg *config.Config, op Op) (*Result, error) {
 		if op.Kind == Edit {
 			newID = ledger.ID(c.Collection, cur.Index, op.Data)
 			if ex := c.Get(newID); ex != nil && ex != cur && len(c.Key) > 0 {
-				return nil, &ConflictError{Message: fmt.Sprintf("%s %q already exists", c.Name, newID), Current: ex}
+				return nil, &ConflictError{Message: fmt.Sprintf("%s %q already exists", c.Name, ledger.SafeID(cfg, c.Name, newID)), Current: ex}
 			}
 			out, err = yamledit.Edit(src, c.Path, cur.Index, op.Data, opts)
 		} else {
@@ -262,7 +309,7 @@ func Apply(cfg *config.Config, op Op) (*Result, error) {
 						return nil, &ForbiddenError{Collection: r.Collection}
 					}
 				}
-				if files, err = clearReferences(base, refs); err != nil {
+				if files, err = clearReferences(base, refs, cfg.SecretScanner()); err != nil {
 					return nil, err
 				}
 				cleared = refs
@@ -279,7 +326,7 @@ func Apply(cfg *config.Config, op Op) (*Result, error) {
 	if err != nil {
 		return nil, err
 	}
-	res := &Result{Kind: op.Kind, Collection: op.Collection, ID: newID, Data: op.Data, Cleared: cleared}
+	res := &Result{Kind: op.Kind, Collection: op.Collection, ID: newID, Data: op.Data, Cleared: cleared, SubjectID: ledger.SafeID(cfg, op.Collection, newID), Trailers: confirmed}
 	if string(out) == string(src) && len(files) == 0 {
 		res.Hash = ledger.Hash(op.Data)
 		return res, nil
@@ -317,7 +364,7 @@ func Apply(cfg *config.Config, op Op) (*Result, error) {
 // and returns the new content of every file it changed (config-relative path).
 // Record positions do not move, so the references of one file are applied one
 // after the other on the evolving text.
-func clearReferences(l *ledger.Ledger, refs []ledger.Reference) (map[string][]byte, error) {
+func clearReferences(l *ledger.Ledger, refs []ledger.Reference, sc *secretscan.Scanner) (map[string][]byte, error) {
 	type recKey struct{ coll, id string }
 	targets := map[recKey]map[string]map[string]bool{} // record -> field -> referenced values
 	var order []recKey
@@ -333,6 +380,7 @@ func clearReferences(l *ledger.Ledger, refs []ledger.Reference) (map[string][]by
 		targets[k][r.Field][r.Value] = true
 	}
 	files := map[string][]byte{}
+	var bad []secretscan.Finding
 	for _, k := range order {
 		c := l.Collection(k.coll)
 		rec := c.Get(k.id)
@@ -357,6 +405,10 @@ func clearReferences(l *ledger.Ledger, refs []ledger.Reference) (map[string][]by
 				}
 			}
 		}
+		ann := secretscan.AnnotationsOf(c.SchemaRaw)
+		// Rewriting a record must not slip a secret in; one that was already
+		// there is for `rackbook check` to report, not a reason to refuse.
+		bad = append(bad, secretscan.Introduced(sc.ScanRecordWith(k.coll, ledger.SafeID(l.Config, k.coll, k.id), rec.Data, ann), sc.ScanRecordWith(k.coll, ledger.SafeID(l.Config, k.coll, k.id), data, ann))...)
 		src, ok := files[c.File]
 		if !ok {
 			var err error
@@ -373,6 +425,9 @@ func clearReferences(l *ledger.Ledger, refs []ledger.Reference) (map[string][]by
 			return nil, err
 		}
 		files[c.File] = out
+	}
+	if len(bad) > 0 {
+		return nil, &secretscan.Error{Findings: bad}
 	}
 	return files, nil
 }

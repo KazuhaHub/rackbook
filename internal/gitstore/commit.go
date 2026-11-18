@@ -90,6 +90,15 @@ func Trailers(who *auth.Identity, via, record string) []string {
 // CommitMessage is the subject, a blank line and the trailers. This is the
 // one place every Rackbook commit message is built, for the server, the CLI
 // and MCP.
-func CommitMessage(subject string, who *auth.Identity, via, record string) string {
-	return subject + "\n\n" + strings.Join(Trailers(who, via, record), "\n") + "\n"
+//
+// extra trailers (Secret-scan when a confirmation was used) follow the Record
+// trailer.
+func CommitMessage(subject string, who *auth.Identity, via, record string, extra ...string) string {
+	t := Trailers(who, via, record)
+	for _, e := range extra {
+		if e = oneLine(e); e != "" {
+			t = append(t, e)
+		}
+	}
+	return subject + "\n\n" + strings.Join(t, "\n") + "\n"
 }

@@ -514,6 +514,164 @@ Logins, refusals and logouts go to the server log (stdout). Starting a login or 
 passkey ceremony is rate limited per client (the first `CF-Connecting-IP` /
 `X-Forwarded-For` address when the request comes from a loopback or private proxy).
 
+## Secret scanning
+
+Rackbook runs Git with hooks disabled, so a pre-commit hook in your data
+repository (gitleaks and the like) never sees its commits. Without a check of
+its own, a password pasted into a record would be committed and pushed into
+history. Rackbook therefore scans what it is about to write, before anything
+touches the disk or Git. It is on by default, deterministic, and never runs
+anything from the data repository.
+
+It covers every write path: records created or updated through the console and
+API, the MCP write tools and `rackbook add` / `set`; data type changes (defaults,
+examples, constants, enum values, titles and descriptions in schemas, and the
+rackbook.yml entry written for the type); the names and labels in the passkey and
+token state files (public keys, ids and hashes are exempt); and the edits made
+when a delete clears references. Every string in a record is scanned, including
+nested values and field names. `rackbook check` and `/api/check` report what is
+already in the repository, so CI catches hand-committed secrets.
+
+**In plain words.** Before Rackbook saves anything, it reads the text for
+things that look like passwords and keys. If it finds a real key or a known kind
+of token (an SSH private key, a GitHub token, a password inside a URL and so
+on), it refuses to save, and nothing you type can override that. The rule is one
+sentence: **block-tier formats are refused in every string, always; schema
+annotations, placeholders and `confirm_not_secret` only silence the confirm
+tier.** If it only
+*suspects* a password, for example a line like `root密码：...` or a field called
+`password`, it stops and asks you to confirm that it is not one; your name is
+recorded in the commit when you do. It cannot catch a secret that has no
+recognisable shape and no label ("Hunter2Hunter2 is what we use"), so it does not
+replace a scanner in CI. If it flags something harmless, either tick the
+confirmation, mark a public field (such as an SSH public key) in the schema, or
+add an `allow` entry in `rackbook.yml`; the sections below show how.
+
+### Two tiers
+
+| tier | what | what happens |
+|---|---|---|
+| **block** (deterministic) | key material and known token formats: PEM and OpenSSH private keys (also base64-encoded, as in a kubeconfig `client-key-data`), `AGE-SECRET-KEY`, GitHub, GitLab, npm, Hugging Face, Tailscale, SendGrid, Slack, AWS, Google, Stripe, OpenAI and Anthropic tokens, JWTs, URLs with a password, key-bearing URL query parameters (`?api_key=...`), private JWKs, and your `extra_patterns` | always refused; only the allow list (by value hash) overrides it |
+| **confirm** (heuristic) | a keyword assignment in any language, `key:` / `privkey:` plus 32 or more hex characters (`hex-key`: it could as well be a node key, fingerprint or hash), the whole value of a secret-named field, `Bearer` tokens and high-entropy tokens in free text | refused until the editor confirms it is not a secret; `rackbook check` reports it as a warning |
+
+A block-tier refusal is `422 {"error":"secret_detected","findings":[...]}`, an
+MCP tool error with the same findings, or exit code 1 from the CLI. A confirm-tier
+hit is `422 {"error":"secret_suspected","findings":[...]}`:
+
+- **Console:** the save is held with "这看起来像密钥/密码", and the editor must tick
+  "不是密钥" to save.
+- **API and MCP:** retry the same request with `"confirm_not_secret": true`. It is
+  accepted for editor and admin sessions and for OAuth/MCP identities with write
+  rights, but never for a write that becomes a pull request from an API token,
+  and never for a block-tier finding.
+- **CLI:** repeat the command with `--confirm-not-secret`.
+- Every confirmation is recorded as a commit trailer, `Secret-scan:
+  confirmed-not-secret by <user> (<rule ids>)`. `rackbook check` leaves out the
+  warnings of a record whose last commit carries that trailer, so a confirmed
+  value stops warning until the record changes again.
+- Data types and state files have no confirmation flow: only block-tier findings
+  refuse there, and heuristic ones show up as warnings in `check`.
+
+A finding gives the rule, tier, collection, record id, the JSON pointer of the
+field and at most the first 4 characters of the match; never the secret.
+
+### Rules
+
+`private-key`, `private-key-base64`, `age-secret-key`, `github-token`,
+`github-pat`, `gitlab-token`, `npm-token`, `huggingface-token`,
+`tailscale-key`, `sendgrid-key`, `slack-token`, `aws-access-key-id`,
+`google-api-key`, `stripe-live-key`, `openai-api-key`, `azure-account-key`,
+`jwt`, `url-credentials`, `url-query-secret`, `private-jwk` (block);
+`secret-assignment`, `hex-key`, `bearer-token`, `high-entropy` (confirm). The IDs are stable.
+
+Text is normalised before it is matched: NFKC (so full-width `：` `＝` and
+letters match as `:` `=` and ASCII) and zero-width characters removed. The
+assignment keywords are `password`, `passwd`, `pwd`, `pass`, `secret`, `token`,
+`api key`, `private key`, `passphrase`, `psk`, `密码`, `口令`, `密钥`, `令牌`,
+`秘钥`, `凭据`, `凭证`, `授权码`, `パスワード`, `비밀번호` and a few more. The
+separators are `:`, `=`, `is`, `was`, `是`, `为`, `為`, `→`, with up to three plain
+words in between ("the root password for the db is X"). The value is the next
+token when it is at least 8 characters long and is not a placeholder, a path, or
+a reference (`op://...`, `vault:...`, `env:NAME`, `${NAME}`, `secrets/x#key`);
+after a word separator or in-between words it must also look like a credential
+(a digit, a symbol, or inner capitals). A reference is scanned again after its
+prefix, so `op://ghp_...` is still caught. High-entropy tokens are free-text
+tokens of 20 or more characters with at least three character classes and
+Shannon entropy of at least 4.0 bits per character.
+
+```yaml
+# rackbook.yml
+secret_scan:
+  enabled: true                 # default; false logs a startup warning
+  extra_patterns:               # your own block-tier rules; group 1, if any, is the secret
+    - {id: corp-token, pattern: 'corp_(tok_[a-z0-9]{12,})', description: internal token}
+  allow:                        # a known false positive, as precisely as you can
+    - rule: secret-assignment
+      collection: devices
+      field: /notes             # JSON pointer, covers everything below it
+      value_sha256: 3b4c...     # sha256 of the matched value (see below)
+  disable_rules: [hex-key]
+```
+
+An `allow` entry needs a `rule` and at least one of `collection`, `field` or
+`value_sha256`; `value_sha256` must come with a `collection` (a value-only entry
+would let the same secret in everywhere). A private key is matched and hashed as
+the whole `BEGIN` to `END` block. The matched value is the whole match, except for
+the keyword rules (the value after the separator), `hex-key` (the text after the
+`:` or `=`), `url-credentials` (`user:password`) and extra patterns with a capture
+group (group 1); quotes and a trailing `,` or `;` are not part of it, and it is
+the normalised text. Compute it with `printf %s 'the value' | shasum -a 256`. An
+invalid pattern or an unknown rule ID is a config error.
+
+### Public fields, placeholders and free text
+
+Free text has no exemptions: notes, descriptions and any other unannotated string
+are scanned in full, with no "near a fingerprint" or "stored in 1Password"
+leniency. The only ways out are:
+
+1. **A schema annotation** on a property that is public by design:
+
+   ```json
+   "ssh_key": {"type": "string", "x-rackbook": {"public": "ssh_public_key"}}
+   ```
+
+   Kinds: `ssh_public_key` (`ssh-ed25519 AAAA...` and the other OpenSSH public
+   key algorithms), `fingerprint` (SHA256 or MD5), `nodekey` (`nodekey:`,
+   `machinekey:` or `discokey:` plus 64 hex), `age_recipient` (`age1...`),
+   `pem_public_key`, `jwk_public` (no private members; its other members are
+   scanned), `hex_id` and `secret_reference` (`op://...`, `vault:...`,
+   `env:NAME`, `${NAME}` or a path without spaces). Only an annotated field whose
+   whole value has the strict format of its kind is exempt from the confirm tier;
+   any other value in it is scanned as text, and block-tier formats are refused
+   in it as anywhere else. On an array, or on its `items`, every item is checked.
+   `hex_id` and `fingerprint` cannot tell a 32-byte key from an id, so a field
+   named like a secret may only be annotated `secret_reference`; any other kind
+   on it is a config error (reported by `check`, refused by a type change).
+2. **Exact placeholders** (`待补`, `TBD`, `-`, `***`, `n/a`, `none`, or an empty
+   string), matched as the whole value.
+3. **The allow list** above.
+
+A field named like a secret (`password`, `passphrase`, `secret_key`, `api_key`,
+`client_secret`, `signing_key`, `private_token`, `access_token`, `密码`, anything
+ending in `_secret`, `_password` or `_token`, ...) counts its whole value, spaces
+included, and so does every string, number, boolean and map key inside it
+(`wifi_password: 98765432` is caught), unless it is an exact placeholder or an
+annotated `secret_reference` (only `env:NAME` and `${NAME}` are environment
+reference shapes; `$HUNTER2` is not special).
+
+### Limits
+
+This is a safety net, not a guarantee. It is pattern based: a natural-language
+secret with no keyword at all ("Hunter2Hunter2 is what we use") is out of scope,
+and it is no replacement for an entropy-based scanner such as gitleaks or
+trufflehog over the whole repository in CI. Known false positives: `api_key=${API_KEY}`
+and similar placeholders in free text, `nodekey` / host-key hex in unannotated
+fields, public keys in notes, long camel-case identifiers, and `sk-` hostnames;
+annotate the field, add an allow entry, or confirm. A record id built from a
+secret is shown redacted everywhere (findings, check output, commit subjects,
+`Record:` trailers) as 4 characters and 8 hex digits of a hash; the hash only
+tells ids apart and is not secure.
+
 ## Windows
 
 Release archives for Windows (amd64 and arm64) are zips containing

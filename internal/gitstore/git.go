@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/kazuhahub/rackbook/internal/auth"
+	"github.com/kazuhahub/rackbook/internal/config"
 	"github.com/kazuhahub/rackbook/internal/roles"
 )
 
@@ -226,7 +227,7 @@ func (r *Repo) Push(ctx context.Context, branch string) error {
 // that the remote history was not rewritten). The author is who; without one
 // (nil) it is the Git configuration. record is the "Record:" trailer value
 // ("<collection>/<id>").
-func CommitFiles(ctx context.Context, dir string, files []string, subject string, who *auth.Identity, record string) (string, error) {
+func CommitFiles(ctx context.Context, dir string, files []string, subject string, who *auth.Identity, record string, extra ...string) (string, error) {
 	r := &Repo{Dir: dir}
 	if !r.IsRepo(ctx) {
 		return "", errors.New("not inside a Git repository")
@@ -242,7 +243,7 @@ func CommitFiles(ctx context.Context, dir string, files []string, subject string
 		who = &auth.Identity{ID: roles.FoldASCII(cfg.Email), Name: cfg.Name, Email: cfg.Email, Method: auth.MethodCLI}
 	}
 	author := AuthorOf(who)
-	return r.Commit(ctx, files, CommitMessage(subject, who, "rackbook", record), author, author)
+	return r.Commit(ctx, files, CommitMessage(subject, who, "rackbook", record, extra...), author, author)
 }
 
 // PushCurrent pushes the checked-out branch to origin.
@@ -267,4 +268,41 @@ func PushCurrent(ctx context.Context, dir string) error {
 		return r.writeLastGood(ctx, br, h)
 	}
 	return nil
+}
+
+// ConfirmedRecords reports, for each Record trailer value, whether the last
+// commit that changed the record carries a "Secret-scan: confirmed-not-secret"
+// trailer: the editor confirmed that what looks like a secret in it is not one.
+// A record changed since by an unconfirmed commit is not in the result as true.
+// The error is nil with an empty map outside a Git repository.
+func ConfirmedRecords(ctx context.Context, dir string) (map[string]bool, error) {
+	r := &Repo{Dir: dir}
+	out := map[string]bool{}
+	if !r.IsRepo(ctx) {
+		return out, nil
+	}
+	raw, err := r.git(ctx, "log", "--format=%x1e%(trailers:key=Record,valueonly,separator=%x1f)%x1d%(trailers:key=Secret-scan,valueonly)", "--", ".", ":(exclude)"+config.StateDir)
+	if err != nil {
+		if strings.Contains(err.Error(), "does not have any commits") {
+			return out, nil
+		}
+		return nil, err
+	}
+	seen := map[string]bool{}
+	for _, c := range strings.Split(raw, "\x1e") { // newest first
+		parts := strings.SplitN(c, "\x1d", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		confirmed := strings.Contains(parts[1], "confirmed-not-secret")
+		for _, ref := range strings.Split(strings.TrimSpace(parts[0]), "\x1f") {
+			ref = strings.TrimSpace(ref)
+			if ref == "" || seen[ref] {
+				continue
+			}
+			seen[ref] = true
+			out[ref] = confirmed
+		}
+	}
+	return out, nil
 }

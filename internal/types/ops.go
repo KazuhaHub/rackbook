@@ -11,6 +11,7 @@ import (
 	"github.com/kazuhahub/rackbook/internal/config"
 	"github.com/kazuhahub/rackbook/internal/edit"
 	"github.com/kazuhahub/rackbook/internal/ledger"
+	"github.com/kazuhahub/rackbook/internal/secretscan"
 	"github.com/kazuhahub/rackbook/internal/yamledit"
 )
 
@@ -177,6 +178,12 @@ func Apply(cfg *config.Config, req Request) (*edit.Result, error) {
 	if err != nil {
 		return nil, err
 	}
+	// A default, an example or a fill value typed into a data type is data too.
+	// Checked before the plan's verdict, so the answer is secret_detected.
+	if bad, _ := secretscan.Split(scanRequest(cfg, req, p)); len(bad) > 0 {
+		// only block-tier findings: a schema or config has no console flow to confirm a heuristic one
+		return nil, &secretscan.Error{Findings: bad}
+	}
 	if !p.Clean {
 		return nil, &PlanError{Plan: p}
 	}
@@ -211,4 +218,42 @@ func Apply(cfg *config.Config, req Request) (*edit.Result, error) {
 	res.SubjectText = p.subject
 	res.RecordText = ""
 	return res, nil
+}
+
+// scanRequest scans what a type change would write: the defaults, examples,
+// constants and enum values of every schema file, and the values of the chosen
+// fill-default migrations.
+func scanRequest(cfg *config.Config, req Request, p *Plan) []secretscan.Finding {
+	sc := cfg.SecretScanner()
+	var out []secretscan.Finding
+	rels := make([]string, 0, len(p.files))
+	for rel := range p.files {
+		rels = append(rels, rel)
+	}
+	sort.Strings(rels)
+	for _, rel := range rels {
+		b := p.files[rel]
+		if b == nil {
+			continue
+		}
+		var old []byte
+		if abs, err := cfg.Resolve(rel); err == nil {
+			old, _ = os.ReadFile(abs)
+		}
+		// What a file already held is for `rackbook check` to report. The schema
+		// is scanned as a schema; rackbook.yml (the type's entry: title,
+		// description, rules) and data files (a new type's seed, migrated records)
+		// as YAML.
+		if strings.HasSuffix(rel, ".json") {
+			out = append(out, secretscan.Introduced(sc.ScanSchema(req.Name, old), sc.ScanSchema(req.Name, b))...)
+		} else {
+			out = append(out, secretscan.Introduced(sc.ScanYAML(rel, old), sc.ScanYAML(rel, b))...)
+		}
+	}
+	for _, m := range req.Migrations {
+		if m.Value != nil {
+			out = append(out, sc.ScanRecord(req.Name, "", map[string]any{m.Field: m.Value})...)
+		}
+	}
+	return out
 }
