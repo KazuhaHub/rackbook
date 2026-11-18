@@ -9,7 +9,21 @@ permissions:
 
 jobs:
   # Nothing is published unless the whole native matrix passes.
+  # Only tags on commits that are already on main may publish (and move `latest`).
+  tag-on-main:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Tag commit must be reachable from origin/main
+        run: git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+
   verify:
+    needs: tag-on-main
     permissions:
       contents: read
     uses: ./.github/workflows/verify.yml

@@ -529,6 +529,9 @@ requests).
 - Put `* text=auto eol=lf` in a `.gitattributes` at the root of your data
   repository (or clone with `core.autocrlf=false`). Otherwise a Windows clone
   checks files out with CRLF and the server reports the clone as modified.
+  Note that this attribute normalises line endings on commit: a file that was
+  committed with CRLF is stored as LF after its next edit. Use it only for data
+  repositories whose files are LF already (the usual case).
 - Paths in `rackbook.yml` are relative, with `/` or `\`; drive letters, UNC
   paths, rooted paths and `:` in a name are refused.
 - Not exercised on Windows (skipped in the tests, with a message): committing
@@ -570,11 +573,13 @@ repository's release workflow.
 
 ```sh
 # Release archives (tar.gz, zip) and checksums.txt
-gh attestation verify rackbook_0.2.1_linux_amd64.tar.gz --repo KazuhaHub/rackbook
+gh attestation verify rackbook_0.2.1_linux_amd64.tar.gz --repo KazuhaHub/rackbook \
+  --signer-workflow KazuhaHub/rackbook/.github/workflows/release.yml
 sha256sum --check --ignore-missing checksums.txt
 
 # Container image: provenance attestation
-gh attestation verify oci://ghcr.io/kazuhahub/rackbook:0.2.1 --repo KazuhaHub/rackbook
+gh attestation verify oci://ghcr.io/kazuhahub/rackbook:0.2.1 --repo KazuhaHub/rackbook \
+  --signer-workflow KazuhaHub/rackbook/.github/workflows/release.yml
 
 # Container image: cosign signature
 cosign verify ghcr.io/kazuhahub/rackbook:0.2.1 \
