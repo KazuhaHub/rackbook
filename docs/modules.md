@@ -152,7 +152,7 @@ modules:
   entra:                       # the module's name = the source value it writes
     token: entra-sync          # the Rackbook API token it uses
     collection: credentials    # the one collection it may write
-    fields: [kind, purpose, expires, not_before, kid, revoked]
+    fields: [kind, self_signed, purpose, expires, not_before, kid, revoked]
     direct_push: true          # create/update go straight to the branch, no daily PR
 ```
 
@@ -163,7 +163,9 @@ modules:
   refused.
 - **`direct_push: true`** lets the module's creates and updates skip the pull
   request that token writes get by default (decision 5), so a nightly sync does
-  not open a PR a day. As for a token's `write_mode: push`, it counts only
+  not open a PR a day. Without it, merge the module's PR before its next run:
+  the module reads the tracked branch, so it proposes the same change again
+  until the PR is merged. As for a token's `write_mode: push`, it counts only
   while the token's creator is an admin. Without it, every module write is a
   PR. Deletes would always be PRs, but modules cannot delete at all.
 - The token itself is created on the 令牌 page as usual: scope `write`,
@@ -258,6 +260,13 @@ until a person confirms them, and a module never confirms. The app id is in
   of the same type and family; the family is the display name without a
   trailing `[tag]` such as `[2025]`.
 - Credentials without an end date are skipped and logged.
+- **Scope changes retire records.** Turning `service_principals` off or adding
+  an app to `exclude_app_ids` makes those credentials gone, so the next run
+  marks their records revoked. Run with `--dry-run` first after such a change.
+  A failed Graph call aborts the run without marking anything.
+- `fields` in rackbook.yml must list every field the module maintains,
+  including the per-type ones (`self_signed` in the example above); otherwise
+  the server refuses the module's updates of that record.
 - Graph throttling (429, 503, 504) is retried with `Retry-After`; paging links
   are followed only on the Graph host.
 

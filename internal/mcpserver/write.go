@@ -143,12 +143,8 @@ func (t *tools) write(ctx context.Context, req *mcp.CallToolRequest, action stri
 			op.ConfirmNotSecret = false
 		}
 	}
-	op, err := gitstore.ModuleGuard(id, t.backend.Config(), op)
-	var res *gitstore.WriteResult
-	if err == nil {
-		opts := gitstore.WriteOptionsFor(id, t.backend.Config(), op.Kind, collection)
-		res, err = t.backend.WriteFunc(ctx, gitstore.ApplyOp(op), id, opts)
-	}
+	opts := gitstore.WriteOptionsFor(id, t.backend.Config(), op.Kind, collection)
+	res, err := t.backend.WriteFunc(ctx, gitstore.ApplyOpAs(id, op), id, opts)
 	if err != nil {
 		info := apierr.Classify(err)
 		if info.Status == http.StatusInternalServerError {

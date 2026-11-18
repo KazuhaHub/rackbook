@@ -7,6 +7,10 @@ web/node_modules
 /rackbook
 /rackbook-entra
 /rackbook-notify
+# `go build` run inside a command directory
+/cmd/*/rackbook
+/cmd/*/rackbook-entra
+/cmd/*/rackbook-notify
 /dist/
 *.test
 coverage.out

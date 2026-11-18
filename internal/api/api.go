@@ -499,14 +499,9 @@ func (s *server) permits(w http.ResponseWriter, r *http.Request, action, collect
 }
 
 func (s *server) apply(w http.ResponseWriter, r *http.Request, op edit.Op) *gitstore.WriteResult {
-	op, err := gitstore.ModuleGuard(s.who(r), s.o.Store.Config(), op)
-	if err != nil {
-		s.writeFailure(w, err)
-		return nil
-	}
 	// Tokens are contributor level: their writes open pull requests unless granted otherwise.
 	opts := gitstore.WriteOptionsFor(s.who(r), s.o.Store.Config(), op.Kind, op.Collection)
-	res, err := s.o.Store.WriteFunc(r.Context(), gitstore.ApplyOp(op), s.who(r), opts)
+	res, err := s.o.Store.WriteFunc(r.Context(), gitstore.ApplyOpAs(s.who(r), op), s.who(r), opts)
 	if err == nil {
 		return res
 	}
