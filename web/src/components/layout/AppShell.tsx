@@ -1,6 +1,6 @@
 import { Suspense, useEffect } from 'react'
 import { Outlet, NavLink, useLocation } from 'react-router'
-import { BookMarked, CalendarClock, KeyRound, LayoutDashboard, Shapes } from 'lucide-react'
+import { CalendarClock, KeyRound, LayoutDashboard, Shapes } from 'lucide-react'
 import {
   Sidebar,
   SidebarContent,
@@ -19,6 +19,7 @@ import {
   useSidebar,
 } from '@/components/ui/sidebar'
 import { t } from '@/i18n/zh-CN'
+import { BrandMark } from '@/components/BrandMark'
 import { CollectionIcon } from '@/components/CollectionIcon'
 import { hasExpiry } from '@/lib/ledger'
 import { useMeta } from '@/providers/meta'
@@ -40,6 +41,7 @@ function CloseMobileOnNavigate() {
 function AppSidebar() {
   const { meta } = useMeta()
   const { pathname } = useLocation()
+  const productName = meta.branding?.name || t.appName
 
   // group collections, keeping config order (ungrouped first-seen position)
   const groups: { name: string; items: typeof meta.collections }[] = []
@@ -54,14 +56,12 @@ function AppSidebar() {
     <Sidebar>
       <SidebarHeader className="gap-3 p-4 pb-2">
         <NavLink to="/" className="flex items-center gap-2.5">
-          <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground">
-            <BookMarked className="size-4" />
-          </span>
+          <BrandMark logo={meta.branding?.logo} name={productName} className="size-8 rounded-lg" />
           <span className="min-w-0">
             <span className="block truncate text-sm leading-tight font-semibold">
               {meta.title || t.ledgerFallbackTitle}
             </span>
-            <span className="block text-xs text-muted-foreground">{t.appName}</span>
+            <span className="block text-xs text-muted-foreground">{productName}</span>
           </span>
         </NavLink>
         <CheckBadge className="self-start" />

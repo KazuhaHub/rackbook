@@ -84,7 +84,8 @@ type options struct {
 	readOnly  bool
 	uv        string
 	cfgExtras string
-	oidc      string // extra lines under auth.oidc
+	oidc      string            // extra lines under auth.oidc
+	files     map[string]string // extra files in the data repository
 }
 
 func git(t *testing.T, dir string, args ...string) string {
@@ -169,6 +170,15 @@ func newEnv(t *testing.T, o options) *env {
 	if err := os.WriteFile(cfgPath, append(b, []byte(block)...), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	for name, content := range o.files {
+		p := filepath.Join(e.dir, name)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
 	if !o.nogit {
 		git(t, e.dir, "init", "-b", "main")
 		git(t, e.dir, "add", ".")
@@ -192,7 +202,7 @@ func newEnv(t *testing.T, o options) *env {
 	}
 	lo := Options{
 		Login: cfg.Auth.Login, BaseURL: e.base, Key: testKey, ClientSecret: clientSecret,
-		HTTPClient: e.idpS.Client(), ReadOnly: o.readOnly, Logger: logger, Now: e.clk.Now,
+		Config: st.Config, HTTPClient: e.idpS.Client(), ReadOnly: o.readOnly, Logger: logger, Now: e.clk.Now,
 	}
 	if cfg.Auth.Passkeys.Enabled {
 		lo.Files = st
@@ -206,7 +216,7 @@ func newEnv(t *testing.T, o options) *env {
 		t.Fatal(err)
 	}
 	e.svc.Bind(authn)
-	web := fstest.MapFS{"index.html": {Data: []byte("<!doctype html><title>console</title>")}}
+	web := fstest.MapFS{"index.html": {Data: []byte("<!doctype html><title>console</title>")}, "favicon.svg": {Data: []byte("<svg xmlns=\"http://www.w3.org/2000/svg\"/>")}}
 	handler := api.New(api.Options{Store: st, Auth: authn, BaseURL: e.base, Web: web, Logger: logger, Login: e.svc})
 	h.Store(&handler)
 	return e

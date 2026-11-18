@@ -49,7 +49,7 @@ function RefineApp() {
         syncWithLocation: false,
         warnWhenUnsavedChanges: false,
         disableTelemetry: true,
-        title: { text: meta.title || t.appName },
+        title: { text: meta.title || meta.branding?.name || t.appName },
         reactQuery: { clientConfig: queryClient },
       }}
     >
@@ -74,7 +74,7 @@ function RefineApp() {
         </Route>
       </Routes>
       <UnsavedChangesNotifier />
-      <DocumentTitleHandler handler={({ resource, action }) => titleFor(meta.title, resource?.meta?.label, action)} />
+      <DocumentTitleHandler handler={({ resource, action }) => titleFor(meta.title || meta.branding?.name || '', resource?.meta?.label, action)} />
     </Refine>
   )
 }

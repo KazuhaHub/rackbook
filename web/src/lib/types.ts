@@ -72,6 +72,7 @@ export type Meta = {
   writeMode?: string
   user: MetaUser | null
   alert?: MetaAlert
+  branding?: { name: string; logo: boolean }
   collections: Collection[]
   modules?: ModuleInfo[]
 }

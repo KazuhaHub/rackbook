@@ -21,7 +21,6 @@ export const t = {
     login: {
       title: '登录',
       subtitle: '登录后访问台账',
-      microsoft: '使用 Microsoft 登录',
       oidc: '使用单点登录',
       passkey: '使用通行密钥登录',
       passkeyUnsupported: '此浏览器不支持通行密钥',
@@ -35,7 +34,7 @@ export const t = {
       back: '返回登录',
       retry: '重新登录',
       loggedOutTitle: '已登出',
-      loggedOutBody: '你已退出 Rackbook。登出不会退出 Microsoft 账号，所以再次登录时可能无需输入密码。',
+      loggedOutBody: '你已退出 Rackbook。登出不会退出单点登录账号，所以再次登录时可能无需输入密码。',
       errors: {
         no_role: {
           title: '没有访问权限',
@@ -76,7 +75,7 @@ export const t = {
       method: '登录方式',
       roleHint: '角色由 rackbook.yml 的 auth.roles 决定，每次请求时重新计算。',
       passkeys: '通行密钥',
-      passkeysHint: '用指纹、面容或设备 PIN 登录，无需再经过 Microsoft。通行密钥只是登录方式之一，丢失后仍可用单点登录。',
+      passkeysHint: '用指纹、面容或设备 PIN 登录，无需再经过单点登录。通行密钥只是登录方式之一，丢失后仍可用单点登录。',
       passkeysEmpty: '还没有通行密钥',
       passkeyName: '名称',
       passkeyNamePlaceholder: '例如：MacBook、iPhone',

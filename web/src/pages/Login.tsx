@@ -1,26 +1,16 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useSearchParams } from 'react-router'
 import { useQuery } from '@tanstack/react-query'
-import { BookMarked, CircleAlert, Fingerprint, KeyRound, LogOut, ShieldX } from 'lucide-react'
+import { CircleAlert, Fingerprint, KeyRound, LogOut, ShieldX } from 'lucide-react'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
+import { BrandMark } from '@/components/BrandMark'
 import { Skeleton } from '@/components/ui/skeleton'
 import { t } from '@/i18n/zh-CN'
 import type { LoginConfig } from '@/lib/auth'
 import { getCredential, isCancelled, passkeysSupported } from '@/lib/webauthn'
 
 const L = t.auth.login
-
-function MicrosoftLogo() {
-  return (
-    <svg viewBox="0 0 21 21" className="size-4" aria-hidden>
-      <rect x="1" y="1" width="9" height="9" fill="#f25022" />
-      <rect x="11" y="1" width="9" height="9" fill="#7fba00" />
-      <rect x="1" y="11" width="9" height="9" fill="#00a4ef" />
-      <rect x="11" y="11" width="9" height="9" fill="#ffb900" />
-    </svg>
-  )
-}
 
 async function loadConfig(): Promise<LoginConfig> {
   const res = await fetch('/auth/config', { headers: { Accept: 'application/json' } })
@@ -41,6 +31,11 @@ export default function Login() {
   const [redirecting, setRedirecting] = useState(false)
   const [passkeyState, setPasskeyState] = useState<'idle' | 'working'>('idle')
   const [passkeyError, setPasskeyError] = useState('')
+
+  const name = cfg?.name || t.appName
+  useEffect(() => {
+    document.title = `${L.title} · ${name}`
+  }, [name])
 
   const start = '/auth/oidc/start' + (ret ? `?return=${encodeURIComponent(ret)}` : '')
   const known = L.errors[code]
@@ -74,11 +69,9 @@ export default function Login() {
     <div className="flex min-h-svh items-center justify-center bg-muted/40 p-4">
       <div className="rb-page w-full max-w-sm">
         <div className="mb-6 flex flex-col items-center gap-3 text-center">
-          <span className="flex size-12 items-center justify-center rounded-2xl bg-primary text-primary-foreground shadow-sm">
-            <BookMarked className="size-6" />
-          </span>
+          <BrandMark logo={cfg?.logo} name={name} className="size-12 rounded-2xl" />
           <div>
-            <h1 className="text-xl font-semibold tracking-tight">{t.appName}</h1>
+            <h1 className="text-xl font-semibold tracking-tight">{name}</h1>
             <p className="mt-1 text-sm text-muted-foreground">{L.subtitle}</p>
           </div>
         </div>
@@ -115,8 +108,8 @@ export default function Login() {
               render={<a href={start} onClick={() => setRedirecting(true)} />}
               aria-busy={redirecting}
             >
-              {cfg?.provider === 'microsoft' || !cfg ? <MicrosoftLogo /> : <KeyRound />}
-              {redirecting ? L.redirecting : cfg?.provider === 'oidc' ? L.oidc : L.microsoft}
+              <KeyRound />
+              {redirecting ? L.redirecting : cfg?.label || L.oidc}
             </Button>
           )}
 

@@ -5,6 +5,12 @@
 title: 示例网络台账
 description: 设备、内网地址、服务端口、网段规划、端口规范、站点与待办。以 Git 仓库里的 YAML 为准。
 
+# Shown on the sign-in page, in the header and as the tab title; the files are in this repository.
+branding:
+  name: Kazuha Hub
+  logo: branding/logo.svg      # .svg or .png, up to 256 KiB
+  favicon: branding/logo.svg   # optional; .svg, .png or .ico
+
 collections:
   devices:
     title: 设备
@@ -100,6 +106,7 @@ auth:
   oidc:
     issuer: https://login.microsoftonline.com/e72914d3-3d19-486e-be11-15c69540e02a/v2.0
     client_id: 3af65b1f-582a-46ae-925a-154a1f457fb6
+    label: 使用 Kazuha Hub SSO 登录   # text of the sign-in button; default: "使用单点登录"
     scopes: [openid, profile, email]
     identity_claim: preferred_username   # Entra: the UPN; "email" is often empty
     name_claim: name
