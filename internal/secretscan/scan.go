@@ -39,7 +39,7 @@ type ExtraPattern struct {
 }
 
 // Allow suppresses a known false positive. Rule is required and at least one of
-// the other fields must narrow it. Field is a JSON pointer inside the record
+// the other fields must narrow it; value_sha256 must come with a collection. Field is a JSON pointer inside the record
 // (a leading "/" is optional) and covers everything below it. ValueSHA256 is the
 // hex SHA-256 of the matched value: the whole match, except for the
 // secret-assignment and hex-key rules (the text after the ":" or "="), the
@@ -185,6 +185,9 @@ func New(c Config) (*Scanner, error) {
 			return nil, fmt.Errorf("secret_scan.allow[%d]: give a collection, a field or a value_sha256 so that the entry stays precise", i)
 		}
 		sha := strings.ToLower(a.ValueSHA256)
+		if sha != "" && a.Collection == "" {
+			return nil, fmt.Errorf("secret_scan.allow[%d]: value_sha256 needs a collection; a value allowed in every collection would also let the same secret in anywhere", i)
+		}
 		if sha != "" {
 			if b, err := hex.DecodeString(sha); err != nil || len(b) != sha256.Size {
 				return nil, fmt.Errorf("secret_scan.allow[%d]: value_sha256 must be 64 hex characters", i)
@@ -264,15 +267,38 @@ func (s *Scanner) matches(text string) []hit {
 	return out
 }
 
-// pairMatches runs the two assignment rules over "name: value" for a field
-// name and its string value, so that a field called password is caught.
+// namedHit applies the "field named like a secret" rule: the whole string
+// value counts, spaces included ("correct horse battery staple"), except
+// references to where a secret lives and empty or placeholder values.
+func (s *Scanner) namedHit(value string) (hit, bool) {
+	if len(value) < 6 || !s.ruleOn(RuleSecretAssign) {
+		return hit{}, false
+	}
+	v := strings.TrimSpace(value)
+	if !notPlaceholder(v, "") {
+		return hit{}, false
+	}
+	return hit{RuleSecretAssign, v}, true
+}
+
+func (s *Scanner) ruleOn(id string) bool {
+	for _, r := range s.rules {
+		if r.id == id {
+			return true
+		}
+	}
+	return false
+}
+
+// pairMatches runs the hex-key rule over "name: value" for a field name and its
+// string value, so that a field called ssh_key holding hex is caught.
 func (s *Scanner) pairMatches(name, value string) []hit {
 	if len(value) < minLen {
 		return nil
 	}
 	var out []hit
 	for _, r := range s.rules {
-		if r.id != RuleSecretAssign && r.id != RuleHexKey {
+		if r.id != RuleHexKey {
 			continue
 		}
 		text := name + ": " + value
@@ -334,8 +360,16 @@ func (c *collector) add(h hit, path, in string) {
 	c.out = append(c.out, f)
 }
 
-func (c *collector) text(text, path, in string) {
+func (c *collector) text(text, path, in string, named bool) {
+	if named {
+		if h, ok := c.s.namedHit(text); ok {
+			c.add(h, path, in)
+		}
+	}
 	for _, h := range c.s.matches(text) {
+		if named && h.rule == RuleSecretAssign {
+			continue // the whole value was judged already
+		}
 		c.add(h, path, in)
 	}
 }
@@ -347,12 +381,12 @@ func ptr(seg string) string {
 
 // walk scans every string under v. Map keys are scanned too; a key that is
 // itself a secret is never put in a path (the path shows "*" instead).
-func (c *collector) walk(v any, path string) {
+func (c *collector) walk(v any, path string, named bool) {
 	switch x := v.(type) {
 	case nil:
 		return
 	case string:
-		c.text(x, path, "")
+		c.text(x, path, "", named)
 		return
 	case json.Number:
 		return
@@ -389,24 +423,35 @@ func (c *collector) walk(v any, path string) {
 					c.add(h, path+"/"+seg, "")
 				}
 			}
-			c.walk(val, path+"/"+seg)
+			// Everything under a field named like a secret counts, strings in
+			// lists and maps included.
+			c.walk(val, path+"/"+seg, named || isSecretName(k))
 		}
 	case reflect.Slice, reflect.Array:
 		if rv.Kind() == reflect.Slice && rv.Type().Elem().Kind() == reflect.Uint8 {
 			return
 		}
 		for i := 0; i < rv.Len(); i++ {
-			c.walk(rv.Index(i).Interface(), path+"/"+strconv.Itoa(i))
+			c.walk(rv.Index(i).Interface(), path+"/"+strconv.Itoa(i), named)
 		}
 	case reflect.String:
-		c.text(rv.String(), path, "")
+		c.text(rv.String(), path, "", named)
 	}
 }
 
-// safeID keeps a secret that is part of a record id out of a report.
-func (s *Scanner) safeID(id string) string {
+// safeID keeps a secret that is part of a record id out of a report: an id that
+// matches a rule, or that is built from the value of a secret-named top-level
+// field, is cut to an excerpt.
+func (s *Scanner) safeID(id string, data any) string {
 	if len(s.matches(id)) > 0 {
 		return Excerpt(id)
+	}
+	if m, ok := data.(map[string]any); ok {
+		for k, v := range m {
+			if str, ok := v.(string); ok && isSecretName(k) && strings.TrimSpace(str) != "" && strings.Contains(id, str) {
+				return Excerpt(id)
+			}
+		}
 	}
 	return id
 }
@@ -418,19 +463,19 @@ func (s *Scanner) ScanRecord(collection, id string, data any) []Finding {
 	if !s.enabled {
 		return nil
 	}
-	c := &collector{s: s, collection: collection, id: s.safeID(id), seen: map[string]bool{}}
-	c.walk(data, "")
+	c := &collector{s: s, collection: collection, id: s.safeID(id, data), seen: map[string]bool{}}
+	c.walk(data, "", false)
 	return c.out
 }
 
 // schemaKeys are the keywords of a JSON Schema whose values are data: a default
-// or an example is typed in by whoever edits the data type. Titles and
-// descriptions are help text and are not scanned.
+// or an example is typed in by whoever edits the data type.
 var schemaKeys = map[string]bool{"default": true, "examples": true, "example": true, "const": true, "enum": true}
 
-// ScanSchema scans the defaults, examples, constants and enum values of a JSON
-// Schema document, wherever they are in it, and a property's default together
-// with the property's name (a field called password with a default). Paths start
+// ScanSchema scans the defaults, examples, constants, enum values, titles and
+// descriptions of a JSON Schema document, wherever they are in it, and a
+// property's default together with the property's name (a field called password
+// with a default). Paths start
 // with "/schema" so that they read the same in check output and allow entries.
 func (s *Scanner) ScanSchema(collection string, schema []byte) []Finding {
 	s = s.get()
@@ -457,16 +502,22 @@ func (s *Scanner) ScanSchema(collection string, schema []byte) []Finding {
 				for name, p := range props {
 					if pm, ok := p.(map[string]any); ok {
 						if d, ok := pm["default"].(string); ok {
+							dp := path + "/properties/" + ptr(name) + "/default"
 							for _, h := range s.pairMatches(name, d) {
-								c.add(h, path+"/properties/"+ptr(name)+"/default", "")
+								c.add(h, dp, "")
+							}
+							if isSecretName(name) {
+								c.walk(d, dp, true)
 							}
 						}
 					}
 				}
 			}
 			for _, k := range keys {
-				if schemaKeys[k] {
-					c.walk(x[k], path+"/"+ptr(k))
+				if str, ok := x[k].(string); ok && (k == "title" || k == "description") {
+					c.text(str, path+"/"+ptr(k), "", false)
+				} else if schemaKeys[k] {
+					c.walk(x[k], path+"/"+ptr(k), false)
 				} else {
 					visit(x[k], path+"/"+ptr(k))
 				}
@@ -478,6 +529,24 @@ func (s *Scanner) ScanSchema(collection string, schema []byte) []Finding {
 		}
 	}
 	visit(doc, "/schema")
+	return c.out
+}
+
+// ScanYAML scans every value of a YAML file the way a record is scanned. It is
+// for files Rackbook rewrites as a whole (rackbook.yml, data files); callers use
+// Introduced against the old content so that what was already there is not
+// refused.
+func (s *Scanner) ScanYAML(rel string, content []byte) []Finding {
+	s = s.get()
+	if !s.enabled {
+		return nil
+	}
+	var doc any
+	if err := yaml.Unmarshal(content, &doc); err != nil {
+		return nil
+	}
+	c := &collector{s: s, collection: rel, seen: map[string]bool{}}
+	c.walk(doc, "", false)
 	return c.out
 }
 
@@ -510,7 +579,7 @@ func (s *Scanner) ScanState(rel string, content []byte) []Finding {
 			for _, k := range keys {
 				if str, ok := x[k].(string); ok {
 					if stateLabels[k] {
-						c.text(str, path+"/"+ptr(k), "")
+						c.text(str, path+"/"+ptr(k), "", false)
 					}
 					continue
 				}

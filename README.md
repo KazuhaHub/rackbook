@@ -482,7 +482,10 @@ API, the MCP write tools and `rackbook add` / `set`; data type changes (the
 defaults, examples, constants and enum values in schemas); the names and labels
 in the passkey and token state files (public keys, ids and hashes are exempt);
 and the edits made when a delete clears references. Every string in a record is
-scanned, including nested values and field names. A refused write returns
+scanned, including nested values and field names. The rule set also covers GitLab, npm, Hugging Face, Tailscale, SendGrid and Azure
+keys and `Bearer` tokens. Titles and descriptions in types and schemas are
+scanned, and `rackbook check` scans the names in `.rackbook/` state files.
+A refused write returns
 `422 {"error":"secret_detected","findings":[...]}` (the console shows it on the
 field), an MCP tool error with the same findings, or exit code 1 from the CLI.
 A finding gives the rule, collection, record id, the JSON pointer of the field
@@ -514,7 +517,11 @@ secret_scan:
 ```
 
 An `allow` entry needs a `rule` and at least one of `collection`, `field` or
-`value_sha256`. The matched value is the whole match, except for
+`value_sha256`; `value_sha256` must come with a `collection` (a value-only entry
+would let the same secret in everywhere). A private key is matched and hashed as
+the whole `BEGIN` to `END` block. A field named like a secret (`password`,
+`passphrase`, `token`, `api_key`, ...) counts its whole value, spaces included,
+and so does everything inside it. The matched value is the whole match, except for
 `secret-assignment` and `hex-key` (the text after the `:` or `=`),
 `url-credentials` (`user:password`) and extra patterns with a capture group
 (group 1); quotes and a trailing `,` or `;` are not part of it. Compute it with

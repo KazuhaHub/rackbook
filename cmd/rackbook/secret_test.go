@@ -79,3 +79,20 @@ func TestExamplesPassTheSecretScanClean(t *testing.T) {
 		}
 	}
 }
+
+func TestCheckScansStateFileLabelsButNotKeysOrHashes(t *testing.T) {
+	dir := testutil.CopyExample(t)
+	cfg := filepath.Join(dir, "rackbook.yml")
+	os.MkdirAll(filepath.Join(dir, ".rackbook"), 0o755)
+	tokens := "tokens:\n  - name: ci\n    prefix: rbk_abcd\n    sha256: " + strings.Repeat("e", 64) + "\n"
+	os.WriteFile(filepath.Join(dir, ".rackbook/tokens.yml"), []byte(tokens), 0o644)
+	if out, err := run(t, "check", "--config", cfg); err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	os.WriteFile(filepath.Join(dir, ".rackbook/tokens.yml"), []byte(strings.Replace(tokens, "name: ci", "name: \""+cliSecret+"\"", 1)), 0o644)
+	out, err := run(t, "check", "--config", cfg)
+	var ee exitError
+	if !errors.As(err, &ee) || !strings.Contains(out, ".rackbook/tokens.yml") || !strings.Contains(out, "github-token") || strings.Contains(out, cliSecret[:8]) {
+		t.Fatalf("%v\n%s", err, out)
+	}
+}

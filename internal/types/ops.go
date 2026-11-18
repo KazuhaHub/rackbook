@@ -231,13 +231,22 @@ func scanRequest(cfg *config.Config, req Request, p *Plan) []secretscan.Finding 
 	}
 	sort.Strings(rels)
 	for _, rel := range rels {
-		if b := p.files[rel]; b != nil && strings.HasSuffix(rel, ".json") {
-			var old []byte
-			if abs, err := cfg.Resolve(rel); err == nil {
-				old, _ = os.ReadFile(abs)
-			}
-			// What the schema already held is for `rackbook check` to report.
+		b := p.files[rel]
+		if b == nil {
+			continue
+		}
+		var old []byte
+		if abs, err := cfg.Resolve(rel); err == nil {
+			old, _ = os.ReadFile(abs)
+		}
+		// What a file already held is for `rackbook check` to report. The schema
+		// is scanned as a schema; rackbook.yml (the type's entry: title,
+		// description, rules) and data files (a new type's seed, migrated records)
+		// as YAML.
+		if strings.HasSuffix(rel, ".json") {
 			out = append(out, secretscan.Introduced(sc.ScanSchema(req.Name, old), sc.ScanSchema(req.Name, b))...)
+		} else {
+			out = append(out, secretscan.Introduced(sc.ScanYAML(rel, old), sc.ScanYAML(rel, b))...)
 		}
 	}
 	for _, m := range req.Migrations {

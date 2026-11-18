@@ -5,6 +5,8 @@ package validate
 import (
 	"bytes"
 	"fmt"
+	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
@@ -32,6 +34,7 @@ func Run(l *ledger.Ledger) []ledger.Issue {
 		issues = append(issues, uniqueIssues(c, c.Key, true)...)
 		issues = append(issues, secretIssues(l, c)...)
 	}
+	issues = append(issues, stateSecretIssues(l)...)
 	for _, r := range l.Config.Rules {
 		switch {
 		case r.Unique != nil:
@@ -63,6 +66,40 @@ func secretIssues(l *ledger.Ledger, c *ledger.Collection) []ledger.Issue {
 	if c.SchemaRaw != nil {
 		for _, f := range sc.ScanSchema(c.Name, c.SchemaRaw) {
 			out = append(out, ledger.Issue{Collection: c.Name, Path: f.Path, Rule: ledger.RuleSecret, Message: f.Message()})
+		}
+	}
+	return out
+}
+
+// stateSecretIssues scans the names and labels in .rackbook/*.yml (passkeys,
+// tokens); the public keys and hashes in them are by design not secrets.
+func stateSecretIssues(l *ledger.Ledger) []ledger.Issue {
+	sc := l.Config.SecretScanner()
+	if !sc.Enabled() {
+		return nil
+	}
+	dir := filepath.Join(l.Config.Dir, config.StateDir)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	var out []ledger.Issue
+	for _, e := range entries {
+		name := e.Name()
+		if !strings.HasSuffix(name, ".yml") && !strings.HasSuffix(name, ".yaml") {
+			continue
+		}
+		p := filepath.Join(dir, name)
+		if st, err := os.Lstat(p); err != nil || !st.Mode().IsRegular() || st.Size() > 1<<20 {
+			continue
+		}
+		b, err := os.ReadFile(p)
+		if err != nil {
+			continue
+		}
+		rel := config.StateDir + "/" + name
+		for _, f := range sc.ScanState(rel, b) {
+			out = append(out, ledger.Issue{Collection: rel, Path: f.Path, Rule: ledger.RuleSecret, Message: f.Message()})
 		}
 	}
 	return out

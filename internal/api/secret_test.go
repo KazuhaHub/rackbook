@@ -112,3 +112,24 @@ func TestAPIRefusesSecretsInDataTypes(t *testing.T) {
 		t.Fatalf("%d %v", code, r)
 	}
 }
+
+func TestTypeTitlesDescriptionsAndConfigEntryAreScanned(t *testing.T) {
+	f := adminFixture(t)
+	before := tree(t, f.dir)
+	for name, mut := range map[string]func(ty map[string]any){
+		"type description":  func(ty map[string]any) { ty["description"] = "login with " + apiToken },
+		"type title":        func(ty map[string]any) { ty["title"] = "pw " + apiToken },
+		"field title":       func(ty map[string]any) { ty["fields"].([]any)[0].(map[string]any)["title"] = "token: abcdefgh12345" },
+		"field description": func(ty map[string]any) { ty["fields"].([]any)[0].(map[string]any)["description"] = apiToken },
+	} {
+		nt := map[string]any{"name": "contacts", "title": "c", "key": []string{"name"}, "fields": []any{map[string]any{"name": "name", "type": "text", "required": true}}}
+		mut(nt)
+		code, r, _ := f.do(t, "POST", "/api/types", map[string]any{"type": nt}, nil)
+		if code != 422 || r["error"] != "secret_detected" {
+			t.Fatalf("%s: %d %v", name, code, r)
+		}
+	}
+	if tree(t, f.dir) != before {
+		t.Fatal("a refused type change wrote")
+	}
+}

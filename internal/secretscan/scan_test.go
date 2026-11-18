@@ -81,8 +81,8 @@ func TestEveryRuleFiresAndKeepsQuietOnNearMisses(t *testing.T) {
 			[]string{"password: hunter2hunter2", "{\"password\": \"Hunter2Hunter2x\"}", "password: $uperS3cretPass", "db password = correcthorse", "API_KEY=abcdefgh12345", "api-key: abcdefgh12345", "client_secret: abcdefgh", "my token: abcdefgh", "privkey=abcdefgh", "passwd:abcdefgh", "notes: root password: changeme123!"},
 			[]string{"password: short", "token: 1234567", "the password is stored in the vault", "passwords: rotated-quarterly", "token_count: 12345678", "password: ********", "password: ${DB_PASSWORD}", "password: op://Infra/db/password", "token: env:GITHUB_TOKEN", "password: vault:kv/db#pw", "secret: /run/secrets/db_password", "token: $GITHUB_TOKEN", "password: %DB_PASSWORD%", "api_key: https://vault.example.com/ui/kv", "password: <redacted>", "secret: {{ vault }}", "password: xxxxxxxxxx", "token_ttl: 3600 seconds"}},
 		{RuleHexKey,
-			[]string{"key: " + hex32, "preshared key: " + hex32, "privkey=" + hex32, "ssh host key = " + hex32 + strings.Repeat("ab", 8), "KEY:" + strings.ToUpper(hex32)},
-			[]string{"key: " + hex32[:31], "fingerprint: " + hex32 + hex32, "sha256: " + hex32 + hex32, "key: " + hex32 + "zz", "public key: " + hex32, "key_fingerprint: " + hex32, "host_pub_key: " + hex32}},
+			[]string{"key: " + hex32, "preshared key: " + hex32, "privkey=" + hex32, "KEY:" + strings.ToUpper(hex32)},
+			[]string{"key: " + hex32[:31], "fingerprint: " + hex32 + hex32, "sha256: " + hex32 + hex32, "key: " + hex32 + "zz", "public key: " + hex32, "key_fingerprint: " + hex32, "host_pub_key: " + hex32, "ssh host key = " + hex32, "hostkey: " + hex32, "nodekey: " + hex32, "machinekey=" + hex32, "discokey:" + hex32, "gpg key: " + hex32, "pgp key " + "= " + hex32}},
 		{RuleURLPassword,
 			[]string{urlPw, "see https://bob:pw@example.com/x", "ssh://git:token@host"},
 			[]string{"https://example.com/path", "https://host:8080/path", "ssh://git@github.com/org/repo.git", "git@github.com:org/repo.git", "https://example.com:8080", "https://user:${PASSWORD}@host/", "https://user:<password>@host/", "mailto:admin@example.com"}},
@@ -195,10 +195,10 @@ func TestAllowListByHashFieldAndCollection(t *testing.T) {
 	if count(mk(), "c") != 2 {
 		t.Fatal("baseline")
 	}
-	if n := count(mk(Allow{Rule: RuleSecretAssign, ValueSHA256: Hash(val)}), "c"); n != 1 {
+	if n := count(mk(Allow{Rule: RuleSecretAssign, Collection: "c", ValueSHA256: Hash(val)}), "c"); n != 1 {
 		t.Fatalf("by hash: %d", n)
 	}
-	if n := count(mk(Allow{Rule: RuleSecretAssign, ValueSHA256: strings.ToUpper(Hash("another value"))}), "c"); n != 2 {
+	if n := count(mk(Allow{Rule: RuleSecretAssign, Collection: "c", ValueSHA256: strings.ToUpper(Hash("another value"))}), "c"); n != 2 {
 		t.Fatalf("wrong hash must not suppress: %d", n)
 	}
 	if n := count(mk(Allow{Rule: RuleSecretAssign, Field: "/notes"}), "c"); n != 1 {
@@ -217,7 +217,7 @@ func TestAllowListByHashFieldAndCollection(t *testing.T) {
 		t.Fatalf("other rule: %d", n)
 	}
 	// The hash of the secret part of a URL is user:password.
-	s := mk(Allow{Rule: RuleURLPassword, ValueSHA256: Hash("admin:hunter2pass")})
+	s := mk(Allow{Rule: RuleURLPassword, Collection: "c", ValueSHA256: Hash("admin:hunter2pass")})
 	if n := len(s.ScanRecord("c", "i", map[string]any{"u": urlPw})); n != 0 {
 		t.Fatalf("url allow: %d", n)
 	}
@@ -263,7 +263,7 @@ func TestExtraPatternsAndConfigErrors(t *testing.T) {
 		"unknown allow":   {Allow: []Allow{{Rule: "nope", Collection: "c"}}},
 		"allow too broad": {Allow: []Allow{{Rule: RuleJWT}}},
 		"bad hash":        {Allow: []Allow{{Rule: RuleJWT, ValueSHA256: "abc"}}},
-		"non hex hash":    {Allow: []Allow{{Rule: RuleJWT, ValueSHA256: strings.Repeat("z", 64)}}},
+		"non hex hash":    {Allow: []Allow{{Rule: RuleJWT, Collection: "c", ValueSHA256: strings.Repeat("z", 64)}}},
 	} {
 		if _, err := New(c); err == nil {
 			t.Errorf("%s: no error", name)
@@ -286,7 +286,7 @@ func TestSchemaDefaultsAndExamplesAreScanned(t *testing.T) {
 	for _, f := range Default().ScanSchema("c", []byte(schema)) {
 		got = append(got, f.Path+" "+f.Rule)
 	}
-	want := "/schema/properties/a/default github-token,/schema/properties/b/examples/1 aws-access-key-id,/schema/properties/c/enum/1 slack-token,/schema/properties/d/const openai-api-key"
+	want := "/schema/description secret-assignment,/schema/properties/a/default github-token,/schema/properties/a/title secret-assignment,/schema/properties/b/examples/1 aws-access-key-id,/schema/properties/c/enum/1 slack-token,/schema/properties/d/const openai-api-key"
 	if strings.Join(got, ",") != want {
 		t.Fatalf("got %v", got)
 	}
@@ -359,5 +359,153 @@ func TestIntroducedIgnoresPositionSoRemovingAnEntryIsNotNewSecrets(t *testing.T)
 	after := d.ScanState("f", b)
 	if got := Introduced(before, after); len(got) != 0 {
 		t.Fatalf("%+v", got)
+	}
+}
+
+const body = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7\n"
+
+func pem(t, b string) string {
+	return "-----BEGIN " + t + " PRIVATE KEY-----\n" + b + "-----END " + t + " PRIVATE KEY-----"
+}
+
+func TestPrivateKeyIsMatchedAndHashedAsAWholeBlock(t *testing.T) {
+	k1, k2 := pem("RSA", body), pem("RSA", "ZZZZ"+body)
+	fs := Default().ScanRecord("c", "i", map[string]any{"a": "x\n" + k1 + "\ntail"})
+	if len(fs) != 1 || fs[0].fp != Hash(k1) {
+		t.Fatalf("%+v", fs)
+	}
+	// a second key of the same type next to an existing one is introduced
+	before := Default().ScanRecord("c", "i", map[string]any{"a": k1})
+	after := Default().ScanRecord("c", "i", map[string]any{"a": k1 + "\n" + k2})
+	if got := Introduced(before, after); len(got) != 1 {
+		t.Fatalf("%+v", got)
+	}
+	// allowing one key's hash lets only that key through
+	s, err := New(Config{Allow: []Allow{{Rule: RulePrivateKey, Collection: "c", ValueSHA256: Hash(k1)}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := len(s.ScanRecord("c", "i", map[string]any{"a": k1})); n != 0 {
+		t.Fatalf("allowed key: %d", n)
+	}
+	if n := len(s.ScanRecord("c", "i", map[string]any{"a": k2})); n != 1 {
+		t.Fatalf("another key: %d", n)
+	}
+	// without END the body is taken to the end of the text
+	trunc := "-----BEGIN " + "OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXk"
+	if fs := Default().ScanRecord("c", "i", map[string]any{"a": trunc}); len(fs) != 1 || fs[0].fp != Hash(trunc) {
+		t.Fatalf("%+v", fs)
+	}
+}
+
+func TestSecretNamedFieldsCountTheWholeValue(t *testing.T) {
+	d := Default()
+	for _, c := range []struct {
+		name, value string
+		fires       bool
+	}{
+		{"password", "correct horse battery staple", true},
+		{"wifi_passphrase", "my long secret phrase", true},
+		{"db-password", "hunter2", true},
+		{"dbPassword", "hunter2hunter2", true},
+		{"client_secret", "a b c d e f g", true},
+		{"api_key", "not a real key but is", true},
+		{"private_key", "some words here", true},
+		{"psk", "tailscale rules ok", true},
+		{"auth_tokens", "abc def ghi", true},
+		{"password", "op://Infra/db/password", false},
+		{"password", "env:DB_PASSWORD", false},
+		{"password", "$DB_PASSWORD", false},
+		{"password", "vault:kv/db#pw", false},
+		{"password", "/run/secrets/db", false},
+		{"password", "待补", false},
+		{"password", "TBD", false},
+		{"password", "-", false},
+		{"password", "***", false},
+		{"password", "********", false},
+		{"token", "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMq", false},
+		{"public_key", "some words here", false},
+		{"password_hint", "my dog's name", false},
+		{"notes", "correct horse battery staple", false},
+	} {
+		got := len(d.ScanRecord("c", "i", map[string]any{c.name: c.value})) > 0
+		if got != c.fires {
+			t.Errorf("%s=%q: fires=%v want %v", c.name, c.value, got, c.fires)
+		}
+	}
+	// lists and maps under a secret-named key: every string inside
+	fs := d.ScanRecord("c", "i", map[string]any{"passwords": []any{"first one here", map[string]any{"x": "second one here"}}, "secrets": map[string]any{"a": []any{"third one here"}}})
+	var paths []string
+	for _, f := range fs {
+		paths = append(paths, f.Path)
+	}
+	if strings.Join(paths, ",") != "/passwords/0,/passwords/1/x,/secrets/a/0" {
+		t.Fatalf("%v", paths)
+	}
+	// a password field with a spaced default in a schema
+	sf := d.ScanSchema("c", []byte(`{"properties":{"password":{"default":"correct horse battery"}}}`))
+	if len(sf) != 1 {
+		t.Fatalf("%+v", sf)
+	}
+}
+
+func TestIDBuiltFromASecretNamedFieldIsRedacted(t *testing.T) {
+	fs := Default().ScanRecord("accounts", "alice/correct horse battery staple", map[string]any{"user": "alice", "password": "correct horse battery staple"})
+	if len(fs) == 0 {
+		t.Fatal("no finding")
+	}
+	for _, f := range fs {
+		if strings.Contains(f.ID, "horse") || len([]rune(strings.TrimSuffix(f.ID, "…"))) > 4 {
+			t.Fatalf("id %q", f.ID)
+		}
+	}
+}
+
+func TestMoreKeywordsAndRules(t *testing.T) {
+	d := Default()
+	for rule, vals := range map[string][]string{
+		RuleSecretAssign: {"private key: abcdefgh1234", "passphrase: abcdefgh1234", "wpa_passphrase=abcdefgh1234", "psk: abcdefgh1234", "wifi_psk=abcdefgh1234", "pre-shared-key: abcdefgh1234", "preshared_key = abcdefgh1234", "private_key=abcdefgh1234"},
+		RuleGitLabToken:  {"glpat" + "-" + strings.Repeat("aB1_", 6)},
+		RuleNPMToken:     {"npm" + "_" + strings.Repeat("aB1", 12)},
+		RuleHFToken:      {"hf" + "_" + strings.Repeat("aBcD", 9)},
+		RuleTailscaleKey: {"tskey" + "-auth-" + "kABCDE1CNTRL-abcdefghij"},
+		RuleSendGridKey:  {"SG" + "." + strings.Repeat("aB1_", 6)[:22] + "." + strings.Repeat("cD2-", 11)[:43]},
+		RuleAzureKey:     {"DefaultEndpointsProtocol=https;AccountName=x;AccountKey=" + strings.Repeat("aB1/", 11) + "==;"},
+		RuleBearer:       {"Authorization: Bearer " + strings.Repeat("aB1.", 6) + "==", "curl -H 'Bearer " + strings.Repeat("xY9", 8) + "'"},
+	} {
+		for _, v := range vals {
+			if got := rules(t, d, v); !has(got, rule) {
+				t.Errorf("%s should fire on %q, got %v", rule, v, got)
+			}
+		}
+	}
+	for rule, vals := range map[string][]string{
+		RuleGitLabToken:  {"glpat-short", "xglpat-" + strings.Repeat("a", 30)},
+		RuleNPMToken:     {"npm_short", "npm_" + strings.Repeat("a", 30)},
+		RuleHFToken:      {"hf_short", "hf_" + strings.Repeat("a", 20)},
+		RuleTailscaleKey: {"tskey-short", "tskey-auth-short"},
+		RuleSendGridKey:  {"SG.short.short"},
+		RuleAzureKey:     {"AccountKey=short", "AccountKey="},
+		RuleBearer:       {"Bearer short", "the bearer authentication-with-the-gateway-service", "Bearer <token>", "Bearer " + strings.Repeat("a", 30)},
+		RuleSecretAssign: {"psk: short", "mypsk is set", "the pre-shared key is stored in the vault"},
+	} {
+		for _, v := range vals {
+			if got := rules(t, d, v); has(got, rule) {
+				t.Errorf("%s must not fire on %q", rule, v)
+			}
+		}
+	}
+	// public values under secret-looking labels
+	for _, v := range []string{"tailscale nodekey: " + hex32, "host_key: " + hex32, "gpg key: " + hex32} {
+		if got := rules(t, d, v); len(got) != 0 {
+			t.Errorf("%q fired %v", v, got)
+		}
+	}
+}
+
+func TestScanYAMLWalksEveryValue(t *testing.T) {
+	fs := Default().ScanYAML("rackbook.yml", []byte("collections:\n  x:\n    title: ok\n    description: \"login with "+ghp+"\"\nrules:\n  - ref: {from: a.b, to: c.d, message: \"password: hunter2hunter2\"}\n"))
+	if len(fs) != 2 || fs[0].Collection != "rackbook.yml" {
+		t.Fatalf("%+v", fs)
 	}
 }
