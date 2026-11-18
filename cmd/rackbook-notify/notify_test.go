@@ -24,6 +24,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -141,7 +142,7 @@ func TestStateRoundTripAndCorrupt(t *testing.T) {
 		t.Fatal(err)
 	}
 	fi, _ := os.Stat(p)
-	if fi.Mode().Perm() != 0o600 {
+	if runtime.GOOS != "windows" && fi.Mode().Perm() != 0o600 { // Windows has no permission bits
 		t.Fatalf("mode %v", fi.Mode())
 	}
 	got, err := loadState(p)
@@ -159,11 +160,13 @@ func TestStateRoundTripAndCorrupt(t *testing.T) {
 }
 
 func TestResolveStatePath(t *testing.T) {
-	t.Setenv("STATE_DIRECTORY", "/var/lib/x:/other")
-	if got := resolveStatePath("s.json"); got != "/var/lib/x/s.json" {
+	first, other := t.TempDir(), t.TempDir()
+	t.Setenv("STATE_DIRECTORY", first+string(os.PathListSeparator)+other)
+	if got := resolveStatePath("s.json"); got != filepath.Join(first, "s.json") {
 		t.Fatal(got)
 	}
-	if got := resolveStatePath("/abs/s.json"); got != "/abs/s.json" {
+	abs := filepath.Join(other, "s.json")
+	if got := resolveStatePath(abs); got != abs {
 		t.Fatal(got)
 	}
 	t.Setenv("STATE_DIRECTORY", "")
