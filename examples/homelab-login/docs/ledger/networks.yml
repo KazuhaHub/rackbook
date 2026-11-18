@@ -1,0 +1,18 @@
+# 网段规划。alias = Tailscale policy 里 hosts 的别名。
+tailscale:
+  - {range: 100.88.0.0/16, third_octet: "—", purpose: Tailscale 地址大段（整个规划在这里面）}
+  - {range: 100.88.0.0/20, third_octet: 0–15, purpose: 路由器 / 网络设备, alias: routers}
+  - {range: 100.88.32.0/20, third_octet: 32–47, purpose: 公开服务器·海外, alias: servers-public}
+  - {range: 100.88.48.0/20, third_octet: 48–63, purpose: 我的终端, alias: my-devs}
+  - {range: 100.88.64.0/20, third_octet: 64–79, purpose: 家里服务 / NAS / IoT, alias: home-svc}
+
+lan:
+  - {range: 192.168.0.0/18, third_octet: 0–63, purpose: 所有站点局域网（每站一个 /22）, alias: lan-sites}
+
+docker:
+  rule: >-
+    Docker 地址池只用于本机容器，永不路由；会被路由的网段不得落入任何
+    Docker 地址池；各机 Docker 一律按 /24 切分
+  ranges:
+    - {range: 172.16.0.0/16, purpose: web Docker 地址池（/24）}
+    - {range: 172.18.0.0/16, purpose: standby Docker 地址池（/24）}

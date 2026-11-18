@@ -1,0 +1,26 @@
+# 服务端口：每台设备上实际开着的服务。device 为 all 表示所有设备。
+# exposure 开放范围：公网 / Tailscale / 局域网 / 本机 / Cloudflare 回源 等。
+- {device: all, service: Tailscale, port: UDP 41641, exposure: 公网, notes: 规范端口}
+
+# --- gw-example-springfield-or-us-home
+- {device: gw-example-springfield-or-us-home, service: SSH, port: TCP 10511, exposure: 局域网 + Tailscale}
+- {device: gw-example-springfield-or-us-home, service: Web 后台, port: TCP 60000, exposure: 局域网 + Tailscale}
+
+# --- web-hostco-ashburn-va-us-dc
+- {device: web-hostco-ashburn-va-us-dc, service: SSH, port: TCP 10511, exposure: 公网 + Tailscale, notes: 仅密钥}
+- {device: web-hostco-ashburn-va-us-dc, service: 主站（www.example.com）, port: TCP 443（nginx → 127.0.0.1:20001）, exposure: 公网（仅经 Cloudflare 回源）}
+- device: web-hostco-ashburn-va-us-dc
+  service: 网络台账（Rackbook）
+  port: TCP 443（nginx → 127.0.0.1:20019）
+  exposure: 公网（仅经 Cloudflare 回源，Cloudflare Access SSO）
+  managed: true
+  notes: >-
+    由配置仓库管理；编辑会提交到 Git 并推送；
+    只有 Cloudflare Access 放行的人能打开
+
+# --- standby-vpsco-sanjose-ca-us-vps
+- {device: standby-vpsco-sanjose-ca-us-vps, service: SSH, port: TCP 10511, exposure: 公网 + Tailscale}
+- {device: standby-vpsco-sanjose-ca-us-vps, service: PostgreSQL 热备, port: TCP 5432, exposure: 仅 Tailscale, managed: true}
+
+# --- nas-example-springfield-or-us-home
+- {device: nas-example-springfield-or-us-home, service: SMB 共享, port: TCP 445, exposure: 局域网}

@@ -1,4 +1,4 @@
-import { lazy } from 'react'
+import { lazy, Suspense } from 'react'
 import { BrowserRouter, Route, Routes } from 'react-router'
 import { Refine } from '@refinedev/core'
 import routerProvider, { DocumentTitleHandler, UnsavedChangesNotifier } from '@refinedev/react-router'
@@ -18,6 +18,13 @@ const CollectionList = lazy(() => import('@/pages/CollectionList'))
 const RecordShow = lazy(() => import('@/pages/RecordShow'))
 const RecordFormPage = lazy(() => import('@/pages/RecordFormPage'))
 const Problems = lazy(() => import('@/pages/Problems'))
+const Account = lazy(() => import('@/pages/Account'))
+const Users = lazy(() => import('@/pages/Users'))
+const Login = lazy(() => import('@/pages/Login'))
+const Tokens = lazy(() => import('@/pages/Tokens'))
+// data types (admin)
+const Types = lazy(() => import('@/pages/Types'))
+const TypeEditor = lazy(() => import('@/pages/TypeEditor'))
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { refetchOnWindowFocus: false } },
@@ -55,6 +62,12 @@ function RefineApp() {
           <Route path="c/:collection/:id" element={<RecordShow />} />
           <Route path="c/:collection/:id/edit" element={<RecordFormPage mode="edit" />} />
           <Route path="check" element={<Problems />} />
+          <Route path="account" element={<Account />} />
+          <Route path="admin/users" element={<Users />} />
+          <Route path="admin/tokens" element={<Tokens />} />
+          <Route path="types" element={<Types />} />
+          <Route path="types/-/new" element={<TypeEditor mode="create" />} />
+          <Route path="types/:name" element={<TypeEditor mode="edit" />} />
           <Route path="*" element={<NotFound />} />
         </Route>
       </Routes>
@@ -77,12 +90,28 @@ export default function App() {
       <QueryClientProvider client={queryClient}>
         <TooltipProvider delay={200}>
           <BrowserRouter>
-            <MetaProvider
-              loading={<div className="p-8"><PageFallback /></div>}
-              failed={(e, retry) => <Unreachable error={e} onRetry={retry} />}
-            >
-              <RefineApp />
-            </MetaProvider>
+            <Routes>
+              {/* the login page needs no session, so it lives outside MetaProvider */}
+              <Route
+                path="/auth/login"
+                element={
+                  <Suspense fallback={<div className="p-8"><PageFallback /></div>}>
+                    <Login />
+                  </Suspense>
+                }
+              />
+              <Route
+                path="*"
+                element={
+                  <MetaProvider
+                    loading={<div className="p-8"><PageFallback /></div>}
+                    failed={(e, retry) => <Unreachable error={e} onRetry={retry} />}
+                  >
+                    <RefineApp />
+                  </MetaProvider>
+                }
+              />
+            </Routes>
           </BrowserRouter>
           <Toaster richColors position="bottom-right" />
         </TooltipProvider>

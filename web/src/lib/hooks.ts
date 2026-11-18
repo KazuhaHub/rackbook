@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useQueries, useQuery } from '@tanstack/react-query'
 import { dataProvider } from '@/providers/dataProvider'
 import type { Collection, Commit, LedgerRecord } from './types'
@@ -37,13 +37,25 @@ export function useRefLookups(col: Collection): Record<string, RefLookup> {
   }, [col, stamp])
 }
 
-export function useHistory(collection: string | undefined, limit: number) {
+/** Recent commits; with `id`, the commits of that record (the server falls back to the collection's file history). */
+export function useHistory(collection: string | undefined, limit: number, id?: string) {
   return useQuery({
-    queryKey: ['rb', 'history', collection ?? '', limit],
+    queryKey: ['rb', 'history', collection ?? '', limit, id ?? ''],
     queryFn: async () =>
       (
-        await dataProvider.custom!({ url: '/history', method: 'get', query: { limit, collection } })
+        await dataProvider.custom!({ url: '/history', method: 'get', query: { limit, collection, id } })
       ).data.commits as Commit[],
     staleTime: 30_000,
   })
+}
+
+/** True from the moment `ready` flips on until `ms` later, so list rows animate in only on first render. */
+export function useFirstRender(ready: boolean, ms = 900) {
+  const [fresh, setFresh] = useState(true)
+  useEffect(() => {
+    if (!ready) return
+    const id = window.setTimeout(() => setFresh(false), ms)
+    return () => window.clearTimeout(id)
+  }, [ready, ms])
+  return fresh
 }

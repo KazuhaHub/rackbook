@@ -155,7 +155,15 @@ story. Read-only use (`check`, `export`, `mcp`, `serve --read-only`) needs no
 git at all. The Docker image ships `git` and `openssh-client`.
 
 **Server-owned clone.** `rackbook serve --repo /data/repo` works in a clone it
-owns; nobody edits that checkout by hand. It fetches every `--pull-interval`
+owns; nobody edits that checkout by hand. **The server clone must contain only
+tracked files**: any modified, untracked or ignored file outside `.git` makes
+every write, pull and accept fail with `repo_dirty` (one `git status
+--porcelain --untracked-files=all --ignored=matching` check), so a hard reset
+can never overwrite or delete anything unknown. The server also runs git with
+hooks disabled, the system config ignored and the user's global config ignored
+(so HTTPS credential helpers in `~/.gitconfig` do not apply: use SSH deploy
+keys or a repo-local config); the CLI keeps the user's config but also runs
+without hooks. It fetches every `--pull-interval`
 (default 60 s) and fast-forwards, so the console shows pushes made from
 elsewhere (ansible-pull hosts, laptops, the owner's agents).
 
@@ -166,14 +174,98 @@ elsewhere (ansible-pull hosts, laptops, the owner's agents).
    HTTP 409 with the current record — the console shows "someone changed this
    record, review and retry");
 3. splice the YAML, re-validate the whole ledger (else HTTP 422 with errors);
-4. commit with author = the editor (`Name <email>` from Cloudflare Access),
-   committer = the configured service identity, message
-   `ledger(<collection>): <add|edit|delete> <id>` plus an `Edited-via: rackbook`
-   trailer and the editor's email;
+4. commit with author = the editor (`Name <email-or-id>`), committer = the
+   configured service identity, and message
+   `ledger(<collection>): <add|edit|delete> <id>` plus trailers (below);
 5. push. If the push is rejected because the remote moved: go back to step 1
    and replay the same semantic edit on the new tip (at most 3 times). A real
    conflict — the same record changed upstream — surfaces as the 409 from
    step 2, never as a merge.
+
+**Commit message trailers.** One function builds every Rackbook commit message
+(`gitstore.CommitMessage`, used by the server, the CLI and MCP):
+
+```
+ledger(services): edit web-1/SSH
+
+Edited-by: ann@example.com
+Edited-via: rackbook (oidc)            # or (cloudflare-access), (mcphub, client <client_id>), (cli), ...
+Record: services/web-1/SSH
+```
+
+`Edited-by` is the identity id and is left out for an anonymous local user.
+`Record: <collection>/<id>` is on every record commit (one function,
+`edit.RecordRef`, computes the value: ids longer than 100 characters are cut
+and get `~` plus 8 hex digits of their SHA-256; History matches it with
+`--fixed-strings`, whatever `grep.patternType` is); `GET /api/history`
+with `collection` and `id` selects by it, and falls back to the collection
+file's history when no commit carries the trailer.
+
+**Rackbook never force-pushes.** It never runs a force push (plain, with lease,
+or a `+` refspec), never deletes or rewrites remote branches or tags, never
+mirrors, and never resets anything on the remote. The only reset is on the
+server's own clone, to the remote tip, after the ancestry check below.
+
+- Exactly one function (`pushArgs` in `internal/gitstore/safegit.go`) builds a
+  push command line, and it can only produce
+  `git push --quiet origin HEAD:refs/heads/<branch>` (the pull request branch
+  uses the same function). Every git call goes through one `Runner`, whose
+  real implementation also refuses any push that is not that exact shape and
+  every git subcommand outside a short allow-list (so no branch/tag/ref
+  deletion, `update-ref`, `send-pack`, `receive-pack` or alias tricks). Only
+  the global options Rackbook itself uses may precede it (`-C <dir>`,
+  `-c` with a fixed set of keys, `--no-pager`); any other is refused. Each
+  subcommand then has its own list of allowed options (nothing like
+  `--upload-pack`, `--exec`, `--output`, `-o`, `--ext-diff`, `--textconv`), and
+  `config` and `remote` only read fixed keys.
+- The tests run the whole gitstore suite through a recording runner and fail if
+  any recorded command is a force or lease push, a mirror, a deletion, a
+  refspec starting with `+` or `:`, `update-ref -d`, or a `reset` outside the
+  clone; a static test keeps those words and every push command line out of
+  all other non-test sources, and `os/exec` out of every other package.
+
+**Rewritten remote history.** The server remembers the last remote commit it
+accepted: in memory and in `.git/rackbook-last-good/<branch>` inside its clone (one file per branch, name escaped; an older single file is migrated). At
+startup, after every periodic fetch and before every write it checks that
+`origin/<branch>` is a descendant of that commit (`git merge-base
+--is-ancestor`); fast-forwards advance it. If it is not (a force push, or a
+branch deleted and recreated), Rackbook:
+
+- does **not** reset the clone and keeps serving read-only from the last good
+  commit;
+- refuses every write (API, CLI `--commit`/`--push`, MCP) with
+  `503 {"error":"history_rewritten","lastGood":"…","remote":"…"}`;
+- logs an error and reports `alert: {kind: "history_rewritten", lastGood,
+  remote}` in `/api/meta`, which the console shows as a red banner.
+
+Our own successful pushes and every fast-forward pull advance the last good
+commit, so a later force push of "our commit's parent plus something else" is
+still detected.
+
+An administrator clears it after checking the new history:
+`rackbook serve --accept-remote <commit>`, `POST /api/admin/accept-remote
+{"commit": "<hash>"}` (admin only, refused in `--read-only`), or, in a plain
+clone, `rackbook accept-remote <commit>`. All three accept only the commit that
+is the current remote tip, and only while a rewrite is active (otherwise
+`no_alert`). They refuse, changing nothing, when the accepted tip's
+`rackbook.yml` does not load (`config_error`), and (server only) when the clone
+has any modified, untracked or ignored file or has commits that are on no remote branch and not part of the old
+accepted history (`local_commits`); only then is the clone reset to the tip and
+the tip recorded as the new base. After the reset the server reloads
+everything; if that fails (for example a schema path turned into a symlink out
+of the repository) it resets back, keeps the old base and the alert, and
+returns `config_error`. `rackbook accept-remote` in a plain clone only records
+the base: it never resets or touches the user's work tree. If the remote later becomes a descendant of
+the last good commit again (the rewrite was undone) the state clears by itself.
+
+The CLI (`rackbook add|set|rm --commit|--push`) runs the same check before it
+edits any file.
+
+**Broken config.** If `rackbook.yml` fails to load after a pull or reset, the
+server keeps serving the last good config and ledger for reads, fails closed
+for writes and admin actions (everyone is capped at viewer, writes return
+`503 config_error`) and reports `alert: {kind: "config_error", message}` in
+`/api/meta`; it recovers on its own when a config loads again.
 
 **Two write modes** (`write.mode` in config):
 
@@ -193,11 +285,50 @@ elsewhere (ansible-pull hosts, laptops, the owner's agents).
   rotated automatically), `iss`, `aud` and expiry using `coreos/go-oidc` — the
   library Cloudflare's own Go example uses. The identity is the `email` claim;
   for Access service tokens (AI agents), the `common_name` claim.
-- Optional `editors:` allow-list (emails / service-token names). Everyone who
-  passes Access can read; only editors can write. Empty list = everyone may
-  write.
+- Roles (`auth.roles` in `rackbook.yml`, see below). The v0.1 `editors:`
+  allow-list still works as editor entries: everyone who passes Access can
+  read, only the listed editors can write. Empty list = everyone may write.
 - The server listens on 127.0.0.1 by default; it is meant to sit behind
   Cloudflare Tunnel or a reverse proxy, never directly on the internet.
+
+### Roles
+
+```yaml
+auth:
+  roles:
+    admin:  [owner@example.com]
+    editor: ["*@example.com", "mcphub:alice", "group:ops"]
+    viewer: ["*"]
+```
+
+Every authenticated request gets an `Identity` (`internal/auth`) with a `Role`
+that is evaluated from the **current** config on every request, so a config
+reload on pull takes effect without a restart.
+
+- Entries (case-insensitive, ASCII letters only: a Unicode look-alike such as
+  the Kelvin sign never folds onto an ASCII name): an exact identity or
+  e-mail, `*@domain`, `mcphub:<username>` / `mcphub:*` (MCPHub identities),
+  `group:<id>` (matched against the groups on the identity) and `*` (anyone
+  authenticated). The highest matching role wins.
+- Which entries can match depends on the login method. oidc, passkey,
+  cloudflare-access, none and cli identities match everything except
+  `mcphub:`. MCPHub identities match only `mcphub:` entries, plus exact and
+  `*@domain` entries when their username is an e-mail address **and**
+  `auth.mcp.match_email: true` is set (default false). Token identities match
+  no entry; they take their creator's role.
+- `viewer` reads; `editor` also creates, edits and deletes records; `admin`
+  also does administrative actions (accepting a rewritten remote, later data
+  types). Checks use the actions `read`, `write`, `delete` and `admin`.
+- No `roles` block: every authenticated identity is an editor (v0.1). With
+  only the v0.1 `editors` list (or `--editors`), those identities are editors
+  and everyone else is a viewer. `editors` entries are added to `roles.editor`
+  when both exist.
+- With a `roles` block an identity that matches nothing has no role and gets
+  `403 {"error":"no_role"}` everywhere. (Auth `none` without `--editor` has no
+  identity to refuse: it is anonymous and never below viewer.)
+- A credential that carries scopes (MCPHub tokens) can only lower the role,
+  through `Identity.Narrow`; it can never raise it.
+- Writes need `editor` in the API; viewers get `403 {"error":"forbidden"}`.
 
 ## 5. Interfaces
 

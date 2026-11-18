@@ -3,6 +3,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -19,13 +20,15 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/kazuhahub/rackbook/internal/apierr"
 	"github.com/kazuhahub/rackbook/internal/auth"
 	"github.com/kazuhahub/rackbook/internal/edit"
 	"github.com/kazuhahub/rackbook/internal/export"
 	"github.com/kazuhahub/rackbook/internal/gitstore"
 	"github.com/kazuhahub/rackbook/internal/ledger"
+	"github.com/kazuhahub/rackbook/internal/roles"
+	"github.com/kazuhahub/rackbook/internal/tokens"
 	"github.com/kazuhahub/rackbook/internal/validate"
-	"github.com/kazuhahub/rackbook/internal/yamledit"
 )
 
 const maxBody = 1 << 20
@@ -33,15 +36,26 @@ const maxBody = 1 << 20
 // Options configures the handler.
 type Options struct {
 	Store    *gitstore.Store
-	Auth     *auth.Authenticator // nil = no authentication
+	Auth     *auth.Authenticator // nil = auth mode none, roles from the store's config
 	ReadOnly bool
 	BaseURL  string       // public URL used in llms.txt; derived from the request when empty
 	Web      fs.FS        // console files (root of dist); may lack index.html
 	MCP      http.Handler // optional, mounted at /mcp
+	// Login mounts the /auth endpoints and the account and user APIs (oidc
+	// mode). It receives the console handler, which serves the login page.
+	Login interface {
+		Mount(mux *http.ServeMux, static http.Handler)
+	}
 	// RestrictHost limits accepted Host headers to loopback names and the host
 	// of BaseURL (DNS-rebinding protection for --auth none).
 	RestrictHost bool
 	Logger       *slog.Logger
+
+	// Public are exact paths served without authentication (the OAuth
+	// protected resource metadata).
+	Public map[string]http.Handler
+	// Tokens enables the admin token endpoints (/api/admin/tokens).
+	Tokens *tokens.Registry
 }
 
 type server struct {
@@ -55,6 +69,14 @@ func New(o Options) http.Handler {
 	if s.log == nil {
 		s.log = slog.New(slog.DiscardHandler)
 	}
+	if s.o.Auth == nil {
+		// No authentication, but roles (and the v0.1 editors list) still apply.
+		a, err := auth.New(context.Background(), auth.Config{Mode: auth.ModeNone, Config: o.Store.Config, Degraded: func() bool { return o.Store.ConfigProblem() != "" }})
+		if err != nil {
+			panic(err) // mode none cannot fail
+		}
+		s.o.Auth = a
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, "ok\n") })
 	mux.HandleFunc("GET /api/meta", s.meta)
@@ -65,6 +87,9 @@ func New(o Options) http.Handler {
 	mux.HandleFunc("POST /api/c/{collection}", s.add)
 	mux.HandleFunc("PUT /api/c/{collection}/{id}", s.put)
 	mux.HandleFunc("DELETE /api/c/{collection}/{id}", s.del)
+	mux.HandleFunc("POST /api/admin/accept-remote", s.acceptRemote)
+	s.tokenRoutes(mux) // tokens.go
+	s.typesRoutes(mux) // types.go
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "not_found", "no such API endpoint")
 	})
@@ -77,18 +102,24 @@ func New(o Options) http.Handler {
 		mux.Handle("/mcp/", o.MCP)
 	}
 	mux.HandleFunc("/", s.static)
+	if o.Login != nil {
+		o.Login.Mount(mux, http.HandlerFunc(s.static))
+	}
 
-	var h http.Handler = mux
-	if o.Auth != nil {
-		authed := o.Auth.Middleware(mux)
-		h = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path == "/healthz" {
-				mux.ServeHTTP(w, r)
+	authed := s.o.Auth.Middleware(mux)
+	var h http.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/healthz" {
+			mux.ServeHTTP(w, r)
+			return
+		}
+		if p, canonical := auth.CanonicalPath(r); canonical {
+			if ph, ok := s.o.Public[p]; ok {
+				ph.ServeHTTP(w, r)
 				return
 			}
-			authed.ServeHTTP(w, r)
-		})
-	}
+		}
+		authed.ServeHTTP(w, r)
+	})
 	return securityHeaders(s.guard(h))
 }
 
@@ -213,16 +244,13 @@ func writeError(w http.ResponseWriter, status int, code, msg string, extra ...an
 	writeJSON(w, status, body)
 }
 
-func (s *server) user(r *http.Request) *auth.User { return auth.UserFrom(r.Context()) }
+// who is the caller authenticated by the middleware (never nil there).
+func (s *server) who(r *http.Request) *auth.Identity { return auth.FromContext(r.Context()) }
 
+// canEdit reports whether the caller may write: not in read-only mode and with
+// at least the editor role.
 func (s *server) canEdit(r *http.Request) bool {
-	if s.o.ReadOnly {
-		return false
-	}
-	if s.o.Auth == nil {
-		return true
-	}
-	return s.o.Auth.CanEdit(s.user(r))
+	return !s.o.ReadOnly && auth.Can(r.Context(), roles.Write)
 }
 
 // Read endpoints -------------------------------------------------------------
@@ -243,6 +271,10 @@ type collectionOut struct {
 	Title       string           `json:"title"`
 	Description string           `json:"description"`
 	Group       string           `json:"group"`
+	Icon        string           `json:"icon,omitempty"`
+	File        string           `json:"file"`
+	Path        string           `json:"path,omitempty"`
+	SchemaFile  string           `json:"schemaFile"`
 	Key         []string         `json:"key"`
 	Label       string           `json:"label"`
 	List        []string         `json:"list"`
@@ -264,14 +296,20 @@ func strs(s []string) []string {
 func (s *server) meta(w http.ResponseWriter, r *http.Request) {
 	l := s.o.Store.Ledger()
 	cfg := l.Config
-	var user any
-	if u := s.user(r); u != nil {
-		user = map[string]any{"email": u.Email, "name": u.Name, "canEdit": s.canEdit(r)}
+	user := map[string]any{"canEdit": s.canEdit(r), "canAdmin": auth.Can(r.Context(), roles.Manage)}
+	if id := s.who(r); id != nil {
+		user["role"], user["authMethod"] = id.EffectiveRole().String(), id.Method
+		for k, v := range map[string]string{"id": id.ID, "email": id.Email, "name": id.Name} {
+			if v != "" {
+				user[k] = v
+			}
+		}
 	}
 	cols := make([]collectionOut, 0, len(l.Collections))
 	for _, c := range l.Collections {
 		out := collectionOut{
-			Name: c.Name, Title: c.Title, Description: c.Description, Group: c.Group,
+			Name: c.Name, Title: c.Title, Description: c.Description, Group: c.Group, Icon: c.Icon,
+			File: c.File, Path: c.Path, SchemaFile: c.Collection.Schema,
 			Key: strs(c.Key), Label: c.Label, List: strs(c.List), Facets: []facetOut{},
 			Schema: c.SchemaRaw, Refs: l.Refs(c.Name), Backrefs: l.BackRefs(c.Name), Notes: []noteOut{}, Count: len(c.Records),
 		}
@@ -288,11 +326,14 @@ func (s *server) meta(w http.ResponseWriter, r *http.Request) {
 		}
 		cols = append(cols, out)
 	}
-	mode := cfg.Write.Mode
-	writeJSON(w, http.StatusOK, map[string]any{
+	meta := map[string]any{
 		"title": cfg.Title, "description": cfg.Description,
-		"readOnly": s.o.ReadOnly, "writeMode": mode, "user": user, "collections": cols,
-	})
+		"readOnly": s.o.ReadOnly, "writeMode": cfg.Write.Mode, "user": user, "collections": cols,
+	}
+	if a := s.o.Store.Alert(); a != nil {
+		meta["alert"] = a
+	}
+	writeJSON(w, http.StatusOK, meta)
 }
 
 func (s *server) check(w http.ResponseWriter, r *http.Request) {
@@ -305,7 +346,7 @@ func (s *server) check(w http.ResponseWriter, r *http.Request) {
 
 func (s *server) history(w http.ResponseWriter, r *http.Request) {
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	commits, err := s.o.Store.History(r.Context(), limit, r.URL.Query().Get("collection"))
+	commits, err := s.o.Store.History(r.Context(), limit, r.URL.Query().Get("collection"), r.URL.Query().Get("id"))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
@@ -373,64 +414,104 @@ func (s *server) readBody(w http.ResponseWriter, r *http.Request) (body, bool) {
 	return b, true
 }
 
-// writable runs the shared checks of write endpoints.
-func (s *server) writable(w http.ResponseWriter, r *http.Request) bool {
-	if !s.canEdit(r) {
-		msg := "the ledger is read-only"
-		if !s.o.ReadOnly {
-			msg = "you are not allowed to edit"
-		}
-		writeError(w, http.StatusForbidden, "read_only", msg)
+// writable runs the shared checks of write endpoints: the server must not be
+// read-only and the caller's role must allow action.
+func (s *server) writable(w http.ResponseWriter, r *http.Request, action roles.Action) bool {
+	if s.o.ReadOnly {
+		writeError(w, http.StatusForbidden, "read_only", "the ledger is read-only")
+		return false
+	}
+	if !auth.Can(r.Context(), action) {
+		writeError(w, http.StatusForbidden, "forbidden", fmt.Sprintf("your role (%s) may not do this", s.who(r).EffectiveRole()))
 		return false
 	}
 	return true
 }
 
-func (s *server) identity(r *http.Request) gitstore.Identity {
-	if u := s.user(r); u != nil {
-		return gitstore.Identity{Name: u.Name, Email: u.Email}
+// permits applies a credential's own narrowing (an API token's collections and
+// actions) on top of the role.
+func (s *server) permits(w http.ResponseWriter, r *http.Request, action, collection string) bool {
+	if s.who(r).Permits(action, collection) {
+		return true
 	}
-	return gitstore.Identity{}
+	writeError(w, http.StatusForbidden, "forbidden", fmt.Sprintf("this token may not %s records in %s", action, collection))
+	return false
 }
 
 func (s *server) apply(w http.ResponseWriter, r *http.Request, op edit.Op) *gitstore.WriteResult {
-	res, err := s.o.Store.Write(r.Context(), op, s.identity(r))
+	// Tokens are contributor level: their writes open pull requests unless granted otherwise.
+	opts := gitstore.WriteOptionsFor(s.who(r), s.o.Store.Config(), op.Kind, op.Collection)
+	res, err := s.o.Store.WriteFunc(r.Context(), gitstore.ApplyOp(op), s.who(r), opts)
 	if err == nil {
 		return res
 	}
-	var ce *edit.ConflictError
-	var ie *edit.InvalidError
-	switch {
-	case errors.As(err, &ce):
-		var cur any
-		if ce.Current != nil {
-			cur = ce.Current
-		}
-		writeError(w, http.StatusConflict, "conflict", ce.Message, "current", cur)
-	case errors.As(err, &ie):
-		writeError(w, http.StatusUnprocessableEntity, "invalid", ie.Error(), "errors", ie.Issues)
-	case errors.Is(err, edit.ErrUnknownCollection):
-		writeError(w, http.StatusNotFound, "not_found", err.Error())
-	case errors.Is(err, edit.ErrBadRequest):
-		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
-	case errors.Is(err, gitstore.ErrRepoDirty):
-		writeError(w, http.StatusServiceUnavailable, "repo_dirty", err.Error())
-	case errors.Is(err, gitstore.ErrRepoDiverged):
-		writeError(w, http.StatusServiceUnavailable, "repo_diverged", err.Error())
-	case errors.Is(err, yamledit.ErrUnsupported):
-		writeError(w, http.StatusUnprocessableEntity, "unsupported", err.Error())
-	default:
-		s.internal(w, err)
-	}
+	s.writeFailure(w, err)
 	return nil
 }
 
+// writeFailure answers a failed write with the status and code of apierr, so
+// the API and the MCP tools fail the same way. Internal errors are logged and
+// shown with a request id.
+func (s *server) writeFailure(w http.ResponseWriter, err error) {
+	info := apierr.Classify(err)
+	if info.Status == http.StatusInternalServerError {
+		s.internal(w, err)
+		return
+	}
+	extra := make([]any, 0, 2*len(info.Extra))
+	for k, v := range info.Extra {
+		extra = append(extra, k, v)
+	}
+	writeError(w, info.Status, info.Code, info.Message, extra...)
+}
+
+func (s *server) acceptRemote(w http.ResponseWriter, r *http.Request) {
+	if s.o.ReadOnly {
+		writeError(w, http.StatusForbidden, "read_only", "the ledger is read-only")
+		return
+	}
+	if !auth.Can(r.Context(), roles.Manage) {
+		writeError(w, http.StatusForbidden, "forbidden", "only administrators may accept the remote history")
+		return
+	}
+	var b struct {
+		Commit string `json:"commit"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBody)).Decode(&b); err != nil || b.Commit == "" {
+		writeError(w, http.StatusBadRequest, "bad_request", `body must be {"commit": "<remote tip>"}`)
+		return
+	}
+	who := s.who(r)
+	hash, err := s.o.Store.AcceptRemote(r.Context(), b.Commit)
+	switch {
+	case err == nil:
+		s.log.Warn("remote history accepted", "by", who.ID, "remote", hash)
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "lastGood": hash})
+	case errors.Is(err, gitstore.ErrConfig):
+		writeError(w, http.StatusServiceUnavailable, "config_error", "the accepted commit's rackbook.yml does not load, nothing was changed: "+err.Error())
+	case errors.Is(err, gitstore.ErrNoAlert):
+		writeError(w, http.StatusConflict, "no_alert", err.Error())
+	case errors.Is(err, gitstore.ErrNotRemoteTip):
+		writeError(w, http.StatusConflict, "not_remote_tip", err.Error())
+	case errors.Is(err, gitstore.ErrLocalCommits):
+		writeError(w, http.StatusConflict, "local_commits", err.Error())
+	case errors.Is(err, gitstore.ErrRepoDirty):
+		writeError(w, http.StatusServiceUnavailable, "repo_dirty", err.Error())
+	default:
+		s.internal(w, err)
+	}
+}
+
 func recordResponse(res *gitstore.WriteResult) map[string]any {
-	return map[string]any{"id": res.ID, "hash": res.Hash, "data": res.Data, "commit": res.Commit}
+	out := map[string]any{"id": res.ID, "hash": res.Hash, "data": res.Data, "commit": res.Commit}
+	if res.PullRequest {
+		out["pullRequest"] = true
+	}
+	return out
 }
 
 func (s *server) add(w http.ResponseWriter, r *http.Request) {
-	if !s.writable(w, r) {
+	if !s.writable(w, r, roles.Write) {
 		return
 	}
 	_, c := s.collection(w, r)
@@ -441,13 +522,16 @@ func (s *server) add(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if !s.permits(w, r, auth.ActCreate, c.Name) {
+		return
+	}
 	if res := s.apply(w, r, edit.Op{Kind: edit.Add, Collection: c.Name, Data: b.Data}); res != nil {
 		writeJSON(w, http.StatusCreated, recordResponse(res))
 	}
 }
 
 func (s *server) put(w http.ResponseWriter, r *http.Request) {
-	if !s.writable(w, r) {
+	if !s.writable(w, r, roles.Write) {
 		return
 	}
 	_, c := s.collection(w, r)
@@ -462,13 +546,16 @@ func (s *server) put(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_request", "hash is required: send the hash of the record you started from")
 		return
 	}
+	if !s.permits(w, r, auth.ActUpdate, c.Name) {
+		return
+	}
 	if res := s.apply(w, r, edit.Op{Kind: edit.Edit, Collection: c.Name, ID: r.PathValue("id"), Hash: b.Hash, Data: b.Data}); res != nil {
 		writeJSON(w, http.StatusOK, recordResponse(res))
 	}
 }
 
 func (s *server) del(w http.ResponseWriter, r *http.Request) {
-	if !s.writable(w, r) {
+	if !s.writable(w, r, roles.Delete) {
 		return
 	}
 	_, c := s.collection(w, r)
@@ -480,8 +567,22 @@ func (s *server) del(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_request", "hash is required: send the hash of the record you started from")
 		return
 	}
-	if res := s.apply(w, r, edit.Op{Kind: edit.Delete, Collection: c.Name, ID: r.PathValue("id"), Hash: hash}); res != nil {
-		writeJSON(w, http.StatusOK, map[string]any{"commit": res.Commit})
+	if !s.permits(w, r, auth.ActDelete, c.Name) {
+		return
+	}
+	clear := r.URL.Query().Get("clearReferences") == "true"
+	if res := s.apply(w, r, edit.Op{Kind: edit.Delete, Collection: c.Name, ID: r.PathValue("id"), Hash: hash, ClearReferences: clear,
+		MayUpdate: func(coll string) bool {
+			return s.who(r).Permits(auth.ActUpdate, coll) && auth.Can(r.Context(), roles.Write)
+		}}); res != nil {
+		out := map[string]any{"commit": res.Commit}
+		if res.PullRequest {
+			out["pullRequest"] = true
+		}
+		if len(res.Cleared) > 0 {
+			out["cleared"] = res.Cleared
+		}
+		writeJSON(w, http.StatusOK, out)
 	}
 }
 

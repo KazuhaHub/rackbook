@@ -268,9 +268,9 @@ func finish(cmd *cobra.Command, cfg *config.Config, res *edit.Result, verb strin
 		return nil
 	}
 	ctx := context.Background()
-	short, err := gitstore.CommitFiles(ctx, cfg.Dir, res.Files, res.Subject(), gitstore.Identity{}, "rackbook")
+	short, err := gitstore.CommitFiles(ctx, cfg.Dir, res.Files, res.Subject(), nil, res.Record())
 	if err != nil {
-		return fmt.Errorf("the file was changed but the commit failed: %w", err)
+		return fmt.Errorf("the file was changed but the commit failed: %w", rewrittenHint(err))
 	}
 	fmt.Fprintf(out, "committed %s\n", short)
 	if push {
@@ -287,11 +287,35 @@ func applyOp(cmd *cobra.Command, op edit.Op, verb string) error {
 	if err != nil {
 		return err
 	}
+	// Refuse before touching any file when the commit could not go anywhere.
+	if commit, _ := cmd.Flags().GetBool("commit"); commit || flagOn(cmd) {
+		pushing, _ := cmd.Flags().GetBool("push")
+		offline, err := gitstore.CheckRemoteHistory(cmd.Context(), cfg.Dir, pushing)
+		if err != nil {
+			return rewrittenHint(err)
+		}
+		if offline {
+			fmt.Fprintln(cmd.ErrOrStderr(), "warning: could not reach the remote; committing without checking that its history was not rewritten")
+		}
+	}
 	res, err := edit.Apply(cfg, op)
 	if err != nil {
 		return explain(err)
 	}
 	return finish(cmd, cfg, res, verb)
+}
+
+func flagOn(cmd *cobra.Command) bool {
+	v, _ := cmd.Flags().GetBool("push")
+	return v
+}
+
+// rewrittenHint tells the CLI user how to continue after a rewritten remote.
+func rewrittenHint(err error) error {
+	if errors.Is(err, gitstore.ErrHistoryRewritten) {
+		return fmt.Errorf("%w\nnothing was changed. After checking the new history, accept it with: rackbook accept-remote <commit of the remote tip>", err)
+	}
+	return err
 }
 
 // explain turns edit errors into readable CLI messages.

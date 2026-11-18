@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useMemo, type CSSProperties } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router'
 import { useTable } from '@refinedev/react-table'
 import {
@@ -31,7 +31,8 @@ import { FacetFilter, type FacetOption } from '@/components/FacetFilter'
 import { NotesPanel } from '@/components/NotesPanel'
 import { t } from '@/i18n/zh-CN'
 import { errorMessage } from '@/lib/api'
-import { useRefLookups } from '@/lib/hooks'
+import { useFirstRender, useRefLookups } from '@/lib/hooks'
+import { CollectionIcon } from '@/components/CollectionIcon'
 import { canEdit, defaultColumns, fieldTitle, looksMono, recordHref, schemaProps, str } from '@/lib/ledger'
 import type { Collection, Facet, LedgerRecord } from '@/lib/types'
 import { cn } from '@/lib/utils'
@@ -208,6 +209,7 @@ function CollectionTable({ col }: { col: Collection }) {
   const queryData = refineCore.tableQuery.data?.data
   const all = useMemo(() => (queryData ?? []) as LedgerRecord[], [queryData])
   const rows = table.getRowModel().rows
+  const freshRows = useFirstRender(all.length > 0)
   const visibleCols = table.getVisibleLeafColumns()
 
   const facetOptions = useMemo(() => {
@@ -233,6 +235,7 @@ function CollectionTable({ col }: { col: Collection }) {
   return (
     <div>
       <PageHeader
+        icon={<CollectionIcon col={col} className="size-5" />}
         title={col.title}
         description={col.description}
         actions={
@@ -327,12 +330,12 @@ function CollectionTable({ col }: { col: Collection }) {
       ) : refineCore.tableQuery.isError ? (
         <EmptyState title={t.errors.generic} body={errorMessage(refineCore.tableQuery.error)} />
       ) : all.length === 0 ? (
-        <EmptyState title={t.list.emptyCollection} />
+        <EmptyState icon={<CollectionIcon col={col} className="size-8" />} title={t.list.emptyCollection} />
       ) : (
         <>
-          <div className="max-h-[70vh] overflow-auto rounded-xl border bg-card">
+          <div className="max-h-[70vh] overflow-auto rounded-xl border bg-card shadow-xs">
             <table className="w-max min-w-full border-collapse text-sm">
-              <thead className="sticky top-0 z-10 bg-muted/95 backdrop-blur">
+              <thead className="sticky top-0 z-10 bg-muted/95 shadow-[0_1px_0_var(--border)] backdrop-blur">
                 <tr className="border-b">
                   {visibleCols.map((c) => {
                     const dir = c.getIsSorted()
@@ -341,7 +344,7 @@ function CollectionTable({ col }: { col: Collection }) {
                         key={c.id}
                         scope="col"
                         aria-sort={dir ? (dir === 'asc' ? 'ascending' : 'descending') : 'none'}
-                        className="h-9 px-3 text-left align-middle text-xs font-medium whitespace-nowrap text-muted-foreground"
+                        className="h-10 px-4 text-left align-middle text-xs font-semibold tracking-wide whitespace-nowrap text-muted-foreground"
                       >
                         <button
                           type="button"
@@ -364,13 +367,19 @@ function CollectionTable({ col }: { col: Collection }) {
                 </tr>
               </thead>
               <tbody>
-                {rows.map((row) => {
+                {rows.map((row, ri) => {
                   const rec = row.original
                   const href = recordHref(col.name, rec.id)
+                  // only the first screenful animates; long tables appear at once
+                  const animate = freshRows && ri < 20
                   return (
                     <tr
                       key={rec.id}
-                      className="cursor-pointer border-b last:border-0 hover:bg-muted/50"
+                      style={animate ? ({ '--i': ri } as CSSProperties) : undefined}
+                      className={cn(
+                        'cursor-pointer border-b transition-colors duration-150 last:border-0 even:bg-muted/25 hover:bg-brand/[0.07]',
+                        animate && 'rb-row-in',
+                      )}
                       onClick={(e) => {
                         if ((e.target as HTMLElement).closest('a,button')) return
                         navigate(href)
@@ -379,7 +388,7 @@ function CollectionTable({ col }: { col: Collection }) {
                       {visibleCols.map((c, i) => {
                         const v = rec.data[c.id]
                         return (
-                          <td key={c.id} className={cn('px-3 py-2 align-top', i === 0 && 'font-medium')}>
+                          <td key={c.id} className={cn('px-4 py-2.5 align-top', i === 0 && 'font-medium')}>
                             {i === 0 && !lookups[c.id] ? (
                               <Link to={href} className={cn('hover:underline', looksMono(str(v)) && 'font-mono text-[0.8125rem]')}>
                                 {str(v) || t.show.empty}

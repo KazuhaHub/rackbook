@@ -41,11 +41,11 @@ export const dataProvider: DataProvider = {
     return { data: res as any }
   },
 
-  // variables: { hash }
+  // variables: { hash, clearReferences? }
   deleteOne: async ({ resource, id, variables }) => {
-    const hash = (variables as { hash?: string } | undefined)?.hash ?? ''
+    const v = (variables as { hash?: string; clearReferences?: boolean } | undefined) ?? {}
     const res = await apiFetch<{ commit: string }>(
-      `/c/${seg(resource)}/${seg(id)}?hash=${encodeURIComponent(hash)}`,
+      `/c/${seg(resource)}/${seg(id)}?hash=${encodeURIComponent(v.hash ?? '')}${v.clearReferences ? '&clearReferences=true' : ''}`,
       { method: 'DELETE' },
     )
     return { data: res as any }

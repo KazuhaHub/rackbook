@@ -7,15 +7,16 @@ import { t } from '@/i18n/zh-CN'
 import { useAllRecords } from '@/lib/hooks'
 import { pointerToPath, str } from '@/lib/ledger'
 import type { CheckError, Collection } from '@/lib/types'
-import { RefWidget, SwitchWidget, type RefItem } from './form-widgets'
+import { customFormats, formatHints } from '@/lib/formats'
+import { RefManyWidget, RefWidget, SwitchWidget, type RefItem } from './form-widgets'
 
 // Draft 2020-12, the same dialect the server validates with.
 const validator = customizeValidator({
   AjvClass: Ajv2020 as any,
-  customFormats: { textarea: () => true },
+  customFormats,
 })
 
-const widgets = { RefWidget, SwitchWidget }
+const widgets = { RefWidget, RefManyWidget, SwitchWidget }
 
 /** Server errors (JSON pointers) -> rjsf ErrorSchema so they show under the matching field. */
 export function toErrorSchema(errors: CheckError[], schema: RJSFSchema, collection: string): ErrorSchema {
@@ -59,6 +60,9 @@ function transformErrors(errors: RJSFValidationError[]): RJSFValidationError[] {
       case 'maximum':
         message = `超出范围（${e.name === 'minimum' ? '≥' : '≤'} ${p.limit}）`
         break
+      case 'format':
+        message = formatHints[String(p.format)] ?? `格式不正确（${p.format}）`
+        break
       case 'additionalProperties':
         message = `不允许的字段：${p.additionalProperty}`
         break
@@ -68,7 +72,7 @@ function transformErrors(errors: RJSFValidationError[]): RJSFValidationError[] {
 }
 
 function useRefItems(col: Collection) {
-  const refs = useMemo(() => (col.refs ?? []).filter((r) => !r.many), [col])
+  const refs = useMemo(() => col.refs ?? [], [col])
   const results = useAllRecords(
     refs.map((r) => r.to),
     true,
@@ -124,7 +128,7 @@ export function RecordForm({
       } else if (prop.type === 'boolean') {
         ui[field] = { 'ui:widget': 'SwitchWidget' }
       } else if (refItems[field]) {
-        ui[field] = { 'ui:widget': 'RefWidget', 'ui:options': { items: refItems[field] } }
+        ui[field] = { 'ui:widget': prop.type === 'array' ? 'RefManyWidget' : 'RefWidget', 'ui:options': { items: refItems[field] } }
       }
     }
     return { schema: s, uiSchema: ui }

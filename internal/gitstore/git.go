@@ -11,6 +11,9 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+
+	"github.com/kazuhahub/rackbook/internal/auth"
+	"github.com/kazuhahub/rackbook/internal/roles"
 )
 
 // Identity is a Git author or committer.
@@ -50,8 +53,16 @@ func ParseIdentity(s string) (Identity, error) {
 	return Identity{Name: strings.SplitN(s, "@", 2)[0], Email: s}, nil
 }
 
-// Repo runs git commands in a directory inside a work tree.
-type Repo struct{ Dir string }
+// Repo runs git commands in a directory inside a work tree. Every command
+// goes through Runner (nil = the real git), so tests can record them.
+type Repo struct {
+	Dir    string
+	Runner Runner
+	// IgnoreUserConfig runs git without the user's global configuration (the
+	// server: its behaviour must not depend on whoever's ~/.gitconfig it finds).
+	// The CLI keeps it.
+	IgnoreUserConfig bool
+}
 
 // GitError is a failed git command.
 type GitError struct {
@@ -70,21 +81,74 @@ func (e *GitError) Error() string {
 
 func (e *GitError) Unwrap() error { return e.Err }
 
-// run executes git with the given extra environment and stdin.
-func (r *Repo) run(ctx context.Context, env []string, stdin string, args ...string) (string, error) {
-	full := append([]string{"-C", r.Dir, "-c", "safe.directory=*", "-c", "core.quotepath=off"}, args...)
-	cmd := exec.CommandContext(ctx, "git", full...)
+// ExitCode is git's exit status, or -1 when git did not run to completion.
+func (e *GitError) ExitCode() int {
+	var ee *exec.ExitError
+	if errors.As(e.Err, &ee) {
+		return ee.ExitCode()
+	}
+	return -1
+}
+
+// Cmd is one git invocation: the arguments after "git" (the runner adds
+// "-C Dir" and its fixed -c options), extra environment and stdin.
+type Cmd struct {
+	Dir   string
+	Args  []string
+	Env   []string
+	Stdin string
+	// IgnoreUserConfig sets GIT_CONFIG_GLOBAL=/dev/null.
+	IgnoreUserConfig bool
+}
+
+// Runner runs git. It is the only place in rackbook that starts a git
+// process; tests replace it with a recorder.
+type Runner interface {
+	Run(ctx context.Context, c Cmd) (stdout, stderr string, err error)
+}
+
+type execRunner struct{}
+
+// defaultRunner runs the real git. Tests may replace it.
+var defaultRunner Runner = execRunner{}
+
+func (execRunner) Run(ctx context.Context, c Cmd) (string, string, error) {
+	if err := refuseDestructive(c.Args); err != nil {
+		return "", "", err
+	}
+	// Hooks never run (not even pre-push). The server (IgnoreUserConfig) also
+	// ignores the system and global config and trusts its own directory; the CLI
+	// keeps the user's config, so credential helpers keep working.
+	full := []string{"-C", c.Dir, "-c", "core.quotepath=off", "-c", "core.hooksPath=/dev/null"}
+	if c.IgnoreUserConfig {
+		full = append(full, "-c", "safe.directory=*")
+	}
+	cmd := exec.CommandContext(ctx, "git", append(full, c.Args...)...)
 	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "LC_ALL=C")
-	cmd.Env = append(cmd.Env, env...)
-	if stdin != "" {
-		cmd.Stdin = strings.NewReader(stdin)
+	if c.IgnoreUserConfig {
+		cmd.Env = append(cmd.Env, "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null")
+	}
+	cmd.Env = append(cmd.Env, c.Env...)
+	if c.Stdin != "" {
+		cmd.Stdin = strings.NewReader(c.Stdin)
 	}
 	var out, errb bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errb
-	if err := cmd.Run(); err != nil {
-		return "", &GitError{Args: args, Stderr: errb.String(), Err: err}
+	err := cmd.Run()
+	return out.String(), errb.String(), err
+}
+
+// run executes git with the given extra environment and stdin.
+func (r *Repo) run(ctx context.Context, env []string, stdin string, args ...string) (string, error) {
+	rn := r.Runner
+	if rn == nil {
+		rn = defaultRunner
 	}
-	return strings.TrimRight(out.String(), "\n"), nil
+	out, errOut, err := rn.Run(ctx, Cmd{Dir: r.Dir, Args: args, Env: env, Stdin: stdin, IgnoreUserConfig: r.IgnoreUserConfig})
+	if err != nil {
+		return "", &GitError{Args: args, Stderr: errOut, Err: err}
+	}
+	return strings.TrimRight(out, "\n"), nil
 }
 
 func (r *Repo) git(ctx context.Context, args ...string) (string, error) {
@@ -116,28 +180,11 @@ func (r *Repo) Head(ctx context.Context) (string, error) {
 	return r.git(ctx, "rev-parse", "HEAD")
 }
 
-// Dirty reports uncommitted changes to tracked files.
-func (r *Repo) Dirty(ctx context.Context) (bool, error) {
-	out, err := r.git(ctx, "status", "--porcelain", "--untracked-files=no")
-	return out != "", err
-}
-
 // ConfigIdentity reads user.name / user.email from the Git configuration.
 func (r *Repo) ConfigIdentity(ctx context.Context) Identity {
 	name, _ := r.git(ctx, "config", "user.name")
 	email, _ := r.git(ctx, "config", "user.email")
 	return Identity{Name: name, Email: email}
-}
-
-// CommitMessage builds subject + blank line + trailers.
-func CommitMessage(subject string, editor Identity, via string) string {
-	var b strings.Builder
-	b.WriteString(subject + "\n\n")
-	if editor.Email != "" {
-		b.WriteString("Edited-by: " + editor.Email + "\n")
-	}
-	b.WriteString("Edited-via: " + via + "\n")
-	return b.String()
 }
 
 // Commit stages files and commits only them. author and committer are set
@@ -160,28 +207,39 @@ func (r *Repo) Commit(ctx context.Context, files []string, message string, autho
 	return r.git(ctx, "rev-parse", "--short", "HEAD")
 }
 
-// Push pushes HEAD to the branch on origin.
+// Push pushes HEAD to the branch on origin: a plain fast-forward push, built
+// by pushArgs (safegit.go), the only function that builds a push command.
 func (r *Repo) Push(ctx context.Context, branch string) error {
-	_, err := r.git(ctx, "push", "--quiet", "origin", "HEAD:refs/heads/"+branch)
+	args, err := pushArgs(branch)
+	if err != nil {
+		return err
+	}
+	_, err = r.git(ctx, args...)
 	return err
 }
 
 // CommitFiles commits the given config-relative files in the user's own
-// working tree (it does not fetch or reset anything). Author is the Git
-// configuration unless editor is set.
-func CommitFiles(ctx context.Context, dir string, files []string, subject string, editor Identity, via string) (string, error) {
+// working tree (it does not fetch or reset anything, except a fetch to check
+// that the remote history was not rewritten). The author is who; without one
+// (nil) it is the Git configuration. record is the "Record:" trailer value
+// ("<collection>/<id>").
+func CommitFiles(ctx context.Context, dir string, files []string, subject string, who *auth.Identity, record string) (string, error) {
 	r := &Repo{Dir: dir}
 	if !r.IsRepo(ctx) {
 		return "", errors.New("not inside a Git repository")
 	}
-	who := editor
-	if who.IsZero() {
-		who = r.ConfigIdentity(ctx)
+	if _, err := r.checkRemoteHistory(ctx, false); err != nil {
+		return "", err
 	}
-	if who.IsZero() {
-		return "", errors.New("no git identity: set user.name and user.email")
+	if who.Anonymous() {
+		cfg := r.ConfigIdentity(ctx)
+		if cfg.IsZero() {
+			return "", errors.New("no git identity: set user.name and user.email")
+		}
+		who = &auth.Identity{ID: roles.FoldASCII(cfg.Email), Name: cfg.Name, Email: cfg.Email, Method: auth.MethodCLI}
 	}
-	return r.Commit(ctx, files, CommitMessage(subject, who, via), who, who)
+	author := AuthorOf(who)
+	return r.Commit(ctx, files, CommitMessage(subject, who, "rackbook", record), author, author)
 }
 
 // PushCurrent pushes the checked-out branch to origin.
@@ -194,5 +252,16 @@ func PushCurrent(ctx context.Context, dir string) error {
 	if br == "HEAD" {
 		return errors.New("detached HEAD: nothing to push")
 	}
-	return r.Push(ctx, br)
+	if _, err := r.checkRemoteHistory(ctx, true); err != nil {
+		return err
+	}
+	if err := r.Push(ctx, br); err != nil {
+		return err
+	}
+	// Our pushed commit is the new base, like on the server: a later force push
+	// that removes only this commit must look like a rewrite.
+	if h, err := r.Head(ctx); err == nil {
+		return r.writeLastGood(ctx, br, h)
+	}
+	return nil
 }

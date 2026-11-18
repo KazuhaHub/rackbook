@@ -1,7 +1,6 @@
 import { Suspense, useEffect } from 'react'
 import { Outlet, NavLink, useLocation } from 'react-router'
-import { BookMarked, LayoutDashboard, Lock } from 'lucide-react'
-import { Badge } from '@/components/ui/badge'
+import { BookMarked, KeyRound, LayoutDashboard, Shapes } from 'lucide-react'
 import {
   Sidebar,
   SidebarContent,
@@ -20,13 +19,15 @@ import {
   useSidebar,
 } from '@/components/ui/sidebar'
 import { t } from '@/i18n/zh-CN'
-import { canEdit } from '@/lib/ledger'
+import { CollectionIcon } from '@/components/CollectionIcon'
 import { useMeta } from '@/providers/meta'
 import { PageFallback } from '@/components/common'
 import { ErrorBoundary } from '@/components/ErrorBoundary'
 import { CheckBadge } from './CheckBadge'
+import { HistoryAlert } from './HistoryAlert'
 import { GlobalSearch } from './GlobalSearch'
 import { ThemeToggle } from './ThemeToggle'
+import { UserMenu } from './UserMenu'
 
 function CloseMobileOnNavigate() {
   const { setOpenMobile } = useSidebar()
@@ -38,7 +39,6 @@ function CloseMobileOnNavigate() {
 function AppSidebar() {
   const { meta } = useMeta()
   const { pathname } = useLocation()
-  const editable = canEdit(meta)
 
   // group collections, keeping config order (ungrouped first-seen position)
   const groups: { name: string; items: typeof meta.collections }[] = []
@@ -80,7 +80,7 @@ function AppSidebar() {
         </SidebarGroup>
         {groups.map((g) => (
           <SidebarGroup key={g.name}>
-            <SidebarGroupLabel>{g.name}</SidebarGroupLabel>
+            <SidebarGroupLabel className="tracking-wide">{g.name}</SidebarGroupLabel>
             <SidebarGroupContent>
               <SidebarMenu>
                 {g.items.map((c) => {
@@ -91,6 +91,7 @@ function AppSidebar() {
                         isActive={pathname === base || pathname.startsWith(base + '/')}
                         render={<NavLink to={base} />}
                       >
+                        <CollectionIcon col={c} />
                         <span className="truncate">{c.title}</span>
                       </SidebarMenuButton>
                       <SidebarMenuBadge>{c.count}</SidebarMenuBadge>
@@ -101,19 +102,30 @@ function AppSidebar() {
             </SidebarGroupContent>
           </SidebarGroup>
         ))}
+        {meta.user?.canAdmin && (
+          <SidebarGroup>
+            <SidebarGroupLabel className="tracking-wide">{t.nav.admin}</SidebarGroupLabel>
+            <SidebarGroupContent>
+              <SidebarMenu>
+                <SidebarMenuItem>
+                  <SidebarMenuButton isActive={pathname === '/types' || pathname.startsWith('/types/')} render={<NavLink to="/types" />}>
+                    <Shapes />
+                    <span>{t.types.nav}</span>
+                  </SidebarMenuButton>
+                </SidebarMenuItem>
+                <SidebarMenuItem>
+                  <SidebarMenuButton isActive={pathname === '/admin/tokens'} render={<NavLink to="/admin/tokens" />}>
+                    <KeyRound />
+                    <span>{t.nav.tokens}</span>
+                  </SidebarMenuButton>
+                </SidebarMenuItem>
+              </SidebarMenu>
+            </SidebarGroupContent>
+          </SidebarGroup>
+        )}
       </SidebarContent>
       <SidebarFooter className="border-t p-3">
-        <div className="flex items-center gap-2 text-xs">
-          <span className="min-w-0 flex-1 truncate text-muted-foreground" title={meta.user?.email}>
-            {meta.user?.email || meta.user?.name || t.user.anonymous}
-          </span>
-          {!editable && (
-            <Badge variant="secondary" title={t.user.readOnlyHint}>
-              <Lock />
-              {t.user.readOnly}
-            </Badge>
-          )}
-        </div>
+        <UserMenu />
       </SidebarFooter>
     </Sidebar>
   )
@@ -126,6 +138,7 @@ export function AppShell() {
       <CloseMobileOnNavigate />
       <AppSidebar />
       <SidebarInset className="min-w-0">
+        <HistoryAlert />
         <header className="sticky top-0 z-30 flex h-14 items-center gap-2 border-b bg-background/80 px-4 backdrop-blur">
           <SidebarTrigger aria-label={t.nav.toggleSidebar} />
           <div className="flex min-w-0 flex-1 items-center">
@@ -133,12 +146,14 @@ export function AppShell() {
           </div>
           <ThemeToggle />
         </header>
-        <div className="mx-auto w-full max-w-[1400px] flex-1 p-4 sm:p-6">
-          <ErrorBoundary key={pathname}>
-            <Suspense fallback={<PageFallback />}>
-              <Outlet />
-            </Suspense>
-          </ErrorBoundary>
+        <div className="mx-auto w-full max-w-[1400px] flex-1 p-4 sm:p-8">
+          <div key={pathname} className="rb-page">
+            <ErrorBoundary>
+              <Suspense fallback={<PageFallback />}>
+                <Outlet />
+              </Suspense>
+            </ErrorBoundary>
+          </div>
         </div>
       </SidebarInset>
     </SidebarProvider>
