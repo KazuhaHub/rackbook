@@ -552,3 +552,43 @@ Agreed with the owner on 2026-11-18:
 11. **Real-client verification in the demo**: MCP Inspector and Claude Code
     (`claude mcp add --transport http`) against an external issuer in v0.2,
     and against the built-in authorization server in v0.2.1.
+
+### Decisions, round 5 (2026-11-18): built-in authorization server approved for v0.2.1
+
+12. **Approved for v0.2.1, built after the v0.2 demo.** An MCP client authorizes
+    **once** and never has to sign in again, including across restarts,
+    upgrades and ansible redeploys.
+    - **State file: the one exception to "no database".** Authorization-server
+      grants live in a small state file, `<state-dir>/oauth-grants.json`. The
+      default state dir is systemd `StateDirectory` (`/var/lib/rackbook`); in
+      Docker it is a volume. The file holds:
+      - registered clients;
+      - grants: user, client, scopes, resource, created, last used;
+      - **SHA-256 hashes** of refresh tokens.
+
+      Writes are atomic (temp file, fsync, rename, directory fsync), the file
+      is 0600 and the directory 0700, and one process holds a lock on it. If the
+      file is lost, clients simply sign in again. Git remains the only source of
+      ledger truth.
+    - **Refresh tokens** are opaque random values (not JWTs) and are checked
+      against the stored hashes.
+      - They rotate on every use. Reusing an already-rotated token revokes the
+        whole grant and is logged.
+      - Expiry is sliding only: a grant unused for 90 days (configurable) is
+        revoked. There is **no absolute lifetime**.
+      - Access tokens are ES256 JWTs that last 10 minutes.
+    - **A grant ends only** when:
+      - the user or an admin revokes it. Grants are listed on the account page
+        and on the admin page, with client name, created and last used;
+      - the user no longer matches any role. The role is re-evaluated from the
+        current config on every refresh and every request, and the check fails
+        closed;
+      - it goes 90 days unused.
+    - **Signing key** comes from a file, an environment variable or systemd
+      `LoadCredential`, never Git. JWKS publishes the current and previous key
+      so access tokens stay valid during a rotation. Rotating the key **does
+      not** invalidate refresh tokens, because they are not signed.
+    - **Reviews and demo.** Two adversarial review rounds. The demo shows MCP
+      Inspector and Claude Code against the built-in server and against an
+      external issuer, and **restarts the server to show the client keeps
+      working without a browser prompt**.
