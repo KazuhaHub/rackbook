@@ -255,6 +255,10 @@ schema). Opening one shows:
 
 ## 4. API tokens and MCP
 
+> Superseded for MCPHub by decision 7 below. MCPHub does not use Rackbook
+> tokens: Rackbook trusts the access tokens MCPHub issues. Rackbook's own API
+> tokens remain an optional feature for scripts that don't go through MCPHub.
+
 ### 4.1 Tokens
 
 - **令牌** page (admin): create (name, scope, expiry: none / 30 / 90 / 365
@@ -413,3 +417,88 @@ Agreed with the owner on 2026-11-18:
        `rackbook serve --accept-remote <commit>`, or the same action on an
        admin-only page; either records the new base.
    - Documented in the README and in design.md's Git section.
+
+### Decisions, round 3 (2026-11-18): one credential system for MCP
+
+7. **Users log in only to MCPHub; Rackbook trusts the identities MCPHub
+   issues.** There is no separate token flow for MCPHub.
+   - **MCPHub side** (owner's fork, ADR 0014/0015). MCPHub is an OAuth 2.1
+     authorization server. For each configured external resource
+     (`systemConfig.oauthServer.externalResources: [{resource, name,
+     allowedClients?}]`) it issues RFC 9068 JWT access tokens:
+     - header: `alg: ES256`, `kid`, `typ: at+jwt`;
+     - claims: `iss` (exactly the issuer from
+       `/.well-known/oauth-authorization-server`), `aud` (the resource URL, a
+       string), `sub` (MCPHub username), `client_id`, `scope` (space
+       separated, may be empty), `iat`, `exp` (default 15 min) and `jti`;
+     - keys are published at `jwks_uri`, and tokens are issued only when
+       MCPHub's public base URL is set.
+
+     Rackbook is registered as an upstream with `identityMode: personal`, so
+     each user calls Rackbook with their own token.
+   - **Rackbook `/mcp` is an OAuth protected resource.**
+
+     ```yaml
+     auth:
+       mcp:
+         resource: https://ledger.kazuha.private.kazuhahub.com/mcp
+         trusted_issuers:
+           - issuer: https://mcp.kazuhahub.com
+             audience: https://ledger.kazuha.private.kazuhahub.com/mcp   # default: resource
+             jwks_url: ""            # default: jwks_uri from the issuer's metadata
+             username_claim: sub
+             scopes: {read: "", write: "rackbook:write"}   # see authorisation below
+     ```
+
+     - It serves `/.well-known/oauth-protected-resource` (RFC 9728), naming
+       the resource and the trusted issuer(s).
+     - A missing or invalid token gets
+       `401` + `WWW-Authenticate: Bearer resource_metadata="…/.well-known/oauth-protected-resource"`.
+       A valid token without the needed permission gets `403` with
+       `error="insufficient_scope"`.
+   - **Verification is offline and strict.**
+     - Libraries: `go-jose/v4` for parsing, `go-oidc`'s remote key set for the
+       JWKS (cached; refetched on an unknown `kid`, at most once a minute).
+     - Header: only `ES256` is allowed (no `HS*`, no `none`), and `typ` must
+       be `at+jwt`.
+     - Claims: `iss` and `aud` must match exactly (`aud` may be a string or an
+       array containing the audience). `exp` is required, `iat` and `nbf` are
+       honoured, and 60 s of clock skew is allowed. `sub` is required.
+     - Each issuer's metadata is fetched over HTTPS. Its `issuer` must equal the
+       configured one, and its `jwks_uri` must be HTTPS. An http issuer is
+       allowed only for localhost, for the demo.
+     - These tokens are accepted only on `/mcp`, never as a console session
+       and never on `/api/*`.
+   - **Authorisation uses the same roles as the console.**
+     - The token's username (`sub`) is matched against `auth.roles` exactly
+       like a console identity. A username that is an email matches email and
+       `*@domain` entries; others can be listed as `mcphub:<username>`.
+     - `scope` can only narrow the role, never widen it. Without the
+       configured write scope the write tools are refused; viewers can never
+       write.
+     - Writes follow decision 5. They become a pull request by default (direct
+       push only for roles/collections an admin configures via
+       `auth.mcp.direct_push`), and deletes are always PRs.
+     - The commit author is the user (`<user>`), with trailers
+       `Edited-by: <user>` and `Edited-via: mcp (MCPHub, client <client_id>)`.
+   - **Network.** `/mcp` must not sit behind Cloudflare Access, because it
+     validates MCPHub tokens itself. The README documents both an Access
+     **Bypass** policy for exactly the path `/mcp` (plus
+     `/.well-known/oauth-protected-resource`) and calling Rackbook from MCPHub
+     over the local network or Tailscale.
+   - **Rackbook API tokens** (section 4.1) stay as an optional feature for
+     scripts that don't use MCPHub. They are bounded by their creator's role
+     (decision 5).
+   - **Docs** cover the MCPHub side:
+     1. add the Rackbook `/mcp` URL to `oauthServer.externalResources`, with a
+        name and optional `allowedClients`;
+     2. set MCPHub's public base URL;
+     3. register Rackbook as a `streamable-http` upstream with OAuth
+        `identityMode: personal`.
+   - **Tests** use an in-process ES256 issuer (metadata + JWKS) and cover: a
+     good token; a wrong alg / HS256 with the public key as secret / `none`;
+     wrong `typ`; wrong `iss` or `aud`; expired; future `nbf`; unknown `kid`
+     with a refetch (rate limited); key rotation; a scope that narrows; a role
+     miss (403); metadata whose issuer doesn't match.
+   - Order of work: this replaces step 4. Token-free MCP auth comes first,
+     because it needs no new state; optional API tokens come later.
