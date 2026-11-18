@@ -9,7 +9,8 @@ COPY web/ ./
 RUN npm run build
 
 # 2. Static binary with the console embedded
-FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS build
+# Pinned by digest to the same Go patch release as go.mod; bump both together.
+FROM --platform=$BUILDPLATFORM golang:1.27.4-alpine@sha256:70bd7ddea8b6cbe5d6943cde279d6b67feb10cc924fb9100d1d8757c1575b280 AS build
 ARG VERSION=dev
 ARG TARGETOS
 ARG TARGETARCH

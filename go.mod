@@ -1,6 +1,6 @@
 module github.com/kazuhahub/rackbook
 
-go 1.26.0
+go 1.27.4
 
 require (
 	github.com/KazuhaHub/authcore v0.6.3-0.20261106114224-f3886de2dcef
