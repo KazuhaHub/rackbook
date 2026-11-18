@@ -94,3 +94,19 @@ export function pointerToPath(p: string | undefined): string[] {
     .slice(1)
     .map((s) => s.replace(/~1/g, '/').replace(/~0/g, '~'))
 }
+
+/** True when some collection marks an expiry field. */
+export function hasExpiry(meta: Meta): boolean {
+  return meta.collections.some((c) => !!c.expiryField)
+}
+
+/** The module that maintains this record, when `source` names one allowed for the collection. */
+export function moduleFor(meta: Meta, collection: string, source: unknown) {
+  if (typeof source !== 'string' || source === '' || source === 'manual') return undefined
+  return meta.modules?.find((m) => m.name === source && m.collection === collection)
+}
+
+/** 手动 for an empty or "manual" source, else the module name. */
+export function sourceLabel(source: unknown): string {
+  return typeof source === 'string' && source !== '' && source !== 'manual' ? source : t.expiring.sourceManual
+}

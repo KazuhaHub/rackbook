@@ -3,6 +3,7 @@ import { Link } from 'react-router'
 import {
   ArrowRight,
   Bot,
+  CalendarClock,
   CheckCircle2,
   ChevronDown,
   CircleAlert,
@@ -21,9 +22,9 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Skeleton } from '@/components/ui/skeleton'
 import { PageHeader } from '@/components/common'
 import { t } from '@/i18n/zh-CN'
-import { useHistory } from '@/lib/hooks'
+import { useExpiring, useHistory } from '@/lib/hooks'
 import { CollectionIcon } from '@/components/CollectionIcon'
-import { recordHref, relativeTime } from '@/lib/ledger'
+import { hasExpiry, recordHref, relativeTime } from '@/lib/ledger'
 import type { CheckError, Commit } from '@/lib/types'
 import { cn } from '@/lib/utils'
 import { useCheck, useMeta } from '@/providers/meta'
@@ -97,6 +98,10 @@ export default function Dashboard() {
   const { meta, byName } = useMeta()
   const check = useCheck()
   const history = useHistory(undefined, 8)
+  const showExpiry = hasExpiry(meta)
+  const expiry = useExpiring(30, false, showExpiry)
+  const expiredCount = expiry.data?.items.filter((i) => i.status === 'expired').length ?? 0
+  const soonCount = expiry.data?.items.filter((i) => i.status === 'expiring').length ?? 0
   const total = meta.collections.reduce((n, c) => n + c.count, 0)
   const notes = meta.collections.flatMap((c) => (c.notes ?? []).map((n) => ({ ...n, source: c.title })))
   const problems = check.data && !check.data.ok ? check.data.errors : []
@@ -133,6 +138,26 @@ export default function Dashboard() {
           value={<span className="text-xl">{last ? relativeTime(last.date) : t.dashboard.noEdits}</span>}
         />
       </div>
+
+      {showExpiry && expiry.data && (
+        <Link
+          to="/expiring"
+          className={cn(
+            'mb-8 flex items-center gap-3 rounded-xl border bg-card px-4 py-3 text-sm shadow-xs transition-colors duration-150 outline-none hover:bg-muted/40 focus-visible:ring-2 focus-visible:ring-ring/60',
+            expiredCount > 0 && 'border-destructive/40',
+          )}
+        >
+          <CalendarClock className={cn('size-4 shrink-0', expiredCount > 0 ? 'text-destructive' : 'text-muted-foreground')} />
+          <span className="font-medium">{t.expiring.dashboardTitle}</span>
+          <span className="min-w-0 flex-1 truncate text-muted-foreground">
+            {expiredCount + soonCount ? t.expiring.dashboardCounts(expiredCount, soonCount) : t.expiring.dashboardNone}
+          </span>
+          <span className="flex shrink-0 items-center gap-1 text-xs text-muted-foreground">
+            {t.expiring.dashboardView}
+            <ArrowRight className="size-3.5" />
+          </span>
+        </Link>
+      )}
 
       <div className="mb-8 grid gap-5 lg:grid-cols-5">
         <Card className="lg:col-span-3">

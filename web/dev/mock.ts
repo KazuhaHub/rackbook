@@ -57,6 +57,48 @@ export function mockApi(root: string): Plugin {
     colls.set(name, { name, cfg: c, schema, rows, validate: validateFn as any, validateFn })
   }
 
+  // A credentials collection with expiry dates and a module, so the expiry pages have data.
+  const dayOffset = (n: number) => new Date(Date.now() + n * 86400000).toISOString().slice(0, 10)
+  const credSchema = {
+    $schema: 'https://json-schema.org/draft/2020-12/schema',
+    type: 'object',
+    required: ['name', 'kind', 'expires'],
+    additionalProperties: false,
+    properties: {
+      name: { type: 'string', title: '名称' },
+      kind: { type: 'string', title: '类型', enum: ['证书', '密钥', '应用凭据'] },
+      purpose: { type: 'string', title: '用途' },
+      expires: { type: 'string', title: '到期日' },
+      revoked: { type: 'string', title: '吊销日' },
+      source: { type: 'string', title: '来源' },
+    },
+  }
+  const credCfg = { title: '凭据', group: '安全', key: ['name'], label: 'name', list: ['name', 'kind', 'purpose', 'expires', 'source'] }
+  const credRows: Data[] = [
+    { name: 'tls-www', kind: '证书', purpose: '官网 HTTPS', expires: dayOffset(-8) },
+    { name: 'tls-grafana', kind: '证书', purpose: '监控面板', expires: dayOffset(0) },
+    { name: 'entra-rackbook-1a2b3c4d', kind: '应用凭据', purpose: 'Entra 应用 rackbook', expires: dayOffset(13), source: 'entra' },
+    { name: 'entra-rackbook-9f8e7d6c', kind: '应用凭据', purpose: 'Entra 应用 rackbook', expires: dayOffset(-2), source: 'entra' },
+    { name: 'backup-signing-key', kind: '密钥', purpose: '备份签名', expires: dayOffset(75) },
+    { name: 'vpn-ca', kind: '证书', purpose: 'VPN 根证书', expires: dayOffset(300) },
+    { name: 'legacy-api-key', kind: '密钥', purpose: '旧接口', expires: '待补' },
+    { name: 'old-cert', kind: '证书', purpose: '已吊销', expires: dayOffset(-30), revoked: dayOffset(-40) },
+  ]
+  colls.set('credentials', {
+    name: 'credentials',
+    cfg: credCfg,
+    schema: credSchema,
+    rows: credRows,
+    validate: ajv.compile(credSchema) as any,
+    validateFn: ajv.compile(credSchema),
+  })
+  const expiryFields: Record<string, { expiryField: string; revokedField: string }> = {
+    credentials: { expiryField: 'expires', revokedField: 'revoked' },
+  }
+  const modules = [
+    { name: 'entra', collection: 'credentials', fields: ['kind', 'purpose', 'expires', 'revoked'], directPush: true },
+  ]
+
   // MOCK_PROBLEMS=1 seeds broken records so the problems page has something to show.
   if (process.env.MOCK_PROBLEMS === '1') {
     colls.get('services')!.rows.push({ device: 'ghost-host', service: 'Demo', port: 'TCP 1' })
@@ -168,7 +210,10 @@ export function mockApi(root: string): Plugin {
       writeMode: cfg.write?.mode ?? 'push',
       user,
       ...(alert ? { alert } : {}),
+      modules,
       collections: [...colls.values()].map((c) => ({
+        expiryField: expiryFields[c.name]?.expiryField ?? '',
+        revokedField: expiryFields[c.name]?.revokedField ?? '',
         name: c.name,
         title: c.cfg.title ?? c.name,
         description: c.cfg.description ?? '',
@@ -255,6 +300,34 @@ export function mockApi(root: string): Plugin {
       if (!alert || body.commit !== alert.remote) return send(res, 409, { error: 'not_remote_tip', message: 'not the remote tip' }), true
       alert = undefined
       return send(res, 200, { ok: true }), true
+    }
+    if (head === 'expiring' && method === 'GET') {
+      const days = Number(url.searchParams.get('days') ?? 30)
+      const only = url.searchParams.getAll('collection')
+      const withUnknown = url.searchParams.get('unknown') === 'true'
+      const today = new Date().toISOString().slice(0, 10)
+      const dayNum = (d: string) => Math.round(Date.parse(d + 'T00:00:00Z') / 86400000)
+      const items: any[] = []
+      for (const c of colls.values()) {
+        const f = expiryFields[c.name]
+        if (!f || (only.length && !only.includes(c.name))) continue
+        for (const r of records(c)) {
+          if (r.data[f.revokedField]) continue
+          const v = r.data[f.expiryField]
+          if (v === undefined || v === '') continue
+          const label = String(r.data[c.cfg.label] ?? r.id)
+          const source = String(r.data.source ?? '')
+          if (!/^\d{4}-\d{2}-\d{2}$/.test(String(v))) {
+            if (withUnknown) items.push({ collection: c.name, id: r.id, label, expires: String(v), daysLeft: null, status: 'unknown', source })
+            continue
+          }
+          const daysLeft = dayNum(String(v)) - dayNum(today)
+          if (daysLeft > days) continue
+          items.push({ collection: c.name, id: r.id, label, expires: String(v), daysLeft, status: daysLeft < 0 ? 'expired' : 'expiring', source })
+        }
+      }
+      items.sort((a, b) => (a.daysLeft ?? Infinity) - (b.daysLeft ?? Infinity))
+      return send(res, 200, { today, days, items }), true
     }
     if (head === 'check' && method === 'GET') {
       const errors = check()

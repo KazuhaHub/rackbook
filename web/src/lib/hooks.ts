@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useQueries, useQuery } from '@tanstack/react-query'
 import { dataProvider } from '@/providers/dataProvider'
-import type { Collection, Commit, LedgerRecord } from './types'
+import type { Collection, Commit, ExpiringResult, LedgerRecord } from './types'
 import { str } from './ledger'
 
 const recordsQuery = (name: string) => ({
@@ -58,4 +58,16 @@ export function useFirstRender(ready: boolean, ms = 900) {
     return () => window.clearTimeout(id)
   }, [ready, ms])
   return fresh
+}
+
+/** Expired and expiring records (GET /api/expiring). */
+export function useExpiring(days: number, unknown: boolean, enabled = true) {
+  return useQuery({
+    queryKey: ['rb', 'expiring', days, unknown],
+    queryFn: async () =>
+      (await dataProvider.custom!({ url: '/expiring', method: 'get', query: { days, unknown: unknown ? 'true' : undefined } }))
+        .data as ExpiringResult,
+    staleTime: 30_000,
+    enabled,
+  })
 }

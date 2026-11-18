@@ -1,6 +1,6 @@
 import { Suspense, useEffect } from 'react'
 import { Outlet, NavLink, useLocation } from 'react-router'
-import { BookMarked, KeyRound, LayoutDashboard, Shapes } from 'lucide-react'
+import { BookMarked, CalendarClock, KeyRound, LayoutDashboard, Shapes } from 'lucide-react'
 import {
   Sidebar,
   SidebarContent,
@@ -20,6 +20,7 @@ import {
 } from '@/components/ui/sidebar'
 import { t } from '@/i18n/zh-CN'
 import { CollectionIcon } from '@/components/CollectionIcon'
+import { hasExpiry } from '@/lib/ledger'
 import { useMeta } from '@/providers/meta'
 import { PageFallback } from '@/components/common'
 import { ErrorBoundary } from '@/components/ErrorBoundary'
@@ -75,6 +76,14 @@ function AppSidebar() {
                   <span>{t.nav.dashboard}</span>
                 </SidebarMenuButton>
               </SidebarMenuItem>
+              {hasExpiry(meta) && (
+                <SidebarMenuItem>
+                  <SidebarMenuButton isActive={pathname === '/expiring'} render={<NavLink to="/expiring" />}>
+                    <CalendarClock />
+                    <span>{t.nav.expiring}</span>
+                  </SidebarMenuButton>
+                </SidebarMenuItem>
+              )}
             </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>

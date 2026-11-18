@@ -12,6 +12,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
+import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -22,7 +23,7 @@ import { HistoryList } from '@/components/HistoryList'
 import { t } from '@/i18n/zh-CN'
 import { ApiError, errorMessage } from '@/lib/api'
 import { useRefLookups } from '@/lib/hooks'
-import { canEdit, fieldTitle, idFromPath, recordHref, recordLabel, schemaProps } from '@/lib/ledger'
+import { canEdit, fieldTitle, idFromPath, recordHref, recordLabel, schemaProps, sourceLabel } from '@/lib/ledger'
 import type { Collection, RecordWithBackrefs } from '@/lib/types'
 import { useAfterWrite, useCollection, useMeta } from '@/providers/meta'
 
@@ -71,6 +72,7 @@ function Show({ col, id }: { col: Collection; id: string }) {
   const rec = result
   const label = recordLabel(col, rec)
   const props = schemaProps(col)
+  const showSource = 'source' in (col.schema.properties ?? {}) || rec.data.source !== undefined
   const extra = Object.keys(rec.data).filter((k) => !col.schema.properties?.[k])
   const backGroups = new Map<string, typeof col.backrefs>()
   for (const b of col.backrefs ?? []) backGroups.set(b.collection, [...(backGroups.get(b.collection) ?? []), b])
@@ -180,6 +182,12 @@ function Show({ col, id }: { col: Collection; id: string }) {
             </CardContent>
           </Card>
           <div className="rounded-xl border p-4 text-xs text-muted-foreground">
+            {showSource && (
+              <div className="flex items-center justify-between gap-3 py-0.5">
+                <span>{t.expiring.source}</span>
+                <Badge variant="outline">{sourceLabel(rec.data.source)}</Badge>
+              </div>
+            )}
             <div className="flex justify-between gap-3 py-0.5">
               <span>{t.show.id}</span>
               <span className="min-w-0 truncate font-mono" title={rec.id}>{rec.id}</span>
