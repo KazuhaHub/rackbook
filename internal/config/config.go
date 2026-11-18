@@ -16,6 +16,11 @@ import (
 // FileName is the default config file name.
 const FileName = "rackbook.yml"
 
+// StateDir is the directory in the data repository that holds Rackbook's own
+// state (.rackbook/passkeys.yml). It is never a ledger collection, note or
+// export source.
+const StateDir = ".rackbook"
+
 // Config is a parsed rackbook.yml.
 type Config struct {
 	Title       string `yaml:"title"`
@@ -143,9 +148,10 @@ type Write struct {
 // auth.roles block (every authenticated identity may then edit). Editors is
 // the v0.1 allow-list; it is read as extra editor entries.
 type Auth struct {
-	Editors []string    `yaml:"editors"`
-	Roles   *roles.Spec `yaml:"roles"`
-	MCP     AuthMCP     `yaml:"mcp"`
+	Login   `yaml:",inline"` // mode, oidc, passkeys, session (login.go)
+	Editors []string         `yaml:"editors"`
+	Roles   *roles.Spec      `yaml:"roles"`
+	MCP     AuthMCP          `yaml:"mcp"`
 }
 
 // AuthMCP is the auth.mcp block (MCP over MCPHub tokens).
@@ -178,6 +184,9 @@ func (c *Config) Resolve(rel string) (string, error) {
 	abs := filepath.Join(c.Dir, rel)
 	if !within(c.Dir, abs) {
 		return "", fmt.Errorf("path %q escapes the config directory", rel)
+	}
+	if r, err := filepath.Rel(c.Dir, abs); err == nil && strings.EqualFold(strings.SplitN(filepath.ToSlash(r), "/", 2)[0], StateDir) {
+		return "", fmt.Errorf("path %q is inside %s/, which belongs to Rackbook (passkeys, tokens) and is not part of the ledger", rel, StateDir)
 	}
 	// Symlinks must not lead out either: resolve the longest existing prefix.
 	root, err := filepath.EvalSymlinks(c.Dir)
@@ -277,6 +286,9 @@ func (c *Config) finish() error {
 		return fmt.Errorf("write.mode must be push or pr, got %q", c.Write.Mode)
 	}
 	if _, err := roles.Compile(c.Auth.Roles, roles.Options{MCPMatchEmail: c.Auth.MCP.MatchEmail}, c.Auth.Editors...); err != nil {
+		return err
+	}
+	if err := c.Auth.Login.check(); err != nil {
 		return err
 	}
 	if len(c.Collections) == 0 {

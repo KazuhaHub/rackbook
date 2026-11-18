@@ -9,7 +9,7 @@ COPY web/ ./
 RUN npm run build
 
 # 2. Static binary with the console embedded
-FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS build
+FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS build
 ARG VERSION=dev
 ARG TARGETOS
 ARG TARGETARCH

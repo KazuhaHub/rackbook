@@ -1,4 +1,5 @@
 import { t } from '@/i18n/zh-CN'
+import { loginUrl } from './loginurl'
 import type { CheckError, LedgerRecord } from './types'
 
 export class ApiError extends Error {
@@ -55,6 +56,14 @@ export async function apiFetch<T>(path: string, init: RequestInit = {}): Promise
     }
   }
   if (!res.ok) {
+    // Not logged in (or no longer): go to the login page and come back here.
+    if (!window.location.pathname.startsWith('/auth/')) {
+      if (res.status === 401 && body?.error === 'login_required') {
+        window.location.assign(loginUrl({ error: body.reason === 'expired' ? 'expired' : undefined }))
+      } else if (res.status === 403 && body?.error === 'no_role') {
+        window.location.assign(loginUrl({ error: 'no_role', returnTo: '/' }))
+      }
+    }
     throw new ApiError(res.status, body?.error ?? 'error', body?.message ?? t.errors.generic, {
       errors: body?.errors,
       requestId: body?.request_id ?? body?.requestId ?? res.headers.get('X-Request-Id') ?? undefined,

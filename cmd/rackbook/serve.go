@@ -15,11 +15,13 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 
 	"github.com/kazuhahub/rackbook/internal/api"
 	"github.com/kazuhahub/rackbook/internal/auth"
 	"github.com/kazuhahub/rackbook/internal/config"
 	"github.com/kazuhahub/rackbook/internal/gitstore"
+	"github.com/kazuhahub/rackbook/internal/login"
 	"github.com/kazuhahub/rackbook/internal/mcpserver"
 	"github.com/kazuhahub/rackbook/web"
 )
@@ -33,7 +35,10 @@ func newServe() *cobra.Command {
 Run it on a clone it owns (--repo): the server fetches and resets that clone to
 origin and commits every write. It listens on 127.0.0.1 by default and is meant to
 sit behind Cloudflare Tunnel or a reverse proxy; use --auth cloudflare-access to
-verify Cloudflare Access tokens.
+verify Cloudflare Access tokens, or --auth oidc for the built-in login (see the
+README): it needs --base-url (https), RACKBOOK_OIDC_CLIENT_SECRET and a session
+key (RACKBOOK_SESSION_KEY or --session-key-file). --tls-cert and --tls-key serve
+HTTPS directly, for local testing or a host without a reverse proxy.
 
 Pull request mode (write.mode: pr in rackbook.yml) reads a GitHub token from
 RACKBOOK_GITHUB_TOKEN.`,
@@ -43,7 +48,11 @@ RACKBOOK_GITHUB_TOKEN.`,
 	f := cmd.Flags()
 	f.String("listen", "127.0.0.1:8080", "address to listen on")
 	f.String("repo", "", "data repository directory (default: the directory of the config)")
-	f.String("auth", "none", "authentication: none or cloudflare-access")
+	f.String("auth", "", "authentication: none, cloudflare-access or oidc (default: auth.mode in rackbook.yml, else none)")
+	f.String("session-key-file", "", "file with the base64 session signing key (--auth oidc; alternative to RACKBOOK_SESSION_KEY)")
+	f.String("oidc-ca-file", "", "extra CA certificates (PEM) to trust for the OIDC issuer, for a private CA (--auth oidc)")
+	f.String("tls-cert", "", "TLS certificate file: serve HTTPS (needs --tls-key)")
+	f.String("tls-key", "", "TLS private key file")
 	f.String("cf-team", "", "Cloudflare Access team name (<team>.cloudflareaccess.com)")
 	f.String("cf-aud", "", "Cloudflare Access application audience (AUD) tag")
 	f.String("editor", "", `attribute writes to "Name <email>" (auth none)`)
@@ -108,23 +117,51 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	// auth.roles and auth.editors are read from the store's current config on every
 	// request, so a config reload on pull changes roles without a restart.
 	mode, _ := f.GetString("auth")
+	if mode == "" {
+		mode = cfg.Auth.Mode
+	}
+	if mode == "" {
+		mode = auth.ModeNone
+	}
 	team, _ := f.GetString("cf-team")
 	aud, _ := f.GetString("cf-aud")
 	editor, _ := f.GetString("editor")
 	editors, _ := f.GetStringSlice("editors")
-	authn, err := auth.New(ctx, auth.Config{Mode: mode, Team: team, Audience: aud, Editor: editor, Editors: editors, Config: store.Config, Degraded: func() bool { return store.ConfigProblem() != "" }})
+	baseURL, _ := f.GetString("base-url")
+	readOnly, _ := f.GetBool("read-only")
+	var loginSvc *login.Service
+	acfg := auth.Config{Mode: mode, Team: team, Audience: aud, Editor: editor, Editors: editors, Config: store.Config, Degraded: func() bool { return store.ConfigProblem() != "" }}
+	if mode == auth.ModeOIDC {
+		caFile, _ := f.GetString("oidc-ca-file")
+		if loginSvc, err = newLogin(cfg, store, baseURL, caFile, f, readOnly, logger); err != nil {
+			return err
+		}
+		acfg.Sessions = loginSvc
+	}
+	authn, err := auth.New(ctx, acfg)
 	if err != nil {
 		return err
+	}
+	if loginSvc != nil {
+		loginSvc.Bind(authn)
+		go loginSvc.Warm()
+		if cfg.Auth.Roles == nil && len(cfg.Auth.Editors) == 0 && len(editors) == 0 {
+			logger.Warn("auth.roles is not set: everyone who can log in is an editor; with a tenant-wide Entra app that is the whole tenant. Add auth.roles to rackbook.yml")
+		}
 	}
 
 	dist, err := fs.Sub(web.FS, "dist")
 	if err != nil {
 		return err
 	}
-	readOnly, _ := f.GetBool("read-only")
-	baseURL, _ := f.GetString("base-url")
+	var loginMount interface {
+		Mount(mux *http.ServeMux, static http.Handler)
+	}
+	if loginSvc != nil {
+		loginMount = loginSvc
+	}
 	handler := api.New(api.Options{
-		Store: store, Auth: authn, ReadOnly: readOnly, BaseURL: baseURL, Web: dist, Logger: logger, RestrictHost: mode == auth.ModeNone,
+		Store: store, Auth: authn, ReadOnly: readOnly, BaseURL: baseURL, Web: dist, Logger: logger, RestrictHost: mode == auth.ModeNone, Login: loginMount,
 		MCP: mcpserver.Handler(mcpserver.New(store.Ledger, version), mode != auth.ModeNone || baseURL != ""),
 	})
 
@@ -140,13 +177,25 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		}
 		logger.Warn("listening on a non-loopback address with --auth none: anyone who can reach it can read and edit the ledger")
 	}
+	certFile, _ := f.GetString("tls-cert")
+	keyFile, _ := f.GetString("tls-key")
+	if (certFile == "") != (keyFile == "") {
+		ln.Close()
+		return errors.New("--tls-cert and --tls-key go together")
+	}
 	srv := &http.Server{Handler: handler, ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 2 * time.Minute, IdleTimeout: 2 * time.Minute}
 	logger.Info("rackbook serving", "version", version, "title", cfg.Title, "listen", ln.Addr().String(),
-		"git", store.GitEnabled(), "remote", store.HasRemote(), "auth", mode, "readOnly", readOnly, "writeMode", cfg.Write.Mode,
+		"git", store.GitEnabled(), "remote", store.HasRemote(), "auth", mode, "tls", certFile != "", "readOnly", readOnly, "writeMode", cfg.Write.Mode,
 		"console", consoleBuilt(dist))
 
 	errc := make(chan error, 1)
-	go func() { errc <- srv.Serve(ln) }()
+	go func() {
+		if certFile != "" {
+			errc <- srv.ServeTLS(ln, certFile, keyFile)
+			return
+		}
+		errc <- srv.Serve(ln)
+	}()
 	select {
 	case err := <-errc:
 		return err
@@ -172,4 +221,30 @@ func isLoopback(addr string) bool {
 func consoleBuilt(dist fs.FS) bool {
 	_, err := fs.Stat(dist, "index.html")
 	return err == nil
+}
+
+// newLogin builds the built-in login for --auth oidc: the OIDC client secret
+// comes only from RACKBOOK_OIDC_CLIENT_SECRET, the session key from
+// RACKBOOK_SESSION_KEY or --session-key-file.
+func newLogin(cfg *config.Config, store *gitstore.Store, baseURL, caFile string, f *pflag.FlagSet, readOnly bool, logger *slog.Logger) (*login.Service, error) {
+	keyFile, _ := f.GetString("session-key-file")
+	key, err := login.LoadSessionKey(os.Getenv("RACKBOOK_SESSION_KEY"), keyFile)
+	if err != nil {
+		return nil, err
+	}
+	secret := os.Getenv("RACKBOOK_OIDC_CLIENT_SECRET")
+	if secret == "" {
+		return nil, errors.New("--auth oidc needs the client secret in RACKBOOK_OIDC_CLIENT_SECRET (it is never read from rackbook.yml)")
+	}
+	if baseURL == "" {
+		return nil, errors.New("--auth oidc needs --base-url (the public https URL of the console; the IdP redirects to <base-url>/auth/oidc/callback)")
+	}
+	o := login.Options{
+		Login: cfg.Auth.Login, BaseURL: baseURL, Key: key, ClientSecret: secret, CAFile: caFile,
+		ReadOnly: readOnly, Logger: logger,
+	}
+	if cfg.Auth.Passkeys.Enabled {
+		o.Files = store
+	}
+	return login.New(o)
 }

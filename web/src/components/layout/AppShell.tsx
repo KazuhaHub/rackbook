@@ -1,7 +1,6 @@
 import { Suspense, useEffect } from 'react'
 import { Outlet, NavLink, useLocation } from 'react-router'
-import { BookMarked, LayoutDashboard, Lock } from 'lucide-react'
-import { Badge } from '@/components/ui/badge'
+import { BookMarked, LayoutDashboard } from 'lucide-react'
 import {
   Sidebar,
   SidebarContent,
@@ -21,7 +20,6 @@ import {
 } from '@/components/ui/sidebar'
 import { t } from '@/i18n/zh-CN'
 import { CollectionIcon } from '@/components/CollectionIcon'
-import { canEdit } from '@/lib/ledger'
 import { useMeta } from '@/providers/meta'
 import { PageFallback } from '@/components/common'
 import { ErrorBoundary } from '@/components/ErrorBoundary'
@@ -29,6 +27,7 @@ import { CheckBadge } from './CheckBadge'
 import { HistoryAlert } from './HistoryAlert'
 import { GlobalSearch } from './GlobalSearch'
 import { ThemeToggle } from './ThemeToggle'
+import { UserMenu } from './UserMenu'
 
 function CloseMobileOnNavigate() {
   const { setOpenMobile } = useSidebar()
@@ -40,7 +39,6 @@ function CloseMobileOnNavigate() {
 function AppSidebar() {
   const { meta } = useMeta()
   const { pathname } = useLocation()
-  const editable = canEdit(meta)
 
   // group collections, keeping config order (ungrouped first-seen position)
   const groups: { name: string; items: typeof meta.collections }[] = []
@@ -106,17 +104,7 @@ function AppSidebar() {
         ))}
       </SidebarContent>
       <SidebarFooter className="border-t p-3">
-        <div className="flex items-center gap-2 text-xs">
-          <span className="min-w-0 flex-1 truncate text-muted-foreground" title={meta.user?.email}>
-            {meta.user?.email || meta.user?.name || t.user.anonymous}
-          </span>
-          {!editable && (
-            <Badge variant="secondary" title={t.user.readOnlyHint}>
-              <Lock />
-              {t.user.readOnly}
-            </Badge>
-          )}
-        </div>
+        <UserMenu />
       </SidebarFooter>
     </Sidebar>
   )

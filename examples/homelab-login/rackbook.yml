@@ -1,0 +1,116 @@
+# The homelab example with built-in login (OIDC, Microsoft Entra ID) and passkeys, for trying
+# `rackbook serve --auth oidc` on https://localhost:18443. See README.md in this directory.
+# The collections, schemas and rules are the ones used by a real multi-site ledger; only the
+# data is made up.
+title: 示例网络台账
+description: 设备、内网地址、服务端口、网段规划、端口规范、站点与待办。以 Git 仓库里的 YAML 为准。
+
+collections:
+  devices:
+    title: 设备
+    description: 所有设备（服务器、路由器、终端、NAS）。
+    file: docs/ledger/devices.yml
+    schema: schemas/device.json
+    key: [name]
+    label: name
+    list: [name, category, site, os, ipv4, domain, managed]
+    facets: [category, site, managed]
+  addresses:
+    title: 内网地址
+    description: 设备在 Tailscale、站点局域网、服务商内网、Docker 等网络里的地址。
+    file: docs/ledger/addresses.yml
+    schema: schemas/address.json
+    key: [device, network]
+    list: [device, network, address, subnet, domain]
+    facets: [device, network]
+  services:
+    title: 服务端口
+    description: 每台设备上实际开着的服务。device 为 all 表示所有设备。
+    file: docs/ledger/services.yml
+    schema: schemas/service.json
+    key: [device, service]
+    list: [device, service, port, exposure, managed]
+    facets:
+      - device
+      - managed
+      - {field: exposure, match: contains, values: [公网, Tailscale, 局域网, 本机, Cloudflare]}
+  ports:
+    title: 端口规范
+    description: 端口约定。改端口先改这里，再改实现。
+    file: docs/ledger/ports.yml
+    schema: schemas/port.json
+    key: [service]
+  tailscale_ranges:
+    title: Tailscale 网段
+    group: 网段规划
+    file: docs/ledger/networks.yml
+    path: tailscale
+    schema: schemas/network-range.json
+    key: [range]
+  lan_ranges:
+    title: 站点局域网网段
+    group: 网段规划
+    file: docs/ledger/networks.yml
+    path: lan
+    schema: schemas/network-range.json
+    key: [range]
+  docker_ranges:
+    title: Docker / 虚拟机网段
+    group: 网段规划
+    file: docs/ledger/networks.yml
+    path: docker.ranges
+    schema: schemas/network-range.json
+    key: [range]
+  sites:
+    title: 站点
+    description: 每个站点一个 /22。
+    file: docs/ledger/sites.yml
+    path: sites
+    schema: schemas/site.json
+    key: [name]
+    facets: [status]
+  todo:
+    title: 待办
+    file: docs/ledger/todo.yml
+    schema: schemas/todo.json
+    key: [item]
+    facets:
+      - {field: status, match: prefix, values: [完成, 部分完成, 待办, 待决定, 推迟, 可选]}
+
+notes:
+  - {title: Docker 地址池规则, file: docs/ledger/networks.yml, path: docker.rule, collection: docker_ranges}
+  - {title: 站点局域网规则, file: docs/ledger/sites.yml, path: rule, collection: sites}
+
+rules:
+  - ref: {from: services.device, to: devices.name, allow: [all]}
+  - ref: {from: addresses.device, to: devices.name}
+  - same_set:
+      left: {collection: devices, field: name, where: {managed: true}}
+      right: {file: inventory/hosts.yml, path: all.children.managed.hosts, take: keys}
+      message: 'devices marked managed: true must equal the inventory group "managed"'
+
+write:
+  mode: push          # push | pr
+  branch: main
+
+# Built-in login. The client secret is never written here: set RACKBOOK_OIDC_CLIENT_SECRET.
+# Redirect URI to register in the app: <--base-url>/auth/oidc/callback.
+auth:
+  mode: oidc
+  oidc:
+    issuer: https://login.microsoftonline.com/e72914d3-3d19-486e-be11-15c69540e02a/v2.0
+    client_id: 3af65b1f-582a-46ae-925a-154a1f457fb6
+    scopes: [openid, profile, email]
+    identity_claim: preferred_username   # Entra: the UPN; "email" is often empty
+    name_claim: name
+    allowed_tenants: [e72914d3-3d19-486e-be11-15c69540e02a]   # checked against the tid claim
+  passkeys: true
+  session:
+    idle: 12h
+    absolute: 7d
+  # Nobody without a matching entry gets in, even from the right tenant. Replace these
+  # placeholders with the account you sign in with (its UPN, as the "preferred_username" claim).
+  roles:
+    admin: ["*@kazuha.org"]
+    editor: []
+    viewer: ["*@example.com"]

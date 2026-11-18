@@ -183,6 +183,102 @@ touches your work tree). Accepting is refused unless a rewrite is active and the
 new tip's config loads. The server's clone must contain only tracked files:
 anything else makes writes fail with `repo_dirty` rather than risk overwriting it.
 
+## Built-in login (OIDC, passkeys)
+
+Instead of Cloudflare Access, Rackbook can log people in itself with OpenID
+Connect (tested with Microsoft Entra ID), optionally with passkeys. It keeps no
+database: sessions are signed cookies, roles live in `rackbook.yml`, and passkey
+public keys are committed to `.rackbook/passkeys.yml` in the data repository.
+
+```yaml
+# rackbook.yml
+auth:
+  mode: oidc                          # none | cloudflare-access | oidc
+  oidc:
+    issuer: https://login.microsoftonline.com/<tenant-id>/v2.0
+    client_id: 00000000-0000-0000-0000-000000000000
+    scopes: [openid, profile, email]
+    identity_claim: preferred_username   # default; Entra: the UPN
+    name_claim: name                     # default
+    allowed_tenants: [<tenant-id>]       # checked against the tid claim
+  passkeys: true                         # or {user_verification: required}
+  session: {idle: 12h, absolute: 7d}     # defaults
+  roles:
+    admin:  [owner@example.com]
+    editor: ["*@example.com"]
+```
+
+```sh
+export RACKBOOK_OIDC_CLIENT_SECRET='…'     # only ever from the environment
+export RACKBOOK_SESSION_KEY="$(openssl rand -base64 32)"   # or --session-key-file
+rackbook serve --base-url https://ledger.example.com
+```
+
+`--auth`, `RACKBOOK_AUTH` and the other flags still override the file, so v0.1
+deployments keep working unchanged. `--base-url` is required and must be
+`https`: the IdP redirects to `<base-url>/auth/oidc/callback`, session cookies are
+`__Host-` cookies, and the passkey relying-party ID is the host of the base URL.
+Behind a reverse proxy this is just the public URL. For local testing, serve
+HTTPS directly with `--tls-cert` and `--tls-key` and use `https://localhost:<port>`
+(see `examples/homelab-login/`); `--oidc-ca-file` adds a private CA for the IdP.
+
+**Entra app registration.**
+
+1. Microsoft Entra admin center, App registrations, New registration. Name it,
+   choose "Accounts in this organizational directory only".
+2. Redirect URI: platform **Web**, value `https://<your host>/auth/oidc/callback`.
+3. Certificates & secrets: new client secret. Its *value* goes into
+   `RACKBOOK_OIDC_CLIENT_SECRET`.
+4. Token configuration: add the optional ID-token claims **email** and
+   **preferred_username**. The `profile` scope delivers `name`, and `tid` is always
+   present. (`preferred_username` is the UPN; `email` is often empty, which is
+   why it is not the default identity. If you do set `identity_claim: email`, the
+   login is refused unless the token has `email_verified: true`, which Entra does
+   not send.)
+5. Copy the Directory (tenant) ID into the issuer and into `allowed_tenants`, and the
+   Application (client) ID into `client_id`.
+
+**What a login does.** `/auth/login` shows the console's login page; "sign in" goes
+through `/auth/oidc/start` (state, nonce and PKCE are created and kept in memory for
+10 minutes, bound to the browser by the `__Host-rackbook_login` cookie) and returns to
+`/auth/oidc/callback`. The callback refuses duplicate or missing parameters, an
+unknown, expired or replayed state, a different browser, a wrong `tid`, an identity
+claim that is not a string, and an identity with no role (a 403 page; logged). The
+identity is the claim lowercased (ASCII only). The browser then goes back to the page
+it came from; only same-origin paths are followed, so there is no open redirect.
+`POST /auth/logout` ends the Rackbook session only, not the Microsoft one, so the next
+login may need no password.
+
+**Sessions.** The cookie `__Host-rackbook_session` (`Secure`, `HttpOnly`,
+`SameSite=Lax`) holds `{identity, method, issued, last_seen}` signed with
+HMAC-SHA256; the server stores nothing. It expires after `idle` without activity (the
+cookie is refreshed at most every 5 minutes) and after `absolute` in any case. It does
+not contain the role: roles are evaluated from `auth.roles` on every request, so
+removing someone from Git locks them out within one pull interval. Rotating
+`RACKBOOK_SESSION_KEY` logs everyone out. API calls without a session get
+`401 {"error":"login_required","login":"/auth/login?return=…"}`; console pages redirect
+to the login page. Users with no role are refused (a tenant-wide Entra app does not
+open the ledger to the whole tenant), so configure `auth.roles`; without it every
+authenticated user is an editor, and Rackbook logs a warning at startup.
+
+**Passkeys.** With `passkeys: true` the login page also offers "sign in with a
+passkey" (discoverable credentials: no username). Add one on the **My account** page
+(**我的账户**), which requires an OIDC login within the last 10 minutes; passkeys
+are an alternative to OIDC, not a second factor, and the role is evaluated exactly as
+for OIDC, so a passkey never outlives a removal from `roles`; deleting a passkey also
+ends the sessions that were opened with it. Credentials are committed
+to `.rackbook/passkeys.yml` (`rackbook(auth): add passkey for <id>` /
+`remove passkey`, authored by the user) straight to the tracked branch even when
+`write.mode` is `pr`. Sign counters are not stored, so there is no clone detection
+(synced passkeys report 0 anyway). Admins see users and passkeys on **用户** and can
+delete passkeys. `.rackbook/` is not a collection: it is hidden from the console,
+exports and MCP, and cannot be configured as a data file. If nobody can log in,
+edit `rackbook.yml` or `.rackbook/passkeys.yml` in Git.
+
+Logins, refusals and logouts go to the server log (stdout). Starting a login or a
+passkey ceremony is rate limited per client (the first `CF-Connecting-IP` /
+`X-Forwarded-For` address when the request comes from a loopback or private proxy).
+
 ## Development
 
 ```bash
@@ -222,6 +318,11 @@ rackbook serve --config examples/homelab/rackbook.yml --no-git   # 打开 http:/
 服务器用带写权限的 deploy key 克隆数据仓库；Rackbook 校验每个请求的
 `Cf-Access-Jwt-Assertion`，用其中的邮箱作为提交作者；`auth.editors` 可限定谁能编辑，
 `auth.roles`（admin / editor / viewer）可按身份、`*@域名`、`mcphub:用户名`、`*` 分配角色。
+
+内置登录：`auth.mode: oidc`（Microsoft Entra ID 等 OIDC，见上文 “Built-in login”）。
+会话是 HMAC 签名的 Cookie（`RACKBOOK_SESSION_KEY`），不存数据库；客户端密钥只从
+`RACKBOOK_OIDC_CLIENT_SECRET` 读取；角色每次请求都按 `auth.roles` 重新计算，没有角色的账号会被拒绝（403）。
+可选通行密钥（`auth.passkeys`），凭据提交到数据仓库的 `.rackbook/passkeys.yml`。
 
 Rackbook 永远不会 force push，也不会改写或删除远端分支和标签。若发现远端历史被他人改写，
 会暂停所有写入（返回 503 `history_rewritten`）、继续只读提供最后一个可信提交，并在控制台显示红色横幅；

@@ -40,6 +40,11 @@ type Options struct {
 	BaseURL  string       // public URL used in llms.txt; derived from the request when empty
 	Web      fs.FS        // console files (root of dist); may lack index.html
 	MCP      http.Handler // optional, mounted at /mcp
+	// Login mounts the /auth endpoints and the account and user APIs (oidc
+	// mode). It receives the console handler, which serves the login page.
+	Login interface {
+		Mount(mux *http.ServeMux, static http.Handler)
+	}
 	// RestrictHost limits accepted Host headers to loopback names and the host
 	// of BaseURL (DNS-rebinding protection for --auth none).
 	RestrictHost bool
@@ -88,6 +93,9 @@ func New(o Options) http.Handler {
 		mux.Handle("/mcp/", o.MCP)
 	}
 	mux.HandleFunc("/", s.static)
+	if o.Login != nil {
+		o.Login.Mount(mux, http.HandlerFunc(s.static))
+	}
 
 	authed := s.o.Auth.Middleware(mux)
 	var h http.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
