@@ -40,11 +40,10 @@ func TestFirstRunCreatesThenIsIdempotent(t *testing.T) {
 	}
 	want := map[string]any{
 		"name": name("billing-service", k1), "source": "entra", "kind": "api_token",
-		"purpose":    `Entra application "Billing Service!": client secret "prod"`,
+		"purpose":    `Entra application "Billing Service!" (aaaaaaaa-0000-0000-0000-00000000000a): client secret "prod"`,
 		"expires":    "2027-03-01",
 		"not_before": "2026-03-01",
 		"kid":        k1,
-		"ids":        []any{"entra_app_id=" + appA, "entra_tenant_id=" + testTenant},
 		"owner":      "ops", "used_by": []any{"all"},
 	}
 	if !reflect.DeepEqual(norm(r1), norm(want)) {
@@ -172,7 +171,7 @@ func TestDryRunWritesNothing(t *testing.T) {
 		t.Fatalf("dry run wrote: %+v", res)
 	}
 	out := e.out.String()
-	for _, want := range []string{"create " + name("billing-service", k1), "update " + name("daemon", k6) + ": expires, ids, purpose", "revoke " + name("gone", "deadbeef-0")} {
+	for _, want := range []string{"create " + name("billing-service", k1), "update " + name("daemon", k6) + ": expires, purpose", "revoke " + name("gone", "deadbeef-0")} {
 		if !strings.Contains(out, want) {
 			t.Errorf("plan lacks %q:\n%s", want, out)
 		}

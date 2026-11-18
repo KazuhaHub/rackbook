@@ -17,7 +17,7 @@ import (
 const (
 	defaultAuthorityHost = "https://login.microsoftonline.com"
 	defaultGraphURL      = "https://graph.microsoft.com/v1.0"
-	defaultPurpose       = `Entra application "{app}": {type} "{name}"`
+	defaultPurpose       = `Entra application "{app}" ({app_id}): {type} "{name}"`
 )
 
 // Config is the content of entra.yml.
