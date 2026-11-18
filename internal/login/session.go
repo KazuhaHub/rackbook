@@ -11,6 +11,7 @@ import (
 	"os"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // Cookie names. The __Host- prefix makes browsers require Secure, Path=/ and
@@ -32,19 +33,47 @@ var (
 	errBadCookie = errors.New("invalid session cookie")
 	errExpired   = errors.New("session expired")
 	errRevoked   = errors.New("session credential revoked")
+	// errUnavailable is a transient failure to check a passkey session: the
+	// credential file could not be read, which is not revocation.
+	errUnavailable = errors.New("passkey file unavailable")
 )
+
+// Bounds on the groups kept in the session cookie, which must stay small.
+const (
+	maxSessionGroups     = 40
+	maxSessionGroupBytes = 700 // total
+)
+
+// boundGroups keeps the first groups that fit the cookie. truncated says some were dropped.
+func boundGroups(in []string) (out []string, truncated bool) {
+	total := 0
+	for _, g := range in {
+		g = strings.TrimSpace(g)
+		if g == "" || len(g) > 128 || !utf8.ValidString(g) {
+			continue
+		}
+		if len(out) >= maxSessionGroups || total+len(g) > maxSessionGroupBytes {
+			return out, true
+		}
+		total += len(g)
+		out = append(out, g)
+	}
+	return out, false
+}
 
 // session is the signed payload of the session cookie. It holds no role: the
 // role is evaluated from auth.roles on every request.
 type session struct {
-	V      int    `json:"v"`
-	ID     string `json:"id"`
-	Name   string `json:"name,omitempty"`
-	Method string `json:"m"`
-	Issued int64  `json:"iat"`
-	Seen   int64  `json:"seen"`
-	OIDCAt int64  `json:"oidc,omitempty"` // when the user last logged in with OIDC (passkey enrolment)
-	Cred   string `json:"cred,omitempty"` // passkey sessions: the credential id used, so deleting it ends the session
+	V      int      `json:"v"`
+	ID     string   `json:"id"`
+	Name   string   `json:"name,omitempty"`
+	Method string   `json:"m"`
+	Issued int64    `json:"iat"`
+	Seen   int64    `json:"seen"`
+	OIDCAt int64    `json:"oidc,omitempty"` // when the user last logged in with OIDC (passkey enrolment)
+	Iss    string   `json:"iss,omitempty"`  // oidc sessions: the issuer that authenticated the login; a session from another issuer is refused
+	Groups []string `json:"grp,omitempty"`  // oidc sessions: the ID token's groups claim (bounded), for group: role entries
+	Cred   string   `json:"cred,omitempty"` // passkey sessions: the credential id used, so deleting it ends the session
 }
 
 type codec struct {

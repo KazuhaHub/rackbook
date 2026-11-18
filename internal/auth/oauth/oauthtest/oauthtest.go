@@ -199,6 +199,7 @@ type Options struct {
 	Typ      string // default "at+jwt"; "-" omits typ
 	Alg      string // "" = the issuer's; "HS256" builds a confusion token, "RS256" a token from a foreign RSA key
 	NoExp    bool
+	NoScope  bool // omit scope and scp
 	NoSub    bool
 	Exp      time.Time // default now+15m
 	IAT      time.Time // default now
@@ -243,10 +244,10 @@ func (i *Issuer) Mint(o Options) string {
 	if o.ClientID != "-" {
 		claims["client_id"] = o.ClientID
 	}
-	if o.Scope != "" || o.Scp == nil {
+	if !o.NoScope && (o.Scope != "" || o.Scp == nil) {
 		claims["scope"] = o.Scope
 	}
-	if o.Scp != nil {
+	if o.Scp != nil && !o.NoScope {
 		claims["scp"] = o.Scp
 	}
 	if !o.NoSub {

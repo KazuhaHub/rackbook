@@ -159,7 +159,7 @@ Viewers read, editors also create, edit and delete records, admins also do
 administrative actions. Without a `roles` block every authenticated identity
 is an editor, and `auth.editors` keeps working. Matching folds ASCII case only.
 MCPHub users match only `mcphub:<username>` entries (or `mcphub:*`), plus
-exact/`*@domain` entries for e-mail usernames if `auth.mcp.match_email: true`. Roles are read from the
+exact/`*@domain` entries only for a *verified* e-mail address (the token's `email` with `email_verified: true`, or an issuer marked `emails_verified: true`) if `auth.mcp.match_email: true`; a username that merely looks like an address never matches. Roles are read from the
 current config on every request, so a change pulled from Git applies at once.
 `/api/meta` reports `user.role`, `user.canEdit` and `user.canAdmin`.
 
@@ -199,8 +199,9 @@ auth:
 Per issuer: `algorithms` (default ES256, RS256, PS256, EdDSA; `HS*` and `none` are
 a config error), `require_typ_at_jwt` (default true: RFC 9068 `typ: at+jwt`;
 with false `typ: JWT` or none is accepted too, but an ID token is still
-refused: its `aud` is not the configured audience, or it has a `nonce` and no
-scope), `audience`, `username_claim` (default `sub`), `scope_claim` (default:
+refused: its `aud` is not the configured audience, it has neither `scope` nor
+`scp`, or it has `at_hash`, `c_hash`, `nonce` or `auth_time` and no scope),
+`emails_verified` (the issuer only puts verified addresses in `email`), `audience`, `username_claim` (default `sub`), `scope_claim` (default:
 `scope`, then `scp`, as a space-separated string or an array), `jwks_url`
 (default: `jwks_uri` from the issuer's metadata).
 
@@ -220,13 +221,17 @@ refetched at most once a minute, on an unknown `kid`.
 ```
 
 (`endpoint` defaults to `introspection_endpoint` from the metadata.) The token
-must be `active` with matching `iss`, `aud`, `exp`; answers are cached for 60 s.
+must be `active` with matching `iss`, `aud`, `exp`; answers are cached for 60 s
+(refusals for 10 s, in a bounded cache). An opaque token is sent to one issuer
+only: the one whose `introspection.token_prefix` it starts with, or the single
+introspecting issuer. With several introspecting issuers every one needs a
+`token_prefix`. Failed attempts are rate-limited per client like API tokens.
 
 **Roles.** The user is the `username_claim` (folded to ASCII lower case) and is
 matched like a console identity, with entries that name the issuer:
 `mcphub:<user>` for `kind: mcphub`, `oauth:<alias>:<user>` for others (`*`
 matches anyone of that issuer). Plain e-mail and `*@domain` entries match
-these users only with `match_email: true`. A scope can only narrow the role:
+these users only with `match_email: true` and a verified e-mail (see above). A scope can only narrow the role:
 without the write scope the write tools are refused; viewers never write.
 `/mcp` still accepts console users (Cloudflare Access) as before.
 
@@ -296,9 +301,14 @@ go straight to the tracked branch only where an admin allows it:
 auth:
   mcp:
     direct_push:
-      - {users: ["mcphub:alice"], collections: [todo]}
+      - {users: ["mcphub:alice", "oauth:entra:bob@example.com"], collections: [todo]}
       - {roles: [admin], collections: ["*"]}
 ```
+
+`direct_push` users are method-gated: `mcphub:<user>` matches only MCPHub
+users, `oauth:<alias>:<user>` only that issuer's, and a plain e-mail address
+only with `match_email` and a verified e-mail; a bare username is a config
+error.
 
 If the server is in `history_rewritten`, `config_error` or dirty state, the
 tools return the API's errors and writes are paused.
@@ -322,9 +332,13 @@ only its SHA-256 (committed as `rackbook(auth): create token <name>` /
   create and update on named collections; it only counts while the creator is
   still an admin. Trailers: `Edited-by: <creator>`, `Edited-via: rackbook
   (token:<name>)` (`mcp (token:<name>)` over `/mcp`).
-- Failed attempts are rate-limited per client IP (10 per minute, then `429`).
-  The IP is the connecting address; `CF-Connecting-IP` is believed only from
-  proxies listed in `--trusted-proxy` (CIDRs).
+- API tokens reach only `/mcp`, record and collection reads and writes
+  (`/api/c/…`, `/api/meta`, `/api/check`, `/api/history`), exports and
+  `/llms*`. Account, passkey, user, token and type endpoints refuse them.
+- Failed attempts are rate-limited per client IP (10 per minute, then `429`);
+  the console login endpoints use the same client address, IPv6 counted per
+  /64. The IP is the connecting address; `CF-Connecting-IP` is believed only
+  from proxies listed in `--trusted-proxy` (CIDRs).
 - `rackbook token list` and `rackbook token revoke <name> [--commit|--push]`
   work on the file directly; "last used" is kept in memory only.
 
@@ -366,6 +380,7 @@ auth:
     client_id: 00000000-0000-0000-0000-000000000000
     scopes: [openid, profile, email]
     identity_claim: preferred_username   # default; Entra: the UPN
+    identity: claim                      # or subject: iss|sub, matched by oidc:<sub> role entries
     name_claim: name                     # default
     allowed_tenants: [<tenant-id>]       # checked against the tid claim
   passkeys: true                         # or {user_verification: required}
@@ -402,6 +417,14 @@ HTTPS directly with `--tls-cert` and `--tls-key` and use `https://localhost:<por
    why it is not the default identity. If you do set `identity_claim: email`, the
    login is refused unless the token has `email_verified: true`, which Entra does
    not send.)
+   **The identity claim must be controlled by the identity provider**, never
+   editable by users or by tenants you do not trust: whoever can set it to
+   another person's address becomes that person. `preferred_username`/`upn` with
+   `allowed_tenants`, or a verified `email`, are fine; anything else logs a
+   warning at startup. `identity: subject` names logins by `iss|sub`
+   (`oidc:<sub>` in `auth.roles`; it matches only such entries, not `*`, domains
+   or groups, and does not combine with passkeys). The ID token's `groups`
+   claim (bounded to what fits the cookie) serves `group:<id>` entries.
 5. Copy the Directory (tenant) ID into the issuer and into `allowed_tenants`, and the
    Application (client) ID into `client_id`.
 

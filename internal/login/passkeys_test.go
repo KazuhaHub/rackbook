@@ -442,3 +442,34 @@ func TestPasskeyFileNeverGetsWrittenInvalid(t *testing.T) {
 		t.Fatal("identity must be folded")
 	}
 }
+
+func TestUnreadablePasskeyFileIsTransientNotRevocation(t *testing.T) {
+	e := newEnv(t, options{passkeys: true, nogit: true})
+	owner := e.browser()
+	owner.login("admin", "")
+	dev := e.newDevice()
+	dev.enrol(owner, "laptop")
+	b := e.browser()
+	if r := dev.login(b, ""); r.StatusCode != 200 {
+		t.Fatalf("login: %d %s", r.StatusCode, r.Body)
+	}
+	file := filepath.Join(e.dir, PasskeysPath)
+	good, err := os.ReadFile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// During a pull or replay the file can be missing or half written.
+	for name, mangle := range map[string]func(){
+		"missing": func() { os.Remove(file) },
+		"corrupt": func() { os.WriteFile(file, []byte("users: nonsense\n"), 0o644) },
+	} {
+		mangle()
+		if st, _ := b.meta(); st != 503 {
+			t.Fatalf("%s: want a transient 503, got %d", name, st)
+		}
+		os.WriteFile(file, good, 0o644)
+		if st, _ := b.meta(); st != 200 {
+			t.Fatalf("%s: the session (cookie kept) must work again once the file is back: %d", name, st)
+		}
+	}
+}

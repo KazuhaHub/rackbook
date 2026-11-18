@@ -42,9 +42,16 @@ type recorder struct {
 }
 
 func (r *recorder) Run(ctx context.Context, c Cmd) (string, string, error) {
-	_, err := os.Stat(filepath.Join(c.Dir, ".git"))
+	// Dir may be a subdirectory of the work tree, so look upwards for .git.
+	inTree := false
+	for d := c.Dir; d != "" && d != filepath.Dir(d); d = filepath.Dir(d) {
+		if _, err := os.Stat(filepath.Join(d, ".git")); err == nil {
+			inTree = true
+			break
+		}
+	}
 	r.mu.Lock()
-	r.cmds = append(r.cmds, recorded{Cmd: Cmd{Dir: c.Dir, Args: append([]string{}, c.Args...)}, workTree: err == nil})
+	r.cmds = append(r.cmds, recorded{Cmd: Cmd{Dir: c.Dir, Args: append([]string{}, c.Args...)}, workTree: inTree})
 	r.mu.Unlock()
 	return r.next.Run(ctx, c)
 }

@@ -82,7 +82,29 @@ func (s *server) typesGet(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"type": t, "incoming": l.BackRefs(t.Name)})
 }
 
+// version is the base version of the body: its own, the type's, or the query's.
+func (b typeBody) version(r *http.Request) string {
+	switch {
+	case b.Version != "":
+		return b.Version
+	case b.Type != nil && b.Type.Version != "":
+		return b.Type.Version
+	}
+	return r.URL.Query().Get("version")
+}
+
+// needVersion answers 400 when a change or delete does not say which version of
+// the type it starts from. A stale version is answered by the write itself (409).
+func (s *server) needVersion(w http.ResponseWriter, req types.Request) bool {
+	if req.Version != "" || (req.Type != nil && req.Type.Version != "") {
+		return true
+	}
+	writeError(w, http.StatusBadRequest, "bad_request", "version is required: send the version of the type you read (GET /api/types/{name})")
+	return false
+}
+
 type typeBody struct {
+	Version    string            `json:"version"`
 	Type       *types.Type       `json:"type"`
 	Migrations []types.Migration `json:"migrations"`
 	Delete     bool              `json:"delete"`
@@ -111,7 +133,7 @@ func (s *server) typesPlan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	name := r.PathValue("name")
-	req := types.Request{Name: name, Type: b.Type, Migrations: b.Migrations}
+	req := types.Request{Name: name, Type: b.Type, Migrations: b.Migrations, Version: b.version(r)}
 	switch {
 	case b.Delete:
 		req.Op = types.OpDelete
@@ -159,14 +181,22 @@ func (s *server) typesUpdate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_request", "type is required")
 		return
 	}
-	s.writeType(w, r, types.Request{Op: types.OpUpdate, Name: r.PathValue("name"), Type: b.Type, Migrations: b.Migrations}, http.StatusOK)
+	req := types.Request{Op: types.OpUpdate, Name: r.PathValue("name"), Type: b.Type, Migrations: b.Migrations, Version: b.version(r)}
+	if !s.needVersion(w, req) {
+		return
+	}
+	s.writeType(w, r, req, http.StatusOK)
 }
 
 func (s *server) typesDelete(w http.ResponseWriter, r *http.Request) {
 	if !s.writable(w, r, roles.Manage) {
 		return
 	}
-	s.writeType(w, r, types.Request{Op: types.OpDelete, Name: r.PathValue("name")}, http.StatusOK)
+	req := types.Request{Op: types.OpDelete, Name: r.PathValue("name"), Version: r.URL.Query().Get("version")}
+	if !s.needVersion(w, req) {
+		return
+	}
+	s.writeType(w, r, req, http.StatusOK)
 }
 
 // writeType commits a type change through the Git write path: one commit with
@@ -192,7 +222,10 @@ func nonNilStrings(s []string) []string {
 
 func (s *server) typeFailure(w http.ResponseWriter, err error) {
 	var pe *types.PlanError
+	var ve *types.VersionError
 	switch {
+	case errors.As(err, &ve):
+		writeError(w, http.StatusConflict, "conflict", ve.Error(), "current", ve.Current)
 	case errors.As(err, &pe):
 		writeError(w, http.StatusUnprocessableEntity, "refused", err.Error(), "plan", pe.Plan)
 	case errors.Is(err, types.ErrUnknownType):

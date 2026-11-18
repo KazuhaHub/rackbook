@@ -1,8 +1,7 @@
 package tokens
 
 import (
-	"net/http"
-	"net/netip"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -64,39 +63,6 @@ func TestParseValidatesTheBuiltInSchema(t *testing.T) {
 	}
 }
 
-func TestClientIPTrustsTheHeaderOnlyFromProxies(t *testing.T) {
-	trusted, err := ParseCIDRs([]string{"10.0.0.0/8", "::1"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	req := func(remote, hdr string) *http.Request {
-		r, _ := http.NewRequest("GET", "/", nil)
-		r.RemoteAddr = remote
-		if hdr != "" {
-			r.Header.Set("CF-Connecting-IP", hdr)
-		}
-		return r
-	}
-	for _, c := range []struct{ remote, hdr, want string }{
-		{"10.1.2.3:555", "203.0.113.7", "203.0.113.7"},
-		{"[::1]:555", "203.0.113.7", "203.0.113.7"},
-		{"198.51.100.1:555", "203.0.113.7", "198.51.100.1"}, // not a proxy: header ignored
-		{"10.1.2.3:555", "garbage", "10.1.2.3"},
-		{"10.1.2.3:555", "", "10.1.2.3"},
-	} {
-		if got := ClientIP(req(c.remote, c.hdr), trusted); got != c.want {
-			t.Errorf("%+v: %s", c, got)
-		}
-	}
-	if got := ClientIP(req("10.1.2.3:1", "203.0.113.7"), nil); got != "10.1.2.3" {
-		t.Fatalf("no proxies configured: %s", got)
-	}
-	if _, err := ParseCIDRs([]string{"nope"}); err == nil {
-		t.Fatal("bad CIDR")
-	}
-	_ = netip.Prefix{}
-}
-
 func TestLimiterWindow(t *testing.T) {
 	now := time.Now()
 	l := &Limiter{Max: 3, Window: time.Minute, Now: func() time.Time { return now }}
@@ -115,5 +81,17 @@ func TestLimiterWindow(t *testing.T) {
 	now = now.Add(61 * time.Second)
 	if b, _ := l.Blocked("ip"); b {
 		t.Fatal("window must expire")
+	}
+}
+
+func TestLimiterEvictsLeastRecentlyUsedNotEverything(t *testing.T) {
+	l := &Limiter{Max: 1}
+	l.Fail("victim")
+	for i := 0; i < maxClients; i++ {
+		l.Fail(fmt.Sprintf("c%d", i))
+		l.Blocked("victim") // keeps it recent
+	}
+	if blocked, _ := l.Blocked("victim"); !blocked {
+		t.Fatal("a client that keeps failing must stay blocked when the table is full")
 	}
 }

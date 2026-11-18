@@ -9,8 +9,9 @@
 //   - typ must be at+jwt (RFC 9068; any case, or application/at+jwt). An issuer
 //     that does not set it (Entra) may be configured with require_typ_at_jwt:
 //     false, which also accepts typ JWT or none, but still refuses ID tokens:
-//     typ id_token, a token whose aud is not the configured audience, and a
-//     token with a nonce but no scope.
+//     typ id_token, a token whose aud is not the configured audience, a token
+//     with neither scope nor scp, and one with at_hash, c_hash, nonce or
+//     auth_time but no scope.
 //   - iss and aud must equal the configured values exactly (aud may be an array
 //     that contains the audience); exp and sub are required; iat and nbf are
 //     honoured with 60 s of clock skew.
@@ -20,8 +21,10 @@
 //     configured one; or jwks_url from the config. Everything is fetched over
 //     HTTPS (http only for localhost), cached, and refetched at most once a
 //     minute, on an unknown kid or when the cache is older than KeyTTL.
-//   - Opaque tokens are checked by RFC 7662 introspection when the issuer has
-//     an introspection block (results cached 60 s).
+//   - Opaque tokens are checked by RFC 7662 introspection, only at an issuer
+//     that opted in with an introspection block: the one whose token_prefix
+//     the token starts with, or the single introspecting issuer. Answers are
+//     cached 60 s (refusals 10 s) in a bounded LRU.
 package oauth
 
 import (
@@ -46,6 +49,7 @@ import (
 	"github.com/go-jose/go-jose/v4/jwt"
 
 	"github.com/kazuhahub/rackbook/internal/config"
+	"github.com/kazuhahub/rackbook/internal/lru"
 )
 
 const (
@@ -82,6 +86,32 @@ type Claims struct {
 	Scopes   []string
 	Expiry   time.Time
 	JTI      string
+	// VerifiedEmail is the token's email claim when it can be trusted: the token
+	// says email_verified: true, or the issuer is configured emails_verified.
+	// Empty otherwise. Only this may be matched against e-mail role entries.
+	VerifiedEmail string
+}
+
+func verifiedEmail(all map[string]any, ti config.TrustedIssuer) string {
+	e, _ := all["email"].(string)
+	e = strings.TrimSpace(e)
+	if e == "" || !strings.Contains(e, "@") {
+		return ""
+	}
+	switch x := all["email_verified"].(type) {
+	case bool:
+		if x {
+			return e
+		}
+	case string:
+		if x == "true" {
+			return e
+		}
+	}
+	if ti.EmailsVerified {
+		return e
+	}
+	return ""
 }
 
 // Verifier verifies tokens for the issuers of auth.mcp.trusted_issuers. It
@@ -98,7 +128,7 @@ type Verifier struct {
 
 	mu      sync.Mutex
 	issuers map[string]*issuerState
-	intro   map[[32]byte]introEntry
+	intro   *lru.Cache[[32]byte, introEntry]
 }
 
 type introEntry struct {
@@ -113,6 +143,7 @@ type issuerState struct {
 	attempted time.Time // last JWKS attempt
 	introURL  string
 	introTry  time.Time
+	flight    *flight // JWKS fetch in progress
 }
 
 func (v *Verifier) now() time.Time {
@@ -233,12 +264,20 @@ func (v *Verifier) Verify(ctx context.Context, raw string, m config.AuthMCP) (*C
 	} else if s, ok := all["appid"].(string); ok { // Entra v1
 		c.ClientID = s
 	}
-	c.Scopes, _ = scopesOf(all, ti.ScopeClaim)
+	var scopePresent bool
+	c.Scopes, scopePresent = scopesOf(all, ti.ScopeClaim)
+	c.VerifiedEmail = verifiedEmail(all, *ti)
 	hasScope := len(c.Scopes) > 0
 	if !atJWT {
-		// Not an RFC 9068 token, so make sure it is not an ID token in disguise.
-		if _, nonce := all["nonce"]; nonce && !hasScope {
-			return nil, invalid("looks like an ID token (nonce, no scope)")
+		// Not an RFC 9068 token, so make sure it is not an ID token in disguise:
+		// an access token carries scope (or scp), an ID token does not.
+		if !scopePresent {
+			return nil, invalid("no scope or scp claim (not accepted without typ at+jwt)")
+		}
+		for _, idClaim := range []string{"at_hash", "c_hash", "nonce", "auth_time"} {
+			if _, ok := all[idClaim]; ok && !hasScope {
+				return nil, invalid("looks like an ID token (%s, no scope)", idClaim)
+			}
 		}
 	}
 	if cl := ti.UsernameClaim; cl != "" && cl != "sub" {
@@ -299,49 +338,97 @@ func scopesOf(all map[string]any, claim string) (scopes []string, present bool) 
 	return nil, false
 }
 
-// key returns the issuer's key for kid, fetching the JWKS when needed.
+// flight is one JWKS fetch in progress; requests that need its result wait on
+// done, requests whose key is already cached do not wait at all.
+type flight struct{ done chan struct{} }
+
+// key returns the issuer's key for kid, fetching the JWKS when needed. The
+// issuer's mutex is never held during a fetch, so a slow or hung issuer does not
+// block tokens whose key is already known.
 func (v *Verifier) key(ctx context.Context, ti config.TrustedIssuer, kid string) (*jose.JSONWebKey, error) {
 	st := v.state(ti.Issuer + "\x00" + ti.JWKSURL)
 	st.mu.Lock()
-	defer st.mu.Unlock()
 	now := v.now()
-	stale := st.keys == nil || now.Sub(st.keysAt) >= KeyTTL
-	if k, ok := st.keys[kid]; ok && !stale {
+	k, known := st.keys[kid]
+	fresh := st.keys != nil && now.Sub(st.keysAt) < KeyTTL
+	if known && (fresh || st.flight != nil) {
+		st.mu.Unlock()
 		return &k, nil
 	}
-	// Unknown kid or an old cache: refetch, but never more than once a minute.
-	if st.attempted.IsZero() || now.Sub(st.attempted) >= MinRefetch {
-		st.attempted = now
-		if err := v.refresh(ctx, st, ti); err != nil && st.keys == nil {
-			return nil, fmt.Errorf("%w: cannot load the issuer's keys: %v", ErrInvalid, err)
+	if f := st.flight; f != nil {
+		// An unknown kid while a fetch runs: wait for it instead of starting another.
+		st.mu.Unlock()
+		select {
+		case <-f.done:
+		case <-ctx.Done():
+			return nil, invalid("cannot load the issuer's keys: %v", ctx.Err())
 		}
-		// With keys already cached, keep verifying when the issuer is briefly down.
+		st.mu.Lock()
+		k, known = st.keys[kid]
+		st.mu.Unlock()
+		if known {
+			return &k, nil
+		}
+		return nil, invalid("unknown signing key")
 	}
-	if k, ok := st.keys[kid]; ok {
+	// Unknown kid or an old cache: refetch, but never more than once a minute.
+	if !st.attempted.IsZero() && now.Sub(st.attempted) < MinRefetch {
+		st.mu.Unlock()
+		if known {
+			return &k, nil
+		}
+		return nil, invalid("unknown signing key")
+	}
+	f := &flight{done: make(chan struct{})}
+	st.flight, st.attempted = f, now
+	st.mu.Unlock()
+
+	keys, introURL, err := v.fetchKeys(context.WithoutCancel(ctx), ti)
+
+	st.mu.Lock()
+	if err == nil {
+		st.keys, st.keysAt = keys, v.now()
+		if introURL != "" {
+			st.introURL = introURL
+		}
+	}
+	st.flight = nil
+	close(f.done)
+	k, known = st.keys[kid]
+	haveKeys := st.keys != nil
+	st.mu.Unlock()
+	if err != nil && !haveKeys {
+		return nil, fmt.Errorf("%w: cannot load the issuer's keys: %v", ErrInvalid, err)
+	}
+	// With keys already cached, keep verifying when the issuer is briefly down.
+	if known {
 		return &k, nil
 	}
 	return nil, invalid("unknown signing key")
 }
 
-func (v *Verifier) refresh(ctx context.Context, st *issuerState, ti config.TrustedIssuer) error {
+// fetchKeys downloads the issuer's JWKS (and learns its introspection endpoint
+// from the metadata). It does not touch the issuer's state.
+func (v *Verifier) fetchKeys(ctx context.Context, ti config.TrustedIssuer) (map[string]jose.JSONWebKey, string, error) {
 	jwksURL := ti.JWKSURL
+	introURL := ""
 	if jwksURL == "" {
 		md, err := v.discover(ctx, ti.Issuer)
 		if err != nil {
-			return err
+			return nil, "", err
 		}
 		jwksURL = md.JWKSURI
 		if u, err := url.Parse(jwksURL); err != nil || u.Scheme != "https" && !isLocalHTTP(u) {
-			return fmt.Errorf("jwks_uri %q must be https", jwksURL)
+			return nil, "", fmt.Errorf("jwks_uri %q must be https", jwksURL)
 		}
-		st.introURL = md.IntrospectionEndpoint
+		introURL = md.IntrospectionEndpoint
 	}
 	if err := config.ValidURL(jwksURL, true); err != nil {
-		return fmt.Errorf("jwks_uri: %w", err)
+		return nil, "", fmt.Errorf("jwks_uri: %w", err)
 	}
 	var set jose.JSONWebKeySet
 	if err := v.getJSON(ctx, jwksURL, &set); err != nil {
-		return err
+		return nil, "", err
 	}
 	keys := map[string]jose.JSONWebKey{}
 	for _, k := range set.Keys {
@@ -371,8 +458,7 @@ func (v *Verifier) refresh(ctx context.Context, st *issuerState, ti config.Trust
 		}
 		keys[k.KeyID] = k
 	}
-	st.keys, st.keysAt = keys, v.now()
-	return nil
+	return keys, introURL, nil
 }
 
 // metadataURLs are where an issuer's metadata may be: RFC 8414 (the well-known
@@ -477,11 +563,51 @@ func (v *Verifier) doJSON(req *http.Request, out any) error {
 
 // Introspection (RFC 7662) ---------------------------------------------------
 
+// IsOpaque reports whether raw is not a JWT, so it can only be checked by
+// introspection.
+func IsOpaque(raw string) bool { return !looksLikeJWT(raw) }
+
+// maxIntrospectionCache bounds the introspection answers kept in memory; the
+// least recently used one is evicted first.
+const maxIntrospectionCache = 2000
+
+// NegativeTTL is how long a refused opaque token is remembered, so a repeated
+// bad token does not reach the introspection endpoint every time.
+const NegativeTTL = 10 * time.Second
+
+// introspector picks the one issuer an opaque token is sent to: the issuer
+// whose introspection token_prefix the token starts with, else the only issuer
+// that introspects. A token is never sent to every issuer.
+func introspector(raw string, m config.AuthMCP) (*config.TrustedIssuer, error) {
+	var all []*config.TrustedIssuer
+	for i := range m.TrustedIssuers {
+		ti := &m.TrustedIssuers[i]
+		if ti.Introspection == nil {
+			continue
+		}
+		all = append(all, ti)
+		if p := ti.Introspection.TokenPrefix; p != "" && strings.HasPrefix(raw, p) {
+			return ti, nil
+		}
+	}
+	switch {
+	case len(all) == 0:
+		return nil, invalid("opaque tokens are not accepted (no issuer has an introspection block)")
+	case len(all) == 1 && all[0].Introspection.TokenPrefix == "":
+		return all[0], nil
+	}
+	return nil, invalid("opaque token matches no issuer's introspection token_prefix")
+}
+
 func (v *Verifier) verifyOpaque(ctx context.Context, raw string, m config.AuthMCP) (*Claims, error) {
-	key := sha256.Sum256([]byte(raw))
+	ti, err := introspector(raw, m)
+	if err != nil {
+		return nil, err
+	}
+	key := sha256.Sum256([]byte(ti.Issuer + "\x00" + raw))
 	now := v.now()
 	v.mu.Lock()
-	e, ok := v.intro[key]
+	e, ok := v.introCache().Get(key)
 	v.mu.Unlock()
 	if ok && now.Before(e.until) {
 		if e.claims == nil {
@@ -491,36 +617,27 @@ func (v *Verifier) verifyOpaque(ctx context.Context, raw string, m config.AuthMC
 			return e.claims, nil
 		}
 	}
-	var lastErr error
-	tried := false
-	for i := range m.TrustedIssuers {
-		ti := m.TrustedIssuers[i]
-		if ti.Introspection == nil {
-			continue
-		}
-		tried = true
-		c, err := v.introspect(ctx, raw, ti, m.Audience(ti))
-		if err != nil {
-			lastErr = err
-			continue
-		}
-		v.cacheIntro(key, c, now.Add(IntrospectionTTL))
-		return c, nil
+	c, err := v.introspect(ctx, raw, *ti, m.Audience(*ti))
+	if err != nil {
+		v.cacheIntro(key, nil, now.Add(NegativeTTL))
+		return nil, err
 	}
-	if !tried {
-		return nil, invalid("opaque tokens are not accepted (no issuer has an introspection block)")
+	v.cacheIntro(key, c, now.Add(IntrospectionTTL))
+	return c, nil
+}
+
+// introCache returns the cache; v.mu is held.
+func (v *Verifier) introCache() *lru.Cache[[32]byte, introEntry] {
+	if v.intro == nil {
+		v.intro = lru.New[[32]byte, introEntry](maxIntrospectionCache)
 	}
-	v.cacheIntro(key, nil, now.Add(10*time.Second))
-	return nil, lastErr
+	return v.intro
 }
 
 func (v *Verifier) cacheIntro(key [32]byte, c *Claims, until time.Time) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
-	if v.intro == nil || len(v.intro) > 2000 {
-		v.intro = map[[32]byte]introEntry{}
-	}
-	v.intro[key] = introEntry{c, until}
+	v.introCache().Put(key, introEntry{c, until})
 }
 
 func (v *Verifier) introspect(ctx context.Context, raw string, ti config.TrustedIssuer, aud string) (*Claims, error) {
@@ -594,6 +711,7 @@ func (v *Verifier) introspect(ctx context.Context, raw string, ti config.Trusted
 	c := &Claims{Issuer: ti.Issuer, Alias: ti.Name(), Kind: kindOf(ti), Subject: sub, Username: sub, Expiry: exp}
 	c.ClientID, _ = out["client_id"].(string)
 	c.Scopes, _ = scopesOf(out, ti.ScopeClaim)
+	c.VerifiedEmail = verifiedEmail(out, ti)
 	if cl := ti.UsernameClaim; cl != "" && cl != "sub" {
 		u, _ := out[cl].(string)
 		if strings.TrimSpace(u) == "" {

@@ -37,11 +37,15 @@ type Login struct {
 // OIDC is auth.oidc. The client secret is never read from the file: it comes
 // from RACKBOOK_OIDC_CLIENT_SECRET.
 type OIDC struct {
-	Issuer         string   `yaml:"issuer"`
-	ClientID       string   `yaml:"client_id"`
-	Scopes         []string `yaml:"scopes"`
-	IdentityClaim  string   `yaml:"identity_claim"` // default preferred_username
-	NameClaim      string   `yaml:"name_claim"`     // default name
+	Issuer        string   `yaml:"issuer"`
+	ClientID      string   `yaml:"client_id"`
+	Scopes        []string `yaml:"scopes"`
+	IdentityClaim string   `yaml:"identity_claim"` // default preferred_username
+	// Identity is how a login is named: "claim" (default) uses identity_claim,
+	// which must be controlled by the IdP, not editable by users; "subject"
+	// uses the stable iss|sub pair, written oidc:<sub> in auth.roles.
+	Identity       string   `yaml:"identity"`
+	NameClaim      string   `yaml:"name_claim"` // default name
 	AllowedTenants []string `yaml:"allowed_tenants"`
 }
 
@@ -132,6 +136,33 @@ func (s Session) AbsoluteOrDefault() time.Duration {
 	return DefaultSessionAbsolute
 }
 
+// IdentityMode values of auth.oidc.identity.
+const (
+	IdentityClaim   = "claim"
+	IdentitySubject = "subject"
+)
+
+// BySubject reports identity: subject.
+func (o OIDC) BySubject() bool { return o.Identity == IdentitySubject }
+
+// IdentityClaimWarning returns why the configured identity claim may be
+// user-controlled (so anyone who can edit it could take over another identity),
+// or "" when it is fine: identity: subject, email (which must be verified),
+// or Entra's upn / preferred_username with allowed_tenants set.
+func (o OIDC) IdentityClaimWarning() string {
+	if o.BySubject() {
+		return ""
+	}
+	claim, _ := o.ClaimsOrDefault()
+	switch {
+	case claim == "email":
+		return ""
+	case (claim == "upn" || claim == "preferred_username") && len(o.AllowedTenants) > 0:
+		return ""
+	}
+	return fmt.Sprintf("auth.oidc.identity_claim %q must be controlled by the identity provider, not editable by users or tenants you do not trust; set auth.oidc.allowed_tenants (Entra), use email (verified), or set auth.oidc.identity: subject", claim)
+}
+
 // ClaimsOrDefault returns the identity and name claims.
 func (o OIDC) ClaimsOrDefault() (identity, name string) {
 	identity, name = o.IdentityClaim, o.NameClaim
@@ -170,6 +201,9 @@ func (l *Login) check() error {
 		if err := l.OIDC.Check(); err != nil {
 			return err
 		}
+		if l.OIDC.BySubject() && l.Passkeys.Enabled {
+			return fmt.Errorf("auth.passkeys cannot be combined with auth.oidc.identity: subject (passkeys are stored by e-mail identity)")
+		}
 	}
 	return nil
 }
@@ -182,6 +216,11 @@ func (o OIDC) Check() error {
 	}
 	if o.ClientID == "" {
 		return fmt.Errorf("auth.oidc.client_id is required")
+	}
+	switch o.Identity {
+	case "", IdentityClaim, IdentitySubject:
+	default:
+		return fmt.Errorf("auth.oidc.identity must be claim or subject, got %q", o.Identity)
 	}
 	return nil
 }

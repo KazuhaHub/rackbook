@@ -225,3 +225,28 @@ func TestAnyOAuthIssuerEntraStyle(t *testing.T) {
 		t.Fatalf("%d", code)
 	}
 }
+
+func TestMatchEmailUsesOnlyVerifiedEmails(t *testing.T) {
+	entra := oauthtest.NewWith(t, oauthtest.Config{Alg: "RS256", Path: "/v2.0", Discovery: "oidc"})
+	h := newHarness(t, hopts{git: true,
+		rolesYAML:   "    admin: [boss@example.com]\n    editor: [\"carol@example.com\"]\n",
+		extraIssuer: "issuer: " + entra.URL + ", alias: entra, audience: \"api://rackbook\", require_typ_at_jwt: false, username_claim: preferred_username, algorithms: [RS256]",
+		mcpYAML:     "    match_email: true\n    scopes: {write: rackbook.write}\n"})
+	mint := func(extra map[string]any) string {
+		extra["preferred_username"] = "carol@example.com"
+		return entra.Mint(oauthtest.Options{Audience: "api://rackbook", Typ: "JWT", ClientID: "-", Now: h.now, Scp: "rackbook.write", Extra: extra})
+	}
+	// A username that looks like an address, or an unverified email, grants nothing.
+	for name, extra := range map[string]map[string]any{
+		"username only":    {},
+		"unverified email": {"email": "carol@example.com"},
+		"email_verified 0": {"email": "carol@example.com", "email_verified": false},
+	} {
+		if code, _, _ := h.do("POST", "/mcp", mint(extra), map[string]any{}); code != 403 {
+			t.Errorf("%s: %d, want 403", name, code)
+		}
+	}
+	if code, _, _ := h.do("POST", "/mcp", mint(map[string]any{"email": "carol@example.com", "email_verified": true}), map[string]any{}); code == 403 || code == 401 {
+		t.Errorf("a verified email must match: %d", code)
+	}
+}

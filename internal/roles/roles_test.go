@@ -179,11 +179,14 @@ func TestMatchingDependsOnTheAuthMethod(t *testing.T) {
 	}
 	// Opt-in: an e-mail username may match exact and domain entries, nothing else.
 	opt := Options{MCPMatchEmail: true}
-	if got := evalOpt(t, noWild, opt, Subject{ID: "boss@x.org", Method: "mcphub"}); got != Admin {
+	if got := evalOpt(t, noWild, opt, Subject{ID: "boss@x.org", Email: "boss@x.org", Method: "mcphub"}); got != Admin {
 		t.Fatal(got)
 	}
-	if got := evalOpt(t, noWild, opt, Subject{ID: "x@x.org", Method: "mcphub"}); got != Editor {
+	if got := evalOpt(t, noWild, opt, Subject{ID: "x@x.org", Email: "x@x.org", Method: "mcphub"}); got != Editor {
 		t.Fatal(got)
+	}
+	if got := evalOpt(t, noWild, opt, Subject{ID: "boss@x.org", Method: "mcphub"}); got != None {
+		t.Fatalf("a username that looks like an address, without a verified Email, never matches: %v", got)
 	}
 	if got := evalOpt(t, noWild, opt, Subject{ID: "alice", Method: "mcphub", Groups: []string{"ops"}}); got != None {
 		t.Fatalf("a non-email username never matches e-mail entries, groups or *: %v", got)
@@ -224,12 +227,30 @@ func TestOAuthEntries(t *testing.T) {
 		t.Fatal("oauth entries must not match mcphub users")
 	}
 	pe, _ := Compile(spec, Options{MCPMatchEmail: true})
-	if pe.Evaluate(Subject{ID: "bob@example.com", Method: "oauth", Issuer: "entra"}) != Viewer || pe.Evaluate(Subject{ID: "x@example.org", Method: "oauth", Issuer: "entra"}) != Viewer {
+	if pe.Evaluate(Subject{ID: "bob", Email: "bob@example.com", Method: "oauth", Issuer: "entra"}) != Viewer || pe.Evaluate(Subject{ID: "x", Email: "x@example.org", Method: "oauth", Issuer: "entra"}) != Viewer || pe.Evaluate(Subject{ID: "bob@example.com", Method: "oauth", Issuer: "entra"}) != None {
 		t.Fatal("match_email")
 	}
 	for _, bad := range []string{"oauth:", "oauth:kc", "oauth:kc:", "oauth::bob"} {
 		if _, err := Compile(&Spec{Editor: []string{bad}}, Options{}); err == nil {
 			t.Errorf("%q accepted", bad)
 		}
+	}
+}
+
+func TestOIDCSubjectEntries(t *testing.T) {
+	spec := &Spec{Admin: []string{"oidc:Sub-1"}, Editor: []string{"*@x.org", "group:ops"}, Viewer: []string{"*"}}
+	if got := eval(t, spec, Subject{ID: "oidc:sub-1", Method: "oidc"}); got != Admin {
+		t.Fatalf("listed subject: %v", got)
+	}
+	// An unlisted subject matches no *, domain or group entry.
+	if got := eval(t, spec, Subject{ID: "oidc:sub-2", Method: "oidc", Groups: []string{"ops"}}); got != None {
+		t.Fatalf("unlisted subject: %v", got)
+	}
+	// An oidc: entry matches nothing but a subject login.
+	if got := eval(t, &Spec{Admin: []string{"oidc:sub-1"}}, Subject{ID: "sub-1", Method: "oidc"}); got != None {
+		t.Fatalf("%v", got)
+	}
+	if got := eval(t, &Spec{Admin: []string{"oidc:sub-1"}}, Subject{ID: "oidc:sub-1", Method: "mcphub"}); got != None {
+		t.Fatalf("%v", got)
 	}
 }

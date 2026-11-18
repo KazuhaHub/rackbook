@@ -453,3 +453,53 @@ func TestPRModeNeverSendsTheTokenToAnUnknownHost(t *testing.T) {
 		t.Fatalf("%v", err)
 	}
 }
+
+// subdirRepo is a repository whose rackbook.yml lives in a subdirectory.
+func subdirRepo(t *testing.T) (root, dir string) {
+	t.Helper()
+	root = t.TempDir()
+	dir = filepath.Join(root, "ledger")
+	if err := os.CopyFS(dir, os.DirFS(testutil.CopyExample(t))); err != nil {
+		t.Fatal(err)
+	}
+	sh(t, root, "init", "-b", "main")
+	sh(t, root, "add", ".")
+	sh(t, root, "commit", "-m", "seed")
+	return root, dir
+}
+
+func TestDiscardInASubdirectoryNeverDeletesExistingFiles(t *testing.T) {
+	_, dir := subdirRepo(t)
+	s := open(t, dir, nil)
+	parent, _ := s.repo.Head(context.Background())
+	ssh := filepath.Join(dir, "docs/ledger/services.yml")
+	orig, _ := os.ReadFile(ssh)
+	os.WriteFile(ssh, append(append([]byte{}, orig...), "# ours\n"...), 0o644)
+	created := filepath.Join(dir, "docs/ledger/new.yml")
+	os.WriteFile(created, []byte("x\n"), 0o644)
+	s.discard(context.Background(), parent, []string{"docs/ledger/services.yml", "docs/ledger/new.yml"})
+	if got, err := os.ReadFile(ssh); err != nil || string(got) != string(orig) {
+		t.Fatalf("an existing file must be restored, not deleted: %v", err)
+	}
+	if _, err := os.Stat(created); !os.IsNotExist(err) {
+		t.Fatal("a created file must be removed")
+	}
+}
+
+func TestFailedCommitInASubdirectoryKeepsFiles(t *testing.T) {
+	_, dir := subdirRepo(t)
+	s := open(t, dir, nil)
+	// A pre-commit-independent failure: make the commit fail through a broken index lock.
+	lock := filepath.Join(strings.TrimSpace(sh(t, dir, "rev-parse", "--absolute-git-dir")), "index.lock")
+	os.WriteFile(lock, nil, 0o644)
+	defer os.Remove(lock)
+	if _, err := s.Write(context.Background(), sshEdit(t, s, "TCP 22"), editor); err == nil {
+		t.Fatal("expected a failure")
+	}
+	os.Remove(lock)
+	for _, f := range []string{"docs/ledger/services.yml", "docs/ledger/todo.yml", "rackbook.yml"} {
+		if _, err := os.Stat(filepath.Join(dir, f)); err != nil {
+			t.Errorf("%s was deleted: %v", f, err)
+		}
+	}
+}

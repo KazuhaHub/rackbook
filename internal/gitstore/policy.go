@@ -38,7 +38,7 @@ func WriteOptionsFor(who *auth.Identity, cfg *config.Config, kind edit.Kind, col
 	}
 	direct := who.Method == auth.MethodToken && who.DirectPush
 	if (who.Method == auth.MethodMCPHub || who.Method == auth.MethodOAuth) && cfg != nil {
-		direct = directPushListed(who, cfg.Auth.MCP.DirectPush, collection)
+		direct = directPushListed(who, cfg.Auth.MCP, collection)
 	}
 	if direct {
 		opts.ForcePR = false
@@ -46,10 +46,13 @@ func WriteOptionsFor(who *auth.Identity, cfg *config.Config, kind edit.Kind, col
 	return opts
 }
 
-func directPushListed(who *auth.Identity, rules []config.DirectPush, collection string) bool {
+// directPushListed matches by method: mcphub:<user> only an MCPHub identity,
+// oauth:<alias>:<user> only that issuer's, an e-mail address only with
+// match_email and a verified e-mail on the identity. Role names work for both.
+func directPushListed(who *auth.Identity, m config.AuthMCP, collection string) bool {
 	id := roles.FoldASCII(who.ID)
 	role := who.EffectiveRole().String()
-	for _, r := range rules {
+	for _, r := range m.DirectPush {
 		onCollection := false
 		for _, c := range r.Collections {
 			onCollection = onCollection || c == "*" || c == collection
@@ -59,7 +62,16 @@ func directPushListed(who *auth.Identity, rules []config.DirectPush, collection 
 		}
 		for _, u := range r.Users {
 			u = roles.FoldASCII(strings.TrimSpace(u))
-			if u == id || u == "mcphub:"+id || u == "oauth:"+roles.FoldASCII(who.Issuer)+":"+id {
+			switch {
+			case strings.HasPrefix(u, "mcphub:"):
+				if who.Method == auth.MethodMCPHub && u == "mcphub:"+id {
+					return true
+				}
+			case strings.HasPrefix(u, "oauth:"):
+				if who.Method == auth.MethodOAuth && u == "oauth:"+roles.FoldASCII(who.Issuer)+":"+id {
+					return true
+				}
+			case m.MatchEmail && who.Email != "" && u == roles.FoldASCII(who.Email):
 				return true
 			}
 		}

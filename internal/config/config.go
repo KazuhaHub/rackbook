@@ -231,6 +231,9 @@ type TrustedIssuer struct {
 	// ScopeClaim names the claim that carries the scopes. Default: scope, then
 	// scp (a space-separated string or an array).
 	ScopeClaim string `yaml:"scope_claim"`
+	// EmailsVerified says the issuer only puts e-mail addresses it has verified
+	// in the email claim, so they may be trusted without email_verified: true.
+	EmailsVerified bool `yaml:"emails_verified"`
 	// Introspection enables RFC 7662 for opaque (non-JWT) tokens.
 	Introspection *Introspection `yaml:"introspection"`
 }
@@ -243,6 +246,10 @@ type Introspection struct {
 	// ClientSecretEnv names the environment variable that holds the client
 	// secret (never the secret itself).
 	ClientSecretEnv string `yaml:"client_secret_env"`
+	// TokenPrefix selects this issuer for opaque tokens that start with it. It is
+	// required for every introspecting issuer when more than one introspects: a
+	// token is only ever sent to one issuer.
+	TokenPrefix string `yaml:"token_prefix"`
 }
 
 // NeedTypATJWT reports whether typ at+jwt is required.
@@ -350,6 +357,12 @@ func (m AuthMCP) validate() error {
 	}
 	seen := map[string]bool{}
 	aliases := map[string]bool{}
+	introspecting, prefixes := 0, map[string]bool{}
+	for _, t := range m.TrustedIssuers {
+		if t.Introspection != nil {
+			introspecting++
+		}
+	}
 	for i, t := range m.TrustedIssuers {
 		if err := ValidURL(t.Issuer, false); err != nil {
 			return fmt.Errorf("auth.mcp.trusted_issuers[%d].issuer: %w", i, err)
@@ -383,6 +396,14 @@ func (m AuthMCP) validate() error {
 					return fmt.Errorf("%s.introspection.endpoint: %w", at, err)
 				}
 			}
+			if p := in.TokenPrefix; p != "" {
+				if prefixes[p] {
+					return fmt.Errorf("%s.introspection.token_prefix %q is used twice", at, p)
+				}
+				prefixes[p] = true
+			} else if introspecting > 1 {
+				return fmt.Errorf("%s.introspection.token_prefix is required when several issuers introspect: an opaque token is only sent to the issuer whose prefix it carries", at)
+			}
 			if in.ClientID == "" || in.ClientSecretEnv == "" {
 				return fmt.Errorf("%s.introspection needs client_id and client_secret_env (the name of the environment variable that holds the secret)", at)
 			}
@@ -402,6 +423,16 @@ func (m AuthMCP) validate() error {
 		}
 		if len(d.Collections) == 0 {
 			return fmt.Errorf("auth.mcp.direct_push[%d]: list collections (or \"*\")", i)
+		}
+		for _, u := range d.Users {
+			u = roles.FoldASCII(strings.TrimSpace(u))
+			switch {
+			case strings.HasPrefix(u, "mcphub:") && len(u) > len("mcphub:"):
+			case strings.HasPrefix(u, "oauth:") && strings.Count(u, ":") >= 2:
+			case strings.Contains(u, "@") && m.MatchEmail:
+			default:
+				return fmt.Errorf("auth.mcp.direct_push[%d]: user %q must be mcphub:<user>, oauth:<alias>:<user>, or an e-mail address with auth.mcp.match_email", i, u)
+			}
 		}
 		for _, r := range d.Roles {
 			if r != "admin" && r != "editor" {
@@ -443,6 +474,9 @@ func (c *Config) Resolve(rel string) (string, error) {
 	}
 	if r, err := filepath.Rel(c.Dir, abs); err == nil && strings.EqualFold(strings.SplitN(filepath.ToSlash(r), "/", 2)[0], StateDir) {
 		return "", fmt.Errorf("path %q is inside %s/, which belongs to Rackbook (passkeys, tokens) and is not part of the ledger", rel, StateDir)
+	}
+	if r, err := filepath.Rel(c.Dir, abs); err == nil && strings.EqualFold(strings.SplitN(filepath.ToSlash(r), "/", 2)[0], ".git") {
+		return "", fmt.Errorf("path %q is inside .git/, which is not part of the ledger", rel)
 	}
 	// Symlinks must not lead out either: resolve the longest existing prefix.
 	root, err := filepath.EvalSymlinks(c.Dir)
@@ -577,8 +611,12 @@ func (c *Config) finish() error {
 			return fmt.Errorf("collection %q needs file and schema", col.Name)
 		}
 		for _, p := range []string{col.File, col.Schema} {
-			if _, err := c.Resolve(p); err != nil {
+			abs, err := c.Resolve(p)
+			if err != nil {
 				return fmt.Errorf("collection %q: %w", col.Name, err)
+			}
+			if c.Path != "" && strings.EqualFold(filepath.Clean(abs), filepath.Clean(c.Path)) {
+				return fmt.Errorf("collection %q: %s is the config file itself, not a data or schema file", col.Name, p)
 			}
 			if IsStatePath(p) {
 				return fmt.Errorf("collection %q: %s is Rackbook's own state (.rackbook/), not a data file", col.Name, p)

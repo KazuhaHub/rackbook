@@ -20,10 +20,14 @@
 //	*                  anyone authenticated
 //
 // Which entries can match depends on how the identity was authenticated.
+// A browser login named by its subject (auth.oidc.identity: subject) has the
+// identity oidc:<sub> and matches only oidc:<sub> entries.
+//
 // Identities from oidc, passkey, cloudflare-access, none and cli match every
 // kind except mcphub:. MCPHub identities match only mcphub: entries, and the
-// exact and *@domain entries as well when the MCPHub username is an e-mail
-// address and Options.MCPMatchEmail (auth.mcp.match_email) is on. Identities
+// exact and *@domain entries as well when the token carries a verified e-mail
+// address (email_verified, or an issuer with emails_verified) and
+// Options.MCPMatchEmail (auth.mcp.match_email) is on. Identities
 // from another OAuth issuer (method "oauth") match only oauth:<alias>:<user>
 // entries, and the same e-mail entries under the same option. Token
 // identities match nothing: they take their creator's role.
@@ -120,6 +124,12 @@ func FoldASCII(s string) string {
 	return s
 }
 
+// verifiedEmail is the subject's e-mail address for e-mail entries. For MCPHub
+// and OAuth identities the caller sets Email only when the issuer vouches for
+// it (email_verified or emails_verified), so a username that merely looks like
+// an address never matches.
+func verifiedEmail(s Subject) string { return FoldASCII(strings.TrimSpace(s.Email)) }
+
 // Options tunes how entries match.
 type Options struct {
 	// MCPMatchEmail lets exact and *@domain entries match MCPHub identities
@@ -149,6 +159,7 @@ const (
 	kOAuth
 	kGroup
 	kAny
+	kOIDC
 )
 
 func parseEntry(s string) (entry, error) {
@@ -170,6 +181,11 @@ func parseEntry(s string) (entry, error) {
 			return entry{}, fmt.Errorf("%q: want oauth:<issuer-alias>:<user>", s)
 		}
 		return entry{kind: kOAuth, alias: alias, value: user}, nil
+	case strings.HasPrefix(s, "oidc:"):
+		if v := strings.TrimSpace(s[len("oidc:"):]); v != "" {
+			return entry{kind: kOIDC, value: v}, nil
+		}
+		return entry{}, fmt.Errorf("%q: want oidc:<sub>", s)
 	case s == "mcphub:*":
 		return entry{kind: kMCPHub, value: "*"}, nil
 	case strings.HasPrefix(s, "mcphub:"):
@@ -210,9 +226,9 @@ func (e entry) matches(s Subject, opt Options) bool {
 		case kMCPHub:
 			return e.value == "*" || s.ID == e.value
 		case kExact:
-			return opt.MCPMatchEmail && strings.Contains(s.ID, "@") && s.ID == e.value
+			return opt.MCPMatchEmail && verifiedEmail(s) != "" && verifiedEmail(s) == e.value
 		case kDomain:
-			return opt.MCPMatchEmail && strings.Contains(s.ID, "@") && strings.HasSuffix(s.ID, e.value)
+			return opt.MCPMatchEmail && verifiedEmail(s) != "" && strings.HasSuffix(verifiedEmail(s), e.value)
 		}
 		return false
 	}
@@ -221,13 +237,21 @@ func (e entry) matches(s Subject, opt Options) bool {
 		case kOAuth:
 			return e.alias == FoldASCII(s.Issuer) && (e.value == "*" || s.ID == e.value)
 		case kExact:
-			return opt.MCPMatchEmail && strings.Contains(s.ID, "@") && s.ID == e.value
+			return opt.MCPMatchEmail && verifiedEmail(s) != "" && verifiedEmail(s) == e.value
 		case kDomain:
-			return opt.MCPMatchEmail && strings.Contains(s.ID, "@") && strings.HasSuffix(s.ID, e.value)
+			return opt.MCPMatchEmail && verifiedEmail(s) != "" && strings.HasSuffix(verifiedEmail(s), e.value)
 		}
 		return false
 	}
 	if !plainMethods[s.Method] { // tokens, unknown methods: no direct role
+		return false
+	}
+	// A login named by its subject (auth.oidc.identity: subject) matches
+	// oidc:<sub> entries only, and those match nothing else.
+	if strings.HasPrefix(s.ID, "oidc:") {
+		return s.Method == "oidc" && e.kind == kOIDC && s.ID == "oidc:"+e.value
+	}
+	if e.kind == kOIDC {
 		return false
 	}
 	switch e.kind {

@@ -1,12 +1,10 @@
 package tokens
 
 import (
-	"net"
-	"net/http"
-	"net/netip"
-	"strings"
 	"sync"
 	"time"
+
+	"github.com/kazuhahub/rackbook/internal/lru"
 )
 
 // Limiter counts failed token attempts per client address and blocks a client
@@ -17,7 +15,7 @@ type Limiter struct {
 	Now    func() time.Time
 
 	mu sync.Mutex
-	m  map[string]*bucket
+	m  *lru.Cache[string, *bucket]
 }
 
 type bucket struct {
@@ -49,13 +47,16 @@ func (l *Limiter) Blocked(ip string) (bool, int) {
 	max, w := l.params()
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	b := l.m[ip]
+	if l.m == nil {
+		return false, 0
+	}
+	b, _ := l.m.Get(ip)
 	if b == nil {
 		return false, 0
 	}
 	now := l.now()
 	if now.Sub(b.start) >= w {
-		delete(l.m, ip)
+		l.m.Delete(ip)
 		return false, 0
 	}
 	if b.count >= max {
@@ -64,76 +65,23 @@ func (l *Limiter) Blocked(ip string) (bool, int) {
 	return false, 0
 }
 
+// maxClients bounds the memory of the limiter; the least recently seen clients
+// are forgotten first.
+const maxClients = 10000
+
 // Fail records a failed attempt.
 func (l *Limiter) Fail(ip string) {
 	_, w := l.params()
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.m == nil {
-		l.m = map[string]*bucket{}
+		l.m = lru.New[string, *bucket](maxClients)
 	}
 	now := l.now()
-	if len(l.m) > 10000 { // bounded: drop expired windows, then give up on the rest
-		for k, b := range l.m {
-			if now.Sub(b.start) >= w {
-				delete(l.m, k)
-			}
-		}
-		if len(l.m) > 10000 {
-			l.m = map[string]*bucket{}
-		}
-	}
-	b := l.m[ip]
+	b, _ := l.m.Get(ip)
 	if b == nil || now.Sub(b.start) >= w {
 		b = &bucket{start: now}
-		l.m[ip] = b
+		l.m.Put(ip, b)
 	}
 	b.count++
-}
-
-// ClientIP is the address a request is attributed to: the connecting address,
-// or, when that address is inside one of trusted (the --trusted-proxy CIDRs),
-// the CF-Connecting-IP header. The header is never trusted otherwise.
-func ClientIP(r *http.Request, trusted []netip.Prefix) string {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		host = r.RemoteAddr
-	}
-	addr, err := netip.ParseAddr(strings.Trim(host, "[]"))
-	if err != nil {
-		return host
-	}
-	addr = addr.Unmap()
-	for _, p := range trusted {
-		if p.Contains(addr) {
-			if h := strings.TrimSpace(r.Header.Get("CF-Connecting-IP")); h != "" {
-				if ip, err := netip.ParseAddr(h); err == nil {
-					return ip.Unmap().String()
-				}
-			}
-			break
-		}
-	}
-	return addr.String()
-}
-
-// ParseCIDRs parses --trusted-proxy values (CIDRs or single addresses).
-func ParseCIDRs(in []string) ([]netip.Prefix, error) {
-	var out []netip.Prefix
-	for _, s := range in {
-		s = strings.TrimSpace(s)
-		if s == "" {
-			continue
-		}
-		if p, err := netip.ParsePrefix(s); err == nil {
-			out = append(out, p.Masked())
-			continue
-		}
-		a, err := netip.ParseAddr(s)
-		if err != nil {
-			return nil, &net.ParseError{Type: "CIDR address", Text: s}
-		}
-		out = append(out, netip.PrefixFrom(a.Unmap(), a.Unmap().BitLen()))
-	}
-	return out, nil
 }

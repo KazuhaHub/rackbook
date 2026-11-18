@@ -3,7 +3,9 @@ package oauth
 import (
 	"context"
 	"errors"
+	"net/http"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -395,5 +397,154 @@ func TestMetadataURLs(t *testing.T) {
 				t.Errorf("%s[%d]: %s", in, i, got[i])
 			}
 		}
+	}
+}
+
+func TestIDTokenLookalikesNeedAScope(t *testing.T) {
+	f := newFixtureWith(t, oauthtest.Config{Alg: "RS256"}, func(ti *config.TrustedIssuer) {
+		ti.Kind, ti.Alias = "", "idp"
+		off := false
+		ti.RequireTypATJWT = &off
+	})
+	_, err := f.verify(f.mint(oauthtest.Options{Typ: "JWT", NoScope: true}))
+	wantInvalid(t, err, "scope")
+	for _, claim := range []string{"at_hash", "c_hash", "nonce", "auth_time"} {
+		_, err := f.verify(f.mint(oauthtest.Options{Typ: "JWT", Extra: map[string]any{claim: "x"}}))
+		wantInvalid(t, err, "ID token")
+		if _, err := f.verify(f.mint(oauthtest.Options{Typ: "JWT", Scope: "s", Extra: map[string]any{claim: "x"}})); err != nil {
+			t.Errorf("%s with a scope: %v", claim, err)
+		}
+	}
+	// A real at+jwt token needs no scope claim to be accepted by this check.
+	if _, err := f.verify(f.mint(oauthtest.Options{NoScope: true})); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestVerifiedEmail(t *testing.T) {
+	f := newFixture(t)
+	mint := func(extra map[string]any) *Claims {
+		c, err := f.verify(f.mint(oauthtest.Options{Extra: extra}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return c
+	}
+	if c := mint(map[string]any{"email": "a@b.c"}); c.VerifiedEmail != "" {
+		t.Errorf("an unverified e-mail must not count: %q", c.VerifiedEmail)
+	}
+	if c := mint(map[string]any{"email": "a@b.c", "email_verified": false}); c.VerifiedEmail != "" {
+		t.Errorf("email_verified false: %q", c.VerifiedEmail)
+	}
+	if c := mint(map[string]any{"email": "a@b.c", "email_verified": true}); c.VerifiedEmail != "a@b.c" {
+		t.Errorf("verified: %q", c.VerifiedEmail)
+	}
+	f.cfg.TrustedIssuers[0].EmailsVerified = true
+	if c := mint(map[string]any{"email": "a@b.c"}); c.VerifiedEmail != "a@b.c" {
+		t.Errorf("emails_verified issuer: %q", c.VerifiedEmail)
+	}
+}
+
+func introspectingFixture(t *testing.T, mut func(*config.TrustedIssuer)) *fixture {
+	f := newFixtureWith(t, oauthtest.Config{Path: "/realms/x", Discovery: "oidc"}, func(ti *config.TrustedIssuer) {
+		ti.Kind, ti.Alias = "", "kc"
+		ti.Introspection = &config.Introspection{ClientID: "rackbook", ClientSecretEnv: "RB_SECRET"}
+		if mut != nil {
+			mut(ti)
+		}
+	})
+	f.v.Getenv = func(string) string { return "s3cret" }
+	f.iss.Introspect = func(tok, id, secret string) map[string]any {
+		return map[string]any{"active": false}
+	}
+	return f
+}
+
+func TestOpaqueTokensGoToOneIssuerOnly(t *testing.T) {
+	f := introspectingFixture(t, func(ti *config.TrustedIssuer) { ti.Introspection.TokenPrefix = "kc_" })
+	other := oauthtest.New(t)
+	f.cfg.TrustedIssuers = append(f.cfg.TrustedIssuers, config.TrustedIssuer{
+		Issuer: other.URL, Alias: "two", Introspection: &config.Introspection{ClientID: "x", ClientSecretEnv: "RB_SECRET", TokenPrefix: "two_"},
+	})
+	otherCalls := 0
+	other.Introspect = func(string, string, string) map[string]any { otherCalls++; return map[string]any{"active": false} }
+	// No prefix match: nobody is asked.
+	_, err := f.verify("plain-opaque")
+	wantInvalid(t, err, "token_prefix")
+	if f.iss.IntrospectCalls.Load() != 0 || otherCalls != 0 {
+		t.Fatal("an opaque token must not be sent to an issuer that does not match its prefix")
+	}
+	f.verify("kc_token")
+	if f.iss.IntrospectCalls.Load() != 1 || otherCalls != 0 {
+		t.Fatalf("kc_ token: %d calls here, %d at the other issuer", f.iss.IntrospectCalls.Load(), otherCalls)
+	}
+	// Two introspecting issuers without prefixes: refused rather than guessed.
+	f.cfg.TrustedIssuers[0].Introspection.TokenPrefix = ""
+	f.cfg.TrustedIssuers[1].Introspection.TokenPrefix = ""
+	n := f.iss.IntrospectCalls.Load()
+	_, err = f.verify("another-opaque")
+	wantInvalid(t, err, "token_prefix")
+	if f.iss.IntrospectCalls.Load() != n || otherCalls != 0 {
+		t.Fatal("ambiguous: nothing may be sent")
+	}
+}
+
+func TestRefusedOpaqueTokensAreCachedBriefly(t *testing.T) {
+	f := introspectingFixture(t, nil)
+	f.verify("bad")
+	n := f.iss.IntrospectCalls.Load()
+	if _, err := f.verify("bad"); err == nil || f.iss.IntrospectCalls.Load() != n {
+		t.Fatalf("a refused token must be remembered: %v", err)
+	}
+	f.now = f.now.Add(NegativeTTL + time.Second)
+	f.verify("bad")
+	if f.iss.IntrospectCalls.Load() != n+1 {
+		t.Fatal("the negative answer must expire after 10 s")
+	}
+}
+
+type gate struct {
+	next    http.RoundTripper
+	block   chan struct{}
+	blocked atomic.Bool
+}
+
+func (g *gate) RoundTrip(r *http.Request) (*http.Response, error) {
+	if g.blocked.Load() && strings.HasSuffix(r.URL.Path, "/jwks.json") {
+		select {
+		case <-g.block:
+		case <-r.Context().Done():
+		}
+	}
+	return g.next.RoundTrip(r)
+}
+
+func TestKnownKeysKeepVerifyingWhileARefetchRuns(t *testing.T) {
+	f := newFixture(t)
+	g := &gate{next: http.DefaultTransport, block: make(chan struct{})}
+	f.v.HTTP = &http.Client{Transport: g, Timeout: 10 * time.Second}
+	if _, err := f.verify(f.mint(oauthtest.Options{})); err != nil {
+		t.Fatal(err)
+	}
+	f.iss.AddKey("k2")
+	f.now = f.now.Add(KeyTTL + time.Second) // the cache is stale, so the refetch is due
+	g.blocked.Store(true)
+	done := make(chan error, 1)
+	go func() { _, err := f.verify(f.mint(oauthtest.Options{KID: "k2"})); done <- err }() // starts the refetch, hangs in it
+	time.Sleep(200 * time.Millisecond)
+	ok := make(chan error, 1)
+	go func() { _, err := f.verify(f.mint(oauthtest.Options{})); ok <- err }()
+	select {
+	case err := <-ok:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("a token with a known kid must not wait for the refetch")
+	}
+	g.blocked.Store(false)
+	close(g.block)
+	if err := <-done; err != nil {
+		t.Fatalf("the new key after the refetch: %v", err)
 	}
 }

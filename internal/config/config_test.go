@@ -161,3 +161,35 @@ func TestAuthMCPValidation(t *testing.T) {
 		t.Fatalf("collections must not live in .rackbook: %v", err)
 	}
 }
+
+func TestDirectPushUsersAreMethodGated(t *testing.T) {
+	for _, u := range []string{"alice", "alice@example.com", "oauth:entra", "mcphub:"} {
+		m := AuthMCP{DirectPush: []DirectPush{{Users: []string{u}, Collections: []string{"*"}}}}
+		if err := m.validate(); err == nil {
+			t.Errorf("user %q must be refused (no match_email)", u)
+		}
+	}
+	for _, u := range []string{"mcphub:alice", "oauth:entra:bob@example.com"} {
+		m := AuthMCP{DirectPush: []DirectPush{{Users: []string{u}, Collections: []string{"*"}}}}
+		if err := m.validate(); err != nil {
+			t.Errorf("%q: %v", u, err)
+		}
+	}
+	m := AuthMCP{MatchEmail: true, DirectPush: []DirectPush{{Users: []string{"a@b.c"}, Collections: []string{"*"}}}}
+	if err := m.validate(); err != nil {
+		t.Error(err)
+	}
+}
+
+func TestLoadRefusesCollectionsOnTheConfigFileOrGit(t *testing.T) {
+	for _, file := range []string{"rackbook.yml", "./rackbook.yml", ".git/data.yml", ".GIT/data.yml"} {
+		dir := t.TempDir()
+		src := "collections:\n  x: {file: " + file + ", schema: s.json}\n"
+		if err := os.WriteFile(filepath.Join(dir, "rackbook.yml"), []byte(src), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Load(filepath.Join(dir, "rackbook.yml")); err == nil {
+			t.Errorf("a collection file %q must be refused", file)
+		}
+	}
+}

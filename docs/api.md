@@ -175,7 +175,7 @@ is on (it is in `rackbook serve`).
 - `POST /api/admin/tokens` `{"name", "scope": "read"|"write", "collections": [], "actions": ["create","update","delete"], "writeMode": ""|"pr"|"push", "expiresDays": 0}` → `201 {"token", "secret", "snippet", "claudeCode", "commit", "pullRequest"}`. The secret is shown only here. `400` for invalid input, `409 exists` for a taken name.
 - `DELETE /api/admin/tokens/{name}` → `200 {"ok", "commit"}`; `404` for an unknown name.
 
-Bearer tokens are accepted on `/api/*`, `/mcp`, `/export.*` and `/llms*`; `401
+Bearer tokens are accepted on `/mcp`, `/api/c/…`, `/api/meta`, `/api/check`, `/api/history`, `/export.*` and `/llms*` (`403 forbidden` on any other path); `401
 invalid_token` (expired, revoked or unknown) and `429 rate_limited` with
 `Retry-After` after repeated failures from one address.
 
@@ -213,6 +213,7 @@ With a session:
   `POST /api/account/passkeys/finish?ceremony=<id>` with the attestation JSON →
   `201 {"passkeys": […]}`. `403 recent_login_required` unless the session's OIDC
   login is at most 10 minutes old, `403 read_only`. Each add is a Git commit.
+- With a passkey session, an unreadable or missing `.rackbook/passkeys.yml` (for example during a pull) answers `503 passkey_unavailable` and keeps the cookie; only a file that loads without the credential ends the session. These endpoints refuse API tokens and OAuth access tokens (`403`).
 - `DELETE /api/account/passkeys/{id}` → `200 {"ok": true}` (own passkeys only, `404` otherwise).
 - Admin: `GET /api/admin/users` → `{"users": [{"id", "name", "method", "role", "seen",
   "firstSeen", "lastSeen", "passkeys"}], "passkeysEnabled"}` (users seen since the
@@ -250,11 +251,11 @@ All answers are 403 for anyone below the admin role. Design: `docs/design-v0.2.m
 | Request | Answer |
 |---|---|
 | `GET /api/types` | `{types: [{name, title, group, icon, file, path, schemaFile, count, fields, problems}], fieldTypes, formats, dataDir, schemaDir}` |
-| `GET /api/types/{name}` | `{type, incoming}`: the collection as the console edits it (fields with console type and options, key, label, list, facets, multi-field unique rules, read-only extras and same_set rules) and the collections that reference it |
+| `GET /api/types/{name}` | `{type, incoming}`: the collection as the console edits it, with `type.version` (a hash of the schema file and the collection's entry; changing or deleting the type needs it) (fields with console type and options, key, label, list, facets, multi-field unique rules, read-only extras and same_set rules) and the collections that reference it |
 | `POST /api/types/{name}/plan` | the dry run. Body `{type, migrations}`; a name that does not exist plans a creation, `{delete: true}` plans the removal. Answer: `{clean, changed, subject, files: [{path, status, diff}], invalid, dangling, other, backrefs, migrations, refusals}` |
 | `POST /api/types` | create from `{type}`: one commit with `rackbook.yml`, `schemas/<name>.json` and the empty data file. 201 |
-| `PUT /api/types/{name}` | change from `{type, migrations}`: one commit. 422 `refused` with the plan when it is not clean |
-| `DELETE /api/types/{name}` | remove an empty, unreferenced collection (its data file stays). 422 `refused` otherwise |
+| `PUT /api/types/{name}` | change from `{type, migrations}` (the `type` carries the `version` it was read with, or send `version` beside it; 400 without): one commit. 409 `conflict` with `current` when the type changed since; 422 `refused` with the plan when it is not clean. Removing a field that has values is refused unless the `remove-field` migration is chosen |
+| `DELETE /api/types/{name}?version=…` | remove an empty, unreferenced collection (its data file stays). 400 without `version`, 409 `conflict` when stale, 422 `refused` otherwise |
 
 Migrations: `{kind: "remove-field", field}` deletes the field from the records that have it;
 `{kind: "fill-default", field, value?}` gives a new required field a value (the field default when `value` is

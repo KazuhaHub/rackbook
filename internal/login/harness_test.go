@@ -84,6 +84,7 @@ type options struct {
 	readOnly  bool
 	uv        string
 	cfgExtras string
+	oidc      string // extra lines under auth.oidc
 }
 
 func git(t *testing.T, dir string, args ...string) string {
@@ -164,7 +165,7 @@ func newEnv(t *testing.T, o options) *env {
 	if err != nil {
 		t.Fatal(err)
 	}
-	block := "\nauth:\n  mode: oidc\n  oidc:\n    issuer: " + e.idpS.URL + "\n    client_id: " + clientID + "\n    allowed_tenants: " + tenants + "\n  passkeys: " + pk + "\n  session:\n    idle: 12h\n    absolute: 7d\n" + roles + o.cfgExtras
+	block := "\nauth:\n  mode: oidc\n  oidc:\n    issuer: " + e.idpS.URL + "\n    client_id: " + clientID + "\n    allowed_tenants: " + tenants + "\n" + o.oidc + "  passkeys: " + pk + "\n  session:\n    idle: 12h\n    absolute: 7d\n" + roles + o.cfgExtras
 	if err := os.WriteFile(cfgPath, append(b, []byte(block)...), 0o644); err != nil {
 		t.Fatal(err)
 	}

@@ -56,8 +56,11 @@ export function isDate(s: string): boolean {
   const m = /^([0-9]{4})-([0-9]{2})-([0-9]{2})$/.exec(s)
   if (!m) return false
   const [y, mo, d] = [Number(m[1]), Number(m[2]), Number(m[3])]
-  const t = new Date(Date.UTC(y, mo - 1, d))
-  return y >= 1 && t.getUTCFullYear() === y && t.getUTCMonth() === mo - 1 && t.getUTCDate() === d
+  // Date.UTC maps years 0-99 to 1900-1999, so set the full year explicitly;
+  // Go's time.Parse accepts years 0000-9999.
+  const t = new Date(0)
+  t.setUTCFullYear(y, mo - 1, d)
+  return t.getUTCFullYear() === y && t.getUTCMonth() === mo - 1 && t.getUTCDate() === d
 }
 
 export function isHostname(s: string): boolean {

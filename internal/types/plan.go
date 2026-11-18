@@ -1,6 +1,8 @@
 package types
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -37,6 +39,8 @@ type Request struct {
 	Name       string      `json:"name"`
 	Type       *Type       `json:"type,omitempty"`
 	Migrations []Migration `json:"migrations,omitempty"`
+	// Version is the base version of an update or delete (see Type.Version).
+	Version string `json:"version,omitempty"`
 }
 
 // Migration is a chosen migration.
@@ -144,7 +148,53 @@ func Load(l *ledger.Ledger, name string) (*Type, error) {
 	if c == nil {
 		return nil, fmt.Errorf("%w %q", ErrUnknownType, name)
 	}
-	return ParseType(c.Collection, c.SchemaRaw, l.Config.Rules, len(c.Records))
+	t, err := ParseType(c.Collection, c.SchemaRaw, l.Config.Rules, len(c.Records))
+	if err != nil {
+		return nil, err
+	}
+	t.Version = versionOf(t, c.SchemaRaw)
+	return t, nil
+}
+
+// versionOf hashes what a type edit starts from: the schema bytes, the
+// collection's entry in rackbook.yml and the rules that mention it. The record
+// count is not part of it, so record edits do not make a type stale.
+func versionOf(t *Type, schemaRaw []byte) string {
+	rules, _ := json.Marshal(t.Rules())
+	h := sha256.New()
+	h.Write(schemaRaw)
+	h.Write([]byte{0})
+	h.Write([]byte(canonJSON(entryValues(t))))
+	h.Write([]byte{0})
+	h.Write(rules)
+	return hex.EncodeToString(h.Sum(nil))[:16]
+}
+
+// VersionError means the type changed since the caller read it.
+type VersionError struct{ Current *Type }
+
+func (e *VersionError) Error() string {
+	return "the data type changed since you opened it; reload it and apply your change again"
+}
+
+// baseVersion is the version the request starts from: Version, else the one
+// carried by the type it sends.
+func (r Request) baseVersion() string {
+	if r.Version != "" {
+		return r.Version
+	}
+	if r.Type != nil {
+		return r.Type.Version
+	}
+	return ""
+}
+
+// checkVersion refuses a request whose base version is not the current one.
+func checkVersion(req Request, cur *Type) error {
+	if v := req.baseVersion(); v != "" && v != cur.Version {
+		return &VersionError{Current: cur}
+	}
+	return nil
 }
 
 // Build plans req against the files under cfg.Dir without touching them.
@@ -378,7 +428,11 @@ func planUpdate(base *ledger.Ledger, req Request, p *Plan) error {
 	if err != nil {
 		return err
 	}
+	if err := checkVersion(req, old); err != nil {
+		return err
+	}
 	nt := normalizeIncoming(*req.Type, old)
+	nt.Version = old.Version
 	if nt.Name != "" && nt.Name != req.Name {
 		p.refuse("rename", "", "renaming a data type is not supported (%q to %q)", req.Name, nt.Name)
 	}
@@ -572,6 +626,10 @@ func offerMigrations(col *ledger.Collection, old, nt *Type, chosen []Migration, 
 			for _, r := range with {
 				delete(data(r), f.Name)
 			}
+		} else {
+			// Whatever the schema's additionalProperties says, values are never
+			// silently orphaned: removing the field takes a decision about them.
+			p.refuse("field-has-values", f.Name, "field %q has values in %d record(s); choose the remove-field migration to delete them", f.Name, len(with))
 		}
 		p.Migrations = append(p.Migrations, off)
 	}

@@ -134,7 +134,7 @@ func TestCreateAndDeleteAType(t *testing.T) {
 	if code, r, _ := f.do(t, "POST", "/api/c/contacts", map[string]any{"data": map[string]any{"name": "ann", "device": "laptop-me-pc"}}, nil); code != 201 {
 		t.Fatalf("%d %v", code, r)
 	}
-	if code, r, _ := f.do(t, "DELETE", "/api/types/contacts", nil, nil); code != 422 || len(arr(t, r["plan"].(map[string]any)["refusals"])) == 0 {
+	if code, r, _ := f.do(t, "DELETE", "/api/types/contacts?version="+typeOf(t, f, "contacts")["version"].(string), nil, nil); code != 422 || len(arr(t, r["plan"].(map[string]any)["refusals"])) == 0 {
 		t.Fatalf("a type with records stays: %d %v", code, r)
 	}
 	// the reference guard: laptop-me-pc is referenced by a record of the new type and by an address
@@ -142,7 +142,7 @@ func TestCreateAndDeleteAType(t *testing.T) {
 	if code, r, _ := f.do(t, "DELETE", "/api/c/contacts/ann?hash="+g["hash"].(string), nil, nil); code != 200 {
 		t.Fatalf("%d %v", code, r)
 	}
-	if code, r, _ := f.do(t, "DELETE", "/api/types/contacts", nil, nil); code != 200 {
+	if code, r, _ := f.do(t, "DELETE", "/api/types/contacts?version="+typeOf(t, f, "contacts")["version"].(string), nil, nil); code != 200 {
 		t.Fatalf("%d %v", code, r)
 	}
 	if code, _, _ := f.do(t, "GET", "/api/c/contacts", nil, nil); code != 404 {
@@ -169,5 +169,50 @@ func TestRecordDeleteGuardListsReferences(t *testing.T) {
 	code, r, _ = f.do(t, "DELETE", "/api/c/devices/"+id+"?clearReferences=true&hash="+g["hash"].(string), nil, nil)
 	if code != 422 || r["error"] != "invalid" {
 		t.Fatalf("%d %v", code, r)
+	}
+}
+
+func TestTypeChangesCarryTheBaseVersion(t *testing.T) {
+	f := adminFixture(t)
+	ty := typeOf(t, f, "todo")
+	v, _ := ty["version"].(string)
+	if v == "" {
+		t.Fatal("GET must return the type's version")
+	}
+	// No version: refused.
+	noVer := map[string]any{"title": "x"}
+	for k, val := range ty {
+		noVer[k] = val
+	}
+	delete(noVer, "version")
+	noVer["title"] = "Tasks"
+	if code, _, _ := f.do(t, "PUT", "/api/types/todo", map[string]any{"type": noVer}, nil); code != 400 {
+		t.Fatalf("a change without a version: %d", code)
+	}
+	if code, _, _ := f.do(t, "DELETE", "/api/types/todo", nil, nil); code != 400 {
+		t.Fatalf("a delete without a version: %d", code)
+	}
+	// Somebody else changes the title first.
+	other := map[string]any{}
+	for k, val := range ty {
+		other[k] = val
+	}
+	other["title"] = "Other title"
+	if code, r, _ := f.do(t, "PUT", "/api/types/todo", map[string]any{"type": other}, nil); code != 200 {
+		t.Fatalf("first change: %d %v", code, r)
+	}
+	// Our change, still based on the old version: 409 with the current type.
+	mine := map[string]any{}
+	for k, val := range ty {
+		mine[k] = val
+	}
+	mine["title"] = "My title"
+	code, r, _ := f.do(t, "PUT", "/api/types/todo", map[string]any{"type": mine}, nil)
+	cur, _ := r["current"].(map[string]any)
+	if code != 409 || r["error"] != "conflict" || cur["title"] != "Other title" || cur["version"] == v {
+		t.Fatalf("stale change: %d %v", code, r)
+	}
+	if code, _, _ := f.do(t, "DELETE", "/api/types/todo?version="+v, nil, nil); code != 409 {
+		t.Fatalf("stale delete: %d", code)
 	}
 }

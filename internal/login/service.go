@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"os"
 	"strings"
@@ -37,17 +38,18 @@ type StateFiles interface {
 
 // Options configures the Service.
 type Options struct {
-	Login        config.Login
-	BaseURL      string // public https URL of the console (required)
-	Key          []byte // session signing key, 32 or more bytes
-	ClientSecret string // RACKBOOK_OIDC_CLIENT_SECRET
-	CAFile       string // extra root CAs for the IdP (private CA); optional
-	HTTPClient   *http.Client
-	Files        StateFiles // nil = no passkeys
-	ReadOnly     bool       // refuse passkey changes
-	Logger       *slog.Logger
-	Now          func() time.Time
-	Context      context.Context // lifetime of the OIDC provider; default Background
+	Login          config.Login
+	BaseURL        string // public https URL of the console (required)
+	Key            []byte // session signing key, 32 or more bytes
+	ClientSecret   string // RACKBOOK_OIDC_CLIENT_SECRET
+	CAFile         string // extra root CAs for the IdP (private CA); optional
+	HTTPClient     *http.Client
+	Files          StateFiles     // nil = no passkeys
+	ReadOnly       bool           // refuse passkey changes
+	TrustedProxies []netip.Prefix // --trusted-proxy CIDRs
+	Logger         *slog.Logger
+	Now            func() time.Time
+	Context        context.Context // lifetime of the OIDC provider; default Background
 }
 
 // Service implements auth.SessionAuth and serves /auth/*.
@@ -70,8 +72,9 @@ type Service struct {
 	provErr error
 	provTry time.Time
 
-	pk    *passkeys
-	limit *limiter // unauthenticated begin endpoints
+	pk      *passkeys
+	limit   *limiter       // unauthenticated begin endpoints
+	trusted []netip.Prefix // --trusted-proxy: whose CF-Connecting-IP is believed
 }
 
 // New validates the options. It does not contact the IdP: discovery happens
@@ -98,11 +101,15 @@ func New(o Options) (*Service, error) {
 	if s.o.Context == nil {
 		s.o.Context = context.Background()
 	}
+	if w := o.Login.OIDC.IdentityClaimWarning(); w != "" {
+		s.log.Warn(w)
+	}
 	s.codec = codec{key: o.Key}
 	s.idle, s.absolute = o.Login.Session.IdleOrDefault(), o.Login.Session.AbsoluteOrDefault()
 	s.pending = newPendingStore(s.now)
 	s.users = newUserRegistry()
 	s.limit = newLimiter(30, 10, s.now)
+	s.trusted = o.TrustedProxies
 	s.redirect = s.base.String() + "/auth/oidc/callback"
 	s.client = o.HTTPClient
 	if s.client == nil && o.CAFile != "" {
@@ -181,13 +188,28 @@ func (s *Service) Mount(mux *http.ServeMux, static http.Handler) {
 		mux.HandleFunc("POST /auth/passkey/begin", s.pk.loginBegin)
 		mux.HandleFunc("POST /auth/passkey/finish", s.pk.loginFinish)
 	}
-	mux.HandleFunc("GET /api/account", s.account)
-	mux.HandleFunc("GET /api/admin/users", s.adminUsers)
+	mux.HandleFunc("GET /api/account", humansOnly(s.account))
+	mux.HandleFunc("GET /api/admin/users", humansOnly(s.adminUsers))
 	if s.pk != nil {
-		mux.HandleFunc("POST /api/account/passkeys/begin", s.pk.enrolBegin)
-		mux.HandleFunc("POST /api/account/passkeys/finish", s.pk.enrolFinish)
-		mux.HandleFunc("DELETE /api/account/passkeys/{id}", s.pk.removeOwn)
-		mux.HandleFunc("DELETE /api/admin/passkeys/{id}", s.pk.removeAny)
+		mux.HandleFunc("POST /api/account/passkeys/begin", humansOnly(s.pk.enrolBegin))
+		mux.HandleFunc("POST /api/account/passkeys/finish", humansOnly(s.pk.enrolFinish))
+		mux.HandleFunc("DELETE /api/account/passkeys/{id}", humansOnly(s.pk.removeOwn))
+		mux.HandleFunc("DELETE /api/admin/passkeys/{id}", humansOnly(s.pk.removeAny))
+	}
+}
+
+// humansOnly refuses credentials that are not a person's browser login: API
+// tokens and OAuth access tokens never manage accounts, passkeys or users.
+func humansOnly(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if id := auth.FromContext(r.Context()); id != nil {
+			switch id.Method {
+			case auth.MethodToken, auth.MethodOAuth, auth.MethodMCPHub:
+				writeErr(w, http.StatusForbidden, "forbidden", "this endpoint is for signed-in people, not API tokens")
+				return
+			}
+		}
+		next(w, r)
 	}
 }
 
@@ -196,7 +218,10 @@ func (s *Service) Mount(mux *http.ServeMux, static http.Handler) {
 // Public reports requests that need no session: the login endpoints and the
 // console's static files (which hold no data).
 func (s *Service) Public(r *http.Request) bool {
-	p := r.URL.Path
+	p, ok := auth.CanonicalPath(r)
+	if !ok {
+		return false
+	}
 	return p == "/auth" || strings.HasPrefix(p, "/auth/") || strings.HasPrefix(p, "/assets/") || p == "/favicon.svg" || p == "/favicon.ico"
 }
 
@@ -215,10 +240,22 @@ func (s *Service) readSession(r *http.Request) (session, error) {
 	if err := sess.check(s.now(), s.idle, s.absolute); err != nil {
 		return session{}, err
 	}
+	if sess.Method == auth.MethodOIDC && sess.Iss != s.o.Login.OIDC.Issuer {
+		// The issuer changed (or the cookie predates the check): log in again.
+		return session{}, errExpired
+	}
 	if sess.Method == auth.MethodPasskey {
-		// A passkey session ends when its credential is deleted (revocation). A
-		// file that cannot be read fails closed.
-		if s.pk == nil || sess.Cred == "" || !s.pk.hasCredential(sess.Cred) {
+		// A passkey session ends when its credential is deleted (revocation), and
+		// only then: a file that cannot be read right now answers 503 for this
+		// request and leaves the cookie alone.
+		if s.pk == nil || sess.Cred == "" {
+			return session{}, errRevoked
+		}
+		present, err := s.pk.credentialState(sess.Cred)
+		if err != nil {
+			return session{}, err
+		}
+		if !present {
 			return session{}, errRevoked
 		}
 	}
@@ -228,6 +265,9 @@ func (s *Service) readSession(r *http.Request) (session, error) {
 // Identify implements auth.SessionAuth.
 func (s *Service) Identify(w http.ResponseWriter, r *http.Request) (*auth.Identity, error) {
 	sess, err := s.readSession(r)
+	if errors.Is(err, errUnavailable) {
+		return nil, err // not ErrUnauthenticated: the session may well be fine
+	}
 	if err != nil {
 		return nil, unauth(err)
 	}
@@ -241,7 +281,7 @@ func (s *Service) Identify(w http.ResponseWriter, r *http.Request) (*auth.Identi
 }
 
 func identityOf(sess session) *auth.Identity {
-	id := &auth.Identity{ID: sess.ID, Name: sess.Name, Method: sess.Method}
+	id := &auth.Identity{ID: sess.ID, Name: sess.Name, Method: sess.Method, Groups: sess.Groups}
 	if strings.Contains(sess.ID, "@") {
 		id.Email = sess.ID
 	}
@@ -264,6 +304,11 @@ func (s *Service) issue(w http.ResponseWriter, id *auth.Identity, method, cred s
 	sess := session{ID: id.ID, Name: id.Name, Method: method, Issued: now, Seen: now, Cred: cred}
 	if method == auth.MethodOIDC {
 		sess.OIDCAt = now
+		sess.Iss = s.o.Login.OIDC.Issuer
+		var cut bool
+		if sess.Groups, cut = boundGroups(id.Groups); cut {
+			s.log.Warn("the ID token has more groups than fit the session cookie; the rest are ignored", "identity", id.ID)
+		}
 	}
 	s.setSession(w, sess)
 	s.users.touch(id.ID, id.Name, method, s.now())
@@ -320,6 +365,12 @@ func returnOf(r *http.Request) string {
 
 // Reject implements auth.SessionAuth.
 func (s *Service) Reject(w http.ResponseWriter, r *http.Request, err error) {
+	if errors.Is(err, errUnavailable) {
+		// Transient (the passkey file is being updated): keep the cookie.
+		w.Header().Set("Retry-After", "2")
+		writeErr(w, http.StatusServiceUnavailable, "passkey_unavailable", "passkeys are briefly unavailable, try again")
+		return
+	}
 	expired := errors.Is(err, errExpired)
 	if !errors.Is(err, errNoSession) {
 		clearCookie(w, SessionCookie)

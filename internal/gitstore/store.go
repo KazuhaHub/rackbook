@@ -485,7 +485,7 @@ func (s *Store) discard(ctx context.Context, parent string, files []string) {
 		return
 	}
 	for _, f := range files {
-		if _, err := s.repo.git(ctx, "cat-file", "blob", parent+":"+f); err != nil {
+		if _, err := s.repo.git(ctx, "cat-file", "blob", parent+":./"+f); err != nil {
 			if msg := err.Error(); !strings.Contains(msg, "Not a valid object name") && !strings.Contains(msg, "does not exist") && !strings.Contains(msg, "but not in") {
 				s.log.Error("could not tell whether the edit created the file", "file", f, "err", err)
 				continue

@@ -18,6 +18,7 @@ import (
 
 	"github.com/kazuhahub/rackbook/internal/auth"
 	"github.com/kazuhahub/rackbook/internal/auth/oauth"
+	"github.com/kazuhahub/rackbook/internal/clientip"
 	"github.com/kazuhahub/rackbook/internal/config"
 	"github.com/kazuhahub/rackbook/internal/roles"
 	"github.com/kazuhahub/rackbook/internal/tokens"
@@ -58,8 +59,17 @@ func (r *Resource) log() *slog.Logger {
 // IsMCPPath reports whether path is /mcp or below it.
 func IsMCPPath(path string) bool { return path == mcpPath || strings.HasPrefix(path, mcpPath+"/") }
 
+// tokenPath lists what an API token may reach: /mcp, record and collection
+// reads and writes, exports and llms. Account, passkey, user and admin
+// endpoints are for people (browser sessions) only.
 func tokenPath(p string) bool {
-	return IsMCPPath(p) || strings.HasPrefix(p, "/api/") || strings.HasPrefix(p, "/export.") || strings.HasPrefix(p, "/llms")
+	switch {
+	case IsMCPPath(p):
+		return true
+	case strings.HasPrefix(p, "/api/c/"), p == "/api/meta", p == "/api/check", p == "/api/history":
+		return true
+	}
+	return strings.HasPrefix(p, "/export.") || strings.HasPrefix(p, "/llms")
 }
 
 // metadataURL is where the protected resource metadata is published: on the
@@ -96,8 +106,11 @@ func (r *Resource) AuthenticateBearer(req *http.Request) (*auth.Identity, error)
 		return nil, nil
 	}
 	if strings.HasPrefix(tok, tokens.Prefix) {
-		if r.Tokens == nil || !tokenPath(req.URL.Path) {
+		if r.Tokens == nil {
 			return nil, nil
+		}
+		if !tokenPath(req.URL.Path) {
+			return nil, &auth.RequestError{Status: http.StatusForbidden, Code: "forbidden", Msg: "API tokens may not use this endpoint"}
 		}
 		return r.token(req, tok)
 	}
@@ -110,8 +123,21 @@ func (r *Resource) AuthenticateBearer(req *http.Request) (*auth.Identity, error)
 // accessToken verifies an access token of a trusted issuer.
 func (r *Resource) accessToken(req *http.Request, raw string) (*auth.Identity, error) {
 	m := r.mcp()
+	// Opaque tokens cost an introspection call per guess, so failures are
+	// rate-limited per client like rbk_ tokens.
+	opaque := oauth.IsOpaque(raw)
+	var ip string
+	if opaque && r.Limiter != nil {
+		ip = clientip.Of(req, r.TrustedProxies)
+		if blocked, wait := r.Limiter.Blocked(ip); blocked {
+			return nil, &auth.RequestError{Status: http.StatusTooManyRequests, Code: "rate_limited", Msg: "too many failed token attempts, try again later", RetryAfter: wait}
+		}
+	}
 	c, err := r.Verifier.Verify(req.Context(), raw, m)
 	if err != nil {
+		if opaque && r.Limiter != nil {
+			r.Limiter.Fail(ip)
+		}
 		r.log().Info("mcp access token refused", "reason", err.Error())
 		return nil, r.invalidToken(req, err.Error())
 	}
@@ -124,9 +150,9 @@ func (r *Resource) accessToken(req *http.Request, raw string) (*auth.Identity, e
 	if c.Kind == config.KindMCPHub {
 		id.Method, id.Issuer = auth.MethodMCPHub, ""
 	}
-	if strings.Contains(c.Username, "@") {
-		id.Email = c.Username
-	}
+	// The e-mail is only what the issuer vouches for; a username that looks like
+	// an address is not one (match_email uses Email and nothing else).
+	id.Email = c.VerifiedEmail
 	readScope, writeScope := m.Scopes.ReadScope(), m.Scopes.WriteScope()
 	have := map[string]bool{}
 	for _, s := range c.Scopes {
@@ -147,7 +173,7 @@ func (r *Resource) accessToken(req *http.Request, raw string) (*auth.Identity, e
 
 // token authenticates a Rackbook API token.
 func (r *Resource) token(req *http.Request, secret string) (*auth.Identity, error) {
-	ip := tokens.ClientIP(req, r.TrustedProxies)
+	ip := clientip.Of(req, r.TrustedProxies)
 	if blocked, wait := r.Limiter.Blocked(ip); blocked {
 		return nil, &auth.RequestError{Status: http.StatusTooManyRequests, Code: "rate_limited", Msg: "too many failed token attempts, try again later", RetryAfter: wait}
 	}

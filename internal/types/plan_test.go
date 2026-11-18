@@ -438,3 +438,71 @@ func TestCreateRefusesRackbookStateDir(t *testing.T) {
 		t.Error(".rackbook must not be created")
 	}
 }
+
+func TestRemovingAFieldWithValuesNeedsTheMigrationEvenWhenTheSchemaIsOpen(t *testing.T) {
+	cfg, dir := setup(t)
+	sp := filepath.Join(dir, cfg.Collection("services").Schema)
+	b, err := os.ReadFile(sp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	open := strings.Replace(string(b), `"additionalProperties": false`, `"additionalProperties": true`, 1)
+	if open == string(b) {
+		t.Skip("the example schema has no additionalProperties: false")
+	}
+	if err := os.WriteFile(sp, []byte(open), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg = testutil.LoadConfig(t, dir)
+	drop := func(ty *Type) {
+		var keep []Field
+		for _, f := range ty.Fields {
+			if f.Name != "notes" {
+				keep = append(keep, f)
+			}
+		}
+		ty.Fields = keep
+		var list []string
+		for _, f := range ty.List {
+			if f != "notes" {
+				list = append(list, f)
+			}
+		}
+		ty.List = list
+	}
+	p := update(t, cfg, "services", drop)
+	if p.Clean || hasRefusal(p, "field-has-values") == nil {
+		t.Fatalf("must be refused without the migration: clean=%v %v", p.Clean, p.Refusals)
+	}
+	if p := update(t, cfg, "services", drop, Migration{Kind: MigRemoveField, Field: "notes"}); !p.Clean {
+		t.Fatalf("%v %v", p.Invalid, p.Refusals)
+	}
+}
+
+func TestCreateRefusesFilesAnotherPartOwns(t *testing.T) {
+	cfg, dir := setup(t)
+	if err := os.MkdirAll(filepath.Join(dir, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, mut := range map[string]func(*Type){
+		"the config file":               func(ty *Type) { ty.File = "rackbook.yml" },
+		"the config file, dotted":       func(ty *Type) { ty.File = "./rackbook.yml" },
+		"a schema file":                 func(ty *Type) { ty.File = "schemas/device.json" },
+		"under .git":                    func(ty *Type) { ty.File = ".git/contacts.yml" },
+		"outside the data dir":          func(ty *Type) { ty.File = "other/contacts.yml" },
+		"another collection's file":     func(ty *Type) { ty.File = "./docs/ledger/devices.yml" },
+		"data and schema are the same":  func(ty *Type) { ty.File, ty.SchemaFile = "docs/ledger/x.yml", "docs/ledger/x.yml" },
+		"the schema is the config file": func(ty *Type) { ty.SchemaFile = "rackbook.yml" },
+		"the schema is a data file":     func(ty *Type) { ty.SchemaFile = "docs/ledger/devices.yml" },
+	} {
+		nt := newType()
+		mut(nt)
+		p, err := Build(cfg, Request{Op: OpCreate, Name: "contacts", Type: nt})
+		if err == nil && p.Clean {
+			t.Errorf("%s: a new collection must be refused", name)
+		}
+	}
+	if p, err := Build(cfg, Request{Op: OpCreate, Name: "contacts", Type: newType()}); err != nil || !p.Clean {
+		t.Fatalf("the default files must still work: %v %v", err, p)
+	}
+}

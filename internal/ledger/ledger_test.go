@@ -82,3 +82,18 @@ func TestOverlay(t *testing.T) {
 		t.Fatalf("overlay ignored: %d", n)
 	}
 }
+
+func TestReferencesToIgnoresValuesThatRemain(t *testing.T) {
+	l := load(t)
+	devices := l.Collection("devices")
+	rec := devices.Get("web-hostco-ashburn-va-us-dc")
+	if rec == nil || len(l.ReferencesTo("devices", rec)) == 0 {
+		t.Fatal("the example device must be referenced")
+	}
+	// A second record with the same name (the field is not unique): deleting
+	// either leaves the references pointing at the other.
+	devices.Records = append(devices.Records, &ledger.Record{ID: "dup", Data: rec.Data})
+	if refs := l.ReferencesTo("devices", rec); len(refs) != 0 {
+		t.Fatalf("references are not broken while another record has the value: %v", refs)
+	}
+}

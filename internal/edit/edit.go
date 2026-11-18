@@ -42,6 +42,10 @@ type Op struct {
 	// records that hold them, in the same change. Without it a record that is
 	// still referenced is not deleted (*ReferencedError).
 	ClearReferences bool
+	// MayUpdate says whether the caller may update records of a collection. It is
+	// asked for every collection whose records ClearReferences would edit; nil
+	// means yes. A "no" refuses the delete with a *ForbiddenError.
+	MayUpdate func(collection string) bool
 }
 
 // Result describes a successful change.
@@ -130,6 +134,14 @@ type ConflictError struct {
 }
 
 func (e *ConflictError) Error() string { return e.Message }
+
+// ForbiddenError means a change would edit records the caller may not edit:
+// clearing references touches the collections that hold them.
+type ForbiddenError struct{ Collection string }
+
+func (e *ForbiddenError) Error() string {
+	return fmt.Sprintf("clearing the references would edit records in %s, which you may not update", e.Collection)
+}
 
 // ReferencedError means other records still point at the record to delete.
 type ReferencedError struct {
@@ -243,6 +255,11 @@ func Apply(cfg *config.Config, op Op) (*Result, error) {
 			if refs := base.ReferencesTo(c.Name, cur); len(refs) > 0 {
 				if !op.ClearReferences {
 					return nil, &ReferencedError{Collection: c.Name, ID: cur.ID, Refs: refs}
+				}
+				for _, r := range refs {
+					if op.MayUpdate != nil && !op.MayUpdate(r.Collection) {
+						return nil, &ForbiddenError{Collection: r.Collection}
+					}
 				}
 				if files, err = clearReferences(base, refs); err != nil {
 					return nil, err

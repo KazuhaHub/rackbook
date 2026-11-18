@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/mail"
+	"path"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -45,6 +46,26 @@ type SessionAuth interface {
 	Reject(w http.ResponseWriter, r *http.Request, err error)
 	// NoRole answers a request whose identity has no role.
 	NoRole(w http.ResponseWriter, r *http.Request, id *Identity)
+}
+
+// CanonicalPath returns the decoded request path and whether it is canonical:
+// it contains no encoded dots, slashes or backslashes, and path.Clean leaves it
+// unchanged (no "..", "." or empty segments). Decisions that exempt a path from
+// authentication must use it and treat a non-canonical path as not exempt.
+func CanonicalPath(r *http.Request) (string, bool) {
+	raw := strings.ToLower(r.URL.EscapedPath())
+	if strings.Contains(raw, "%2e") || strings.Contains(raw, "%2f") || strings.Contains(raw, "%5c") {
+		return r.URL.Path, false
+	}
+	p := r.URL.Path
+	if strings.Contains(p, `\`) {
+		return p, false
+	}
+	c := path.Clean(p)
+	if c != p && c+"/" != p {
+		return p, false
+	}
+	return p, true
 }
 
 // Config selects and configures the authentication mode.

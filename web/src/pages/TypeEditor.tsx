@@ -25,7 +25,7 @@ import { RulesTab } from '@/components/types/RulesTab'
 import { t } from '@/i18n/zh-CN'
 import { ApiError, errorMessage } from '@/lib/api'
 import { emptyType, stable, type FieldDef, type FieldType, type Migration, type Plan, type TypeDef } from '@/lib/typedef'
-import { createType, deleteType, planType, updateType, useTypeDetail, useTypeList, type TypeDetail } from '@/lib/typesApi'
+import { createType, deleteType, planType, updateType, useRefreshAll, useTypeDetail, useTypeList, type TypeDetail } from '@/lib/typesApi'
 import { useAfterWrite, useMeta } from '@/providers/meta'
 import { cn } from 'cn'
 
@@ -80,6 +80,7 @@ function Editor({ detail, dataDir, schemaDir }: { detail?: TypeDetail; dataDir: 
   const creating = !original
   const navigate = useNavigate()
   const afterWrite = useAfterWrite()
+  const refresh = useRefreshAll()
   const [draft, setDraft] = useState<TypeDef>(() => original ?? emptyType())
   const [tab, setTab] = useState<string>('basic')
   const [step, setStep] = useState(0)
@@ -159,7 +160,13 @@ function Editor({ detail, dataDir, schemaDir }: { detail?: TypeDetail; dataDir: 
       navigate(`/types/${encodeURIComponent(draft.name)}`, { replace: true })
     } catch (e) {
       if (e instanceof ApiError && e.code === 'refused' && e.body?.plan) setPlan(e.body.plan as Plan)
-      setSaveError(errorMessage(e))
+      if (e instanceof ApiError && e.code === 'conflict') {
+        // Somebody changed the type first: refresh what we compare against, and make the user look at it.
+        refresh()
+        setSaveError(t.types.stale)
+      } else {
+        setSaveError(errorMessage(e))
+      }
     } finally {
       setSaving(false)
     }
@@ -298,7 +305,7 @@ function Editor({ detail, dataDir, schemaDir }: { detail?: TypeDetail; dataDir: 
         </AlertDialogContent>
       </AlertDialog>
 
-      {original && <DeleteDialog name={original.name} open={deleting} onOpenChange={setDeleting} />}
+      {original && <DeleteDialog name={original.name} version={original.version} open={deleting} onOpenChange={setDeleting} />}
     </div>
   )
 }
@@ -370,7 +377,7 @@ function Wizard({
   )
 }
 
-function DeleteDialog({ name, open, onOpenChange }: { name: string; open: boolean; onOpenChange: (o: boolean) => void }) {
+function DeleteDialog({ name, version, open, onOpenChange }: { name: string; version?: string; open: boolean; onOpenChange: (o: boolean) => void }) {
   const navigate = useNavigate()
   const afterWrite = useAfterWrite()
   const [plan, setPlan] = useState<Plan>()
@@ -380,7 +387,7 @@ function DeleteDialog({ name, open, onOpenChange }: { name: string; open: boolea
   useEffect(() => {
     if (!open) return
     const ctl = new AbortController()
-    planType(name, { delete: true }, ctl.signal)
+    planType(name, { delete: true, version }, ctl.signal)
       .then((p) => !ctl.signal.aborted && setPlan(p))
       .catch((e) => !ctl.signal.aborted && setError(errorMessage(e)))
     return () => {
@@ -388,12 +395,12 @@ function DeleteDialog({ name, open, onOpenChange }: { name: string; open: boolea
       setPlan(undefined)
       setError(undefined)
     }
-  }, [open, name])
+  }, [open, name, version])
 
   const go = async () => {
     setBusy(true)
     try {
-      const res = await deleteType(name)
+      const res = await deleteType(name, version)
       toast.success(t.types.delete.done(res.commit))
       await afterWrite()
       navigate('/types', { replace: true })

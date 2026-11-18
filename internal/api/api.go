@@ -112,9 +112,11 @@ func New(o Options) http.Handler {
 			mux.ServeHTTP(w, r)
 			return
 		}
-		if ph, ok := s.o.Public[r.URL.Path]; ok {
-			ph.ServeHTTP(w, r)
-			return
+		if p, canonical := auth.CanonicalPath(r); canonical {
+			if ph, ok := s.o.Public[p]; ok {
+				ph.ServeHTTP(w, r)
+				return
+			}
 		}
 		authed.ServeHTTP(w, r)
 	})
@@ -569,7 +571,10 @@ func (s *server) del(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	clear := r.URL.Query().Get("clearReferences") == "true"
-	if res := s.apply(w, r, edit.Op{Kind: edit.Delete, Collection: c.Name, ID: r.PathValue("id"), Hash: hash, ClearReferences: clear}); res != nil {
+	if res := s.apply(w, r, edit.Op{Kind: edit.Delete, Collection: c.Name, ID: r.PathValue("id"), Hash: hash, ClearReferences: clear,
+		MayUpdate: func(coll string) bool {
+			return s.who(r).Permits(auth.ActUpdate, coll) && auth.Can(r.Context(), roles.Write)
+		}}); res != nil {
 		out := map[string]any{"commit": res.Commit}
 		if res.PullRequest {
 			out["pullRequest"] = true

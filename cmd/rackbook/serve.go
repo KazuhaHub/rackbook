@@ -20,6 +20,7 @@ import (
 	"github.com/kazuhahub/rackbook/internal/api"
 	"github.com/kazuhahub/rackbook/internal/auth"
 	"github.com/kazuhahub/rackbook/internal/auth/oauth"
+	"github.com/kazuhahub/rackbook/internal/clientip"
 	"github.com/kazuhahub/rackbook/internal/config"
 	"github.com/kazuhahub/rackbook/internal/gitstore"
 	"github.com/kazuhahub/rackbook/internal/login"
@@ -166,7 +167,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	}
 	// Bearer credentials on /mcp (OAuth access tokens of the trusted issuers) and
 	// Rackbook API tokens (see docs/api.md); /mcp is an OAuth protected resource.
-	proxies, perr := tokens.ParseCIDRs(trustedProxies(f))
+	proxies, perr := clientip.ParseCIDRs(trustedProxies(f))
 	if perr != nil {
 		return fmt.Errorf("--trusted-proxy: %w", perr)
 	}
@@ -261,8 +262,12 @@ func newLogin(cfg *config.Config, store *gitstore.Store, baseURL, caFile string,
 	if baseURL == "" {
 		return nil, errors.New("--auth oidc needs --base-url (the public https URL of the console; the IdP redirects to <base-url>/auth/oidc/callback)")
 	}
+	proxies, err := clientip.ParseCIDRs(trustedProxies(f))
+	if err != nil {
+		return nil, fmt.Errorf("--trusted-proxy: %w", err)
+	}
 	o := login.Options{
-		Login: cfg.Auth.Login, BaseURL: baseURL, Key: key, ClientSecret: secret, CAFile: caFile,
+		TrustedProxies: proxies, Login: cfg.Auth.Login, BaseURL: baseURL, Key: key, ClientSecret: secret, CAFile: caFile,
 		ReadOnly: readOnly, Logger: logger,
 	}
 	if cfg.Auth.Passkeys.Enabled {

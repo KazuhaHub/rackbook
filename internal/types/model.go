@@ -65,6 +65,12 @@ type Type struct {
 	Extras  []Extra   `json:"extras,omitempty"`  // other top-level schema keywords
 	SameSet []SameSet `json:"sameSet,omitempty"` // same_set rules that mention this collection
 	Count   int       `json:"count"`             // records (output only)
+
+	// Version identifies the schema file and the collection entry this Type was
+	// read from (a hash). A change or delete that carries a Version other than
+	// the current one is refused with a *VersionError: somebody else changed the
+	// type in between.
+	Version string `json:"version,omitempty"`
 }
 
 // Field is one property of the collection's schema.

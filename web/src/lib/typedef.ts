@@ -71,6 +71,8 @@ export type TypeDef = {
   extras?: Extra[]
   sameSet?: { message?: string; left: string; right: string }[]
   count: number
+  /** Identifies the schema and config entry this type was read from; sent back with every change and delete. */
+  version?: string
 }
 
 export type TypeSummary = {

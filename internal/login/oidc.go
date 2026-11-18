@@ -11,6 +11,7 @@ import (
 	authoidc "github.com/KazuhaHub/authcore/oidc"
 
 	"github.com/kazuhahub/rackbook/internal/auth"
+	"github.com/kazuhahub/rackbook/internal/clientip"
 	"github.com/kazuhahub/rackbook/internal/roles"
 )
 
@@ -24,8 +25,8 @@ func (s *Service) loginFail(w http.ResponseWriter, r *http.Request, code, ret st
 // in memory, binds it to this browser with a cookie, and redirects to the IdP.
 func (s *Service) oidcStart(w http.ResponseWriter, r *http.Request) {
 	ret := SafeReturn(r.URL.Query().Get("return"))
-	if !s.limit.allow(clientIP(r)) {
-		s.log.Warn("login start rate limited", "remote", clientIP(r))
+	if !s.limit.allow(clientip.Of(r, s.trusted)) {
+		s.log.Warn("login start rate limited", "remote", clientip.Of(r, s.trusted))
 		http.Error(w, "too many login attempts, wait a minute", http.StatusTooManyRequests)
 		return
 	}
@@ -159,6 +160,33 @@ func (s *Service) oidcCallback(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, SafeReturn(entry.ret), http.StatusSeeOther)
 }
 
+// SubjectPrefix starts the identity of a login in auth.oidc.identity: subject
+// mode; auth.roles names such users oidc:<sub>.
+const SubjectPrefix = "oidc:"
+
+// identityFromSubject names the login by the ID token's sub, which the
+// verified token binds to this issuer.
+func (s *Service) identityFromSubject(claims map[string]json.RawMessage, str func(string, bool) (string, error)) (*auth.Identity, string, error) {
+	sub, err := str("sub", true)
+	if err != nil {
+		return nil, "", err
+	}
+	sub = strings.TrimSpace(sub)
+	if sub == "" || len(sub) > 255 || !utf8.ValidString(sub) || strings.ContainsFunc(sub, func(r rune) bool { return r <= 0x20 || r == 0x7f || r == '<' || r == '>' }) {
+		return nil, "", errors.New("claim sub is empty or not usable as an identity")
+	}
+	_, nameClaim := s.o.Login.OIDC.ClaimsOrDefault()
+	name, err := str(nameClaim, false)
+	if err != nil {
+		return nil, "", err
+	}
+	tid, err := str("tid", false)
+	if err != nil {
+		return nil, "", err
+	}
+	return &auth.Identity{ID: roles.FoldASCII(SubjectPrefix + sub), Name: cleanName(name), Method: auth.MethodOIDC, Groups: groupsClaim(claims)}, tid, nil
+}
+
 // identityFromClaims decodes the verified ID token's claims with an explicit
 // schema: the identity and name claims must be JSON strings.
 func (s *Service) identityFromClaims(a *authoidc.Assertion) (*auth.Identity, string, error) {
@@ -181,6 +209,9 @@ func (s *Service) identityFromClaims(a *authoidc.Assertion) (*auth.Identity, str
 		}
 		return v, nil
 	}
+	if s.o.Login.OIDC.BySubject() {
+		return s.identityFromSubject(claims, str)
+	}
 	ident, err := str(idClaim, true)
 	if err != nil {
 		return nil, "", err
@@ -190,6 +221,10 @@ func (s *Service) identityFromClaims(a *authoidc.Assertion) (*auth.Identity, str
 		return r <= 0x20 || r == 0x7f || r == 0x85 || r == 0x2028 || r == 0x2029 || r == '<' || r == '>'
 	}) {
 		return nil, "", errors.New("claim " + idClaim + " is empty or not usable as an identity")
+	}
+	if strings.HasPrefix(strings.ToLower(ident), SubjectPrefix) {
+		// The oidc: prefix names subject identities only; a claim must not be able to forge one.
+		return nil, "", errors.New("claim " + idClaim + " must not start with " + SubjectPrefix)
 	}
 	if idClaim == "email" {
 		// An e-mail address is only an identity if the IdP vouches for it
@@ -208,11 +243,25 @@ func (s *Service) identityFromClaims(a *authoidc.Assertion) (*auth.Identity, str
 	if err != nil {
 		return nil, "", err
 	}
-	id := &auth.Identity{ID: roles.FoldASCII(ident), Name: name, Method: auth.MethodOIDC}
+	id := &auth.Identity{ID: roles.FoldASCII(ident), Name: name, Method: auth.MethodOIDC, Groups: groupsClaim(claims)}
 	if strings.Contains(ident, "@") {
 		id.Email = id.ID
 	}
 	return id, tid, nil
+}
+
+// groupsClaim reads the ID token's groups claim (an array of strings, as Entra
+// and Keycloak send it); anything else is no groups.
+func groupsClaim(claims map[string]json.RawMessage) []string {
+	raw, ok := claims["groups"]
+	if !ok {
+		return nil
+	}
+	var g []string
+	if json.Unmarshal(raw, &g) != nil {
+		return nil
+	}
+	return g
 }
 
 func tenantAllowed(allowed []string, tid string) bool {

@@ -233,3 +233,22 @@ func TestFailedTokenAttemptsAreRateLimitedPerIP(t *testing.T) {
 		t.Fatal(code)
 	}
 }
+
+func TestClearReferencesNeedsUpdateRightsOnTheReferencingCollections(t *testing.T) {
+	h := newHarness(t, hopts{git: true})
+	secret, _ := h.createToken(map[string]any{"name": "dev-only", "scope": "write", "collections": []string{"devices"}, "actions": []string{"delete"}})
+	id := "web-hostco-ashburn-va-us-dc" // referenced by services
+	_, rec, _ := h.do("GET", "/api/c/devices/"+id, secret, nil)
+	hash, _ := rec["hash"].(string)
+	if hash == "" {
+		t.Fatalf("no hash: %v", rec)
+	}
+	// Without clearing, the delete guard answers 409 (the token may delete devices).
+	if code, _, _ := h.do("DELETE", "/api/c/devices/"+id+"?hash="+hash, secret, nil); code != 409 {
+		t.Fatalf("referenced delete: %d", code)
+	}
+	// Clearing would edit services records, which this token may not update.
+	if code, body, _ := h.do("DELETE", "/api/c/devices/"+id+"?hash="+hash+"&clearReferences=true", secret, nil); code != 403 {
+		t.Fatalf("clearReferences must check the token on every edited collection: %d %v", code, body)
+	}
+}

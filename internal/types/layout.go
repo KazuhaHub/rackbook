@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path"
+	"path/filepath"
 	"strings"
 
 	"github.com/kazuhahub/rackbook/internal/config"
@@ -30,6 +31,41 @@ func seedData(title string) []byte {
 	return []byte("# " + strings.NewReplacer("\n", " ", "\r", " ").Replace(title) + "\n")
 }
 
+// checkNewPaths refuses the files a new collection must never own: the config
+// file, a schema file, a file some other collection uses as its data or schema,
+// anything outside the configured data directory. (.git/ and .rackbook/ are
+// refused by Config.Resolve.)
+func checkNewPaths(l *ledger.Ledger, nt *Type) error {
+	cfg := l.Config
+	data, schema := path.Clean(nt.File), path.Clean(nt.SchemaFile)
+	same := func(a, b string) bool { return strings.EqualFold(path.Clean(a), path.Clean(b)) }
+	for what, rel := range map[string]string{"data file": data, "schema file": schema} {
+		abs, err := cfg.Resolve(rel)
+		if err != nil {
+			continue // reported by the callers' own checks
+		}
+		if cfg.Path != "" && strings.EqualFold(filepath.Clean(abs), filepath.Clean(cfg.Path)) {
+			return fmt.Errorf("the %s cannot be the config file %s", what, filepath.Base(cfg.Path))
+		}
+	}
+	if same(data, schema) {
+		return errors.New("the data file and the schema file cannot be the same file")
+	}
+	for _, c := range cfg.Collections {
+		if same(c.Schema, data) {
+			return fmt.Errorf("the data file %s is the schema of %q", data, c.Name)
+		}
+		if same(c.File, schema) {
+			return fmt.Errorf("the schema file %s holds the records of %q", schema, c.Name)
+		}
+	}
+	dir := path.Clean(cfg.Types.DataDir)
+	if dir != "." && !strings.HasPrefix(data, dir+"/") {
+		return fmt.Errorf("the data file must be inside the data directory %s", dir)
+	}
+	return nil
+}
+
 // checkNewData says whether file (and the list at p inside it) can hold the
 // records of a new collection. exists is true when the file is already there;
 // it is then left alone.
@@ -41,7 +77,7 @@ func checkNewData(l *ledger.Ledger, file, p string) (exists bool, err error) {
 		return false, err
 	}
 	for _, c := range l.Config.Collections {
-		if c.File == file && c.Path == p {
+		if path.Clean(c.File) == path.Clean(file) && c.Path == p {
 			return false, fmt.Errorf("collection %q already stores its records in %s%s", c.Name, file, atPath(p))
 		}
 	}

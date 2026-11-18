@@ -82,8 +82,10 @@ func TestStateFileInPRModeLeavesACleanClone(t *testing.T) {
 func TestWriteOptionsFor(t *testing.T) {
 	cfg := &config.Config{Auth: config.Auth{MCP: config.AuthMCP{DirectPush: []config.DirectPush{
 		{Users: []string{"MCPHub:Alice"}, Collections: []string{"todo"}},
+		{Users: []string{"oauth:entra:carol"}, Collections: []string{"docs"}},
+		{Users: []string{"dave@y.z"}, Collections: []string{"mail"}},
 		{Roles: []string{"admin"}, Collections: []string{"*"}},
-	}}}}
+	}, MatchEmail: true}}}
 	hub := func(id string, role string) *auth.Identity {
 		return &auth.Identity{ID: id, Method: auth.MethodMCPHub, Role: roleOf(role)}
 	}
@@ -101,6 +103,11 @@ func TestWriteOptionsFor(t *testing.T) {
 		{hub("alice", "editor"), edit.Delete, "todo", true, "rackbook/mcp/alice"},
 		{hub("alice", "editor"), edit.Add, "sites", true, "rackbook/mcp/alice"},
 		{hub("bob", "editor"), edit.Add, "todo", true, "rackbook/mcp/bob"},
+		// Entries are method-gated: an OAuth user named alice does not match mcphub:alice.
+		{&auth.Identity{ID: "alice", Method: auth.MethodOAuth, Issuer: "entra", Role: roleOf("editor")}, edit.Add, "todo", true, "rackbook/mcp/alice"},
+		{&auth.Identity{ID: "carol", Method: auth.MethodOAuth, Issuer: "entra", Role: roleOf("editor")}, edit.Add, "docs", false, "rackbook/mcp/carol"},
+		{&auth.Identity{ID: "carol", Method: auth.MethodOAuth, Issuer: "other", Role: roleOf("editor")}, edit.Add, "docs", true, "rackbook/mcp/carol"},
+		{&auth.Identity{ID: "dave@y.z", Email: "dave@y.z", Method: auth.MethodOAuth, Issuer: "entra", Role: roleOf("editor")}, edit.Add, "mail", false, "rackbook/mcp/dave-y-z"},
 		{hub("root", "admin"), edit.Add, "sites", false, "rackbook/mcp/root"}, // role entry
 		{hub("root", "admin"), edit.Delete, "sites", true, "rackbook/mcp/root"},
 		{&auth.Identity{ID: "x@y.z", Method: auth.MethodToken, Token: "ci", Role: roleOf("editor")}, edit.Add, "todo", true, "rackbook/token/ci"},

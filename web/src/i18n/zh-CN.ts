@@ -521,6 +521,7 @@ export const t = {
     noChanges: '没有修改',
     discard: '放弃修改',
     unsaved: '有未保存的修改',
+    stale: '这个数据类型刚刚被其他人修改过，你的修改没有保存。请点击“放弃修改”载入最新版本，再重新修改。',
     delete: {
       button: '删除数据类型',
       title: (n: string) => `删除数据类型“${n}”？`,

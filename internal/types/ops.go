@@ -57,6 +57,9 @@ func planCreate(base *ledger.Ledger, req Request, p *Plan) error {
 	} else if _, err := base.ReadFile(nt.SchemaFile); err == nil {
 		p.refuse("exists", "", "the schema file %s already exists", nt.SchemaFile)
 	}
+	if err := checkNewPaths(base, nt); err != nil {
+		p.refuse("invalid", "", "%v", err)
+	}
 	dataExists, err := checkNewData(base, nt.File, nt.Path)
 	if err != nil {
 		p.refuse("invalid", "", "data file: %v", err)
@@ -101,6 +104,9 @@ func planDelete(base *ledger.Ledger, req Request, p *Plan) error {
 	}
 	old, err := Load(base, req.Name)
 	if err != nil {
+		return err
+	}
+	if err := checkVersion(req, old); err != nil {
 		return err
 	}
 	p.Type = old

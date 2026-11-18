@@ -341,3 +341,16 @@ func TestOIDCModeKeepsMCPOutOfTheLoginRedirect(t *testing.T) {
 		t.Fatalf("public path: %d", w.Code)
 	}
 }
+
+func TestCanonicalPath(t *testing.T) {
+	for target, want := range map[string]bool{
+		"/auth/login": true, "/assets/app.js": true, "/auth/": true, "/": true,
+		"/assets/../api/meta": false, "/assets/%2e%2e/api/meta": false, "/auth/%2E%2E/api/meta": false,
+		"/auth%2fx": false, "/assets//x": false, "/assets/./x": false, "/auth/..%5capi": false,
+	} {
+		r := httptest.NewRequest("GET", "http://x"+target, nil)
+		if _, ok := CanonicalPath(r); ok != want {
+			t.Errorf("%s: canonical = %v, want %v", target, ok, want)
+		}
+	}
+}

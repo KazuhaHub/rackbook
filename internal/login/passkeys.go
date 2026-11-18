@@ -17,6 +17,7 @@ import (
 	"github.com/go-webauthn/webauthn/webauthn"
 
 	"github.com/kazuhahub/rackbook/internal/auth"
+	"github.com/kazuhahub/rackbook/internal/clientip"
 	"github.com/kazuhahub/rackbook/internal/gitstore"
 	"github.com/kazuhahub/rackbook/internal/roles"
 )
@@ -212,15 +213,21 @@ func (f *fileStore) UpdateSignCount(context.Context, []byte, webauthn.Credential
 	return nil
 }
 
-// hasCredential reports whether a credential id is still in the file. Any
-// failure to read the file says no.
-func (p *passkeys) hasCredential(id string) bool {
-	file, err := p.store.load()
+// credentialState reports whether a credential id is in the file. It is a
+// transient error (errUnavailable) when the file is missing, unreadable or does
+// not load, as it can be briefly during a pull or a replay: only a file that
+// loads without the credential means the credential was revoked.
+func (p *passkeys) credentialState(id string) (bool, error) {
+	b, exists, err := p.store.files.StateFile(PasskeysPath)
+	if err != nil || !exists {
+		return false, errUnavailable
+	}
+	file, err := parsePasskeys(b)
 	if err != nil {
-		return false
+		return false, errUnavailable
 	}
 	_, c := file.findCred(id)
-	return c != nil
+	return c != nil, nil
 }
 
 // Responses -----------------------------------------------------------------
@@ -254,7 +261,7 @@ func (p *passkeys) jsonBody(w http.ResponseWriter, r *http.Request) bool {
 
 func (p *passkeys) loginBegin(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 4096)
-	if !p.s.limit.allow(clientIP(r)) {
+	if !p.s.limit.allow(clientip.Of(r, p.s.trusted)) {
 		writeErr(w, http.StatusTooManyRequests, "rate_limited", "too many attempts, wait a minute")
 		return
 	}

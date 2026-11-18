@@ -138,6 +138,20 @@ func (l *Ledger) ReferencesTo(collection string, rec *Record) []Reference {
 		if target == "" {
 			continue
 		}
+		// The target field need not be unique: when another record still has the
+		// same value, deleting this one leaves the references pointing somewhere.
+		if tcoll := l.Collection(tc); tcoll != nil {
+			remains := false
+			for _, o := range tcoll.Records {
+				if o != rec && Str(o.Data[tf]) == target {
+					remains = true
+					break
+				}
+			}
+			if remains {
+				continue
+			}
+		}
 		for _, cand := range from.Records {
 			if fc == collection && cand == rec {
 				continue

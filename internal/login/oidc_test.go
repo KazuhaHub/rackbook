@@ -594,22 +594,104 @@ func TestLoginStartIsRateLimited(t *testing.T) {
 	}
 }
 
-func TestClientIPTrustsHeadersOnlyFromAProxy(t *testing.T) {
-	mk := func(remote, hdr string) *http.Request {
-		r, _ := http.NewRequest("GET", "https://x/", nil)
-		r.RemoteAddr = remote
-		if hdr != "" {
-			r.Header.Set("CF-Connecting-IP", hdr)
+func TestSubjectIdentityMatchesOnlySubjectRoleEntries(t *testing.T) {
+	e := newEnv(t, options{
+		oidc:  "    identity: subject\n",
+		roles: "  roles:\n    admin: [\"oidc:sub-admin\"]\n    editor: [\"*@kazuha.org\"]\n    viewer: [\"*\"]\n",
+	})
+	b := e.browser()
+	if r := b.login("admin", ""); r.StatusCode != 303 {
+		t.Fatalf("listed subject: %d", r.StatusCode)
+	}
+	_, m := b.meta()
+	if u := userOf(t, m); u["id"] != "oidc:sub-admin" || u["role"] != "admin" {
+		t.Fatalf("%v", u)
+	}
+	// ed@kazuha.org and * would match in claim mode; a subject login matches oidc: entries only.
+	b2 := e.browser()
+	if r := b2.login("editor", ""); r.StatusCode == 303 && r.Loc() == "/" {
+		t.Fatalf("an unlisted subject must have no role, got a session: %d %q", r.StatusCode, r.Loc())
+	}
+}
+
+func TestStartupWarnsWhenTheIdentityClaimIsNotIdPControlled(t *testing.T) {
+	e := newEnv(t, options{oidc: "    identity_claim: name\n"})
+	if !strings.Contains(e.logs.String(), "must be controlled by the identity provider") {
+		t.Fatalf("no warning:\n%s", e.logs.String())
+	}
+	e = newEnv(t, options{}) // preferred_username with allowed_tenants set
+	if strings.Contains(e.logs.String(), "must be controlled by the identity provider") {
+		t.Fatalf("unexpected warning:\n%s", e.logs.String())
+	}
+}
+
+func TestClaimIdentityCannotForgeASubjectIdentity(t *testing.T) {
+	e := newEnv(t, options{roles: "  roles:\n    admin: [\"oidc:sub-admin\"]\n    viewer: [\"*\"]\n"})
+	e.idp.Users["forger"] = map[string]any{"sub": "sub-x", "preferred_username": "oidc:sub-admin", "name": "X", "tid": tenant}
+	b := e.browser()
+	if r := b.login("forger", ""); r.StatusCode == 303 && r.Loc() == "/" {
+		t.Fatalf("a username that starts with oidc: must be refused: %d %q", r.StatusCode, r.Loc())
+	}
+}
+
+func TestPublicPathsAreCanonicalOnly(t *testing.T) {
+	e := newEnv(t, options{})
+	b := e.browser()
+	for _, p := range []string{"/assets/%2e%2e/api/meta", "/auth/%2e%2e/api/meta", "/assets/../api/meta", "/auth%2f..%2fapi/meta"} {
+		r := b.get(p)
+		if r.StatusCode == 200 || strings.Contains(r.Body, `"collections"`) {
+			t.Errorf("%s reached the API without a session: %d", p, r.StatusCode)
 		}
-		return r
+		if r.StatusCode == 301 && strings.HasPrefix(r.Loc(), "/api/") {
+			t.Errorf("%s: public prefix used to redirect into the API: %q", p, r.Loc())
+		}
 	}
-	if got := clientIP(mk("127.0.0.1:5", "203.0.113.9")); got != "203.0.113.9" {
-		t.Errorf("proxy on loopback: %s", got)
+}
+
+func TestGroupsClaimReachesRolesAndSessionsBindTheIssuer(t *testing.T) {
+	e := newEnv(t, options{roles: "  roles:\n    admin: [\"group:ops\"]\n    viewer: [\"*@kazuha.org\"]\n"})
+	e.idp.Users["admin"]["groups"] = []string{"dev", "ops"}
+	b := e.browser()
+	if r := b.login("admin", ""); r.StatusCode != 303 {
+		t.Fatalf("login: %d", r.StatusCode)
 	}
-	if got := clientIP(mk("198.51.100.7:5", "203.0.113.9")); got != "198.51.100.7" {
-		t.Errorf("a public client must not choose its own address: %s", got)
+	if _, m := b.meta(); userOf(t, m)["role"] != "admin" {
+		t.Fatalf("the groups claim must give group: entries a browser login: %v", m)
 	}
-	if got := clientIP(mk("127.0.0.1:5", "not-an-ip")); got != "127.0.0.1" {
-		t.Errorf("garbage header: %s", got)
+	// Another user without the group stays a viewer.
+	e.idp.Users["editor"]["groups"] = []string{"dev"}
+	b2 := e.browser()
+	b2.login("editor", "")
+	if _, m := b2.meta(); userOf(t, m)["role"] != "viewer" {
+		t.Fatalf("%v", m)
+	}
+	// A session made for another issuer is refused.
+	sess, err := e.svc.codec.open(b.cookie(SessionCookie).Value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sess.Iss != e.idpS.URL {
+		t.Fatalf("the session must record its issuer, got %q", sess.Iss)
+	}
+	sess.Iss = "https://old-idp.example.com"
+	v, _ := e.svc.codec.seal(sess)
+	b.setCookie(SessionCookie, v)
+	if st, _ := b.meta(); st != 401 {
+		t.Fatalf("a session from a different issuer must end: %d", st)
+	}
+}
+
+func TestBoundGroups(t *testing.T) {
+	var many []string
+	for i := 0; i < 200; i++ {
+		many = append(many, strings.Repeat("g", 36))
+	}
+	out, cut := boundGroups(many)
+	total := 0
+	for _, g := range out {
+		total += len(g)
+	}
+	if !cut || total > maxSessionGroupBytes || len(out) > maxSessionGroups {
+		t.Fatalf("%d groups, %d bytes, cut %v", len(out), total, cut)
 	}
 }
