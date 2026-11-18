@@ -314,18 +314,31 @@ type WriteOptions struct {
 }
 
 // Write applies op on behalf of who (nil = anonymous) with the default options;
-// see WriteWith.
+// see WriteFunc.
 func (s *Store) Write(ctx context.Context, op edit.Op, who *auth.Identity) (*WriteResult, error) {
-	return s.WriteWith(ctx, op, who, WriteOptions{})
+	return s.WriteFunc(ctx, ApplyOp(op), who, WriteOptions{})
 }
 
-// WriteWith applies op on behalf of who. Without Git the files are edited in
-// place. With Git the edit is committed (author = who, committer = service
-// identity; message built by CommitMessage, with a Record trailer) and pushed;
-// if the push is rejected because the remote moved, the same edit is replayed on
-// the new tip, at most MaxAttempts times. In pr mode (or with opts.ForcePR) the
-// commit goes to a new branch and a pull request is opened instead.
-func (s *Store) WriteWith(ctx context.Context, op edit.Op, who *auth.Identity, opts WriteOptions) (*WriteResult, error) {
+// ApplyFunc performs one change on the files under cfg.Dir and reports which
+// files it wrote and the commit subject and trailer (see edit.Result). It is
+// called again on the new tip when a push is rejected, so it must be
+// repeatable: it describes the change, not the file positions.
+type ApplyFunc func(cfg *config.Config) (*edit.Result, error)
+
+// ApplyOp is the ApplyFunc of a record edit.
+func ApplyOp(op edit.Op) ApplyFunc {
+	return func(cfg *config.Config) (*edit.Result, error) { return edit.Apply(cfg, op) }
+}
+
+// WriteFunc is the one write path for any change to the data repository:
+// record edits (ApplyOp), data type changes (types.Apply) and the MCP write
+// tools all go through it. Without Git the files are changed in place. With Git
+// the change is committed (author = who, committer = service identity; message
+// built by CommitMessage, with a Record trailer) and pushed; if the push is
+// rejected because the remote moved, apply runs again on the new tip, at most
+// MaxAttempts times. In pr mode (or with opts.ForcePR) the commit goes to a new
+// branch and a pull request is opened instead.
+func (s *Store) WriteFunc(ctx context.Context, apply ApplyFunc, who *auth.Identity, opts WriteOptions) (*WriteResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if !s.git {
@@ -335,7 +348,7 @@ func (s *Store) WriteWith(ctx context.Context, op edit.Op, who *auth.Identity, o
 		if err := s.reload(); err != nil {
 			return nil, err
 		}
-		res, err := edit.Apply(s.cur.Load().Config, op)
+		res, err := apply(s.cur.Load().Config)
 		if err != nil {
 			return nil, err
 		}
@@ -346,7 +359,7 @@ func (s *Store) WriteWith(ctx context.Context, op edit.Op, who *auth.Identity, o
 	}
 	var res *edit.Result
 	commit, pr, err := s.commitLoop(ctx, who, opts, func() (*change, error) {
-		r, err := edit.Apply(s.cur.Load().Config, op)
+		r, err := apply(s.cur.Load().Config)
 		if err != nil {
 			return nil, err
 		}
@@ -369,8 +382,7 @@ var errPRNeedsGit = fmt.Errorf("%w: this write must go through a pull request, b
 type change struct {
 	Files   []string // config-relative files written; empty = nothing changed
 	Subject string
-	Record  string   // Record trailer value, "" for none
-	Created []string // absolute paths that did not exist before (removed again when the commit is dropped)
+	Record  string // Record trailer value, "" for none
 }
 
 // commitLoop is the Git write path shared by record edits and state files:
@@ -405,7 +417,7 @@ func (s *Store) commitLoop(ctx context.Context, who *auth.Identity, opts WriteOp
 		msg := CommitMessage(ch.Subject, who, s.via, ch.Record)
 		short, err := s.repo.Commit(ctx, ch.Files, msg, author, s.opts.Committer)
 		if err != nil {
-			s.discard(ctx, parent, ch.Files, ch.Created)
+			s.discard(ctx, parent, ch.Files)
 			return "", false, err
 		}
 		if !s.HasRemote() {
@@ -416,7 +428,7 @@ func (s *Store) commitLoop(ctx context.Context, who *auth.Identity, opts WriteOp
 		}
 		if pr {
 			url, err := s.openPR(ctx, ch.Subject, opts.BranchPrefix, author, msg)
-			s.discard(ctx, parent, ch.Files, ch.Created)
+			s.discard(ctx, parent, ch.Files)
 			if err != nil {
 				return "", false, err
 			}
@@ -445,7 +457,7 @@ func (s *Store) commitLoop(ctx context.Context, who *auth.Identity, opts WriteOp
 			}
 			// A moved remote means replay; anything else is a real failure.
 			tip, _ := s.repo.git(ctx, "rev-parse", "origin/"+s.branch)
-			s.discard(ctx, parent, ch.Files, ch.Created)
+			s.discard(ctx, parent, ch.Files)
 			if ferr != nil || tip == parent {
 				return "", false, fmt.Errorf("push failed: %w", err)
 			}
@@ -462,8 +474,9 @@ func (s *Store) commitLoop(ctx context.Context, who *auth.Identity, opts WriteOp
 }
 
 // discard drops our unpushed commit and restores only the files the edit
-// touched; changes the store did not make are never reset.
-func (s *Store) discard(ctx context.Context, parent string, files, created []string) {
+// touched; changes the store did not make are never reset. A file the edit
+// created (it is not in the parent commit) is removed again.
+func (s *Store) discard(ctx context.Context, parent string, files []string) {
 	if parent == "" {
 		return
 	}
@@ -471,23 +484,19 @@ func (s *Store) discard(ctx context.Context, parent string, files, created []str
 		s.log.Error("could not reset the index", "err", err)
 		return
 	}
-	// Files the change created are untracked again after the reset: remove them.
-	gone := map[string]bool{}
-	for _, p := range created {
-		if err := os.Remove(p); err != nil && !errors.Is(err, os.ErrNotExist) {
-			s.log.Error("could not remove a file the dropped commit created", "path", p, "err", err)
-		}
-		gone[p] = true
-	}
-	var restore []string
 	for _, f := range files {
-		if !gone[filepath.Join(s.cur.Load().Config.Dir, filepath.FromSlash(f))] {
-			restore = append(restore, f)
+		if _, err := s.repo.git(ctx, "cat-file", "blob", parent+":"+f); err != nil {
+			if msg := err.Error(); !strings.Contains(msg, "Not a valid object name") && !strings.Contains(msg, "does not exist") && !strings.Contains(msg, "but not in") {
+				s.log.Error("could not tell whether the edit created the file", "file", f, "err", err)
+				continue
+			}
+			if err := os.Remove(filepath.Join(s.repo.Dir, filepath.FromSlash(f))); err != nil && !errors.Is(err, os.ErrNotExist) {
+				s.log.Error("could not remove the created file", "file", f, "err", err)
+			}
+			continue
 		}
-	}
-	if len(restore) > 0 {
-		if _, err := s.repo.git(ctx, append([]string{"checkout", "--quiet", "--"}, restore...)...); err != nil {
-			s.log.Error("could not restore the edited files", "err", err)
+		if _, err := s.repo.git(ctx, "checkout", "--quiet", "--", f); err != nil {
+			s.log.Error("could not restore the edited file", "file", f, "err", err)
 		}
 	}
 }

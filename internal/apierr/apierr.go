@@ -26,7 +26,10 @@ func Classify(err error) Info {
 	var ce *edit.ConflictError
 	var ie *edit.InvalidError
 	var he *gitstore.HistoryRewrittenError
+	var re *edit.ReferencedError
 	switch {
+	case errors.As(err, &re):
+		return Info{409, "referenced", re.Error(), map[string]any{"references": re.Refs}}
 	case errors.As(err, &ce):
 		var cur any
 		if ce.Current != nil {

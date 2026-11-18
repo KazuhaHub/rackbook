@@ -1,6 +1,6 @@
 import { Suspense, useEffect } from 'react'
 import { Outlet, NavLink, useLocation } from 'react-router'
-import { BookMarked, KeyRound, LayoutDashboard } from 'lucide-react'
+import { BookMarked, KeyRound, LayoutDashboard, Shapes } from 'lucide-react'
 import {
   Sidebar,
   SidebarContent,
@@ -107,6 +107,12 @@ function AppSidebar() {
             <SidebarGroupLabel className="tracking-wide">{t.nav.admin}</SidebarGroupLabel>
             <SidebarGroupContent>
               <SidebarMenu>
+                <SidebarMenuItem>
+                  <SidebarMenuButton isActive={pathname === '/types' || pathname.startsWith('/types/')} render={<NavLink to="/types" />}>
+                    <Shapes />
+                    <span>{t.types.nav}</span>
+                  </SidebarMenuButton>
+                </SidebarMenuItem>
                 <SidebarMenuItem>
                   <SidebarMenuButton isActive={pathname === '/admin/tokens'} render={<NavLink to="/admin/tokens" />}>
                     <KeyRound />

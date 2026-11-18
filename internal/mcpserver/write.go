@@ -25,7 +25,7 @@ import (
 // *gitstore.Store; the interface keeps the tool handlers independent of how a
 // record is stored (v0.3 will keep one file per record).
 type Backend interface {
-	WriteWith(ctx context.Context, op edit.Op, who *auth.Identity, opts gitstore.WriteOptions) (*gitstore.WriteResult, error)
+	WriteFunc(ctx context.Context, apply gitstore.ApplyFunc, who *auth.Identity, opts gitstore.WriteOptions) (*gitstore.WriteResult, error)
 	History(ctx context.Context, limit int, collection, id string) ([]gitstore.Commit, error)
 	Config() *config.Config
 	Alert() *gitstore.Alert
@@ -133,7 +133,7 @@ func (t *tools) write(ctx context.Context, req *mcp.CallToolRequest, action stri
 		return errText(http.StatusForbidden, "forbidden", fmt.Sprintf("this token may not %s records in %s", action, collection), nil), nil, nil
 	}
 	opts := gitstore.WriteOptionsFor(id, t.backend.Config(), op.Kind, collection)
-	res, err := t.backend.WriteWith(ctx, op, id, opts)
+	res, err := t.backend.WriteFunc(ctx, gitstore.ApplyOp(op), id, opts)
 	if err != nil {
 		info := apierr.Classify(err)
 		if info.Status == http.StatusInternalServerError {

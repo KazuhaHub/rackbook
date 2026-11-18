@@ -14,7 +14,7 @@ export type JsonSchema = {
 
 export type Facet = { field: string; match: 'exact' | 'contains' | 'prefix'; values: string[] }
 export type Ref = { field: string; to: string; toField: string; allow?: string[]; many?: boolean }
-export type Backref = { collection: string; field: string }
+export type Backref = { collection: string; field: string; title?: string; columns?: string[] }
 export type Note = { title: string; text: string }
 
 export type Collection = {
@@ -24,6 +24,9 @@ export type Collection = {
   group?: string
   /** optional lucide icon name; unknown names are ignored */
   icon?: string
+  file?: string
+  path?: string
+  schemaFile?: string
   key?: string[]
   label?: string
   list?: string[]

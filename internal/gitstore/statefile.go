@@ -82,11 +82,7 @@ func (s *Store) MutateStateFile(ctx context.Context, rel, subject string, who *a
 			_ = os.Remove(tmp)
 			return nil, err
 		}
-		ch := &change{Files: []string{rel}, Subject: subject}
-		if !exists {
-			ch.Created = []string{abs}
-		}
-		return ch, nil
+		return &change{Files: []string{rel}, Subject: subject}, nil
 	}
 	if !s.git {
 		if _, err := apply(); err != nil {

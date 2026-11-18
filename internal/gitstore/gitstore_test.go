@@ -404,7 +404,7 @@ func TestDiscardOnlyTouchesTheEditedFiles(t *testing.T) {
 	ob, _ := os.ReadFile(other)
 	mine := append(append([]byte{}, ob...), "# not ours\n"...)
 	os.WriteFile(other, mine, 0o644)
-	s.discard(context.Background(), parent, []string{"docs/ledger/services.yml"}, nil)
+	s.discard(context.Background(), parent, []string{"docs/ledger/services.yml"})
 	if got, _ := os.ReadFile(ssh); string(got) != string(orig) {
 		t.Fatal("edited file must be restored")
 	}

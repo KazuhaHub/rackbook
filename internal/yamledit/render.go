@@ -147,6 +147,8 @@ func inline(v any, hint yaml.Style) string {
 	switch x := v.(type) {
 	case nil:
 		return "null"
+	case rawText:
+		return string(x)
 	case string:
 		return scalar(x, true, hint)
 	case bool:

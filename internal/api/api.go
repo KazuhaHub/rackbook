@@ -89,6 +89,7 @@ func New(o Options) http.Handler {
 	mux.HandleFunc("DELETE /api/c/{collection}/{id}", s.del)
 	mux.HandleFunc("POST /api/admin/accept-remote", s.acceptRemote)
 	s.tokenRoutes(mux) // tokens.go
+	s.typesRoutes(mux) // types.go
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "not_found", "no such API endpoint")
 	})
@@ -268,6 +269,10 @@ type collectionOut struct {
 	Title       string           `json:"title"`
 	Description string           `json:"description"`
 	Group       string           `json:"group"`
+	Icon        string           `json:"icon,omitempty"`
+	File        string           `json:"file"`
+	Path        string           `json:"path,omitempty"`
+	SchemaFile  string           `json:"schemaFile"`
 	Key         []string         `json:"key"`
 	Label       string           `json:"label"`
 	List        []string         `json:"list"`
@@ -301,7 +306,8 @@ func (s *server) meta(w http.ResponseWriter, r *http.Request) {
 	cols := make([]collectionOut, 0, len(l.Collections))
 	for _, c := range l.Collections {
 		out := collectionOut{
-			Name: c.Name, Title: c.Title, Description: c.Description, Group: c.Group,
+			Name: c.Name, Title: c.Title, Description: c.Description, Group: c.Group, Icon: c.Icon,
+			File: c.File, Path: c.Path, SchemaFile: c.Collection.Schema,
 			Key: strs(c.Key), Label: c.Label, List: strs(c.List), Facets: []facetOut{},
 			Schema: c.SchemaRaw, Refs: l.Refs(c.Name), Backrefs: l.BackRefs(c.Name), Notes: []noteOut{}, Count: len(c.Records),
 		}
@@ -433,21 +439,28 @@ func (s *server) permits(w http.ResponseWriter, r *http.Request, action, collect
 func (s *server) apply(w http.ResponseWriter, r *http.Request, op edit.Op) *gitstore.WriteResult {
 	// Tokens are contributor level: their writes open pull requests unless granted otherwise.
 	opts := gitstore.WriteOptionsFor(s.who(r), s.o.Store.Config(), op.Kind, op.Collection)
-	res, err := s.o.Store.WriteWith(r.Context(), op, s.who(r), opts)
+	res, err := s.o.Store.WriteFunc(r.Context(), gitstore.ApplyOp(op), s.who(r), opts)
 	if err == nil {
 		return res
 	}
+	s.writeFailure(w, err)
+	return nil
+}
+
+// writeFailure answers a failed write with the status and code of apierr, so
+// the API and the MCP tools fail the same way. Internal errors are logged and
+// shown with a request id.
+func (s *server) writeFailure(w http.ResponseWriter, err error) {
 	info := apierr.Classify(err)
 	if info.Status == http.StatusInternalServerError {
 		s.internal(w, err)
-		return nil
+		return
 	}
 	extra := make([]any, 0, 2*len(info.Extra))
 	for k, v := range info.Extra {
 		extra = append(extra, k, v)
 	}
 	writeError(w, info.Status, info.Code, info.Message, extra...)
-	return nil
 }
 
 func (s *server) acceptRemote(w http.ResponseWriter, r *http.Request) {
@@ -555,10 +568,14 @@ func (s *server) del(w http.ResponseWriter, r *http.Request) {
 	if !s.permits(w, r, auth.ActDelete, c.Name) {
 		return
 	}
-	if res := s.apply(w, r, edit.Op{Kind: edit.Delete, Collection: c.Name, ID: r.PathValue("id"), Hash: hash}); res != nil {
+	clear := r.URL.Query().Get("clearReferences") == "true"
+	if res := s.apply(w, r, edit.Op{Kind: edit.Delete, Collection: c.Name, ID: r.PathValue("id"), Hash: hash, ClearReferences: clear}); res != nil {
 		out := map[string]any{"commit": res.Commit}
 		if res.PullRequest {
 			out["pullRequest"] = true
+		}
+		if len(res.Cleared) > 0 {
+			out["cleared"] = res.Cleared
 		}
 		writeJSON(w, http.StatusOK, out)
 	}

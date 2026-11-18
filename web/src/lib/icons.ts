@@ -3,7 +3,14 @@ import {
   Boxes,
   Cable,
   Cloud,
+  Calendar,
   Contact,
+  Cpu,
+  Folder,
+  Laptop,
+  Router,
+  Tag,
+  Wrench,
   Database,
   Globe,
   Hash,
@@ -43,7 +50,23 @@ const registry: Record<string, LucideIcon> = {
   server: Server,
   users: Users,
   waypoints: Waypoints,
+  calendar: Calendar,
+  cpu: Cpu,
+  folder: Folder,
+  laptop: Laptop,
+  router: Router,
+  tag: Tag,
+  wrench: Wrench,
 }
+
+/** The icons the data type editor offers, as the names written to rackbook.yml. */
+export const iconChoices: { name: string; Icon: LucideIcon }[] = [
+  ['server', Server], ['laptop', Laptop], ['router', Router], ['cpu', Cpu], ['hard-drive', HardDrive], ['boxes', Boxes],
+  ['database', Database], ['cloud', Cloud], ['network', Network], ['waypoints', Waypoints], ['globe', Globe], ['plug', Plug],
+  ['cable', Cable], ['hash', Hash], ['map-pin', MapPin], ['users', Users], ['contact', Contact], ['key-round', KeyRound],
+  ['shield-check', ShieldCheck], ['list-todo', ListTodo], ['list-checks', ListChecks], ['archive', Archive], ['folder', Folder],
+  ['tag', Tag], ['calendar', Calendar], ['wrench', Wrench],
+].map(([name, Icon]) => ({ name: name as string, Icon: Icon as LucideIcon }))
 
 /** First match wins; matched against the collection name and title, lower-cased. */
 const keywords: [RegExp, LucideIcon][] = [
