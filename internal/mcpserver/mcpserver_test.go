@@ -112,7 +112,7 @@ func TestGetRecordBackrefsSearchSchemaCheck(t *testing.T) {
 		t.Fatalf("%s", out)
 	}
 
-	out, isErr = call(t, cs, "get_schema", map[string]any{"collection": "device"})
+	_, isErr = call(t, cs, "get_schema", map[string]any{"collection": "device"})
 	if !isErr {
 		t.Fatal("unknown collection must be an error")
 	}

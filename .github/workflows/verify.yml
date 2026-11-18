@@ -1,7 +1,7 @@
 # Reusable verification: the console build once, then the Go tests and a smoke
-# test of the built binary natively on every supported platform. ci.yml runs it
-# on pull requests and on main; release.yml runs it as the gate before anything
-# is published, and publishes the very console build that was tested here.
+# test of the built binary natively on every supported platform. Only
+# release.yml runs it, as the gate before anything is published; it publishes
+# the very console build that was tested here. Pull request CI (ci.yml) is lighter.
 name: verify
 
 on:

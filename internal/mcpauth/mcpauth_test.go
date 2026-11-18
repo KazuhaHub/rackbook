@@ -153,7 +153,7 @@ func TestDirectPushAndDeletesAlwaysPR(t *testing.T) {
 	if out, _ = call(t, ed, "create_record", map[string]any{"collection": "todo", "data": map[string]any{"item": "ed", "status": "待办"}}); out["pullRequest"] != true {
 		t.Fatalf("%v", out)
 	}
-	out, isErr = call(t, alice, "create_record", map[string]any{"collection": "sites", "data": map[string]any{"name": "zzz"}})
+	out, _ = call(t, alice, "create_record", map[string]any{"collection": "sites", "data": map[string]any{"name": "zzz"}})
 	if out["pullRequest"] == false {
 		t.Fatalf("direct_push must be limited to the listed collection: %v", out)
 	}

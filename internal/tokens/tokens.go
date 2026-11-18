@@ -57,10 +57,10 @@ type Token struct {
 	// none), so the token is evaluated against the creator's real role entries
 	// (oidc:<sub> for identity: subject). Empty on older tokens.
 	CreatedVia string `yaml:"created_via,omitempty" json:"-"`
-	Created     string   `yaml:"created" json:"created"`
-	Expires     string   `yaml:"expires,omitempty" json:"expires,omitempty"`
-	Revoked     string   `yaml:"revoked,omitempty" json:"revoked,omitempty"`
-	RevokedBy   string   `yaml:"revoked_by,omitempty" json:"revokedBy,omitempty"`
+	Created    string `yaml:"created" json:"created"`
+	Expires    string `yaml:"expires,omitempty" json:"expires,omitempty"`
+	Revoked    string `yaml:"revoked,omitempty" json:"revoked,omitempty"`
+	RevokedBy  string `yaml:"revoked_by,omitempty" json:"revokedBy,omitempty"`
 }
 
 // ParseTime reads one of the timestamp fields ("" = zero).

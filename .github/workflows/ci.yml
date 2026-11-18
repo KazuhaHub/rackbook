@@ -5,15 +5,165 @@ on:
   push:
     branches: [main]
 
-permissions:
-  contents: read
-
+# A new push to a pull request makes the run in flight stale, so that run is
+# cancelled; separate PRs still run side by side. A main push is never stale:
+# it gets its own group (the run id) and cancels nothing, so every commit on
+# main keeps a verdict of its own even when two merges arrive seconds apart.
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+# No permissions by default; each job asks for read access to the code only.
+permissions: {}
+
+env:
+  # Ignore any go.work file and use exactly the Go version from go.mod.
+  GOWORK: "off"
+  GOTOOLCHAIN: local
+
 jobs:
-  verify:
+  go:
+    name: go
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: read
-    uses: ./.github/workflows/verify.yml
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version-file: go.mod
+      # The tests need no console build: web/dist holds only a .gitkeep and the
+      # server then shows its "console not built" page.
+      - name: gofmt
+        run: |
+          out="$(gofmt -l .)"
+          if [ -n "$out" ]; then
+            echo "These files are not gofmt-formatted:"
+            echo "$out"
+            exit 1
+          fi
+      - name: go vet
+        run: go vet ./...
+      - name: staticcheck
+        run: go run honnef.co/go/tools/cmd/staticcheck@v0.8.2 ./...
+      # Checks the workflow files themselves: expressions, job wiring, inputs.
+      - name: actionlint
+        run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+      - name: go test -race
+        run: go test -race -count=1 ./...
+
+  web:
+    name: web
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # No .nvmrc or engines field exists, so use the Node version the Dockerfile and release use.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      # npm ci installs exactly what package-lock.json says.
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm run check:formats
+      - run: npm run build
+
+  govulncheck:
+    name: govulncheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version-file: go.mod
+      # Reports known vulnerabilities in the Go standard library and modules that the code actually calls.
+      - run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
+
+  fuzz:
+    name: fuzz
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version-file: go.mod
+      # A short run: it only catches crashes in the secret scanner, it does not prove there are none.
+      - run: go test -run '^$' -fuzz '^FuzzScan$' -fuzztime=20s ./internal/secretscan/
+
+  cross-compile:
+    name: cross-compile
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version-file: go.mod
+      # Release builds are static (no cgo), so prove every target still compiles that way.
+      - name: Build every release target
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          for os in linux darwin windows; do
+            for arch in amd64 arm64; do
+              echo "== $os/$arch"
+              GOOS=$os GOARCH=$arch go build -trimpath -o /dev/null ./cmd/rackbook
+            done
+          done
+      # Build for the runner itself and run it once. The full smoke test runs natively on every platform in verify.yml at release.
+      - name: Smoke test linux/amd64
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          go build -trimpath -o rackbook ./cmd/rackbook
+          ./rackbook version
+          ./rackbook check --config examples/homelab/rackbook.yml
+
+  docker:
+    name: docker
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # QEMU lets the amd64 runner build the arm64 image.
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      # The Dockerfile builds the console and the binary itself; nothing is pushed.
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
