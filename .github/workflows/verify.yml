@@ -85,7 +85,7 @@ jobs:
             go test -count=1 -v ./cmd/... ./internal/... ./web 2>&1 | tee test.log
           fi
           # Every skipped test must say why; list them in the job summary.
-          { echo '### Skipped tests on ${{ matrix.name }}'; echo '```'; grep -hA1 -- '--- SKIP' test.log | grep -v '^--$' || true; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          { echo '### Skipped tests on ${{ matrix.name }}'; echo '```'; grep -hE -A1 -- '--- SKIP|SKIPPED' test.log | grep -v '^--$' | sort -u || true; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
         # pipefail is on in the bash shell, so a failing go test fails the step.
       - name: Build
         env:

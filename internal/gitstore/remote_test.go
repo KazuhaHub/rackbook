@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -587,7 +588,9 @@ func TestMigrationOnlyForTheCheckedOutBranchAndNeverLosesTheOldFile(t *testing.T
 		t.Fatal("the old file must still be there")
 	}
 	// A failing migration leaves the old file alone.
-	if os.Getuid() != 0 {
+	if runtime.GOOS == "windows" {
+		t.Log("SKIPPED on Windows: the failed-migration case (a read-only .git via chmod 0555) does not apply; Windows ignores directory permission bits")
+	} else if os.Getuid() != 0 {
 		os.Chmod(gitDir, 0o555)
 		got := r.readLastGood(ctx, "main")
 		os.Chmod(gitDir, 0o755)
