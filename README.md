@@ -674,7 +674,9 @@ leniency. The only ways out are:
    key algorithms), `fingerprint` (SHA256 or MD5), `nodekey` (`nodekey:`,
    `machinekey:` or `discokey:` plus 64 hex), `age_recipient` (`age1...`),
    `pem_public_key`, `jwk_public` (no private members; its other members are
-   scanned), `hex_id` and `secret_reference` (`op://...`, `vault:...`,
+   scanned), `hex_id`, `uuid` (a standard UUID, alone or as `<label>=<uuid>`
+   such as `entra_app_id=…`, where the label must not be named like a secret)
+   and `secret_reference` (`op://...`, `vault:...`,
    `env:NAME`, `${NAME}` or a path without spaces). Only an annotated field whose
    whole value has the strict format of its kind is exempt from the confirm tier;
    any other value in it is scanned as text, and block-tier formats are refused

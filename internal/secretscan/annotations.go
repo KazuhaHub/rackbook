@@ -24,11 +24,12 @@ const (
 	KindPEMPublicKey    = "pem_public_key"
 	KindJWKPublic       = "jwk_public"
 	KindHexID           = "hex_id"
+	KindUUID            = "uuid"
 	KindSecretReference = "secret_reference"
 )
 
 // Kinds lists the annotation kinds.
-var Kinds = []string{KindSSHPublicKey, KindFingerprint, KindNodeKey, KindAgeRecipient, KindPEMPublicKey, KindJWKPublic, KindHexID, KindSecretReference}
+var Kinds = []string{KindSSHPublicKey, KindFingerprint, KindNodeKey, KindAgeRecipient, KindPEMPublicKey, KindJWKPublic, KindHexID, KindUUID, KindSecretReference}
 
 // Annotations maps a data path of a record ("/ssh_key", "/users/*/key"; a list
 // index is written "*") to the public kind its schema property declares.
@@ -109,6 +110,8 @@ var (
 	ageRecip  = regexp.MustCompile(`^age1[0-9a-z]{58}$`)
 	pemPublic = regexp.MustCompile(`^-----BEGIN (?:RSA )?PUBLIC KEY-----\s*[A-Za-z0-9+/=\s]+-----END (?:RSA )?PUBLIC KEY-----$`)
 	hexID     = regexp.MustCompile(`^(?:0x)?[0-9a-fA-F]{8,128}$`)
+	// a standard UUID, alone or labelled (entra_app_id=<uuid>)
+	uuidID = regexp.MustCompile(`^(?:([a-z][a-z0-9_]{0,31})=)?[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 )
 
 // validFor reports whether the whole value v has the strict format of kind.
@@ -147,6 +150,10 @@ func (s *Scanner) validFor(kind, v string) bool {
 		return true
 	case KindHexID:
 		return hexID.MatchString(v)
+	case KindUUID:
+		// a label named like a secret ("client_secret=<uuid>") is not an id
+		m := uuidID.FindStringSubmatch(v)
+		return m != nil && (m[1] == "" || !isSecretName(m[1]))
 	case KindSecretReference:
 		// the remainder after the prefix is scanned again: "op://ghp_..." and
 		// "/ghp_..." are not references, and a path that looks like a value is not a path
