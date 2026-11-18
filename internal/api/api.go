@@ -88,8 +88,9 @@ func New(o Options) http.Handler {
 	mux.HandleFunc("PUT /api/c/{collection}/{id}", s.put)
 	mux.HandleFunc("DELETE /api/c/{collection}/{id}", s.del)
 	mux.HandleFunc("POST /api/admin/accept-remote", s.acceptRemote)
-	s.tokenRoutes(mux) // tokens.go
-	s.typesRoutes(mux) // types.go
+	s.tokenRoutes(mux)    // tokens.go
+	s.typesRoutes(mux)    // types.go
+	s.brandingRoutes(mux) // branding.go: public
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "not_found", "no such API endpoint")
 	})
@@ -108,7 +109,9 @@ func New(o Options) http.Handler {
 
 	authed := s.o.Auth.Middleware(mux)
 	var h http.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/healthz" {
+		// RawPath is set only when the request escaped something (e.g. %2F), so the
+		// branding exemption matches exactly the two plain paths and nothing else.
+		if r.URL.Path == "/healthz" || (r.URL.RawPath == "" && isBrandingPath(r.URL.Path)) {
 			mux.ServeHTTP(w, r)
 			return
 		}
@@ -330,6 +333,7 @@ func (s *server) meta(w http.ResponseWriter, r *http.Request) {
 		"title": cfg.Title, "description": cfg.Description,
 		"readOnly": s.o.ReadOnly, "writeMode": cfg.Write.Mode, "user": user, "collections": cols,
 	}
+	meta["branding"] = map[string]any{"name": cfg.Branding.Name, "logo": cfg.BrandLogo() != nil}
 	if a := s.o.Store.Alert(); a != nil {
 		meta["alert"] = a
 	}

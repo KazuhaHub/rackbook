@@ -514,6 +514,39 @@ Logins, refusals and logouts go to the server log (stdout). Starting a login or 
 passkey ceremony is rate limited per client (the first `CF-Connecting-IP` /
 `X-Forwarded-For` address when the request comes from a loopback or private proxy).
 
+## Branding and the sign-in button
+
+By default the sign-in page says "使用单点登录" and shows the Rackbook mark; it never names
+an identity provider. To use your own wording and logo, add two optional blocks to
+`rackbook.yml`:
+
+```yaml
+branding:
+  name: Kazuha Hub              # product name: sign-in page, header, tab title (default: Rackbook)
+  logo: branding/logo.svg       # sign-in page and header
+  favicon: branding/favicon.svg # browser tab icon (default: the Rackbook icon)
+auth:
+  oidc:
+    label: 使用 Kazuha Hub SSO 登录   # text of the sign-in button
+```
+
+Put the image files in your data repository (for example in `branding/`) and give their
+paths relative to the folder that holds `rackbook.yml`, like the schema files. A logo is
+`.svg` or `.png`; a favicon is `.svg`, `.png` or `.ico`. Each file must be at most 256 KiB,
+must really be that type (a PNG starts with the PNG signature, an SVG is XML whose root
+element is `<svg>`), and must be inside the repository: absolute paths, `..` and symbolic
+links that lead out are refused. A bad file is a config error, reported by `rackbook check`
+and when the server loads or pulls the config. The files are read when the config loads
+and served from memory at `/branding/logo` and `/branding/favicon` (also before sign-in,
+GET only, revalidated with an `ETag`). `examples/homelab-login/` shows all of it.
+
+**Why an SVG logo is safe.** The console only ever shows the logo through an `<img>` tag,
+and browsers never run scripts inside an SVG loaded that way. If someone opens the image
+address directly, the response is served with its exact content type,
+`X-Content-Type-Options: nosniff` and `Content-Security-Policy: default-src 'none';
+sandbox`, so the page can still not run script or load anything. Only people who can
+write to the data repository can change these files.
+
 ## Secret scanning
 
 Rackbook runs Git with hooks disabled, so a pre-commit hook in your data
@@ -797,6 +830,9 @@ Rackbook 校验 `Cf-Access-Jwt-Assertion` 并用其中的邮箱作为提交作�
 
 会话是 HMAC 签名的 Cookie，不存数据库；角色每次请求都按 `auth.roles` 重新计算，没有角色的账号会被拒绝（403）。
 可选通行密钥（`auth.passkeys`），凭据提交到数据仓库的 `.rackbook/passkeys.yml`。
+
+登录页不会出现任何身份提供方的名字。可在 `rackbook.yml` 里用 `auth.oidc.label`（按钮文字，如“使用 Kazuha Hub SSO 登录”）
+和 `branding.name` / `branding.logo` / `branding.favicon`（图片放在数据仓库里，SVG 或 PNG，不超过 256 KiB）定制，见上文 “Branding and the sign-in button”。
 
 Rackbook 永远不会 force push，也不会改写或删除远端分支和标签。若发现远端历史被他人改写，
 会暂停所有写入（返回 503 `history_rewritten`）、继续只读提供最后一个可信提交，并在控制台显示红色横幅；

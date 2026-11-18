@@ -63,6 +63,8 @@ except the export endpoints. Errors always have the shape
   `{"kind": "config_error", "message": "…"}` when `rackbook.yml` no longer
   loads (writes `503 config_error`, everyone is capped at viewer); a rewritten
   history takes precedence.
+- `branding` is `{"name": string, "logo": bool}`: `branding.name` (empty when unset)
+  and whether a custom logo is served at `/branding/logo`.
 - `list` empty → the client shows all schema properties in order.
 - `facets[].match`: `exact` (values = distinct field values, computed by
   the client when `values` is empty), `contains` (a record matches a value if
@@ -193,7 +195,18 @@ Public endpoints (no session):
   (`error`: `no_role`, `tenant` (both served with status 403), `idp_error`,
   `idp_unavailable`, `expired`, `bad_callback`, `claims`, `logged_out`). With a
   valid session and no `error` it redirects to `return`.
-- `GET /auth/config` → `{"oidc": true, "provider": "microsoft"|"oidc", "passkeys": bool}`.
+- `GET /auth/config` → `{"oidc": true, "provider": "oidc", "passkeys": bool, "label": string,
+  "name": string, "logo": bool}`. `label` is `auth.oidc.label` (empty when unset),
+  `name` is `branding.name` (empty when unset) and `logo` says whether
+  `branding.logo` is configured. `provider` is kept for older consoles and is always
+  `"oidc"`.
+- `GET /branding/logo`, `GET /branding/favicon` — the images of `branding.logo` and
+  `branding.favicon` (also public; GET and HEAD only). They carry the exact
+  `Content-Type`, `X-Content-Type-Options: nosniff`, `Cache-Control: no-cache`, an
+  `ETag` (content hash; `If-None-Match` gets `304`) and
+  `Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; sandbox`.
+  Without a configured file `/branding/favicon` serves the console's own favicon and
+  `/branding/logo` answers `404` (the console then shows its default mark).
 - `GET /auth/oidc/start[?return=<path>]` — redirects to the IdP and sets the
   `__Host-rackbook_login` binding cookie. `return` must be a same-origin path.
 - `GET /auth/oidc/callback` — completes the login; always redirects (to `return`
