@@ -69,7 +69,7 @@ export default function Types() {
                       {ty.problems > 0 && <Badge variant="destructive">{t.check.problems(ty.problems)}</Badge>}
                     </Link>
                   </td>
-                  <td className="px-3 py-2.5 text-muted-foreground">{ty.group || t.types.ungrouped}</td>
+                  <td className="px-3 py-2.5 whitespace-nowrap text-muted-foreground">{ty.group || t.types.ungrouped}</td>
                   <td className="px-3 py-2.5 tabular-nums">{ty.count}</td>
                   <td className="px-3 py-2.5 tabular-nums">{ty.fields}</td>
                   <td className="px-3 py-2.5 font-mono text-xs text-muted-foreground">
