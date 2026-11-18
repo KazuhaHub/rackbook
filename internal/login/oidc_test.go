@@ -1,6 +1,7 @@
 package login
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/url"
 	"strings"
@@ -691,5 +692,53 @@ func TestBoundGroups(t *testing.T) {
 	}
 	if !cut || total > maxSessionGroupBytes || len(out) > maxSessionGroups {
 		t.Fatalf("%d groups, %d bytes, cut %v", len(out), total, cut)
+	}
+}
+
+func TestLoginConfigCarriesLabelAndBranding(t *testing.T) {
+	// Nothing set: empty label and name, no logo, and no provider named.
+	e := newEnv(t, options{})
+	var m map[string]any
+	r := e.browser().get("/auth/config")
+	if err := json.Unmarshal([]byte(r.Body), &m); err != nil {
+		t.Fatalf("%v: %s", err, r.Body)
+	}
+	if m["label"] != "" || m["name"] != "" || m["logo"] != false || m["provider"] != "oidc" || m["oidc"] != true {
+		t.Fatalf("defaults: %s", r.Body)
+	}
+	if strings.Contains(strings.ToLower(r.Body), "microsoft") {
+		t.Fatalf("the login config names a provider: %s", r.Body)
+	}
+
+	e = newEnv(t, options{oidc: "    label: 使用 Kazuha Hub SSO 登录\n", cfgExtras: "branding:\n  name: Kazuha Hub\n"})
+	r = e.browser().get("/auth/config")
+	m = nil
+	if err := json.Unmarshal([]byte(r.Body), &m); err != nil {
+		t.Fatalf("%v: %s", err, r.Body)
+	}
+	if m["label"] != "使用 Kazuha Hub SSO 登录" || m["name"] != "Kazuha Hub" || m["logo"] != false {
+		t.Fatalf("configured: %s", r.Body)
+	}
+}
+
+func TestBrandingImagesNeedNoLogin(t *testing.T) {
+	svg := `<svg xmlns="http://www.w3.org/2000/svg"><rect width="1" height="1"/></svg>`
+	e := newEnv(t, options{
+		cfgExtras: "branding:\n  logo: branding/logo.svg\n",
+		files:     map[string]string{"branding/logo.svg": svg},
+	})
+	b := e.browser() // no session
+	if r := b.get("/api/meta"); r.StatusCode != 401 {
+		t.Fatalf("the API must still need a login: %d", r.StatusCode)
+	}
+	r := b.get("/branding/logo")
+	if r.StatusCode != 200 || r.Body != svg || r.Header.Get("Content-Type") != "image/svg+xml" {
+		t.Fatalf("logo: %d %q %v", r.StatusCode, r.Body, r.Header)
+	}
+	if r = b.get("/branding/favicon"); r.StatusCode != 200 || r.Header.Get("Content-Type") != "image/svg+xml" {
+		t.Fatalf("default favicon: %d %v", r.StatusCode, r.Header)
+	}
+	if r = b.get("/auth/config"); !strings.Contains(r.Body, `"logo":true`) {
+		t.Fatalf("config: %s", r.Body)
 	}
 }

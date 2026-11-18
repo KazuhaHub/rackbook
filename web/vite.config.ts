@@ -13,7 +13,7 @@ export default defineConfig(async ({ mode }) => {
     plugins.push(mockApi(path.resolve(import.meta.dirname, '../examples/homelab')))
   }
   const proxy = Object.fromEntries(
-    ['/api', '/mcp', '/export.', '/llms'].map((p) => [p, { target: backend, changeOrigin: true }]),
+    ['/api', '/branding', '/mcp', '/export.', '/llms'].map((p) => [p, { target: backend, changeOrigin: true }]),
   )
   return {
     plugins,

@@ -31,7 +31,16 @@ export type ManagedUser = {
 
 export type UsersResponse = { users: ManagedUser[]; passkeysEnabled: boolean; passkeyError?: string }
 
-export type LoginConfig = { oidc: boolean; provider: 'microsoft' | 'oidc'; passkeys: boolean }
+export type LoginConfig = {
+  oidc: boolean
+  passkeys: boolean
+  /** text of the sign-in button; empty = the generic one */
+  label: string
+  /** product name; empty = the default */
+  name: string
+  /** a custom logo is served at /branding/logo */
+  logo: boolean
+}
 
 /** Methods that have a server-side session (and so a logout and an account page). */
 export const hasSession = (method?: string) => method === 'oidc' || method === 'passkey'

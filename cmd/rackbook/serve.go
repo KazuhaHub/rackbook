@@ -267,7 +267,7 @@ func newLogin(cfg *config.Config, store *gitstore.Store, baseURL, caFile string,
 		return nil, fmt.Errorf("--trusted-proxy: %w", err)
 	}
 	o := login.Options{
-		TrustedProxies: proxies, Login: cfg.Auth.Login, BaseURL: baseURL, Key: key, ClientSecret: secret, CAFile: caFile,
+		TrustedProxies: proxies, Login: cfg.Auth.Login, Config: store.Config, BaseURL: baseURL, Key: key, ClientSecret: secret, CAFile: caFile,
 		ReadOnly: readOnly, Logger: logger,
 	}
 	if cfg.Auth.Passkeys.Enabled {

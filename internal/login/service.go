@@ -40,7 +40,11 @@ type StateFiles interface {
 
 // Options configures the Service.
 type Options struct {
-	Login          config.Login
+	Login config.Login
+	// Config returns the current rackbook.yml, which changes when the data
+	// repository is pulled. It supplies the sign-in label and branding; nil
+	// = use Login and no branding.
+	Config         func() *config.Config
 	BaseURL        string // public https URL of the console (required)
 	Key            []byte // session signing key, 32 or more bytes
 	ClientSecret   string // RACKBOOK_OIDC_CLIENT_SECRET
@@ -454,11 +458,16 @@ func (s *Service) loginPage(w http.ResponseWriter, r *http.Request, static http.
 }
 
 func (s *Service) publicConfig(w http.ResponseWriter, r *http.Request) {
-	provider := "oidc"
-	if u, err := url.Parse(s.o.Login.OIDC.Issuer); err == nil && strings.HasSuffix(u.Hostname(), "microsoftonline.com") {
-		provider = "microsoft"
+	label, name, logo := s.o.Login.OIDC.Label, "", false
+	if s.o.Config != nil {
+		cfg := s.o.Config()
+		label, name, logo = cfg.Auth.OIDC.Label, cfg.Branding.Name, cfg.BrandLogo() != nil
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"oidc": true, "provider": provider, "passkeys": s.pk != nil})
+	// "provider" stays for older consoles; it no longer names the IdP.
+	writeJSON(w, http.StatusOK, map[string]any{
+		"oidc": true, "provider": "oidc", "passkeys": s.pk != nil,
+		"label": label, "name": name, "logo": logo,
+	})
 }
 
 func (s *Service) logout(w http.ResponseWriter, r *http.Request) {

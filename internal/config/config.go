@@ -36,6 +36,7 @@ type Config struct {
 	Write       Write         `yaml:"write"`
 	Auth        Auth          `yaml:"auth"`
 	Types       Types         `yaml:"types"`
+	Branding    Branding      `yaml:"branding"`
 	// SecretScan configures the built-in scan for secrets on every write. It is
 	// on unless secret_scan.enabled is false.
 	SecretScan secretscan.Config `yaml:"secret_scan"`
@@ -44,7 +45,8 @@ type Config struct {
 	Path string `yaml:"-"`
 	Dir  string `yaml:"-"`
 
-	scanner *secretscan.Scanner
+	scanner       *secretscan.Scanner
+	logo, favicon *Asset // branding images, read at load (branding.go)
 }
 
 // SecretScanner is the compiled secret_scan block. It is never nil, and a
@@ -625,6 +627,9 @@ func (c *Config) finish() error {
 		if _, err := c.Resolve(d); err != nil {
 			return fmt.Errorf("types: %w", err)
 		}
+	}
+	if err := c.loadBranding(); err != nil {
+		return err
 	}
 	if len(c.Collections) == 0 {
 		return errors.New("no collections defined")

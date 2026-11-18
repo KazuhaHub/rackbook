@@ -44,8 +44,11 @@ type OIDC struct {
 	// Identity is how a login is named: "claim" (default) uses identity_claim,
 	// which must be controlled by the IdP, not editable by users; "subject"
 	// uses the stable iss|sub pair, written oidc:<sub> in auth.roles.
-	Identity       string   `yaml:"identity"`
-	NameClaim      string   `yaml:"name_claim"` // default name
+	Identity  string `yaml:"identity"`
+	NameClaim string `yaml:"name_claim"` // default name
+	// Label is the text of the sign-in button, e.g. "使用 Kazuha Hub SSO 登录".
+	// Empty = a generic "Sign in with SSO" in the console's language.
+	Label          string   `yaml:"label"`
 	AllowedTenants []string `yaml:"allowed_tenants"`
 }
 
@@ -182,6 +185,10 @@ func (l *Login) check() error {
 	case "", AuthModeNone, AuthModeCloudflareAccess, AuthModeOIDC:
 	default:
 		return fmt.Errorf("auth.mode must be none, cloudflare-access or oidc, got %q", l.Mode)
+	}
+	l.OIDC.Label = strings.TrimSpace(l.OIDC.Label)
+	if err := checkText("auth.oidc.label", l.OIDC.Label); err != nil {
+		return err
 	}
 	if l.Session.Idle < 0 || l.Session.Absolute < 0 {
 		return fmt.Errorf("auth.session: durations must be positive")
