@@ -9,7 +9,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strings"
 
 	"github.com/kazuhahub/rackbook/modules/rbclient"
 )
@@ -35,8 +34,10 @@ func resolveStatePath(name string) string {
 		return name
 	}
 	if dir := os.Getenv("STATE_DIRECTORY"); dir != "" {
-		first, _, _ := strings.Cut(dir, ":")
-		return filepath.Join(first, name)
+		// systemd lists several directories separated by ":" (";" on Windows)
+		if first := filepath.SplitList(dir)[0]; first != "" {
+			return filepath.Join(first, name)
+		}
 	}
 	return name
 }
