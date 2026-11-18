@@ -607,6 +607,10 @@ Rackbook uses SemVer (Go modules require SemVer tags). Release plan:
   `revoked` schema marks, `/api/expiring`, the `expiry_list` MCP tool, the
   到期 page, the `modules:` allow list, and the `rackbook-entra` and
   `rackbook-notify` modules.
+  The v0.3.0 tag exists but was never released: the release matrix found two
+  Windows-only test failures in `rackbook-notify`. Its content, plus the fix
+  (and the configurable sign-in button and branding), shipped as **v0.3.1**.
+  The tag stays as it is; pushed tags are never moved.
 - **v0.4.0** — the built-in authorization server (decision 12), GitHub App
   authentication (decision 14), record documents (decision 15) and the MCP
   surface renames (decision 16). Planned for v0.3.0 until decision 17 took
