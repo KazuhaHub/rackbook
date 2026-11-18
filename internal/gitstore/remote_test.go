@@ -508,6 +508,7 @@ func TestLastGoodIsStoredPerBranchAndTheOldFileIsMigrated(t *testing.T) {
 }
 
 func TestAcceptedTipWithAnEscapingSymlinkIsRolledBack(t *testing.T) {
+	testutil.SkipOnWindows(t, "committing a symbolic link needs core.symlinks, which Git for Windows does not enable by default; the escaping-symlink check itself is covered by TestResolveRefusesSymlinksOutOfTheRoot")
 	ctx := context.Background()
 	e := newEnv(t)
 	pushLaptop(t, e, "one")

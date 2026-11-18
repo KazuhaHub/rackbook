@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -80,11 +81,11 @@ func TestResolveRefusesSymlinksOutOfTheRoot(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(outside, "secret.yml"), []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(outside, filepath.Join(root, "link")); err != nil {
-		t.Skip("symlinks unavailable")
-	}
-	if err := os.Symlink(filepath.Join(outside, "secret.yml"), filepath.Join(root, "file.yml")); err != nil {
-		t.Fatal(err)
+	// (internal/testutil imports this package, so it cannot be used here.)
+	for _, l := range [][2]string{{outside, "link"}, {filepath.Join(outside, "secret.yml"), "file.yml"}} {
+		if err := os.Symlink(l[0], filepath.Join(root, l[1])); err != nil {
+			t.Skipf("SKIPPED: cannot create symbolic links here (%s): %v", runtime.GOOS, err)
+		}
 	}
 	if err := os.MkdirAll(filepath.Join(root, "ok"), 0o755); err != nil {
 		t.Fatal(err)
@@ -190,6 +191,32 @@ func TestLoadRefusesCollectionsOnTheConfigFileOrGit(t *testing.T) {
 		}
 		if _, err := Load(filepath.Join(dir, "rackbook.yml")); err == nil {
 			t.Errorf("a collection file %q must be refused", file)
+		}
+	}
+}
+
+func TestWindowsNonRelative(t *testing.T) {
+	for _, p := range []string{`C:\x.yml`, `C:x.yml`, `c:/x.yml`, `\\host\share\x.yml`, `\\?\C:\x.yml`, `\x.yml`, `/x.yml`, `a.yml:stream`} {
+		if !windowsNonRelative(p) {
+			t.Errorf("%q must be refused on Windows", p)
+		}
+	}
+	for _, p := range []string{`data/x.yml`, `data\x.yml`, `..\x.yml`, `a b/c.yml`} {
+		if windowsNonRelative(p) {
+			t.Errorf("%q is a plain relative path", p)
+		}
+	}
+}
+
+func TestResolveRefusesRootedAndDrivePaths(t *testing.T) {
+	c := &Config{Dir: t.TempDir()}
+	bad := []string{"/etc/passwd", "../x.yml", "a/../../x.yml"}
+	if runtime.GOOS == "windows" {
+		bad = append(bad, `C:\Windows\win.ini`, `C:win.ini`, `\\host\share\x.yml`, `\Windows\win.ini`, `..\x.yml`, `a.yml:stream`)
+	}
+	for _, p := range bad {
+		if _, err := c.Resolve(p); err == nil {
+			t.Errorf("%q must be refused", p)
 		}
 	}
 }

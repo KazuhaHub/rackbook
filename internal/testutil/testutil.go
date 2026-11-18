@@ -4,6 +4,7 @@ package testutil
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -75,5 +76,22 @@ func Replace(t testing.TB, dir, rel, old, new string) {
 	}
 	if err := os.WriteFile(p, []byte(strings.Replace(string(b), old, new, 1)), 0o644); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// Symlink creates a symbolic link or skips the test with an explicit reason
+// when the platform or the account cannot (Windows needs a privilege for it).
+func Symlink(t testing.TB, oldname, newname string) {
+	t.Helper()
+	if err := os.Symlink(oldname, newname); err != nil {
+		t.Skipf("SKIPPED: cannot create symbolic links here (%s): %v", runtime.GOOS, err)
+	}
+}
+
+// SkipOnWindows skips the test, saying why, on Windows.
+func SkipOnWindows(t testing.TB, why string) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("SKIPPED on Windows: " + why)
 	}
 }

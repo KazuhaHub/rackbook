@@ -20,6 +20,7 @@ import (
 	"strings"
 
 	"github.com/kazuhahub/rackbook/internal/config"
+	"github.com/kazuhahub/rackbook/internal/fsutil"
 )
 
 const lastGoodFile = "rackbook-last-good"
@@ -107,7 +108,7 @@ func migrateLastGood(gitDir, base, name string, old []byte) error {
 	if err := os.Remove(base); err != nil {
 		return err
 	}
-	if err := os.Rename(tmp, base); err != nil {
+	if err := fsutil.Rename(tmp, base); err != nil {
 		return err
 	}
 	done = true
@@ -138,7 +139,7 @@ func writeFileSync(path string, data []byte) error {
 		os.Remove(tmp)
 		return err
 	}
-	if err := os.Rename(tmp, path); err != nil {
+	if err := fsutil.Rename(tmp, path); err != nil {
 		os.Remove(tmp)
 		return err
 	}
