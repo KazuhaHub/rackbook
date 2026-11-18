@@ -89,20 +89,43 @@ write:
 See [docs/design.md](docs/design.md) for every option and
 [docs/api.md](docs/api.md) for the HTTP API.
 
-## Deployment behind Cloudflare Access
+## Deployment
 
-Rackbook is designed to run on a private host behind Cloudflare Access
-(Cloudflare Tunnel or a reverse proxy in front). It works in its own clone of
-the data repository and pushes every edit.
+Rackbook runs on a host you control, in its own clone of the data repository,
+and pushes every edit. People sign in with any OpenID Connect identity provider
+(Microsoft Entra ID, Keycloak, Authentik, Google, ...); a reverse proxy or
+Cloudflare in front provides TLS.
 
 1. **Deploy key.** Create an SSH key and add it to the data repository as a
    deploy key *with write access*. Clone the repository on the server with
    that key into a directory the container can write, e.g. `/srv/rackbook/repo`.
-2. **Access application.** In Cloudflare Zero Trust create a self-hosted
-   application for the hostname, with a policy for the people allowed in.
-   Note your team name (`<team>.cloudflareaccess.com`) and the application's
-   **AUD tag**.
-3. **Run it.**
+2. **Register the app with your IdP** as a confidential web client. The redirect
+   URI is `<base-url>/auth/oidc/callback`, e.g.
+   `https://ledger.example.com/auth/oidc/callback`. Note the issuer URL, the
+   client ID and the client secret (Entra walkthrough: see
+   [Built-in login](#built-in-login-oidc-passkeys)).
+3. **Configure `rackbook.yml`** in the data repository: the issuer, the client
+   ID and **roles**. Nobody who matches no role gets in.
+
+   ```yaml
+   auth:
+     mode: oidc
+     oidc:
+       issuer: https://keycloak.example.com/realms/home
+       client_id: rackbook
+       identity_claim: email            # must be controlled by the IdP, see below
+     roles:
+       admin:  [owner@example.com]
+       editor: ["*@example.com"]
+   ```
+
+   The identity claim (default `preferred_username`) names the person in roles
+   and in Git commits, so **it must be controlled by the IdP**, never editable
+   by users or by tenants you do not trust: whoever can set it to someone
+   else's address becomes that person. `email` is accepted only with
+   `email_verified: true`. If your IdP cannot guarantee that, use
+   `identity: subject` and match `oidc:<sub>` role entries instead.
+4. **Run it.**
 
    ```yaml
    # compose.yaml
@@ -110,12 +133,14 @@ the data repository and pushes every edit.
      rackbook:
        image: ghcr.io/kazuhahub/rackbook:1
        restart: unless-stopped
-       command: serve --listen 0.0.0.0:8080 --config /data/repo/rackbook.yml
+       command: >
+         serve --listen 0.0.0.0:8080 --config /data/repo/rackbook.yml
+         --trusted-proxy 172.16.0.0/12
        environment:
-         RACKBOOK_AUTH: cloudflare-access
-         RACKBOOK_CF_TEAM: your-team
-         RACKBOOK_CF_AUD: your-aud-tag
+         RACKBOOK_AUTH: oidc
          RACKBOOK_BASE_URL: https://ledger.example.com
+         RACKBOOK_OIDC_CLIENT_SECRET: ${RACKBOOK_OIDC_CLIENT_SECRET}  # from .env, never the repo
+         RACKBOOK_SESSION_KEY: ${RACKBOOK_SESSION_KEY}                # openssl rand -base64 32
          RACKBOOK_COMMITTER: "Rackbook <rackbook@example.com>"
          GIT_SSH_COMMAND: ssh -i /data/deploy_key -o IdentitiesOnly=yes
        volumes:
@@ -124,19 +149,40 @@ the data repository and pushes every edit.
          - "127.0.0.1:8080:8080"
    ```
 
-   Point the tunnel / reverse proxy at `127.0.0.1:8080`. `RACKBOOK_BASE_URL` is
-   the public URL: it is used in `llms.txt` and accepted as the browser origin
-   for writes when your proxy rewrites the `Host` header. Rackbook verifies
-   the `Cf-Access-Jwt-Assertion` header on every request (signature, issuer,
-   audience, expiry) — a request that bypasses Access is rejected — and uses
-   the `email` claim as the Git author of edits. Restrict who may edit with
-   `auth.editors` in `rackbook.yml`, or assign roles with `auth.roles` (below);
-   everyone else Access lets in can read.
-4. **AI agents.** Give an agent an Access service token and point its MCP
-   client at `https://<host>/mcp`, sending `CF-Access-Client-Id` /
-   `CF-Access-Client-Secret`. Or run `rackbook mcp` locally against a clone. To
-   let people and agents sign in through an OAuth provider (MCPHub, Entra ID,
-   Keycloak, ...) see [Any OAuth provider](#any-oauth-provider-mcp-and-mcphub).
+   Point your reverse proxy (Caddy, nginx, Traefik) or Cloudflare Tunnel at
+   `127.0.0.1:8080` and terminate TLS there. `RACKBOOK_BASE_URL` is the public
+   `https` URL: it is the base of the IdP redirect, the host of the session
+   cookies and the passkey relying-party ID, and it is used in `llms.txt`.
+   `--trusted-proxy` lists the CIDRs of the proxy as the container sees it, so
+   login and token rate limits use the real client address (the
+   `CF-Connecting-IP` header) instead of the proxy's. Sessions are signed
+   cookies (`RACKBOOK_SESSION_KEY`); the server keeps no state of its own.
+5. **Passkeys (optional).** `auth.passkeys: true` lets signed-in users register
+   a passkey for later logins; see [Built-in login](#built-in-login-oidc-passkeys).
+6. **AI agents.** `/mcp` and `/.well-known/oauth-protected-resource*`
+   authenticate with their own bearer tokens (API tokens or OAuth access tokens,
+   below); no proxy login is needed in front of them. Or run `rackbook mcp`
+   locally against a clone.
+
+### Alternative: Cloudflare Access
+
+Optional. If you would rather have Cloudflare Access authenticate people, set
+`auth.mode: cloudflare-access` (or `RACKBOOK_AUTH=cloudflare-access`).
+
+1. In Cloudflare Zero Trust create a self-hosted application for the hostname
+   with a policy for the people allowed in. Note your team name
+   (`<team>.cloudflareaccess.com`) and the application's **AUD tag**.
+2. Run the same compose service with `RACKBOOK_AUTH: cloudflare-access`,
+   `RACKBOOK_CF_TEAM` and `RACKBOOK_CF_AUD` instead of the OIDC variables.
+   Rackbook verifies the `Cf-Access-Jwt-Assertion` header on every request
+   (signature, issuer, audience, expiry), so a request that bypasses Access is
+   rejected, and uses the `email` claim as the Git author. Restrict who may edit
+   with `auth.editors` or `auth.roles` (below); everyone else Access lets in can read.
+3. Access login must not sit in front of the bearer-token endpoints: add an
+   Access **Bypass** policy for exactly `/mcp`, `/.well-known/oauth-protected-resource`
+   and `/.well-known/oauth-protected-resource/mcp` (the rest stays protected).
+   Or give an agent an Access service token and send `CF-Access-Client-Id` /
+   `CF-Access-Client-Secret` with its MCP requests.
 
 Rackbook fetches the remote every minute, so changes pushed from elsewhere
 appear without a restart. If someone changed the same record in the meantime,
@@ -233,7 +279,7 @@ matched like a console identity, with entries that name the issuer:
 matches anyone of that issuer). Plain e-mail and `*@domain` entries match
 these users only with `match_email: true` and a verified e-mail (see above). A scope can only narrow the role:
 without the write scope the write tools are refused; viewers never write.
-`/mcp` still accepts console users (Cloudflare Access) as before.
+`/mcp` also still accepts a console login (the session cookie) as before.
 
 **Responses.** A missing or invalid token gets `401` with
 `WWW-Authenticate: Bearer resource_metadata="https://ledger.example.com/.well-known/oauth-protected-resource"`;
@@ -254,11 +300,9 @@ as RFC 9728 asks) lists the resource, the issuers, the scopes and
    user calls Rackbook with their own token.
 4. Put users in `auth.roles` as `mcphub:<username>`.
 
-**Network.** `/mcp` validates tokens itself, so it must not sit behind
-Cloudflare Access login. Add an Access **Bypass** policy for exactly `/mcp`,
-`/.well-known/oauth-protected-resource` and `/.well-known/oauth-protected-resource/mcp`
-(the rest stays protected), or have MCPHub call Rackbook over the local
-network or Tailscale and keep Access in front of everything else.
+**Network.** `/mcp` and `/.well-known/oauth-protected-resource*` validate bearer
+tokens themselves, so no proxy login is needed in front of them. MCPHub can call
+Rackbook over the public URL, the local network or Tailscale.
 
 #### Entra ID and Keycloak
 
@@ -366,15 +410,16 @@ anything else makes writes fail with `repo_dirty` rather than risk overwriting i
 
 ## Built-in login (OIDC, passkeys)
 
-Instead of Cloudflare Access, Rackbook can log people in itself with OpenID
-Connect (tested with Microsoft Entra ID), optionally with passkeys. It keeps no
+Rackbook logs people in itself with OpenID Connect (the primary way to deploy
+it; tested with Microsoft Entra ID, and any standards-compliant IdP such as
+Keycloak, Authentik or Google works the same way), optionally with passkeys. It keeps no
 database: sessions are signed cookies, roles live in `rackbook.yml`, and passkey
 public keys are committed to `.rackbook/passkeys.yml` in the data repository.
 
 ```yaml
 # rackbook.yml
 auth:
-  mode: oidc                          # none | cloudflare-access | oidc
+  mode: oidc                          # oidc | cloudflare-access | none
   oidc:
     issuer: https://login.microsoftonline.com/<tenant-id>/v2.0
     client_id: 00000000-0000-0000-0000-000000000000
@@ -477,6 +522,48 @@ make test         # go test ./...
 npm --prefix web run dev:mock   # console against a mock API built from the example
 ```
 
+## Versioning and compatibility
+
+Rackbook follows [Semantic Versioning](https://semver.org/).
+
+- While the version is 0.x, a minor release (0.y → 0.y+1) may contain
+  breaking changes.
+- From 1.0 on, breaking changes happen only in a major release.
+
+A change is **breaking** if it is incompatible for any of:
+
+- the `rackbook.yml` format;
+- the HTTP API;
+- MCP tool names or arguments;
+- the on-disk data layout.
+
+Every breaking release ships migration notes in its release notes.
+
+## Verifying releases
+
+Every release archive, `checksums.txt` and the container image carries a
+signed build provenance attestation (GitHub Artifact Attestations), and the
+image is also signed with cosign (keyless, by digest). Both are tied to this
+repository's release workflow.
+
+```sh
+# Release archives (tar.gz, zip) and checksums.txt
+gh attestation verify rackbook_0.2.1_linux_amd64.tar.gz --repo KazuhaHub/rackbook
+sha256sum --check --ignore-missing checksums.txt
+
+# Container image: provenance attestation
+gh attestation verify oci://ghcr.io/kazuhahub/rackbook:0.2.1 --repo KazuhaHub/rackbook
+
+# Container image: cosign signature
+cosign verify ghcr.io/kazuhahub/rackbook:0.2.1 \
+  --certificate-identity-regexp '^https://github\.com/KazuhaHub/rackbook/\.github/workflows/release\.yml@refs/tags/v.*$' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+```
+
+Verify by digest (`ghcr.io/kazuhahub/rackbook@sha256:...`) when you pin the
+image. A release is published only after the test suite passed natively on
+Linux, macOS and Windows (amd64 and arm64 each).
+
 ## License
 
 [Apache-2.0](LICENSE)
@@ -504,14 +591,19 @@ rackbook check --config examples/homelab/rackbook.yml
 rackbook serve --config examples/homelab/rackbook.yml --no-git   # 打开 http://127.0.0.1:8080
 ```
 
-部署：放在 Cloudflare Access 后面（见上文 “Deployment behind Cloudflare Access”）。
-服务器用带写权限的 deploy key 克隆数据仓库；Rackbook 校验每个请求的
-`Cf-Access-Jwt-Assertion`，用其中的邮箱作为提交作者；`auth.editors` 可限定谁能编辑，
-`auth.roles`（admin / editor / viewer）可按身份、`*@域名`、`mcphub:用户名`、`*` 分配角色。
+部署：推荐使用 `auth.mode: oidc`，对接任意 OIDC 身份提供方（Microsoft Entra ID、Keycloak、
+Authentik、Google 等）。在 IdP 注册应用，重定向地址为 `<base-url>/auth/oidc/callback`；
+`RACKBOOK_BASE_URL`（公网 https 地址）、`RACKBOOK_OIDC_CLIENT_SECRET`、`RACKBOOK_SESSION_KEY`
+都从环境变量读取；角色写在 `rackbook.yml` 的 `auth.roles`（admin / editor / viewer，可按身份、
+`*@域名`、`group:<id>`、`*` 匹配），没有匹配角色的人无法进入。`identity_claim` 必须由 IdP 控制
+（不能由用户自行修改），否则改用 `identity: subject`。服务器用带写权限的 deploy key 克隆数据仓库，
+前面放反向代理或 Cloudflare 终结 TLS，并用 `--trusted-proxy` 指明代理地址；compose 示例见上文 “Deployment”。
+`/mcp` 与 `/.well-known/oauth-protected-resource*` 使用各自的 Bearer 令牌，不需要在前面加登录。
 
-内置登录：`auth.mode: oidc`（Microsoft Entra ID 等 OIDC，见上文 “Built-in login”）。
-会话是 HMAC 签名的 Cookie（`RACKBOOK_SESSION_KEY`），不存数据库；客户端密钥只从
-`RACKBOOK_OIDC_CLIENT_SECRET` 读取；角色每次请求都按 `auth.roles` 重新计算，没有角色的账号会被拒绝（403）。
+可选：Cloudflare Access（`auth.mode: cloudflare-access`，见上文 “Alternative: Cloudflare Access”），
+Rackbook 校验 `Cf-Access-Jwt-Assertion` 并用其中的邮箱作为提交作者；此时才需要为 `/mcp` 配置 Access 的 Bypass 策略。
+
+会话是 HMAC 签名的 Cookie，不存数据库；角色每次请求都按 `auth.roles` 重新计算，没有角色的账号会被拒绝（403）。
 可选通行密钥（`auth.passkeys`），凭据提交到数据仓库的 `.rackbook/passkeys.yml`。
 
 Rackbook 永远不会 force push，也不会改写或删除远端分支和标签。若发现远端历史被他人改写，

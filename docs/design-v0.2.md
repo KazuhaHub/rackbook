@@ -528,7 +528,7 @@ Agreed with the owner on 2026-11-18:
    fixed header.
 10. **Built-in authorization server**, so standalone users without MCPHub can
     add Rackbook directly to Claude, Cursor, VS Code or MCP Inspector. It is
-    proposed for **v0.2.1**, after the v0.2 demo and before v0.3 storage.
+    proposed for **v0.3.0** (renumbered, see the versioning note below), before the storage work (now v0.4.0).
     **Not started: it waits for the owner's OK on placement and cost.**
     - Spec: the MCP authorization spec — OAuth 2.1 + PKCE S256, RFC 8707
       resource indicators (`aud` = the `/mcp` URL), RFC 8414 metadata, and
@@ -551,11 +551,11 @@ Agreed with the owner on 2026-11-18:
       an external issuer.
 11. **Real-client verification in the demo**: MCP Inspector and Claude Code
     (`claude mcp add --transport http`) against an external issuer in v0.2,
-    and against the built-in authorization server in v0.2.1.
+    and against the built-in authorization server in v0.3.0.
 
-### Decisions, round 5 (2026-11-18): built-in authorization server approved for v0.2.1
+### Decisions, round 5 (2026-11-18): built-in authorization server approved (ships in v0.3.0)
 
-12. **Approved for v0.2.1, built after the v0.2 demo.** An MCP client authorizes
+12. **Approved; ships in v0.3.0.** An MCP client authorizes
     **once** and never has to sign in again, including across restarts,
     upgrades and ansible redeploys.
     - **State file: the one exception to "no database".** Authorization-server
@@ -592,3 +592,51 @@ Agreed with the owner on 2026-11-18:
       Inspector and Claude Code against the built-in server and against an
       external issuer, and **restarts the server to show the client keeps
       working without a browser prompt**.
+
+### Versioning (2026-11-18)
+
+Rackbook uses SemVer (Go modules require SemVer tags). Release plan:
+
+- **v0.2.1** — the release pipeline only: Windows builds, a native test
+  matrix on six runners, SHA-pinned actions, build provenance attestations,
+  and cosign signing. No feature changes.
+- **v0.3.0** — the built-in authorization server (decision 12).
+- **v0.4.0** — storage: one record per file (design in
+  `design-v0.4-storage.md`).
+- **1.0** — once the storage layout, config format and API are stable.
+
+See README, "Versioning and compatibility".
+
+### Decisions, round 6 (2026-11-18): separate ledger repository, GitHub App credentials (v0.3.0)
+
+13. **Rackbook writes only to a dedicated data repository** (for the owner:
+    KazuhaHub/ledger), never to an infrastructure repo. In the owner's setup
+    the infra repo's `main` is applied as root on every host, so a write
+    credential for it would amount to root. Infra may *read* the ledger;
+    Rackbook never holds a credential for infra.
+14. **GitHub App authentication (v0.3.0)**, as an alternative to deploy key +
+    PAT. One credential replaces both.
+    - An org-owned GitHub App, installed **only** on the data repository, with
+      repository permissions `contents: write` and `pull_requests: write`.
+      Nothing else.
+    - Configuration:
+      `write.github_app: {app_id, installation_id (optional, looked up from
+      the repo), private_key_file}`. The key can also come from env
+      `RACKBOOK_GITHUB_APP_KEY` or a systemd `LoadCredential` path. It never
+      goes into Git.
+    - Token flow: an RS256 app JWT (≤ 10 min) is exchanged for an installation
+      access token. That token is narrowed in the request to the data repository
+      and the two permissions, and lasts about 1 h. It is cached in memory only,
+      refreshed 5 min before expiry, and never logged.
+    - Git over **HTTPS** with the installation token. The token is passed to git
+      through the environment (`GIT_CONFIG_COUNT`/`KEY`/`VALUE` for an
+      `http.<url>.extraheader`), never on the command line, in the remote URL,
+      or in `.git/config`. The git runner's allow-lists gain exactly this, and
+      the never-force rules are unchanged.
+    - PR mode uses the same token for the REST API. `RACKBOOK_GITHUB_TOKEN`
+      stays supported for non-App setups.
+    - Commit authorship is unchanged (author = the user; committer = the
+      configured identity).
+    - Tests: a fake GitHub API issues installation tokens. They cover expiry and
+      refresh, a token that must not appear in argv or logs, push over HTTPS to
+      a local smart-HTTP test server, and PRs.
