@@ -139,10 +139,11 @@ func (cfg *Config) ownedFields(c credential) map[string]any {
 	if c.Start != nil {
 		f["not_before"] = c.Start.UTC().Format(dateLayout)
 	}
-	// The key id is written bare. Labelled ids ("entra_app_id=<uuid>") are left
-	// to people: Rackbook's secret scan holds them as possible secrets, and a
-	// module never confirms "not a secret". The app id goes into purpose.
 	f["kid"] = strings.ToLower(c.KeyID)
+	f["ids"] = []string{
+		"entra_app_id=" + strings.ToLower(c.AppID),
+		"entra_tenant_id=" + strings.ToLower(cfg.Entra.TenantID),
+	}
 	f["source"] = cfg.Rackbook.Source
 	return f
 }

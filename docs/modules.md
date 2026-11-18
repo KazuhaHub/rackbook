@@ -152,7 +152,7 @@ modules:
   entra:                       # the module's name = the source value it writes
     token: entra-sync          # the Rackbook API token it uses
     collection: credentials    # the one collection it may write
-    fields: [kind, self_signed, purpose, expires, not_before, kid, revoked]
+    fields: [kind, self_signed, purpose, expires, not_before, kid, ids, revoked]
     direct_push: true          # create/update go straight to the branch, no daily PR
 ```
 
@@ -225,7 +225,7 @@ entra:
 interval: 24h                       # without --once
 record:
   name_prefix: entra-               # record name: <prefix><app slug>-<first 8 of the key id>
-  purpose: 'Entra application "{app}" ({app_id}): {type} "{name}"'
+  purpose: 'Entra application "{app}": {type} "{name}"'
   type_labels: {password: client secret, certificate: certificate}
   password: {kind: api_token}       # extra fields for client secrets (module-owned)
   certificate: {kind: client_cert, self_signed: true}
@@ -239,11 +239,12 @@ record:
 
 Fields the module maintains (list them under `fields:` in rackbook.yml):
 `kind` and the other per-type fields, `purpose`, `expires`, `not_before`,
-`kid` (the Entra key id) and `revoked`. It also sets `source` and, on create,
-`name` and the `defaults`. It does not write labelled ids such as
-`entra_app_id=<uuid>`: Rackbook's secret scan holds those as possible secrets
-until a person confirms them, and a module never confirms. The app id is in
-`purpose` instead.
+`kid` (the Entra key id), `ids` (`entra_app_id=<uuid>`,
+`entra_tenant_id=<uuid>`) and `revoked`. It also sets `source` and, on create,
+`name` and the `defaults`. Annotate `ids` with
+`"x-rackbook": {"public": "uuid"}` in the schema: without it Rackbook's secret
+scan holds `<label>=<uuid>` values as possible secrets, and a module never
+confirms "not a secret".
 
 ### 3.3 Rules
 
