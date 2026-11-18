@@ -61,6 +61,20 @@ jobs:
             dist/*.zip
             dist/checksums.txt
 
+  # Publish the draft only after both the archives and the image are built,
+  # attested and signed. With immutable releases nothing can change afterwards.
+  publish:
+    needs: [binaries, image]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # publish the draft release
+    steps:
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false
+
   image:
     needs: verify
     runs-on: ubuntu-latest
