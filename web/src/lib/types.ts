@@ -22,6 +22,8 @@ export type Collection = {
   title: string
   description?: string
   group?: string
+  /** optional lucide icon name; unknown names are ignored */
+  icon?: string
   key?: string[]
   label?: string
   list?: string[]

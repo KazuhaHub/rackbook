@@ -20,18 +20,27 @@ export function PageHeader({
   description,
   actions,
   eyebrow,
+  icon,
 }: {
   title: ReactNode
   description?: ReactNode
   actions?: ReactNode
   eyebrow?: ReactNode
+  icon?: ReactNode
 }) {
   return (
-    <div className="mb-6 flex flex-wrap items-start justify-between gap-3">
-      <div className="min-w-0">
-        {eyebrow && <div className="mb-1 text-xs text-muted-foreground">{eyebrow}</div>}
-        <h1 className="text-2xl font-semibold tracking-tight break-words">{title}</h1>
-        {description && <p className="mt-1 max-w-3xl text-sm text-muted-foreground">{description}</p>}
+    <div className="mb-8 flex flex-wrap items-start justify-between gap-4">
+      <div className="flex min-w-0 items-start gap-3">
+        {icon && (
+          <span className="mt-0.5 flex size-10 shrink-0 items-center justify-center rounded-xl bg-brand/10 text-brand [&_svg]:size-5">
+            {icon}
+          </span>
+        )}
+        <div className="min-w-0">
+          {eyebrow && <div className="mb-1 text-xs text-muted-foreground">{eyebrow}</div>}
+          <h1 className="text-2xl font-semibold tracking-tight break-words">{title}</h1>
+          {description && <p className="mt-1.5 max-w-3xl text-sm text-muted-foreground">{description}</p>}
+        </div>
       </div>
       {actions && <div className="flex shrink-0 items-center gap-2">{actions}</div>}
     </div>
@@ -51,7 +60,7 @@ export function EmptyState({
 }) {
   return (
     <div className="flex flex-col items-center justify-center gap-3 rounded-xl border border-dashed px-6 py-16 text-center">
-      <div className="text-muted-foreground">{icon}</div>
+      {icon && <div className="flex size-16 items-center justify-center rounded-full bg-muted text-muted-foreground [&_svg]:size-8">{icon}</div>}
       <div className="text-lg font-medium">{title}</div>
       {body && <p className="max-w-md text-sm text-muted-foreground">{body}</p>}
       {action}

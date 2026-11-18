@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useQueries, useQuery } from '@tanstack/react-query'
 import { dataProvider } from '@/providers/dataProvider'
 import type { Collection, Commit, LedgerRecord } from './types'
@@ -46,4 +46,15 @@ export function useHistory(collection: string | undefined, limit: number) {
       ).data.commits as Commit[],
     staleTime: 30_000,
   })
+}
+
+/** True from the moment `ready` flips on until `ms` later, so list rows animate in only on first render. */
+export function useFirstRender(ready: boolean, ms = 900) {
+  const [fresh, setFresh] = useState(true)
+  useEffect(() => {
+    if (!ready) return
+    const id = window.setTimeout(() => setFresh(false), ms)
+    return () => window.clearTimeout(id)
+  }, [ready, ms])
+  return fresh
 }

@@ -8,6 +8,7 @@ import { defaultColumns, fieldTitle, recordHref, str } from '@/lib/ledger'
 import type { Backref, Collection, LedgerRecord } from '@/lib/types'
 import { CellValue } from './CellValue'
 import { useRefLookups } from '@/lib/hooks'
+import { CollectionIcon } from '@/components/CollectionIcon'
 
 /** Records of another collection that reference the one on screen. */
 export function BackrefTable({
@@ -41,6 +42,7 @@ export function BackrefTable({
     <Card>
       <CardHeader>
         <CardTitle className="flex items-center gap-2">
+          <CollectionIcon col={col} className="size-4 text-muted-foreground" />
           {col.title}
           <Badge variant="secondary">{records.length}</Badge>
         </CardTitle>
@@ -65,7 +67,7 @@ export function BackrefTable({
               <thead className="bg-muted/60">
                 <tr className="border-b">
                   {cols.map((c) => (
-                    <th key={c} className="h-8 px-3 text-left text-xs font-medium whitespace-nowrap text-muted-foreground">
+                    <th key={c} className="h-9 px-3 text-left text-xs font-semibold tracking-wide whitespace-nowrap text-muted-foreground">
                       {fieldTitle(col, c)}
                     </th>
                   ))}
@@ -82,13 +84,13 @@ export function BackrefTable({
                   return (
                     <tr
                       key={r.id}
-                      className="cursor-pointer border-b last:border-0 hover:bg-muted/50"
+                      className="cursor-pointer border-b transition-colors duration-150 last:border-0 even:bg-muted/25 hover:bg-brand/[0.07]"
                       onClick={(e) => {
                         if (!(e.target as HTMLElement).closest('a,button')) navigate(href)
                       }}
                     >
                       {cols.map((c, i) => (
-                        <td key={c} className="px-3 py-2 align-top">
+                        <td key={c} className="px-3 py-2.5 align-top">
                           {i === 0 && !lookups[c] ? (
                             <span className="flex flex-wrap items-center gap-2">
                               <Link to={href} className="font-medium hover:underline">

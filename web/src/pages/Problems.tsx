@@ -1,5 +1,5 @@
 import { Link } from 'react-router'
-import { CheckCircle2, RefreshCw } from 'lucide-react'
+import { CheckCircle2, CircleAlert, RefreshCw } from 'lucide-react'
 import { useQueryClient } from '@tanstack/react-query'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -29,16 +29,16 @@ export default function Problems() {
       {isPending ? (
         <Skeleton className="h-40 w-full" />
       ) : isError ? (
-        <EmptyState title={t.errors.generic} body={errorMessage(error)} />
+        <EmptyState icon={<CircleAlert className="size-8" />} title={t.errors.generic} body={errorMessage(error)} />
       ) : data.ok ? (
-        <EmptyState icon={<CheckCircle2 className="size-10 text-success" />} title={t.problems.okTitle} body={t.problems.okBody} />
+        <EmptyState icon={<CheckCircle2 className="size-8 text-success" />} title={t.problems.okTitle} body={t.problems.okBody} />
       ) : (
-        <div className="overflow-x-auto rounded-xl border bg-card">
+        <div className="overflow-x-auto rounded-xl border bg-card shadow-xs">
           <table className="w-full border-collapse text-sm">
             <thead className="bg-muted/60">
               <tr className="border-b text-left text-xs text-muted-foreground">
                 {[t.problems.collection, t.problems.record, t.problems.field, t.problems.rule, t.problems.message].map((h) => (
-                  <th key={h} className="h-9 px-3 font-medium whitespace-nowrap">
+                  <th key={h} className="h-10 px-4 font-semibold tracking-wide whitespace-nowrap">
                     {h}
                   </th>
                 ))}
@@ -49,8 +49,8 @@ export default function Problems() {
                 const col = e.collection ? byName.get(e.collection) : undefined
                 const field = pointerToPath(e.path)[0]
                 return (
-                  <tr key={i} className="border-b align-top last:border-0">
-                    <td className="px-3 py-2 whitespace-nowrap">
+                  <tr key={i} className="border-b align-top transition-colors duration-150 last:border-0 even:bg-muted/25 hover:bg-destructive/5">
+                    <td className="px-4 py-2.5 whitespace-nowrap">
                       {col ? (
                         <Link to={`/c/${encodeURIComponent(col.name)}`} className="hover:underline">
                           {col.title}
@@ -59,7 +59,7 @@ export default function Problems() {
                         e.collection || '—'
                       )}
                     </td>
-                    <td className="px-3 py-2">
+                    <td className="px-4 py-2.5">
                       {col && e.id ? (
                         <Link to={recordHref(col.name, e.id)} className="font-mono text-[0.8125rem] text-sky-700 underline decoration-sky-700/30 underline-offset-4 dark:text-sky-300">
                           {e.id}
@@ -68,7 +68,7 @@ export default function Problems() {
                         <span className="text-muted-foreground">—</span>
                       )}
                     </td>
-                    <td className="px-3 py-2 whitespace-nowrap">
+                    <td className="px-4 py-2.5 whitespace-nowrap">
                       {field ? (
                         <>
                           {col ? fieldTitle(col, field) : field}
@@ -78,10 +78,10 @@ export default function Problems() {
                         <span className="text-muted-foreground">—</span>
                       )}
                     </td>
-                    <td className="px-3 py-2">
+                    <td className="px-4 py-2.5">
                       <Badge variant="outline">{t.problems.rules[e.rule ?? ''] ?? e.rule}</Badge>
                     </td>
-                    <td className="px-3 py-2">{e.message}</td>
+                    <td className="px-4 py-2.5">{e.message}</td>
                   </tr>
                 )
               })}

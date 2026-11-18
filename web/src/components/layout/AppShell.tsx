@@ -20,6 +20,7 @@ import {
   useSidebar,
 } from '@/components/ui/sidebar'
 import { t } from '@/i18n/zh-CN'
+import { CollectionIcon } from '@/components/CollectionIcon'
 import { canEdit } from '@/lib/ledger'
 import { useMeta } from '@/providers/meta'
 import { PageFallback } from '@/components/common'
@@ -80,7 +81,7 @@ function AppSidebar() {
         </SidebarGroup>
         {groups.map((g) => (
           <SidebarGroup key={g.name}>
-            <SidebarGroupLabel>{g.name}</SidebarGroupLabel>
+            <SidebarGroupLabel className="tracking-wide">{g.name}</SidebarGroupLabel>
             <SidebarGroupContent>
               <SidebarMenu>
                 {g.items.map((c) => {
@@ -91,6 +92,7 @@ function AppSidebar() {
                         isActive={pathname === base || pathname.startsWith(base + '/')}
                         render={<NavLink to={base} />}
                       >
+                        <CollectionIcon col={c} />
                         <span className="truncate">{c.title}</span>
                       </SidebarMenuButton>
                       <SidebarMenuBadge>{c.count}</SidebarMenuBadge>
@@ -133,12 +135,14 @@ export function AppShell() {
           </div>
           <ThemeToggle />
         </header>
-        <div className="mx-auto w-full max-w-[1400px] flex-1 p-4 sm:p-6">
-          <ErrorBoundary key={pathname}>
-            <Suspense fallback={<PageFallback />}>
-              <Outlet />
-            </Suspense>
-          </ErrorBoundary>
+        <div className="mx-auto w-full max-w-[1400px] flex-1 p-4 sm:p-8">
+          <div key={pathname} className="rb-page">
+            <ErrorBoundary>
+              <Suspense fallback={<PageFallback />}>
+                <Outlet />
+              </Suspense>
+            </ErrorBoundary>
+          </div>
         </div>
       </SidebarInset>
     </SidebarProvider>
