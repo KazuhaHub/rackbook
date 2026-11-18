@@ -337,11 +337,9 @@ func (s *server) meta(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) check(w http.ResponseWriter, r *http.Request) {
-	issues := validate.Run(s.o.Store.Ledger())
-	if issues == nil {
-		issues = []ledger.Issue{}
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": len(issues) == 0, "errors": issues})
+	confirmed, _ := gitstore.ConfirmedRecords(r.Context(), s.o.Store.Config().Dir)
+	issues, warnings := validate.Split(validate.RunWith(s.o.Store.Ledger(), validate.Options{Confirmed: func(coll, id string) bool { return confirmed[edit.RecordRef(coll, id)] }}))
+	writeJSON(w, http.StatusOK, map[string]any{"ok": len(issues) == 0, "errors": issues, "warnings": warnings})
 }
 
 func (s *server) history(w http.ResponseWriter, r *http.Request) {
@@ -401,6 +399,27 @@ func (s *server) get(w http.ResponseWriter, r *http.Request) {
 type body struct {
 	Data map[string]any `json:"data"`
 	Hash string         `json:"hash"`
+	// ConfirmNotSecret retries a write held as secret_suspected: "this is not a
+	// secret". Never accepted for block-tier findings, nor for a token write that
+	// becomes a pull request.
+	ConfirmNotSecret bool `json:"confirm_not_secret"`
+}
+
+// confirmed sets op's secret-scan confirmation when the caller asked for it and
+// may give it.
+func (s *server) confirmed(r *http.Request, op edit.Op, want bool) edit.Op {
+	if !want {
+		return op
+	}
+	who := s.who(r)
+	if gitstore.MayConfirm(who, s.o.Store.Config(), op.Kind, op.Collection) {
+		op.ConfirmNotSecret = true
+		op.ConfirmedBy = who.IDOrEmpty()
+		if op.ConfirmedBy == "" {
+			op.ConfirmedBy = "anonymous"
+		}
+	}
+	return op
 }
 
 func (s *server) readBody(w http.ResponseWriter, r *http.Request) (body, bool) {
@@ -525,7 +544,7 @@ func (s *server) add(w http.ResponseWriter, r *http.Request) {
 	if !s.permits(w, r, auth.ActCreate, c.Name) {
 		return
 	}
-	if res := s.apply(w, r, edit.Op{Kind: edit.Add, Collection: c.Name, Data: b.Data}); res != nil {
+	if res := s.apply(w, r, s.confirmed(r, edit.Op{Kind: edit.Add, Collection: c.Name, Data: b.Data}, b.ConfirmNotSecret)); res != nil {
 		writeJSON(w, http.StatusCreated, recordResponse(res))
 	}
 }
@@ -549,7 +568,7 @@ func (s *server) put(w http.ResponseWriter, r *http.Request) {
 	if !s.permits(w, r, auth.ActUpdate, c.Name) {
 		return
 	}
-	if res := s.apply(w, r, edit.Op{Kind: edit.Edit, Collection: c.Name, ID: r.PathValue("id"), Hash: b.Hash, Data: b.Data}); res != nil {
+	if res := s.apply(w, r, s.confirmed(r, edit.Op{Kind: edit.Edit, Collection: c.Name, ID: r.PathValue("id"), Hash: b.Hash, Data: b.Data}, b.ConfirmNotSecret)); res != nil {
 		writeJSON(w, http.StatusOK, recordResponse(res))
 	}
 }

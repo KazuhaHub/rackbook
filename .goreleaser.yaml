@@ -46,4 +46,7 @@ changelog:
       - "^test:"
 
 release:
-  draft: false
+  # Created as a draft with all assets, then published in one step by the
+  # workflow, so the repository can use immutable releases.
+  draft: true
+  replace_existing_draft: true

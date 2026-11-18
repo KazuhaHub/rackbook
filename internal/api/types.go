@@ -55,6 +55,9 @@ func (s *server) typesList(w http.ResponseWriter, r *http.Request) {
 	l := s.o.Store.Ledger()
 	problems := map[string]int{}
 	for _, is := range validate.Run(l) {
+		if is.Warning() {
+			continue
+		}
 		problems[is.Collection]++
 	}
 	out := []typeSummary{}

@@ -67,8 +67,19 @@ export async function apiFetch<T>(path: string, init: RequestInit = {}): Promise
         window.location.assign(loginUrl({ error: 'no_role', returnTo: '/' }))
       }
     }
+    // A refused secret is shown like a validation error, on the field it was found in.
+    const findings: CheckError[] | undefined =
+      (body?.error === 'secret_detected' || body?.error === 'secret_suspected') && Array.isArray(body.findings)
+        ? body.findings.map((f: any) => ({
+            collection: f.collection,
+            id: f.id,
+            path: f.path,
+            rule: 'secret',
+            message: t.errors.secret(f.rule, f.excerpt),
+          }))
+        : undefined
     throw new ApiError(res.status, body?.error ?? 'error', body?.message ?? t.errors.generic, {
-      errors: body?.errors,
+      errors: findings ?? body?.errors,
       requestId: body?.request_id ?? body?.requestId ?? res.headers.get('X-Request-Id') ?? undefined,
       current: body?.current,
       body,

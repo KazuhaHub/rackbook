@@ -6,6 +6,8 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/kazuhahub/rackbook/internal/edit"
+	"github.com/kazuhahub/rackbook/internal/gitstore"
 	"github.com/kazuhahub/rackbook/internal/ledger"
 	"github.com/kazuhahub/rackbook/internal/validate"
 )
@@ -28,27 +30,32 @@ func newCheck() *cobra.Command {
 				issues = []ledger.Issue{{Rule: ledger.RuleConfig, Message: err.Error()}}
 			} else {
 				l := ledger.Load(cfg, nil)
-				issues = validate.Run(l)
+				confirmed, _ := gitstore.ConfirmedRecords(cmd.Context(), cfg.Dir)
+				issues = validate.RunWith(l, validate.Options{Confirmed: func(coll, id string) bool { return confirmed[edit.RecordRef(coll, id)] }})
 				collections = len(l.Collections)
 				for _, c := range l.Collections {
 					records += len(c.Records)
 				}
 			}
-			if issues == nil {
-				issues = []ledger.Issue{}
-			}
+			issues, warnings := validate.Split(issues)
 			if format == "json" {
 				enc := json.NewEncoder(out)
 				enc.SetIndent("", "  ")
 				enc.SetEscapeHTML(false)
-				if err := enc.Encode(map[string]any{"ok": len(issues) == 0, "errors": issues}); err != nil {
+				if err := enc.Encode(map[string]any{"ok": len(issues) == 0, "errors": issues, "warnings": warnings}); err != nil {
 					return err
 				}
 			} else if len(issues) == 0 {
 				fmt.Fprintf(out, "ok: %d collections, %d records\n", collections, records)
+				for _, i := range warnings {
+					fmt.Fprintln(out, "warning: "+i.String())
+				}
 			} else {
 				for _, i := range issues {
 					fmt.Fprintln(out, i)
+				}
+				for _, i := range warnings {
+					fmt.Fprintln(out, "warning: "+i.String())
 				}
 				fmt.Fprintf(cmd.ErrOrStderr(), "%d error(s)\n", len(issues))
 			}

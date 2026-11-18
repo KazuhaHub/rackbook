@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -17,6 +18,7 @@ import (
 	"github.com/kazuhahub/rackbook/internal/edit"
 	"github.com/kazuhahub/rackbook/internal/gitstore"
 	"github.com/kazuhahub/rackbook/internal/ledger"
+	"github.com/kazuhahub/rackbook/internal/secretscan"
 	"github.com/kazuhahub/rackbook/internal/yamledit"
 )
 
@@ -249,6 +251,10 @@ func newGet() *cobra.Command {
 
 // add / set / rm ---------------------------------------------------------------
 
+func addConfirmFlag(cmd *cobra.Command) {
+	cmd.Flags().Bool("confirm-not-secret", false, "accept a heuristic secret-scan finding (recorded in the commit); block-tier findings cannot be confirmed")
+}
+
 func addWriteFlags(cmd *cobra.Command) {
 	cmd.Flags().Bool("commit", false, "commit the change to Git (only the changed file)")
 	cmd.Flags().Bool("push", false, "commit and push to origin")
@@ -268,7 +274,7 @@ func finish(cmd *cobra.Command, cfg *config.Config, res *edit.Result, verb strin
 		return nil
 	}
 	ctx := context.Background()
-	short, err := gitstore.CommitFiles(ctx, cfg.Dir, res.Files, res.Subject(), nil, res.Record())
+	short, err := gitstore.CommitFiles(ctx, cfg.Dir, res.Files, res.Subject(), nil, res.Record(), res.Trailers...)
 	if err != nil {
 		return fmt.Errorf("the file was changed but the commit failed: %w", rewrittenHint(err))
 	}
@@ -298,6 +304,10 @@ func applyOp(cmd *cobra.Command, op edit.Op, verb string) error {
 			fmt.Fprintln(cmd.ErrOrStderr(), "warning: could not reach the remote; committing without checking that its history was not rewritten")
 		}
 	}
+	if on, _ := cmd.Flags().GetBool("confirm-not-secret"); on {
+		op.ConfirmNotSecret = true
+		op.ConfirmedBy = cliUser(cmd, cfg)
+	}
 	res, err := edit.Apply(cfg, op)
 	if err != nil {
 		return explain(err)
@@ -318,8 +328,25 @@ func rewrittenHint(err error) error {
 	return err
 }
 
+// cliUser names who confirms a secret-scan finding at the command line: the Git
+// identity of the repository, else the login name.
+func cliUser(cmd *cobra.Command, cfg *config.Config) string {
+	r := &gitstore.Repo{Dir: cfg.Dir}
+	if id := r.ConfigIdentity(cmd.Context()); id.Email != "" {
+		return id.Email
+	}
+	if u := os.Getenv("USER"); u != "" {
+		return u
+	}
+	return "cli"
+}
+
 // explain turns edit errors into readable CLI messages.
 func explain(err error) error {
+	var se *secretscan.Error
+	if errors.As(err, &se) && se.Suspected() {
+		return fmt.Errorf("%w\nIf this is not a secret, repeat the command with --confirm-not-secret (recorded in the commit)", err)
+	}
 	var ie *edit.InvalidError
 	if errors.As(err, &ie) {
 		var b strings.Builder
@@ -367,6 +394,7 @@ func newAdd() *cobra.Command {
 		},
 	}
 	addWriteFlags(cmd)
+	addConfirmFlag(cmd)
 	return cmd
 }
 
@@ -407,6 +435,7 @@ func newSet() *cobra.Command {
 		},
 	}
 	addWriteFlags(cmd)
+	addConfirmFlag(cmd)
 	return cmd
 }
 

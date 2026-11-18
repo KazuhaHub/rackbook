@@ -49,6 +49,7 @@ Writes (create_record, update_record, delete_record) are validated exactly like 
 type writeIn struct {
 	Collection string         `json:"collection" jsonschema:"collection name from list_collections"`
 	Data       map[string]any `json:"data" jsonschema:"the full record: every field, as in get_record's data"`
+	Confirm    bool           `json:"confirm_not_secret,omitempty" jsonschema:"set true only after a secret_suspected error, when you have checked the value is not a secret"`
 }
 
 type updateIn struct {
@@ -56,6 +57,7 @@ type updateIn struct {
 	ID         string         `json:"id" jsonschema:"record id from list_records or get_record"`
 	Hash       string         `json:"hash" jsonschema:"the hash from get_record; the write fails with a conflict if the record changed since"`
 	Data       map[string]any `json:"data" jsonschema:"the full new record (not a patch): every field"`
+	Confirm    bool           `json:"confirm_not_secret,omitempty" jsonschema:"set true only after a secret_suspected error, when you have checked the value is not a secret"`
 }
 
 type deleteIn struct {
@@ -78,7 +80,7 @@ func (t *tools) addWriteTools(s *mcp.Server) {
 	mcp.AddTool(s, &mcp.Tool{Name: "create_record",
 		Description: "Add a record to a collection. data is the whole record (see get_schema for the fields). Validated like the console; the result tells whether it was committed or opened as a pull request (url)."},
 		func(ctx context.Context, req *mcp.CallToolRequest, in writeIn) (*mcp.CallToolResult, any, error) {
-			return t.write(ctx, req, auth.ActCreate, roles.Write, in.Collection, edit.Op{Kind: edit.Add, Collection: in.Collection, Data: intify(in.Data)})
+			return t.write(ctx, req, auth.ActCreate, roles.Write, in.Collection, edit.Op{Kind: edit.Add, Collection: in.Collection, Data: intify(in.Data), ConfirmNotSecret: in.Confirm})
 		})
 	mcp.AddTool(s, &mcp.Tool{Name: "update_record",
 		Description: "Replace a record. Needs the hash from get_record; data is the whole new record. Fails with a conflict (and the current record) if it changed meanwhile."},
@@ -86,7 +88,7 @@ func (t *tools) addWriteTools(s *mcp.Server) {
 			if in.Hash == "" {
 				return errText(http.StatusBadRequest, "bad_request", "hash is required: call get_record first", nil), nil, nil
 			}
-			return t.write(ctx, req, auth.ActUpdate, roles.Write, in.Collection, edit.Op{Kind: edit.Edit, Collection: in.Collection, ID: in.ID, Hash: in.Hash, Data: intify(in.Data)})
+			return t.write(ctx, req, auth.ActUpdate, roles.Write, in.Collection, edit.Op{Kind: edit.Edit, Collection: in.Collection, ID: in.ID, Hash: in.Hash, Data: intify(in.Data), ConfirmNotSecret: in.Confirm})
 		})
 	mcp.AddTool(s, &mcp.Tool{Name: "delete_record",
 		Description: "Delete a record. Needs the hash from get_record. A delete always opens a pull request, even for credentials that may commit directly; it is refused while other records still reference the record."},
@@ -131,6 +133,15 @@ func (t *tools) write(ctx context.Context, req *mcp.CallToolRequest, action stri
 	}
 	if !id.Permits(action, collection) {
 		return errText(http.StatusForbidden, "forbidden", fmt.Sprintf("this token may not %s records in %s", action, collection), nil), nil, nil
+	}
+	if op.ConfirmNotSecret {
+		// A confirmation is only taken from someone who may give it; otherwise the
+		// write is refused as secret_suspected like any other.
+		if gitstore.MayConfirm(id, t.backend.Config(), op.Kind, collection) {
+			op.ConfirmedBy = id.IDOrEmpty()
+		} else {
+			op.ConfirmNotSecret = false
+		}
 	}
 	opts := gitstore.WriteOptionsFor(id, t.backend.Config(), op.Kind, collection)
 	res, err := t.backend.WriteFunc(ctx, gitstore.ApplyOp(op), id, opts)
@@ -222,14 +233,14 @@ type problemsOut struct {
 	// Store lists what pauses writes: history_rewritten, config_error.
 	Store  []map[string]any `json:"store"`
 	Errors []ledger.Issue   `json:"errors"`
+	// Warnings are heuristic secret findings (confirm tier).
+	Warnings []ledger.Issue `json:"warnings"`
 }
 
 func (t *tools) listProblems(_ context.Context, _ *mcp.CallToolRequest, _ noArgs) (*mcp.CallToolResult, problemsOut, error) {
 	issues := validate.Run(t.src())
-	if issues == nil {
-		issues = []ledger.Issue{}
-	}
-	out := problemsOut{Store: []map[string]any{}, Errors: issues}
+	issues, warnings := validate.Split(issues)
+	out := problemsOut{Store: []map[string]any{}, Errors: issues, Warnings: warnings}
 	if t.backend != nil {
 		if a := t.backend.Alert(); a != nil {
 			m := map[string]any{"kind": a.Kind, "writesPaused": true}

@@ -324,16 +324,14 @@ func (t *tools) getSchema(_ context.Context, _ *mcp.CallToolRequest, in getSchem
 }
 
 type checkOut struct {
-	OK     bool           `json:"ok"`
-	Errors []ledger.Issue `json:"errors"`
+	OK       bool           `json:"ok"`
+	Errors   []ledger.Issue `json:"errors"`
+	Warnings []ledger.Issue `json:"warnings"`
 }
 
 func (t *tools) check(_ context.Context, _ *mcp.CallToolRequest, _ noArgs) (*mcp.CallToolResult, checkOut, error) {
-	issues := validate.Run(t.src())
-	if issues == nil {
-		issues = []ledger.Issue{}
-	}
-	return nil, checkOut{OK: len(issues) == 0, Errors: issues}, nil
+	issues, warnings := validate.Split(validate.Run(t.src()))
+	return nil, checkOut{OK: len(issues) == 0, Errors: issues, Warnings: warnings}, nil
 }
 
 func (t *tools) exportMarkdown(_ context.Context, _ *mcp.CallToolRequest, _ noArgs) (*mcp.CallToolResult, any, error) {

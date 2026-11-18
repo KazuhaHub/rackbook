@@ -15,6 +15,7 @@ import (
 	"go.yaml.in/yaml/v3"
 
 	"github.com/kazuhahub/rackbook/internal/config"
+	"github.com/kazuhahub/rackbook/internal/secretscan"
 	"github.com/kazuhahub/rackbook/internal/yamledit"
 )
 
@@ -26,6 +27,7 @@ const (
 	RuleRef     = "ref"
 	RuleSameSet = "same_set"
 	RuleConfig  = "config"
+	RuleSecret  = "secret"
 )
 
 // Issue is one problem found while loading or checking the ledger.
@@ -35,11 +37,17 @@ type Issue struct {
 	Path       string `json:"path"` // JSON pointer inside the record, may be empty
 	Rule       string `json:"rule"`
 	Message    string `json:"message"`
+	// Severity is "warning" for a heuristic finding (a confirm-tier secret); empty
+	// means an error.
+	Severity string `json:"severity,omitempty"`
 	// Hash identifies the record content the issue was found on. It is not
 	// part of the API; validate.Introduced uses it to match issues across
 	// edits of keyless collections, whose ids shift.
 	Hash string `json:"-"`
 }
+
+// Warning reports whether the issue is a warning, not an error.
+func (i Issue) Warning() bool { return i.Severity == "warning" }
 
 func (i Issue) String() string {
 	var b strings.Builder
@@ -170,6 +178,9 @@ func (l *Ledger) loadSchema(c *Collection) {
 		return
 	}
 	c.Schema = s
+	for _, p := range secretscan.AnnotationProblems(raw) {
+		l.Issues = append(l.Issues, Issue{Collection: c.Name, Rule: RuleConfig, Message: "schema " + c.Collection.Schema + ": " + p})
+	}
 }
 
 func (l *Ledger) loadRecords(c *Collection, doc func(string) (*yamledit.Doc, error), reported map[string]bool) {
@@ -273,4 +284,31 @@ func Match(r *Record, where map[string]string) bool {
 func (l *Ledger) AbsFile(c *Collection) string {
 	abs, _ := l.Config.Resolve(c.File)
 	return abs
+}
+
+// SafeID is the id to show in anything that is reported, logged or committed: a
+// record whose key fields hold a secret (a value a rule flags, or the value of
+// a secret-named key field) is shown as secretscan.RedactID of its id. The id
+// parts are compared unescaped.
+func SafeID(cfg *config.Config, collection, id string) string {
+	sc := cfg.SecretScanner()
+	if !sc.Enabled() || id == "" {
+		return id
+	}
+	col := cfg.Collection(collection)
+	if col == nil || len(col.Key) == 0 {
+		return id
+	}
+	parts := strings.Split(id, "/")
+	un := strings.NewReplacer("%2F", "/", "%25", "%")
+	for i, p := range parts {
+		name := ""
+		if len(parts) == len(col.Key) {
+			name = col.Key[i]
+		}
+		if sc.Sensitive(name, un.Replace(p)) {
+			return secretscan.RedactID(id)
+		}
+	}
+	return id
 }

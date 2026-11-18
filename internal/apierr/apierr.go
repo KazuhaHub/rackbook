@@ -8,6 +8,7 @@ import (
 
 	"github.com/kazuhahub/rackbook/internal/edit"
 	"github.com/kazuhahub/rackbook/internal/gitstore"
+	"github.com/kazuhahub/rackbook/internal/secretscan"
 	"github.com/kazuhahub/rackbook/internal/yamledit"
 )
 
@@ -28,7 +29,12 @@ func Classify(err error) Info {
 	var he *gitstore.HistoryRewrittenError
 	var re *edit.ReferencedError
 	var fe *edit.ForbiddenError
+	var se *secretscan.Error
 	switch {
+	case errors.As(err, &se) && se.Suspected():
+		return Info{422, "secret_suspected", "this looks like a secret; nothing was written. Confirm it is not one and retry with confirm_not_secret", map[string]any{"findings": se.Findings}}
+	case errors.As(err, &se):
+		return Info{422, "secret_detected", "a possible secret was found; nothing was written", map[string]any{"findings": se.Findings}}
 	case errors.As(err, &fe):
 		return Info{403, "forbidden", fe.Error(), nil}
 	case errors.As(err, &re):

@@ -600,7 +600,11 @@ Rackbook uses SemVer (Go modules require SemVer tags). Release plan:
 - **v0.2.1** — the release pipeline only: Windows builds, a native test
   matrix on six runners, SHA-pinned actions, build provenance attestations,
   and cosign signing. No feature changes.
-- **v0.3.0** — the built-in authorization server (decision 12).
+- **v0.2.2** — security fix: the built-in secret scan on every write (see
+  "v0.2.2 security fix" below).
+- **v0.3.0** — the built-in authorization server (decision 12), GitHub App
+  authentication (decision 14), record documents (decision 15) and the MCP
+  surface renames (decision 16).
 - **v0.4.0** — storage: one record per file (design in
   `design-v0.4-storage.md`).
 - **1.0** — once the storage layout, config format and API are stable.
@@ -703,3 +707,49 @@ See README, "Versioning and compatibility".
 
     The renames of the v0.2 tools ship in v0.3.0, with deprecated aliases that
     are removed in v0.4.0.
+
+## v0.2.2 security fix: built-in secret scan
+
+Rackbook runs Git without hooks (decision above), so a repository's
+pre-commit scanners never see its commits, and a secret typed into a record
+would be committed and pushed. v0.2.2 closes that with a deterministic,
+pattern-based scan (`internal/secretscan`, on by default, configured under
+`secret_scan` in `rackbook.yml`) that runs before anything touches the disk or
+Git, on every write path: `edit.Apply` (API, MCP and CLI record writes, and the
+edits made by `clearReferences`), `types.Apply` (schemas and the rackbook.yml
+entry) and `MutateStateFile` (names and labels in passkey and token files;
+public keys, ids and hashes are exempt). Nothing from the data repository is
+ever executed. The scan is a safety net, not a guarantee: a secret with no
+keyword and no known shape ("Hunter2Hunter2 is what we use") is out of scope.
+
+Two tiers:
+
+- **Block (deterministic):** key material and known token formats (PEM and
+  OpenSSH, also base64-encoded; AGE-SECRET-KEY; GitHub, GitLab, npm, Hugging
+  Face, Tailscale, SendGrid, Slack, AWS, Google, Stripe, OpenAI and Anthropic
+  tokens; JWT; URL userinfo; key-bearing query
+  parameters; private JWK). Always refused (`422 secret_detected`); only the
+  allow list by value hash overrides it.
+- **Confirm (heuristic):** keyword assignments in any language (after NFKC
+  normalisation and zero-width stripping), the whole value of secret-named
+  fields (numbers and booleans included), `key`/`privkey` plus hex (`hex-key`:
+  ambiguous with node keys, fingerprints and hashes) and high-entropy tokens in
+  free text.
+  Refused with `422 secret_suspected` until the editor confirms: the console
+  holds the write behind a "不是密钥" tick, API and MCP retry with
+  `confirm_not_secret: true` (editor and admin sessions, OAuth/MCP identities
+  with write rights; never for a token write that becomes a pull request, never
+  for block-tier findings), the CLI takes `--confirm-not-secret`. Every
+  confirmation is committed as `Secret-scan: confirmed-not-secret by <user>
+  (<rule ids>)`. `rackbook check` reports confirm-tier hits as warnings, and
+  not at all for a record whose last commit carries that trailer.
+
+One rule: block-tier formats are refused in every string, always; schema
+annotations, placeholders and `confirm_not_secret` only silence the confirm
+tier. An exempt value is still run, whole, through the block-tier rules. The
+confirm-tier exemptions come only from structure: a schema annotation
+`x-rackbook: {public: <kind>}` whose whole value has the kind's strict format,
+and the exact placeholders. The allow list (by value hash) is the one override
+for the block tier. Free text has none. A secret-named
+field may only be annotated `secret_reference`. Record ids that carry a secret are
+shown as 4 characters plus 8 hex digits of a hash (not a secure hash; it only tells ids apart).

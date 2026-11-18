@@ -46,6 +46,20 @@ func WriteOptionsFor(who *auth.Identity, cfg *config.Config, kind edit.Kind, col
 	return opts
 }
 
+// MayConfirm says whether who may confirm "this is not a secret" on a write.
+// Editors and OAuth/MCP identities with write rights may; an API token never
+// may when its write becomes a pull request (a token is contributor level: no
+// one reviews a confirmation made by a script). The role check has already
+// happened.
+func MayConfirm(who *auth.Identity, cfg *config.Config, kind edit.Kind, collection string) bool {
+	if who == nil || who.Method != auth.MethodToken {
+		return true
+	}
+	opts := WriteOptionsFor(who, cfg, kind, collection)
+	pr := opts.ForcePR || (!opts.Direct && cfg != nil && cfg.Write.Mode == "pr")
+	return !pr
+}
+
 // directPushListed matches by method: mcphub:<user> only an MCPHub identity,
 // oauth:<alias>:<user> only that issuer's, an e-mail address only with
 // match_email and a verified e-mail on the identity. Role names work for both.

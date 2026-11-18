@@ -16,6 +16,7 @@ import (
 	"github.com/kazuhahub/rackbook/internal/config"
 	"github.com/kazuhahub/rackbook/internal/edit"
 	"github.com/kazuhahub/rackbook/internal/ledger"
+	"github.com/kazuhahub/rackbook/internal/secretscan"
 	"github.com/kazuhahub/rackbook/internal/validate"
 )
 
@@ -245,6 +246,13 @@ func (p *Plan) finish(base *ledger.Ledger) {
 			status = "added"
 		}
 		p.Files = append(p.Files, FileChange{Path: f, Status: status, Diff: unifiedDiff(f, string(old), string(nw))})
+	}
+	for _, f := range paths {
+		if b := p.files[f]; b != nil && strings.HasSuffix(f, ".json") {
+			for _, msg := range secretscan.AnnotationProblems(b) {
+				p.refuse("annotation", "", "%s: %s", f, msg)
+			}
+		}
 	}
 	p.Changed = len(p.files) > 0
 	p.Clean = len(p.Refusals) == 0 && len(p.Invalid) == 0 && len(p.Dangling) == 0 && len(p.Other) == 0

@@ -14,6 +14,7 @@ import (
 	"go.yaml.in/yaml/v3"
 
 	"github.com/kazuhahub/rackbook/internal/roles"
+	"github.com/kazuhahub/rackbook/internal/secretscan"
 )
 
 // FileName is the default config file name.
@@ -35,10 +36,24 @@ type Config struct {
 	Write       Write         `yaml:"write"`
 	Auth        Auth          `yaml:"auth"`
 	Types       Types         `yaml:"types"`
+	// SecretScan configures the built-in scan for secrets on every write. It is
+	// on unless secret_scan.enabled is false.
+	SecretScan secretscan.Config `yaml:"secret_scan"`
 
 	// Path is the absolute path of the config file; Dir its directory.
 	Path string `yaml:"-"`
 	Dir  string `yaml:"-"`
+
+	scanner *secretscan.Scanner
+}
+
+// SecretScanner is the compiled secret_scan block. It is never nil, and a
+// config that was not built by Parse still scans with every built-in rule.
+func (c *Config) SecretScanner() *secretscan.Scanner {
+	if c == nil || c.scanner == nil {
+		return secretscan.Default()
+	}
+	return c.scanner
 }
 
 // Types holds where the console puts the files of a new data type.
@@ -595,6 +610,11 @@ func (c *Config) finish() error {
 	if err := c.Auth.MCP.validate(); err != nil {
 		return err
 	}
+	sc, err := secretscan.New(c.SecretScan)
+	if err != nil {
+		return err
+	}
+	c.scanner = sc
 	if c.Types.DataDir == "" {
 		c.Types.DataDir = "docs/ledger"
 	}

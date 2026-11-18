@@ -138,6 +138,9 @@ func Open(ctx context.Context, o Options) (*Store, error) {
 		}
 	}
 	s.cur.Store(ledger.Load(cfg, nil))
+	if !cfg.SecretScanner().Enabled() {
+		s.log.Warn("secret_scan.enabled is false: nothing checks the records, data types and state files Rackbook writes for secrets, and Rackbook's commits bypass repository pre-commit hooks")
+	}
 	if s.git && s.remote != "" {
 		s.initLastGood(ctx)
 		if err := s.Pull(ctx); err != nil && !errors.Is(err, ErrHistoryRewritten) {
@@ -364,7 +367,7 @@ func (s *Store) WriteFunc(ctx context.Context, apply ApplyFunc, who *auth.Identi
 			return nil, err
 		}
 		res = r
-		return &change{Files: r.Files, Subject: r.Subject(), Record: r.Record()}, nil
+		return &change{Files: r.Files, Subject: r.Subject(), Record: r.Record(), Trailers: r.Trailers}, nil
 	})
 	if err != nil {
 		return nil, err
@@ -383,6 +386,8 @@ type change struct {
 	Files   []string // config-relative files written; empty = nothing changed
 	Subject string
 	Record  string // Record trailer value, "" for none
+	// Trailers are extra trailers after Record (Secret-scan confirmations).
+	Trailers []string
 }
 
 // commitLoop is the Git write path shared by record edits and state files:
@@ -414,7 +419,7 @@ func (s *Store) commitLoop(ctx context.Context, who *auth.Identity, opts WriteOp
 			return "", false, nil
 		}
 		parent, _ := s.repo.Head(ctx)
-		msg := CommitMessage(ch.Subject, who, s.via, ch.Record)
+		msg := CommitMessage(ch.Subject, who, s.via, ch.Record, ch.Trailers...)
 		short, err := s.repo.Commit(ctx, ch.Files, msg, author, s.opts.Committer)
 		if err != nil {
 			s.discard(ctx, parent, ch.Files)
@@ -564,7 +569,7 @@ func (s *Store) History(ctx context.Context, limit int, collection, id string) (
 		file = filepath.FromSlash(c.File)
 	}
 	if id != "" {
-		want := edit.RecordRef(collection, id)
+		want := edit.RecordRef(collection, ledger.SafeID(s.Config(), collection, id))
 		// --fixed-strings makes the prefilter literal whatever grep.patternType
 		// says; it is a substring match, so the exact value is checked below.
 		commits, err := s.gitLog(ctx, limit, want, "--fixed-strings", "--grep=Record: "+want)
