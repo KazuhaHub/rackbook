@@ -92,7 +92,7 @@ func BenchmarkPathological(b *testing.B) {
 	}
 }
 
-func TestPathologicalInputsStayUnderASecondPerMegabyte(t *testing.T) {
+func TestPathologicalInputsStayLinear(t *testing.T) {
 	if raceEnabled {
 		t.Skip("the race detector slows everything several times")
 	}
@@ -106,7 +106,11 @@ func TestPathologicalInputsStayUnderASecondPerMegabyte(t *testing.T) {
 				best = el
 			}
 		}
-		if best > time.Second {
+		// Shared CI runners (windows-arm64 especially) are a few times slower
+		// than a laptop; the regressions this guards against (exponential or
+		// quadratic scanning) take 100 s or more per megabyte, so 5 s still
+		// catches them without failing on slow hardware.
+		if best > 5*time.Second {
 			t.Errorf("%s: %d bytes took %v", name, len(text), best)
 		}
 	}
