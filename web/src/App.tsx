@@ -21,6 +21,7 @@ const Problems = lazy(() => import('@/pages/Problems'))
 const Account = lazy(() => import('@/pages/Account'))
 const Users = lazy(() => import('@/pages/Users'))
 const Login = lazy(() => import('@/pages/Login'))
+const Tokens = lazy(() => import('@/pages/Tokens'))
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { refetchOnWindowFocus: false } },
@@ -60,6 +61,7 @@ function RefineApp() {
           <Route path="check" element={<Problems />} />
           <Route path="account" element={<Account />} />
           <Route path="admin/users" element={<Users />} />
+          <Route path="admin/tokens" element={<Tokens />} />
           <Route path="*" element={<NotFound />} />
         </Route>
       </Routes>

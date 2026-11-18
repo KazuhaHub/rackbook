@@ -135,7 +135,11 @@ remote's history is rewritten (full commit hashes; see `alert` above);
 changes or unpushed commits (an administrator must fix the clone). Other
 failures are `500 {"error":"internal","message":"…","requestId":"…"}`; the
 details are only in the server log. Success responses carry `commit` (short hash, or `""` when
-the server runs without Git).
+the server runs without Git; the pull request URL with `"pullRequest": true`
+in pr mode and for writes by API tokens). `503 {"error":"pull_request_unavailable"}`
+when a write must be a pull request but the server has no remote or no
+`RACKBOOK_GITHUB_TOKEN`. With an API token (`Authorization: Bearer rbk_…`),
+`403 forbidden` also means the token's collections/actions do not allow it.
 
 ### `POST /api/c/{collection}`
 
@@ -161,6 +165,19 @@ the commit is not the tip after a fresh fetch, `409 local_commits` when the
 clone has commits that exist nowhere else, `400` without a commit, `503
 repo_dirty` if the clone has local changes, `403 read_only` in `--read-only`
 mode. A refused request changes nothing.
+
+### API tokens (admin)
+
+Admin only, and never with a token (`403 forbidden`); `404` unless token support
+is on (it is in `rackbook serve`).
+
+- `GET /api/admin/tokens` → `{"tokens": [{name, prefix, scope, collections?, actions?, writeMode?, createdBy, created, expires?, revoked?, status: active|revoked|expired, lastUsed?, creatorRole, warnings: [creator_no_role|limited_by_creator|push_needs_admin]}], "mcpUrl"}`.
+- `POST /api/admin/tokens` `{"name", "scope": "read"|"write", "collections": [], "actions": ["create","update","delete"], "writeMode": ""|"pr"|"push", "expiresDays": 0}` → `201 {"token", "secret", "snippet", "claudeCode", "commit", "pullRequest"}`. The secret is shown only here. `400` for invalid input, `409 exists` for a taken name.
+- `DELETE /api/admin/tokens/{name}` → `200 {"ok", "commit"}`; `404` for an unknown name.
+
+Bearer tokens are accepted on `/api/*`, `/mcp`, `/export.*` and `/llms*`; `401
+invalid_token` (expired, revoked or unknown) and `429 rate_limited` with
+`Retry-After` after repeated failures from one address.
 
 ## Login (`--auth oidc`)
 
@@ -210,7 +227,16 @@ With a session:
 
 ## MCP
 
-`POST /mcp` (streamable HTTP) — same tools as `rackbook mcp` on stdio.
+`POST /mcp` (streamable HTTP) — the read tools of `rackbook mcp` on stdio, plus
+`record_history` and `list_problems`, and (for callers that may write)
+`create_record`, `update_record` and `delete_record`. Auth: the console's mode,
+an OAuth access token of a trusted issuer (`auth.mcp`, README), or an API token.
+`/.well-known/oauth-protected-resource` (RFC 9728, public) describes the
+resource; a missing or invalid token gets `401` with `WWW-Authenticate: Bearer
+resource_metadata="…"`, a valid token without a role `403` with
+`error="insufficient_scope"`. Write tools fail with the API's error codes in a
+tool error: `{"error","message","status",…}`; a successful write returns
+`{id, hash, data, commit | url, pullRequest}`.
 
 ## Static console
 

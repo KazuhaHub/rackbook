@@ -17,6 +17,7 @@ import (
 	"github.com/go-webauthn/webauthn/webauthn"
 
 	"github.com/kazuhahub/rackbook/internal/auth"
+	"github.com/kazuhahub/rackbook/internal/gitstore"
 	"github.com/kazuhahub/rackbook/internal/roles"
 )
 
@@ -91,7 +92,7 @@ type fileStore struct {
 }
 
 func (f *fileStore) load() (*pkFile, error) {
-	b, err := f.files.ReadStateFile(PasskeysPath)
+	b, _, err := f.files.StateFile(PasskeysPath)
 	if err != nil {
 		return nil, err
 	}
@@ -179,7 +180,7 @@ func (f *fileStore) Save(ctx context.Context, cred passkey.StoredCredential) err
 	handle := base64.RawURLEncoding.EncodeToString(cred.UserHandle)
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Minute)
 	defer cancel()
-	return f.files.UpdateStateFile(ctx, PasskeysPath, a.who, "rackbook(auth): add passkey for "+a.who.ID, func(old []byte) ([]byte, error) {
+	_, err := f.files.MutateStateFile(ctx, PasskeysPath, "rackbook(auth): add passkey for "+a.who.ID, a.who, func(old []byte, _ bool) ([]byte, error) {
 		file, err := parsePasskeys(old)
 		if err != nil {
 			return nil, err
@@ -202,7 +203,8 @@ func (f *fileStore) Save(ctx context.Context, cred passkey.StoredCredential) err
 		}
 		u.Credentials = append(u.Credentials, entry)
 		return file.marshal()
-	})
+	}, gitstore.Direct())
+	return err
 }
 
 // UpdateSignCount is deliberately a no-op: counters are not persisted.
@@ -443,7 +445,7 @@ func (p *passkeys) remove(w http.ResponseWriter, r *http.Request, own bool) {
 	target := owner.Identity
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), time.Minute)
 	defer cancel()
-	err = p.s.o.Files.UpdateStateFile(ctx, PasskeysPath, who, "rackbook(auth): remove passkey for "+target, func(old []byte) ([]byte, error) {
+	_, err = p.s.o.Files.MutateStateFile(ctx, PasskeysPath, "rackbook(auth): remove passkey for "+target, who, func(old []byte, _ bool) ([]byte, error) {
 		f, err := parsePasskeys(old)
 		if err != nil {
 			return nil, err
@@ -454,7 +456,7 @@ func (p *passkeys) remove(w http.ResponseWriter, r *http.Request, own bool) {
 		}
 		f.removeCred(id)
 		return f.marshal()
-	})
+	}, gitstore.Direct())
 	switch {
 	case errors.Is(err, errNoSuchCredential):
 		writeErr(w, http.StatusNotFound, "not_found", "no such passkey")

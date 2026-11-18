@@ -5,6 +5,7 @@ go 1.26.0
 require (
 	github.com/KazuhaHub/authcore v0.6.3-0.20261106114224-f3886de2dcef
 	github.com/coreos/go-oidc/v3 v3.21.0
+	github.com/descope/virtualwebauthn v1.0.5
 	github.com/go-jose/go-jose/v4 v4.1.6
 	github.com/go-webauthn/webauthn v0.18.2
 	github.com/modelcontextprotocol/go-sdk v1.8.0
@@ -16,7 +17,6 @@ require (
 )
 
 require (
-	github.com/descope/virtualwebauthn v1.0.5 // indirect
 	github.com/fxamacker/cbor/v2 v2.9.4 // indirect
 	github.com/go-viper/mapstructure/v2 v2.5.0 // indirect
 	github.com/go-webauthn/x v0.3.1 // indirect

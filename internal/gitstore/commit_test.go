@@ -24,6 +24,23 @@ func TestAuthorAndTrailers(t *testing.T) {
 	if got != want {
 		t.Fatalf("\n%q\n%q", got, want)
 	}
+	// Requests to /mcp: the channel is "mcp", MCPHub is named, other issuers by alias, tokens by name.
+	hub := &auth.Identity{ID: "alice", Method: auth.MethodMCPHub, Client: "cursor", Via: "mcp"}
+	if m := CommitMessage("s", hub, "rackbook", ""); m != "s\n\nEdited-by: alice\nEdited-via: mcp (MCPHub, client cursor)\n" {
+		t.Fatalf("%q", m)
+	}
+	ent := &auth.Identity{ID: "a@e.com", Method: auth.MethodOAuth, Issuer: "entra", Client: "app-1", Via: "mcp"}
+	if m := CommitMessage("s", ent, "rackbook", ""); m != "s\n\nEdited-by: a@e.com\nEdited-via: mcp (entra, client app-1)\n" {
+		t.Fatalf("%q", m)
+	}
+	tok := &auth.Identity{ID: "boss@e.com", Method: auth.MethodToken, Token: "ci"}
+	if m := CommitMessage("s", tok, "rackbook", ""); m != "s\n\nEdited-by: boss@e.com\nEdited-via: rackbook (token:ci)\n" {
+		t.Fatalf("%q", m)
+	}
+	tok.Via = "mcp"
+	if m := CommitMessage("s", tok, "rackbook", ""); !strings.Contains(m, "Edited-via: mcp (token:ci)") {
+		t.Fatalf("%q", m)
+	}
 	// No name: derived from the address; no method: plain via; no record: no trailer.
 	if a := AuthorOf(&auth.Identity{ID: "bob@example.com"}); a.Name != "bob" {
 		t.Fatalf("%+v", a)

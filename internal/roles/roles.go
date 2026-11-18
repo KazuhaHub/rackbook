@@ -14,6 +14,8 @@
 //	*@example.com      any identity or e-mail in that domain
 //	mcphub:<username>  an MCPHub user (only for Method "mcphub")
 //	mcphub:*           any MCPHub user
+//	oauth:<alias>:<user>  a user of the OAuth issuer auth.mcp.trusted_issuers[].alias
+//	oauth:<alias>:*    any user of that issuer
 //	group:<id>         a group the identity carries (Subject.Groups)
 //	*                  anyone authenticated
 //
@@ -21,7 +23,9 @@
 // Identities from oidc, passkey, cloudflare-access, none and cli match every
 // kind except mcphub:. MCPHub identities match only mcphub: entries, and the
 // exact and *@domain entries as well when the MCPHub username is an e-mail
-// address and Options.MCPMatchEmail (auth.mcp.match_email) is on. Token
+// address and Options.MCPMatchEmail (auth.mcp.match_email) is on. Identities
+// from another OAuth issuer (method "oauth") match only oauth:<alias>:<user>
+// entries, and the same e-mail entries under the same option. Token
 // identities match nothing: they take their creator's role.
 //
 // The highest matching role wins. Without a roles block every identity is an
@@ -128,18 +132,21 @@ type Subject struct {
 	ID     string // identity string folded with FoldASCII (e-mail, username, ...)
 	Email  string
 	Method string // how the identity was authenticated; see the package comment
+	Issuer string // method oauth: the alias of the trusted issuer
 	Groups []string
 }
 
 type entry struct {
 	kind  int
 	value string // exact: the identity; domain: "@example.com"; group/mcphub: the id
+	alias string // oauth: the issuer alias
 }
 
 const (
 	kExact = iota
 	kDomain
 	kMCPHub
+	kOAuth
 	kGroup
 	kAny
 )
@@ -156,6 +163,13 @@ func parseEntry(s string) (entry, error) {
 			return entry{kind: kGroup, value: v}, nil
 		}
 		return entry{}, fmt.Errorf("%q: group id is empty", s)
+	case strings.HasPrefix(s, "oauth:"):
+		alias, user, ok := strings.Cut(s[len("oauth:"):], ":")
+		alias, user = strings.TrimSpace(alias), strings.TrimSpace(user)
+		if !ok || alias == "" || user == "" {
+			return entry{}, fmt.Errorf("%q: want oauth:<issuer-alias>:<user>", s)
+		}
+		return entry{kind: kOAuth, alias: alias, value: user}, nil
 	case s == "mcphub:*":
 		return entry{kind: kMCPHub, value: "*"}, nil
 	case strings.HasPrefix(s, "mcphub:"):
@@ -195,6 +209,17 @@ func (e entry) matches(s Subject, opt Options) bool {
 		switch e.kind {
 		case kMCPHub:
 			return e.value == "*" || s.ID == e.value
+		case kExact:
+			return opt.MCPMatchEmail && strings.Contains(s.ID, "@") && s.ID == e.value
+		case kDomain:
+			return opt.MCPMatchEmail && strings.Contains(s.ID, "@") && strings.HasSuffix(s.ID, e.value)
+		}
+		return false
+	}
+	if s.Method == "oauth" {
+		switch e.kind {
+		case kOAuth:
+			return e.alias == FoldASCII(s.Issuer) && (e.value == "*" || s.ID == e.value)
 		case kExact:
 			return opt.MCPMatchEmail && strings.Contains(s.ID, "@") && s.ID == e.value
 		case kDomain:

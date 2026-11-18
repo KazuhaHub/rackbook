@@ -4,8 +4,10 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"go.yaml.in/yaml/v3"
@@ -17,8 +19,8 @@ import (
 const FileName = "rackbook.yml"
 
 // StateDir is the directory in the data repository that holds Rackbook's own
-// state (.rackbook/passkeys.yml). It is never a ledger collection, note or
-// export source.
+// state (.rackbook/passkeys.yml, .rackbook/tokens.yml). It is never a ledger
+// collection, note or export source.
 const StateDir = ".rackbook"
 
 // Config is a parsed rackbook.yml.
@@ -160,6 +162,248 @@ type AuthMCP struct {
 	// whose username is an e-mail address. Default false: MCPHub users match
 	// only mcphub:<username> entries.
 	MatchEmail bool `yaml:"match_email"`
+
+	// Resource is the public URL of /mcp, the OAuth protected resource
+	// (RFC 9728). Required with trusted_issuers.
+	Resource string `yaml:"resource"`
+	// TrustedIssuers are the authorization servers (MCPHub) whose RFC 9068
+	// access tokens /mcp accepts.
+	TrustedIssuers []TrustedIssuer `yaml:"trusted_issuers"`
+	// Scopes maps OAuth scopes to what they allow.
+	Scopes MCPScopes `yaml:"scopes"`
+	// DirectPush lists who may push create and update from MCP straight to the
+	// tracked branch. Everything else an MCPHub user or token does through
+	// MCP becomes a pull request; deletes always do.
+	DirectPush []DirectPush `yaml:"direct_push"`
+}
+
+// Issuer kinds.
+const (
+	KindOAuth  = "oauth"  // any OAuth 2.0 / OIDC authorization server (default)
+	KindMCPHub = "mcphub" // MCPHub: identities match mcphub:<user> role entries
+)
+
+// DefaultAlgorithms are the signing algorithms accepted when an issuer does not
+// list its own.
+var DefaultAlgorithms = []string{"ES256", "RS256", "PS256", "EdDSA"}
+
+// AllowedAlgorithms is every algorithm an issuer may list. HS* (shared
+// secrets) and none are never accepted, whatever the config says.
+var AllowedAlgorithms = map[string]bool{
+	"ES256": true, "ES384": true, "ES512": true, "RS256": true, "RS384": true, "RS512": true,
+	"PS256": true, "PS384": true, "PS512": true, "EdDSA": true,
+}
+
+// TrustedIssuer is one authorization server /mcp trusts.
+type TrustedIssuer struct {
+	Issuer string `yaml:"issuer"`
+	// Alias names the issuer in role entries (oauth:<alias>:<user>) and in the
+	// Edited-via trailer. Required for kind oauth; default "mcphub" for kind
+	// mcphub.
+	Alias string `yaml:"alias"`
+	// Kind is oauth (default) or mcphub.
+	Kind string `yaml:"kind"`
+	// Audience the token must carry; default Resource. It need not be a URL
+	// (Entra uses api://<client-id> or the client id).
+	Audience string `yaml:"audience"`
+	// JWKSURL overrides jwks_uri from the issuer metadata (then the metadata
+	// is not fetched).
+	JWKSURL string `yaml:"jwks_url"`
+	// Algorithms the issuer signs with; default DefaultAlgorithms.
+	Algorithms []string `yaml:"algorithms"`
+	// RequireTypATJWT demands typ at+jwt (RFC 9068). Default true. When false,
+	// typ JWT or no typ is accepted too, with extra checks against ID tokens.
+	RequireTypATJWT *bool `yaml:"require_typ_at_jwt"`
+	// UsernameClaim is the claim that names the user; default sub.
+	UsernameClaim string `yaml:"username_claim"`
+	// ScopeClaim names the claim that carries the scopes. Default: scope, then
+	// scp (a space-separated string or an array).
+	ScopeClaim string `yaml:"scope_claim"`
+	// Introspection enables RFC 7662 for opaque (non-JWT) tokens.
+	Introspection *Introspection `yaml:"introspection"`
+}
+
+// Introspection configures RFC 7662 token introspection for one issuer.
+type Introspection struct {
+	// Endpoint overrides introspection_endpoint from the issuer metadata.
+	Endpoint string `yaml:"endpoint"`
+	ClientID string `yaml:"client_id"`
+	// ClientSecretEnv names the environment variable that holds the client
+	// secret (never the secret itself).
+	ClientSecretEnv string `yaml:"client_secret_env"`
+}
+
+// NeedTypATJWT reports whether typ at+jwt is required.
+func (t TrustedIssuer) NeedTypATJWT() bool { return t.RequireTypATJWT == nil || *t.RequireTypATJWT }
+
+// AlgorithmList is Algorithms or the default.
+func (t TrustedIssuer) AlgorithmList() []string {
+	if len(t.Algorithms) == 0 {
+		return DefaultAlgorithms
+	}
+	return t.Algorithms
+}
+
+// Name is the issuer's alias.
+func (t TrustedIssuer) Name() string {
+	if t.Alias != "" {
+		return t.Alias
+	}
+	if t.Kind == KindMCPHub {
+		return "mcphub"
+	}
+	return ""
+}
+
+// MCPScopes names the OAuth scopes that Rackbook checks. A nil pointer means
+// the default; an empty string means "no scope needed".
+type MCPScopes struct {
+	Read  *string `yaml:"read"`  // default: no scope needed
+	Write *string `yaml:"write"` // default: DefaultWriteScope
+}
+
+// DefaultWriteScope is required for MCPHub tokens to write unless
+// auth.mcp.scopes.write says otherwise.
+const DefaultWriteScope = "rackbook:write"
+
+// ReadScope is the scope a token needs to read ("" = none).
+func (s MCPScopes) ReadScope() string {
+	if s.Read == nil {
+		return ""
+	}
+	return strings.TrimSpace(*s.Read)
+}
+
+// WriteScope is the scope a token needs to write ("" = none).
+func (s MCPScopes) WriteScope() string {
+	if s.Write == nil {
+		return DefaultWriteScope
+	}
+	return strings.TrimSpace(*s.Write)
+}
+
+// DirectPush allows create and update to the tracked branch for the listed
+// users or roles, on the listed collections ("*" = all).
+type DirectPush struct {
+	Users       []string `yaml:"users"`
+	Roles       []string `yaml:"roles"`
+	Collections []string `yaml:"collections"`
+}
+
+// Audience returns the audience required of tokens from t.
+func (m AuthMCP) Audience(t TrustedIssuer) string {
+	if t.Audience != "" {
+		return t.Audience
+	}
+	return m.Resource
+}
+
+// Enabled reports whether /mcp accepts MCPHub tokens.
+func (m AuthMCP) Enabled() bool { return len(m.TrustedIssuers) > 0 }
+
+// ValidURL checks an issuer, resource or JWKS URL: absolute, https (http only
+// for localhost, 127.0.0.1 and [::1]), no credentials, query or fragment.
+func ValidURL(raw string, allowQuery bool) error {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" || u.Opaque != "" {
+		return fmt.Errorf("%q is not an absolute URL", raw)
+	}
+	if u.User != nil || u.Fragment != "" || (!allowQuery && u.RawQuery != "") {
+		return fmt.Errorf("%q must not carry credentials, a fragment or a query", raw)
+	}
+	switch u.Scheme {
+	case "https":
+	case "http":
+		switch u.Hostname() {
+		case "localhost", "127.0.0.1", "::1":
+		default:
+			return fmt.Errorf("%q: http is only allowed for localhost, use https", raw)
+		}
+	default:
+		return fmt.Errorf("%q: the scheme must be https", raw)
+	}
+	return nil
+}
+
+var aliasRe = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,31}$`)
+
+func (m AuthMCP) validate() error {
+	if m.Resource != "" {
+		if err := ValidURL(m.Resource, false); err != nil {
+			return fmt.Errorf("auth.mcp.resource: %w", err)
+		}
+	}
+	if len(m.TrustedIssuers) > 0 && m.Resource == "" {
+		return errors.New("auth.mcp.resource is required with trusted_issuers (the public URL of /mcp)")
+	}
+	seen := map[string]bool{}
+	aliases := map[string]bool{}
+	for i, t := range m.TrustedIssuers {
+		if err := ValidURL(t.Issuer, false); err != nil {
+			return fmt.Errorf("auth.mcp.trusted_issuers[%d].issuer: %w", i, err)
+		}
+		if seen[t.Issuer] {
+			return fmt.Errorf("auth.mcp.trusted_issuers: %q listed twice", t.Issuer)
+		}
+		seen[t.Issuer] = true
+		at := fmt.Sprintf("auth.mcp.trusted_issuers[%d]", i)
+		switch t.Kind {
+		case "", KindOAuth, KindMCPHub:
+		default:
+			return fmt.Errorf("%s.kind must be oauth or mcphub, got %q", at, t.Kind)
+		}
+		name := t.Name()
+		if name == "" || !aliasRe.MatchString(name) {
+			return fmt.Errorf("%s.alias is required (1-32 characters of a-z 0-9 . _ -), it names the issuer in role entries oauth:<alias>:<user>", at)
+		}
+		if aliases[name] {
+			return fmt.Errorf("%s.alias %q is used twice", at, name)
+		}
+		aliases[name] = true
+		for _, a := range t.Algorithms {
+			if !AllowedAlgorithms[a] {
+				return fmt.Errorf("%s.algorithms: %q is not allowed (use ES*, RS*, PS* or EdDSA; HS* and none are never accepted)", at, a)
+			}
+		}
+		if in := t.Introspection; in != nil {
+			if in.Endpoint != "" {
+				if err := ValidURL(in.Endpoint, false); err != nil {
+					return fmt.Errorf("%s.introspection.endpoint: %w", at, err)
+				}
+			}
+			if in.ClientID == "" || in.ClientSecretEnv == "" {
+				return fmt.Errorf("%s.introspection needs client_id and client_secret_env (the name of the environment variable that holds the secret)", at)
+			}
+		}
+		if t.Audience == "" && m.Resource == "" {
+			return fmt.Errorf("%s needs an audience or auth.mcp.resource", at)
+		}
+		if t.JWKSURL != "" {
+			if err := ValidURL(t.JWKSURL, true); err != nil {
+				return fmt.Errorf("auth.mcp.trusted_issuers[%d].jwks_url: %w", i, err)
+			}
+		}
+	}
+	for i, d := range m.DirectPush {
+		if len(d.Users) == 0 && len(d.Roles) == 0 {
+			return fmt.Errorf("auth.mcp.direct_push[%d]: list users or roles", i)
+		}
+		if len(d.Collections) == 0 {
+			return fmt.Errorf("auth.mcp.direct_push[%d]: list collections (or \"*\")", i)
+		}
+		for _, r := range d.Roles {
+			if r != "admin" && r != "editor" {
+				return fmt.Errorf("auth.mcp.direct_push[%d]: role %q must be admin or editor", i, r)
+			}
+		}
+	}
+	return nil
+}
+
+// IsStatePath reports whether a config-relative path is inside StateDir.
+func IsStatePath(rel string) bool {
+	p := filepath.ToSlash(filepath.Clean(rel))
+	return p == StateDir || strings.HasPrefix(p, StateDir+"/")
 }
 
 // Collection returns the collection with the given name, or nil.
@@ -291,6 +535,9 @@ func (c *Config) finish() error {
 	if err := c.Auth.Login.check(); err != nil {
 		return err
 	}
+	if err := c.Auth.MCP.validate(); err != nil {
+		return err
+	}
 	if len(c.Collections) == 0 {
 		return errors.New("no collections defined")
 	}
@@ -309,6 +556,9 @@ func (c *Config) finish() error {
 		for _, p := range []string{col.File, col.Schema} {
 			if _, err := c.Resolve(p); err != nil {
 				return fmt.Errorf("collection %q: %w", col.Name, err)
+			}
+			if IsStatePath(p) {
+				return fmt.Errorf("collection %q: %s is Rackbook's own state (.rackbook/), not a data file", col.Name, p)
 			}
 		}
 		for i := range col.Facets {

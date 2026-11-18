@@ -14,6 +14,7 @@ const (
 	MethodOIDC             = "oidc"
 	MethodPasskey          = "passkey"
 	MethodMCPHub           = "mcphub"
+	MethodOAuth            = "oauth" // access token of another trusted OAuth issuer
 	MethodToken            = "token"
 	// MethodCLI marks commits made by the rackbook command line.
 	MethodCLI = "cli"
@@ -28,6 +29,7 @@ type Identity struct {
 	Email  string // may be empty (MCPHub usernames, tokens)
 	Method string // one of the Method constants
 	Client string // e.g. the MCPHub OAuth client_id
+	Issuer string // method oauth: alias of the trusted issuer
 	Groups []string
 
 	// Scopes are the OAuth scopes (or token scopes) the credential carries;
@@ -44,6 +46,33 @@ type Identity struct {
 	// returns the role the credential may use; a result higher than the
 	// input is ignored, so a scope can never widen a role.
 	Narrow func(roles.Role) roles.Role
+
+	// Via names the channel in the Edited-via trailer instead of the product
+	// name ("mcp" for requests to /mcp). Empty = the product name.
+	Via string
+	// Token is the name of the Rackbook API token the request used ("" =
+	// none). The identity is then the token's creator.
+	Token string
+	// Allow narrows writes to certain collections and actions (an API token's
+	// collections/actions). action is create, update or delete. Nil = no
+	// narrowing beyond the role.
+	Allow func(action, collection string) bool
+	// DirectPush says the credential may push create and update straight to the
+	// tracked branch (a token granted write_mode push by a current admin).
+	DirectPush bool
+}
+
+// Write actions as passed to Permits.
+const (
+	ActCreate = "create"
+	ActUpdate = "update"
+	ActDelete = "delete"
+)
+
+// Permits reports whether the credential's own narrowing (not the role) lets
+// it perform action on collection.
+func (i *Identity) Permits(action, collection string) bool {
+	return i != nil && (i.Allow == nil || i.Allow(action, collection))
 }
 
 // EffectiveRole is Role after scope narrowing.
@@ -61,12 +90,20 @@ func (i *Identity) EffectiveRole() roles.Role {
 // Can reports whether the identity may perform a. A nil identity may not.
 func (i *Identity) Can(a roles.Action) bool { return i.EffectiveRole().Allows(a) }
 
+// IDOrEmpty is the identity's ID, or "" for a nil identity.
+func (i *Identity) IDOrEmpty() string {
+	if i == nil {
+		return ""
+	}
+	return i.ID
+}
+
 // Anonymous reports an identity without an ID (auth none, no --editor).
 func (i *Identity) Anonymous() bool { return i == nil || i.ID == "" }
 
 // Subject is the view of the identity that roles are matched against.
 func (i *Identity) Subject() roles.Subject {
-	return roles.Subject{ID: roles.FoldASCII(i.ID), Email: i.Email, Method: i.Method, Groups: i.Groups}
+	return roles.Subject{ID: roles.FoldASCII(i.ID), Email: i.Email, Method: i.Method, Issuer: i.Issuer, Groups: i.Groups}
 }
 
 type ctxKey struct{}

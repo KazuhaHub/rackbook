@@ -19,10 +19,13 @@ import (
 
 	"github.com/kazuhahub/rackbook/internal/api"
 	"github.com/kazuhahub/rackbook/internal/auth"
+	"github.com/kazuhahub/rackbook/internal/auth/oauth"
 	"github.com/kazuhahub/rackbook/internal/config"
 	"github.com/kazuhahub/rackbook/internal/gitstore"
 	"github.com/kazuhahub/rackbook/internal/login"
+	"github.com/kazuhahub/rackbook/internal/mcpauth"
 	"github.com/kazuhahub/rackbook/internal/mcpserver"
+	"github.com/kazuhahub/rackbook/internal/tokens"
 	"github.com/kazuhahub/rackbook/web"
 )
 
@@ -66,6 +69,7 @@ RACKBOOK_GITHUB_TOKEN.`,
 	f.Bool("insecure-no-auth", false, "allow --auth none on a non-loopback --listen address (anyone who can reach it can edit)")
 	f.String("github-repo", "", "owner/repo for pull requests (default: parsed from the origin URL)")
 	f.String("github-api", "", "GitHub REST API base URL (default: derived from the origin host)")
+	f.StringSlice("trusted-proxy", nil, "CIDRs (or addresses) of reverse proxies whose CF-Connecting-IP header is believed when rate-limiting failed API-token attempts")
 	return cmd
 }
 
@@ -160,9 +164,22 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	if loginSvc != nil {
 		loginMount = loginSvc
 	}
+	// Bearer credentials on /mcp (OAuth access tokens of the trusted issuers) and
+	// Rackbook API tokens (see docs/api.md); /mcp is an OAuth protected resource.
+	proxies, perr := tokens.ParseCIDRs(trustedProxies(f))
+	if perr != nil {
+		return fmt.Errorf("--trusted-proxy: %w", perr)
+	}
+	registry := &tokens.Registry{Store: store}
+	resource := &mcpauth.Resource{Config: store.Config, Auth: authn, Verifier: &oauth.Verifier{}, Tokens: registry, Limiter: &tokens.Limiter{}, TrustedProxies: proxies, Log: logger}
+	authn.SetBearer(resource)
+	meta := resource.MetadataHandler()
+	mcpSrv := mcpserver.NewWithOptions(mcpserver.Options{Source: store.Ledger, Version: version, Backend: store, ReadOnly: readOnly, Logger: logger})
 	handler := api.New(api.Options{
 		Store: store, Auth: authn, ReadOnly: readOnly, BaseURL: baseURL, Web: dist, Logger: logger, RestrictHost: mode == auth.ModeNone, Login: loginMount,
-		MCP: mcpserver.Handler(mcpserver.New(store.Ledger, version), mode != auth.ModeNone || baseURL != ""),
+		MCP:    mcpauth.Handler(mcpserver.Handler(mcpSrv, mode != auth.ModeNone || baseURL != "" || cfg.Auth.MCP.Enabled())),
+		Public: map[string]http.Handler{mcpauth.MetadataPath: meta, mcpauth.MetadataPathMCP: meta},
+		Tokens: registry,
 	})
 
 	addr, _ := f.GetString("listen")
@@ -207,6 +224,11 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 	return nil
+}
+
+func trustedProxies(f *pflag.FlagSet) []string {
+	v, _ := f.GetStringSlice("trusted-proxy")
+	return v
 }
 
 func isLoopback(addr string) bool {

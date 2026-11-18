@@ -1,6 +1,6 @@
 import { Suspense, useEffect } from 'react'
 import { Outlet, NavLink, useLocation } from 'react-router'
-import { BookMarked, LayoutDashboard } from 'lucide-react'
+import { BookMarked, KeyRound, LayoutDashboard } from 'lucide-react'
 import {
   Sidebar,
   SidebarContent,
@@ -102,6 +102,21 @@ function AppSidebar() {
             </SidebarGroupContent>
           </SidebarGroup>
         ))}
+        {meta.user?.canAdmin && (
+          <SidebarGroup>
+            <SidebarGroupLabel className="tracking-wide">{t.nav.admin}</SidebarGroupLabel>
+            <SidebarGroupContent>
+              <SidebarMenu>
+                <SidebarMenuItem>
+                  <SidebarMenuButton isActive={pathname === '/admin/tokens'} render={<NavLink to="/admin/tokens" />}>
+                    <KeyRound />
+                    <span>{t.nav.tokens}</span>
+                  </SidebarMenuButton>
+                </SidebarMenuItem>
+              </SidebarMenu>
+            </SidebarGroupContent>
+          </SidebarGroup>
+        )}
       </SidebarContent>
       <SidebarFooter className="border-t p-3">
         <UserMenu />

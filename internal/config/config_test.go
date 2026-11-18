@@ -132,3 +132,32 @@ func TestParseMCPMatchEmail(t *testing.T) {
 		t.Fatalf("%v %+v", err, c.Auth)
 	}
 }
+
+func TestAuthMCPValidation(t *testing.T) {
+	base := "title: t\ncollections:\n  a: {file: a.yml, schema: a.json}\nauth:\n  mcp:\n"
+	for name, c := range map[string]struct{ yaml, want string }{
+		"issuer without resource": {"    trusted_issuers: [{issuer: \"https://i.example.com\", alias: x}]\n", "resource is required"},
+		"no alias":                {"    resource: https://r.example.com/mcp\n    trusted_issuers: [{issuer: \"https://i.example.com\"}]\n", "alias is required"},
+		"same alias twice":        {"    resource: https://r.example.com/mcp\n    trusted_issuers: [{issuer: \"https://i.example.com\", alias: x}, {issuer: \"https://j.example.com\", alias: x}]\n", "used twice"},
+		"bad kind":                {"    resource: https://r.example.com/mcp\n    trusted_issuers: [{issuer: \"https://i.example.com\", alias: x, kind: saml}]\n", "kind"},
+		"introspection no secret": {"    resource: https://r.example.com/mcp\n    trusted_issuers: [{issuer: \"https://i.example.com\", alias: x, introspection: {client_id: c}}]\n", "client_secret_env"},
+		"direct push no scope":    {"    direct_push: [{users: [a]}]\n", "collections"},
+		"direct push viewer":      {"    direct_push: [{roles: [viewer], collections: [a]}]\n", "admin or editor"},
+	} {
+		if _, err := Parse([]byte(base+c.yaml), "/x/rackbook.yml"); err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	ok := base + "    resource: https://r.example.com/mcp\n    trusted_issuers: [{issuer: \"https://i.example.com\", kind: mcphub}]\n    scopes: {read: \"\"}\n"
+	cfg, err := Parse([]byte(ok), "/x/rackbook.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := cfg.Auth.MCP
+	if m.TrustedIssuers[0].Name() != "mcphub" || m.Audience(m.TrustedIssuers[0]) != "https://r.example.com/mcp" || m.Scopes.WriteScope() != "rackbook:write" || m.Scopes.ReadScope() != "" || !m.TrustedIssuers[0].NeedTypATJWT() {
+		t.Fatalf("%+v", m)
+	}
+	if _, err := Parse([]byte("title: t\ncollections:\n  a: {file: .rackbook/a.yml, schema: a.json}\n"), "/x/rackbook.yml"); err == nil || !strings.Contains(err.Error(), ".rackbook") {
+		t.Fatalf("collections must not live in .rackbook: %v", err)
+	}
+}

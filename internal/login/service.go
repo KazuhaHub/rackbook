@@ -24,14 +24,15 @@ import (
 
 	"github.com/kazuhahub/rackbook/internal/auth"
 	"github.com/kazuhahub/rackbook/internal/config"
+	"github.com/kazuhahub/rackbook/internal/gitstore"
 	"github.com/kazuhahub/rackbook/internal/roles"
 )
 
 // StateFiles is where passkey credentials are read and committed. The Git
 // store implements it.
 type StateFiles interface {
-	ReadStateFile(rel string) ([]byte, error)
-	UpdateStateFile(ctx context.Context, rel string, who *auth.Identity, subject string, fn func(old []byte) ([]byte, error)) error
+	StateFile(rel string) (content []byte, exists bool, err error)
+	MutateStateFile(ctx context.Context, rel, subject string, who *auth.Identity, mutate func(old []byte, exists bool) ([]byte, error), opts ...gitstore.StateOption) (*gitstore.StateResult, error)
 }
 
 // Options configures the Service.
