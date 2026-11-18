@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -479,6 +480,10 @@ func (s *Store) gitLog(ctx context.Context, limit int, record string, extra ...s
 	args := []string{"log", "--format=%h%x1f%an%x1f%ae%x1f%aI%x1f%s%x1f%(trailers:key=Record,valueonly,separator=%x1e)"}
 	if record == "" {
 		args = append(args, "-n", fmt.Sprint(limit))
+	}
+	if !slices.Contains(extra, "--") {
+		// Rackbook's own state (passkeys) is not ledger history.
+		extra = append(slices.Clone(extra), "--", ".", ":(exclude)"+config.StateDir)
 	}
 	out, err := s.repo.git(ctx, append(args, extra...)...)
 	if err != nil {

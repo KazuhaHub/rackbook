@@ -26,7 +26,25 @@ import (
 const (
 	ModeNone             = "none"
 	ModeCloudflareAccess = "cloudflare-access"
+	ModeOIDC             = "oidc"
 )
+
+// SessionAuth supplies identities from login sessions (oidc mode); the
+// internal/login package implements it.
+type SessionAuth interface {
+	// Identify returns the identity of the session cookie of r, without a
+	// role. It may set a refreshed cookie on w (w may be nil). A failure wraps
+	// ErrUnauthenticated.
+	Identify(w http.ResponseWriter, r *http.Request) (*Identity, error)
+	// Public reports requests that need no session (login pages, console
+	// assets, the login endpoints).
+	Public(r *http.Request) bool
+	// Reject answers a request without a valid session: 401 login_required
+	// for API clients, a redirect to the login page for the console.
+	Reject(w http.ResponseWriter, r *http.Request, err error)
+	// NoRole answers a request whose identity has no role.
+	NoRole(w http.ResponseWriter, r *http.Request, id *Identity)
+}
 
 // Config selects and configures the authentication mode.
 type Config struct {
@@ -45,6 +63,9 @@ type Config struct {
 	// from the last good config, but nobody may do more than read: writes and
 	// admin actions fail closed until the config loads again.
 	Degraded func() bool
+
+	// Sessions is required in oidc mode.
+	Sessions SessionAuth
 
 	// JWKSURL and Issuer override the values derived from Team. They exist
 	// for tests and self-hosted setups.
@@ -102,8 +123,12 @@ func New(ctx context.Context, cfg Config) (*Authenticator, error) {
 		}
 		keys := oidc.NewRemoteKeySet(ctx, jwks)
 		a.verifier = oidc.NewVerifier(issuer, keys, &oidc.Config{ClientID: cfg.Audience, SupportedSigningAlgs: []string{"RS256"}})
+	case ModeOIDC:
+		if cfg.Sessions == nil {
+			return nil, errors.New("--auth oidc needs a session provider")
+		}
 	default:
-		return nil, fmt.Errorf("unknown auth mode %q (want none or cloudflare-access)", cfg.Mode)
+		return nil, fmt.Errorf("unknown auth mode %q (want none, cloudflare-access or oidc)", cfg.Mode)
 	}
 	return a, nil
 }
@@ -156,6 +181,17 @@ var ErrUnauthenticated = errors.New("authentication required")
 // Authenticate identifies the caller of r and evaluates its role. In none
 // mode it returns the configured editor, or an anonymous identity.
 func (a *Authenticator) Authenticate(r *http.Request) (*Identity, error) {
+	return a.authenticate(nil, r)
+}
+
+func (a *Authenticator) authenticate(w http.ResponseWriter, r *http.Request) (*Identity, error) {
+	if a.cfg.Mode == ModeOIDC {
+		id, err := a.cfg.Sessions.Identify(w, r)
+		if err != nil {
+			return nil, err
+		}
+		return a.Evaluate(id), nil
+	}
 	if a.cfg.Mode == ModeNone {
 		id := &Identity{Method: MethodNone}
 		if a.fixed != nil {
@@ -210,12 +246,24 @@ func writeJSONError(w http.ResponseWriter, status int, code, msg string) {
 // role with 403 "no_role", and stores the Identity in the context otherwise.
 func (a *Authenticator) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		id, err := a.Authenticate(r)
+		if a.cfg.Sessions != nil && a.cfg.Sessions.Public(r) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		id, err := a.authenticate(w, r)
 		if err != nil {
+			if a.cfg.Sessions != nil {
+				a.cfg.Sessions.Reject(w, r, err)
+				return
+			}
 			writeJSONError(w, http.StatusUnauthorized, "unauthorized", err.Error())
 			return
 		}
 		if id.EffectiveRole() == roles.None {
+			if a.cfg.Sessions != nil {
+				a.cfg.Sessions.NoRole(w, r, id)
+				return
+			}
 			writeJSONError(w, http.StatusForbidden, "no_role", "you are not allowed to use this ledger")
 			return
 		}
