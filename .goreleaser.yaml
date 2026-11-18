@@ -2,10 +2,12 @@ version: 2
 
 project_name: rackbook
 
+# The console (web/dist) is built once, before GoReleaser runs: the release
+# workflow downloads the build that the verification matrix tested, and locally
+# `make web` produces it. The binaries are cross-compiled in this single job.
 before:
   hooks:
-    - npm --prefix web ci
-    - npm --prefix web run build
+    - sh -c 'test -f web/dist/index.html || { echo web/dist is missing, run make web first; exit 1; }'
 
 builds:
   - id: rackbook
@@ -13,7 +15,7 @@ builds:
     binary: rackbook
     env:
       - CGO_ENABLED=0
-    goos: [linux, darwin]
+    goos: [linux, darwin, windows]
     goarch: [amd64, arm64]
     flags:
       - -trimpath
@@ -23,6 +25,9 @@ builds:
 archives:
   - id: rackbook
     formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     files:
       - LICENSE

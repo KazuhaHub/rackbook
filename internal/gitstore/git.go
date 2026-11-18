@@ -97,7 +97,7 @@ type Cmd struct {
 	Args  []string
 	Env   []string
 	Stdin string
-	// IgnoreUserConfig sets GIT_CONFIG_GLOBAL=/dev/null.
+	// IgnoreUserConfig sets GIT_CONFIG_GLOBAL to the null device.
 	IgnoreUserConfig bool
 }
 
@@ -119,14 +119,17 @@ func (execRunner) Run(ctx context.Context, c Cmd) (string, string, error) {
 	// Hooks never run (not even pre-push). The server (IgnoreUserConfig) also
 	// ignores the system and global config and trusts its own directory; the CLI
 	// keeps the user's config, so credential helpers keep working.
-	full := []string{"-C", c.Dir, "-c", "core.quotepath=off", "-c", "core.hooksPath=/dev/null"}
+	full := []string{"-C", c.Dir, "-c", "core.quotepath=off", "-c", "core.hooksPath=/dev/null",
+		// Files are committed byte for byte: no CRLF conversion, whatever the
+		// platform default is (Git for Windows ships with autocrlf=true).
+		"-c", "core.autocrlf=false"}
 	if c.IgnoreUserConfig {
 		full = append(full, "-c", "safe.directory=*")
 	}
 	cmd := exec.CommandContext(ctx, "git", append(full, c.Args...)...)
 	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "LC_ALL=C")
 	if c.IgnoreUserConfig {
-		cmd.Env = append(cmd.Env, "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null")
+		cmd.Env = append(cmd.Env, "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL="+os.DevNull)
 	}
 	cmd.Env = append(cmd.Env, c.Env...)
 	if c.Stdin != "" {

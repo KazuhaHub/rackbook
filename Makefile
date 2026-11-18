@@ -5,7 +5,7 @@ VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -s -w -X main.version=$(VERSION)
 GOPKGS  := ./cmd/... ./internal/... ./web
 
-.PHONY: build web go-build test vet check run docker clean
+.PHONY: build web go-build test vet check smoke run docker clean
 
 # Full build: console first (it is embedded into the binary), then the binary.
 build: web go-build
@@ -26,6 +26,10 @@ test:
 # Validate the example ledger with the freshly built binary.
 check: go-build
 	./rackbook check --config examples/homelab/rackbook.yml
+
+# Smoke-test the built binary: version, check, export, mcp and serve.
+smoke: go-build
+	bash scripts/smoke.sh ./rackbook examples/homelab/rackbook.yml
 
 run: go-build
 	./rackbook serve --config examples/homelab/rackbook.yml --no-git

@@ -250,7 +250,7 @@ func TestRuntimeGuardRefusesDestructiveCommands(t *testing.T) {
 			t.Errorf("git %v: %v", args, err)
 		}
 	}
-	for _, args := range [][]string{{"fetch", "--quiet", "origin"}, {"reset", "--quiet", "--hard", "origin/main"}, {"-C", "d", "log", "-n", "1"}, {"-c", "commit.gpgsign=false", "-C", "d", "status"}, {"--no-pager", "log"}, {"config", "user.name"}, {"remote", "get-url", "origin"}, {"log", "-n", "5", "--format=%h", "--fixed-strings", "--grep=Record: x", "--", "--weird-file"}, {"commit", "--quiet", "--no-verify", "-F", "-", "--only", "--", "-f"}} {
+	for _, args := range [][]string{{"fetch", "--quiet", "origin"}, {"reset", "--quiet", "--hard", "origin/main"}, {"-C", "d", "log", "-n", "1"}, {"-c", "commit.gpgsign=false", "-C", "d", "status"}, {"-c", "core.autocrlf=false", "status"}, {"--no-pager", "log"}, {"config", "user.name"}, {"remote", "get-url", "origin"}, {"log", "-n", "5", "--format=%h", "--fixed-strings", "--grep=Record: x", "--", "--weird-file"}, {"commit", "--quiet", "--no-verify", "-F", "-", "--only", "--", "-f"}} {
 		if err := refuseDestructive(args); err != nil {
 			t.Errorf("%v refused: %v", args, err)
 		}
@@ -413,4 +413,37 @@ func TestOnlyTheServerIgnoresSystemAndGlobalConfig(t *testing.T) {
 	if got, _ := srv.git(context.Background(), "config", "user.name"); got != "" {
 		t.Fatalf("the server ignores it: %q", got)
 	}
+}
+
+func TestCommitsAreByteForByteWhateverAutocrlfSays(t *testing.T) {
+	home := t.TempDir()
+	gc := filepath.Join(home, ".gitconfig")
+	os.WriteFile(gc, []byte("[core]\n\tautocrlf = true\n"), 0o644)
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("GIT_CONFIG_GLOBAL", gc)
+	dir := t.TempDir()
+	sh(t, dir, "init", "-b", "main")
+	os.WriteFile(filepath.Join(dir, "a.txt"), []byte("a\r\nb\r\n"), 0o644)
+	want := "a\r\nb\r\n"
+	for _, ignore := range []bool{false, true} {
+		r := &Repo{Dir: dir, IgnoreUserConfig: ignore}
+		if _, err := r.Commit(context.Background(), []string{"a.txt"}, "x\n", Identity{"T", "t@e.com"}, Identity{"T", "t@e.com"}); err != nil {
+			t.Fatal(err)
+		}
+		if got := sh2raw(t, dir, "cat-file", "blob", "HEAD:a.txt"); got != want {
+			t.Fatalf("ignore=%v: the blob was converted: %q", ignore, got)
+		}
+		want += "c\r\n"
+		os.WriteFile(filepath.Join(dir, "a.txt"), []byte(want), 0o644)
+	}
+}
+
+func sh2raw(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	out, err := exec.Command("git", append([]string{"-C", dir}, args...)...).Output()
+	if err != nil {
+		t.Fatalf("git %v: %v", args, err)
+	}
+	return string(out)
 }

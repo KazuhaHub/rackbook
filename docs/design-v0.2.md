@@ -528,7 +528,7 @@ Agreed with the owner on 2026-11-18:
    fixed header.
 10. **Built-in authorization server**, so standalone users without MCPHub can
     add Rackbook directly to Claude, Cursor, VS Code or MCP Inspector. It is
-    proposed for **v0.2.1**, after the v0.2 demo and before v0.3 storage.
+    proposed for **v0.3.0** (renumbered, see the versioning note below), before the storage work (now v0.4.0).
     **Not started: it waits for the owner's OK on placement and cost.**
     - Spec: the MCP authorization spec — OAuth 2.1 + PKCE S256, RFC 8707
       resource indicators (`aud` = the `/mcp` URL), RFC 8414 metadata, and
@@ -551,11 +551,11 @@ Agreed with the owner on 2026-11-18:
       an external issuer.
 11. **Real-client verification in the demo**: MCP Inspector and Claude Code
     (`claude mcp add --transport http`) against an external issuer in v0.2,
-    and against the built-in authorization server in v0.2.1.
+    and against the built-in authorization server in v0.3.0.
 
-### Decisions, round 5 (2026-11-18): built-in authorization server approved for v0.2.1
+### Decisions, round 5 (2026-11-18): built-in authorization server approved (ships in v0.3.0)
 
-12. **Approved for v0.2.1, built after the v0.2 demo.** An MCP client authorizes
+12. **Approved; ships in v0.3.0.** An MCP client authorizes
     **once** and never has to sign in again, including across restarts,
     upgrades and ansible redeploys.
     - **State file: the one exception to "no database".** Authorization-server
@@ -606,3 +606,95 @@ schemas) and `MutateStateFile` (names and labels in passkey and token files;
 public keys, ids and hashes are exempt). A violation is `422 secret_detected`
 with redacted findings; `rackbook check` reports secrets already in the data as
 `rule: secret`. Nothing from the data repository is ever executed.
+### Versioning (2026-11-18)
+
+Rackbook uses SemVer (Go modules require SemVer tags). Release plan:
+
+- **v0.2.1** — the release pipeline only: Windows builds, a native test
+  matrix on six runners, SHA-pinned actions, build provenance attestations,
+  and cosign signing. No feature changes.
+- **v0.3.0** — the built-in authorization server (decision 12).
+- **v0.4.0** — storage: one record per file (design in
+  `design-v0.4-storage.md`).
+- **1.0** — once the storage layout, config format and API are stable.
+
+See README, "Versioning and compatibility".
+
+### Decisions, round 6 (2026-11-18): separate ledger repository, GitHub App credentials (v0.3.0)
+
+13. **Rackbook writes only to a dedicated data repository** (for the owner:
+    KazuhaHub/ledger), never to an infrastructure repo. In the owner's setup
+    the infra repo's `main` is applied as root on every host, so a write
+    credential for it would amount to root. Infra may *read* the ledger;
+    Rackbook never holds a credential for infra.
+14. **GitHub App authentication (v0.3.0)**, as an alternative to deploy key +
+    PAT. One credential replaces both.
+    - An org-owned GitHub App, installed **only** on the data repository, with
+      repository permissions `contents: write` and `pull_requests: write`.
+      Nothing else.
+    - Configuration:
+      `write.github_app: {app_id, installation_id (optional, looked up from
+      the repo), private_key_file}`. The key can also come from env
+      `RACKBOOK_GITHUB_APP_KEY` or a systemd `LoadCredential` path. It never
+      goes into Git.
+    - Token flow: an RS256 app JWT (≤ 10 min) is exchanged for an installation
+      access token. That token is narrowed in the request to the data repository
+      and the two permissions, and lasts about 1 h. It is cached in memory only,
+      refreshed 5 min before expiry, and never logged.
+    - Git over **HTTPS** with the installation token. The token is passed to git
+      through the environment (`GIT_CONFIG_COUNT`/`KEY`/`VALUE` for an
+      `http.<url>.extraheader`), never on the command line, in the remote URL,
+      or in `.git/config`. The git runner's allow-lists gain exactly this, and
+      the never-force rules are unchanged.
+    - PR mode uses the same token for the REST API. `RACKBOOK_GITHUB_TOKEN`
+      stays supported for non-App setups.
+    - Commit authorship is unchanged (author = the user; committer = the
+      configured identity).
+    - Tests: a fake GitHub API issues installation tokens. They cover expiry and
+      refresh, a token that must not appear in argv or logs, push over HTTPS to
+      a local smart-HTTP test server, and PRs.
+
+### Decision 15 (2026-11-18): record documents (v0.3.0)
+
+15. **A Markdown document per record**, for runbooks, history and anything
+    else that doesn't fit fields. Generic for every collection.
+    - **Location:** `docs/<collection>/<key>.md` in the data repo, linked by
+      record key with no field needed. The root is configurable
+      (`documents.root`, default `docs`) and so is the per-collection
+      directory. A composite key uses the record id with its usual escaping,
+      and the file name is made safe for every OS: Windows reserved names and
+      characters are escaped. Owner's first real example: KazuhaHub/ledger
+      `docs/devices/development-ovh-hillsboro-or-us-dc.md`.
+    - **Lifecycle:**
+      - renaming a record (a key change) moves its document in the same commit
+        (`git mv` semantics);
+      - deleting a record whose document exists asks whether to delete the
+        document too or keep it as an orphan; nothing is removed silently;
+      - `rackbook check` reports orphaned documents.
+    - **Rendering:** on the record page, CommonMark + GFM tables and task lists.
+      **No raw HTML** (stripped, not rendered). Links are limited to
+      `http(s)`, `mailto` and relative links (relative links resolve to
+      records or documents). Images come only from relative paths in the data
+      repo or `https`; there are no `javascript:` or `data:` URLs.
+      - Server side: the API returns the Markdown source, and the console
+        renders it with a sanitizing renderer (react-markdown + rehype-sanitize
+        with a strict schema).
+      - Exports and MCP get the source.
+    - **Editing:** in the console, with the same roles as record edits
+      (editor+). Commits go through the same Git write path with the never-force
+      rules, history detection and identity trailers. Commit subject:
+      `ledger(<collection>): edit document <id>`.
+    - **Secret scan:** covers documents too, as whole-text scanning with the
+      same rules and allow-list keyed on the document path.
+    - **Search and AI:**
+      - full-text search covers documents;
+      - `export markdown` and `llms-full.txt` include each document under its
+        record;
+      - `llms.txt` links to them;
+      - MCP read tool `get_document(collection, id)`;
+      - MCP write tool `put_document(collection, id, markdown, base_hash)`,
+        which follows the PR-by-default rule (deletes always a PR).
+    - **Concurrency:** writes carry the document's content hash. A mismatch is
+      a 409 with the current text, as for records.
+    - **Documentation:** a README section for open-source users (layout,
+      config, safety rules).

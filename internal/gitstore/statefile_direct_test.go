@@ -149,9 +149,7 @@ func TestStateFileCommitsAreNotLedgerHistory(t *testing.T) {
 func TestStateFileRefusesSymlinks(t *testing.T) {
 	dir := testutil.CopyExample(t)
 	outside := t.TempDir()
-	if err := os.Symlink(outside, filepath.Join(dir, ".rackbook")); err != nil {
-		t.Skip("no symlinks")
-	}
+	testutil.Symlink(t, outside, filepath.Join(dir, ".rackbook"))
 	s := open(t, dir, func(o *Options) { o.NoGit = true })
 	if err := s.updateState(context.Background(), stateRel, nil, "x", appendLine("a")); err == nil {
 		t.Fatal("a symlinked .rackbook must be refused")

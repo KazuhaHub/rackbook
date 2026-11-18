@@ -468,6 +468,7 @@ func TestInternalErrorsAreGeneric(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("directory permissions do not apply to root")
 	}
+	testutil.SkipOnWindows(t, "making a directory read-only with chmod 0555 does not stop file creation on Windows")
 	dir := testutil.CopyExample(t)
 	f := newFixture(t, nil, dir)
 	ledgerDir := filepath.Join(dir, "docs/ledger")
