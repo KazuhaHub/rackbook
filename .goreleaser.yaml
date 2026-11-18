@@ -21,9 +21,34 @@ builds:
       - -trimpath
     ldflags:
       - -s -w -X main.version={{.Version}}
+  # Modules: separate executables that use only the public HTTP API
+  # (docs/modules.md). They ship in the same archives.
+  - id: rackbook-entra
+    main: ./cmd/rackbook-entra
+    binary: rackbook-entra
+    env:
+      - CGO_ENABLED=0
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X main.version={{.Version}}
+  - id: rackbook-notify
+    main: ./cmd/rackbook-notify
+    binary: rackbook-notify
+    env:
+      - CGO_ENABLED=0
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X main.version={{.Version}}
 
 archives:
   - id: rackbook
+    ids: [rackbook, rackbook-entra, rackbook-notify]
     formats: [tar.gz]
     format_overrides:
       - goos: windows
@@ -32,6 +57,7 @@ archives:
     files:
       - LICENSE
       - README.md
+      - docs/modules.md
       - examples/**/*
 
 checksum:

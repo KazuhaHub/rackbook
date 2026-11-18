@@ -3,3 +3,5 @@ rackbook
 dist
 web/node_modules
 web/dist
+rackbook-entra
+rackbook-notify

@@ -3,7 +3,7 @@ export GOWORK := off
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -s -w -X main.version=$(VERSION)
-GOPKGS  := ./cmd/... ./internal/... ./web
+GOPKGS  := ./cmd/... ./internal/... ./modules/... ./web
 
 .PHONY: build web go-build test vet check smoke run docker clean
 
@@ -16,6 +16,8 @@ web:
 
 go-build:
 	CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -o rackbook ./cmd/rackbook
+	CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -o rackbook-entra ./cmd/rackbook-entra
+	CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -o rackbook-notify ./cmd/rackbook-notify
 
 vet:
 	go vet $(GOPKGS)
@@ -38,4 +40,4 @@ docker:
 	docker build --build-arg VERSION=$(VERSION) -t rackbook:$(VERSION) .
 
 clean:
-	rm -rf rackbook dist
+	rm -rf rackbook rackbook-entra rackbook-notify dist

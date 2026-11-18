@@ -5,6 +5,8 @@ web/node_modules
 
 # Go build output
 /rackbook
+/rackbook-entra
+/rackbook-notify
 /dist/
 *.test
 coverage.out
