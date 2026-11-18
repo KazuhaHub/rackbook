@@ -502,3 +502,53 @@ Agreed with the owner on 2026-11-18:
      miss (403); metadata whose issuer doesn't match.
    - Order of work: this replaces step 4. Token-free MCP auth comes first,
      because it needs no new state; optional API tokens come later.
+
+### Decisions, round 4 (2026-11-18): standard MCP authorization, any OAuth provider
+
+8. **`/mcp` works with any OAuth provider, not only MCPHub** (building now, part of v0.2).
+   Each `trusted_issuers` entry has the following options:
+   - `algorithms`: default ES256, RS256, PS256, EdDSA. `HS*` and `none` are
+     refused at config load.
+   - `require_typ_at_jwt`: default true. Set it to false for Entra/Keycloak,
+     which send `typ: JWT`. An ID token presented as an access token is still
+     refused.
+   - `scope_claim`: reads `scope` (a string) or `scp` (a string or array).
+   - `username_claim`.
+   - Discovery: RFC 8414 first, then OIDC discovery, with path-insertion rules
+     for issuers that have a path.
+   - `kind: mcphub | oauth`. Generic identities match role entries
+     `oauth:<alias>:<user>`.
+   - RFC 7662 introspection for opaque tokens if it's cheap; otherwise the
+     README says it isn't supported.
+   - Roles, scope narrowing and PR-by-default writes are unchanged.
+
+   The README covers MCPHub, Entra and Keycloak, and how to connect MCP
+   Inspector and Claude Code.
+9. **Static API tokens** (section 4.1) stay, for clients that can only send a
+   fixed header.
+10. **Built-in authorization server**, so standalone users without MCPHub can
+    add Rackbook directly to Claude, Cursor, VS Code or MCP Inspector. It is
+    proposed for **v0.2.1**, after the v0.2 demo and before v0.3 storage.
+    **Not started: it waits for the owner's OK on placement and cost.**
+    - Spec: the MCP authorization spec — OAuth 2.1 + PKCE S256, RFC 8707
+      resource indicators (`aud` = the `/mcp` URL), RFC 8414 metadata, and
+      client identification. Use Client ID Metadata Documents where the current
+      spec revision prefers them, and RFC 7591 dynamic registration for older
+      clients. The exact revision is checked against the spec text before
+      building.
+    - Login: through Rackbook's own OIDC or passkey login, with a consent page.
+    - Tokens: ES256 JWT access tokens (10 min); rotating, one-time refresh
+      tokens with reuse detection.
+    - Storage: the signing key comes from a file, an environment variable or
+      systemd `LoadCredential`, never Git. Grants, refresh tokens and dynamic
+      registrations live in memory (section 1), so a restart makes clients sign
+      in again through the browser. Persisting them would need a database or
+      per-login Git churn, which the owner already ruled out.
+    - Cost: about 2,500–3,500 lines of Go and TypeScript. It adds the largest
+      security surface in Rackbook (authorize, token, registration and consent
+      endpoints) and so needs at least two adversarial review rounds. Testing
+      covers MCP Inspector and Claude Code against both the built-in server and
+      an external issuer.
+11. **Real-client verification in the demo**: MCP Inspector and Claude Code
+    (`claude mcp add --transport http`) against an external issuer in v0.2,
+    and against the built-in authorization server in v0.2.1.
