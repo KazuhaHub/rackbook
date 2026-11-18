@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "待办",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["item", "status"],
+  "properties": {
+    "item": {"type": "string", "title": "事项", "format": "textarea"},
+    "scope": {"type": "string", "title": "涉及"},
+    "status": {"type": "string", "title": "状态", "description": "待办 / 待决定 / 推迟 / 部分完成 / 可选 / 完成（可加括号说明）"}
+  }
+}

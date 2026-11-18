@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "设备",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["name", "category"],
+  "properties": {
+    "name": {"type": "string", "title": "设备名", "description": "<角色/主机>-<服务商或站点>-<城市>-<州/省>-<国家>-<类型>", "pattern": "^[a-z0-9][a-z0-9-]*$"},
+    "category": {"type": "string", "title": "类别"},
+    "site": {"type": "string", "title": "站点 / 服务商"},
+    "os": {"type": "string", "title": "系统"},
+    "ipv4": {"type": "string", "title": "公网 IPv4"},
+    "ipv4_type": {"type": "string", "title": "IPv4 类型", "examples": ["静态", "动态"]},
+    "ipv6": {"type": "string", "title": "公网 IPv6"},
+    "domain": {"type": "string", "title": "公网域名"},
+    "managed": {"type": "boolean", "title": "纳管", "description": "由配置仓库（ansible）管理；必须与 inventory 的 managed 组一致", "default": false},
+    "notes": {"type": "string", "title": "备注", "format": "textarea"}
+  }
+}

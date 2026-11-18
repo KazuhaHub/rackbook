@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "网段",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["range", "purpose"],
+  "properties": {
+    "range": {"type": "string", "title": "网段"},
+    "third_octet": {"type": "string", "title": "第三段"},
+    "purpose": {"type": "string", "title": "用途", "format": "textarea"},
+    "alias": {"type": "string", "title": "Tailscale 别名"}
+  }
+}

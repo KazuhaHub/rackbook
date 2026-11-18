@@ -162,6 +162,46 @@ clone has commits that exist nowhere else, `400` without a commit, `503
 repo_dirty` if the clone has local changes, `403 read_only` in `--read-only`
 mode. A refused request changes nothing.
 
+## Login (`--auth oidc`)
+
+Only with the built-in login (see the README and design-v0.2.md section 2).
+Without a valid session every API request gets `401
+{"error":"login_required","message":…,"login":"/auth/login?return=…"}` (plus
+`"reason":"expired"` after a timeout); an identity without a role gets `403
+{"error":"no_role"}`. Console pages redirect to `/auth/login` instead.
+
+Public endpoints (no session):
+
+- `GET /auth/login[?return=<path>][&error=<code>]` — the console's login page
+  (`error`: `no_role`, `tenant` (both served with status 403), `idp_error`,
+  `idp_unavailable`, `expired`, `bad_callback`, `claims`, `logged_out`). With a
+  valid session and no `error` it redirects to `return`.
+- `GET /auth/config` → `{"oidc": true, "provider": "microsoft"|"oidc", "passkeys": bool}`.
+- `GET /auth/oidc/start[?return=<path>]` — redirects to the IdP and sets the
+  `__Host-rackbook_login` binding cookie. `return` must be a same-origin path.
+- `GET /auth/oidc/callback` — completes the login; always redirects (to `return`
+  on success, else to `/auth/login?error=<code>`).
+- `POST /auth/logout` (same-origin only) → `200 {"login": "/auth/login?error=logged_out"}`
+  when `Accept: application/json`, else `303`.
+- `POST /auth/passkey/begin` → `{"ceremony": "<id>", "options": <WebAuthn request options>}`;
+  `POST /auth/passkey/finish?ceremony=<id>[&return=<path>]` with the assertion JSON →
+  `200 {"return": "<path>"}` and a session, `401 passkey_failed`, `403 no_role`,
+  `503 passkey_unavailable`. Only with `auth.passkeys`.
+
+With a session:
+
+- `GET /api/account` → `{"id", "name", "email", "role", "authMethod", "passkeysEnabled",
+  "canEnrol", "enrolUntil", "passkeys": [{"id", "name", "created"}], "passkeyError"?}`.
+- `POST /api/account/passkeys/begin` `{"name": "MacBook"}` → `{"ceremony", "options": <creation options>}`;
+  `POST /api/account/passkeys/finish?ceremony=<id>` with the attestation JSON →
+  `201 {"passkeys": […]}`. `403 recent_login_required` unless the session's OIDC
+  login is at most 10 minutes old, `403 read_only`. Each add is a Git commit.
+- `DELETE /api/account/passkeys/{id}` → `200 {"ok": true}` (own passkeys only, `404` otherwise).
+- Admin: `GET /api/admin/users` → `{"users": [{"id", "name", "method", "role", "seen",
+  "firstSeen", "lastSeen", "passkeys"}], "passkeysEnabled"}` (users seen since the
+  server started plus users with passkeys; `role` is the effective role, `none` if
+  they have none) and `DELETE /api/admin/passkeys/{id}`.
+
 ## Exports
 
 - `GET /export.md` — Markdown (`text/markdown; charset=utf-8`)

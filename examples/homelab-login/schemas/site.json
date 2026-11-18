@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "站点",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["name", "lan"],
+  "properties": {
+    "name": {"type": "string", "title": "站点"},
+    "lan": {"type": "string", "title": "局域网"},
+    "gateway": {"type": "string", "title": "网关 IP"},
+    "gateway_os": {"type": "string", "title": "网关系统"},
+    "router_tailscale_ip": {"type": "string", "title": "路由器 Tailscale IP"},
+    "status": {"type": "string", "title": "状态"},
+    "notes": {"type": "string", "title": "备注", "format": "textarea"}
+  }
+}
