@@ -105,6 +105,18 @@ func (c *Config) loadAsset(key, rel string, exts ...string) (*Asset, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", key, err)
 	}
+	// Resolve checks .git/ and .rackbook/ by name; check where symlinks
+	// actually lead too, so a committed link can't point into them.
+	if real, err := filepath.EvalSymlinks(abs); err == nil {
+		if root, err := filepath.EvalSymlinks(c.Dir); err == nil {
+			if r, err := filepath.Rel(root, real); err == nil {
+				first := strings.SplitN(filepath.ToSlash(r), "/", 2)[0]
+				if strings.EqualFold(first, ".git") || strings.EqualFold(first, StateDir) {
+					return nil, fmt.Errorf("%s: %q leads into %s/, which is not part of the ledger", key, rel, first)
+				}
+			}
+		}
+	}
 	st, err := os.Stat(abs)
 	if err != nil {
 		return nil, fmt.Errorf("%s: cannot read %q: %w", key, rel, errors.Unwrap(err))

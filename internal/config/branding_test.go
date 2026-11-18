@@ -144,3 +144,22 @@ func TestBrandingRefusesSymlinkOutOfTheRepo(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestBrandingRefusesSymlinkIntoGitOrState(t *testing.T) {
+	dir := t.TempDir()
+	for _, d := range []string{".git", StateDir} {
+		if err := os.MkdirAll(filepath.Join(dir, d), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, d, "x.svg"), []byte(okSVG), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(filepath.Join(d, "x.svg"), filepath.Join(dir, d+"-link.svg")); err != nil {
+			t.Skipf("SKIPPED: cannot create symbolic links here: %v", err)
+		}
+		_, err := Parse([]byte(base+"branding: {logo: "+d+"-link.svg}\n"), filepath.Join(dir, "rackbook.yml"))
+		if err == nil || !strings.Contains(err.Error(), "leads into") {
+			t.Errorf("%s: %v", d, err)
+		}
+	}
+}

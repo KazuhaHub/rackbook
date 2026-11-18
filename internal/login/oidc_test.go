@@ -738,6 +738,13 @@ func TestBrandingImagesNeedNoLogin(t *testing.T) {
 	if r = b.get("/branding/favicon"); r.StatusCode != 200 || r.Header.Get("Content-Type") != "image/svg+xml" {
 		t.Fatalf("default favicon: %d %v", r.StatusCode, r.Header)
 	}
+	// Only the two plain paths are public: an escaped slash is a different
+	// path and goes through the login like any other page.
+	for _, p := range []string{"/branding%2Flogo", "/branding%2ffavicon"} {
+		if r := b.get(p); r.StatusCode != 302 {
+			t.Fatalf("%s without a session: %d", p, r.StatusCode)
+		}
+	}
 	if r = b.get("/auth/config"); !strings.Contains(r.Body, `"logo":true`) {
 		t.Fatalf("config: %s", r.Body)
 	}

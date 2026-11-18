@@ -109,7 +109,9 @@ func New(o Options) http.Handler {
 
 	authed := s.o.Auth.Middleware(mux)
 	var h http.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/healthz" || isBrandingPath(r.URL.Path) {
+		// RawPath is set only when the request escaped something (e.g. %2F), so the
+		// branding exemption matches exactly the two plain paths and nothing else.
+		if r.URL.Path == "/healthz" || (r.URL.RawPath == "" && isBrandingPath(r.URL.Path)) {
 			mux.ServeHTTP(w, r)
 			return
 		}
