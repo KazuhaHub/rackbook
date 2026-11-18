@@ -214,12 +214,20 @@ func (f *fileStore) UpdateSignCount(context.Context, []byte, webauthn.Credential
 }
 
 // credentialState reports whether a credential id is in the file. It is a
-// transient error (errUnavailable) when the file is missing, unreadable or does
-// not load, as it can be briefly during a pull or a replay: only a file that
-// loads without the credential means the credential was revoked.
+// transient error (errUnavailable) when the file is unreadable, does not load,
+// or is missing while an update is in progress; a file that loads without the
+// credential, or is missing at a settled commit, means it was revoked.
 func (p *passkeys) credentialState(id string) (bool, error) {
 	b, exists, err := p.store.files.StateFile(PasskeysPath)
-	if err != nil || !exists {
+	if err != nil {
+		return false, errUnavailable
+	}
+	if !exists {
+		// Missing is "no passkeys" only at a settled, loaded commit; during a
+		// pull or replay it is transient.
+		if p.store.files.StateSettled() {
+			return false, nil
+		}
 		return false, errUnavailable
 	}
 	file, err := parsePasskeys(b)

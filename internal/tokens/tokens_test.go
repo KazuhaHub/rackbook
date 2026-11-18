@@ -95,3 +95,11 @@ func TestLimiterEvictsLeastRecentlyUsedNotEverything(t *testing.T) {
 		t.Fatal("a client that keeps failing must stay blocked when the table is full")
 	}
 }
+
+func TestSubjectMethodIsTheCreatorsRecordedMethod(t *testing.T) {
+	for via, want := range map[string]string{"oidc": "oidc", "passkey": "passkey", "": "none", "mcphub": "none", "token": "none", "bogus": "none"} {
+		if got := (Token{CreatedVia: via}).SubjectMethod(); got != want {
+			t.Errorf("%q: %q, want %q", via, got, want)
+		}
+	}
+}

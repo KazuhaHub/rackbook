@@ -6,6 +6,7 @@
 package mcpauth
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -134,6 +135,10 @@ func (r *Resource) accessToken(req *http.Request, raw string) (*auth.Identity, e
 		}
 	}
 	c, err := r.Verifier.Verify(req.Context(), raw, m)
+	if errors.Is(err, oauth.ErrUnavailable) {
+		r.log().Warn("mcp token introspection unavailable", "err", err.Error())
+		return nil, &auth.RequestError{Status: http.StatusServiceUnavailable, Code: "introspection_unavailable", Msg: "the token cannot be checked right now, try again"}
+	}
 	if err != nil {
 		if opaque && r.Limiter != nil {
 			r.Limiter.Fail(ip)
@@ -195,7 +200,7 @@ func (r *Resource) token(req *http.Request, secret string) (*auth.Identity, erro
 	id.Scopes = scopes
 	// The token's role is its creator's role as it is now, capped by its scope.
 	id.Narrow = func(role roles.Role) roles.Role { return roles.Lower(role, capRole) }
-	r.Auth.EvaluateSubject(id, roles.Subject{ID: id.ID, Email: id.Email, Method: auth.MethodNone})
+	r.Auth.EvaluateSubject(id, roles.Subject{ID: id.ID, Email: id.Email, Method: t.SubjectMethod()})
 	cols, acts := t.Collections, t.Actions
 	id.Allow = func(action, collection string) bool {
 		if t.Scope != tokens.ScopeWrite {

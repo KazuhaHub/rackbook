@@ -123,7 +123,7 @@ func (r *Registry) Create(ctx context.Context, p CreateParams, who *auth.Identit
 	tok := Token{
 		Name: p.Name, ShownPrefix: ShownPrefix(secret), Hash: HashSecret(secret), Scope: p.Scope,
 		Collections: p.Collections, Actions: p.Actions, WriteMode: p.WriteMode,
-		CreatedBy: who.ID, Created: now.Format(time.RFC3339),
+		CreatedBy: who.ID, CreatedVia: creatorMethod(who.Method), Created: now.Format(time.RFC3339),
 	}
 	if tok.WriteMode == ModePR {
 		tok.WriteMode = ""
@@ -194,4 +194,23 @@ func (r *Registry) Revoke(ctx context.Context, name string, who *auth.Identity) 
 	return r.Store.MutateStateFile(ctx, File, "rackbook(auth): revoke token "+name, who, func(old []byte, _ bool) ([]byte, error) {
 		return ApplyRevoke(old, name, who.IDOrEmpty(), r.now())
 	})
+}
+
+// creatorMethod is the login method worth recording: only those whose
+// identities match role entries directly.
+func creatorMethod(m string) string {
+	switch m {
+	case auth.MethodOIDC, auth.MethodPasskey, auth.MethodCloudflareAccess, auth.MethodNone:
+		return m
+	}
+	return ""
+}
+
+// SubjectMethod is the method to evaluate the creator with: the recorded one,
+// else none (the behaviour of tokens made before it was recorded).
+func (t Token) SubjectMethod() string {
+	if m := creatorMethod(t.CreatedVia); m != "" {
+		return m
+	}
+	return auth.MethodNone
 }

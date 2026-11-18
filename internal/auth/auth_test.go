@@ -354,3 +354,17 @@ func TestCanonicalPath(t *testing.T) {
 		}
 	}
 }
+
+func TestRoleForViaFindsSubjectIdentities(t *testing.T) {
+	cfg := &config.Config{Auth: config.Auth{Roles: &roles.Spec{Admin: []string{"oidc:sub-1"}}}}
+	a, err := New(context.Background(), Config{Mode: ModeNone, Config: func() *config.Config { return cfg }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := a.RoleForVia("oidc:sub-1", MethodOIDC); got != roles.Admin {
+		t.Fatalf("oidc creator: %v", got)
+	}
+	if got := a.RoleFor("oidc:sub-1"); got != roles.None {
+		t.Fatalf("a token without a recorded method keeps the old behaviour: %v", got)
+	}
+}

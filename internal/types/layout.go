@@ -33,7 +33,8 @@ func seedData(title string) []byte {
 
 // checkNewPaths refuses the files a new collection must never own: the config
 // file, a schema file, a file some other collection uses as its data or schema,
-// anything outside the configured data directory. (.git/ and .rackbook/ are
+// anything outside the configured data directory (data files) or schema
+// directory (schema files). (.git/ and .rackbook/ are
 // refused by Config.Resolve.)
 func checkNewPaths(l *ledger.Ledger, nt *Type) error {
 	cfg := l.Config
@@ -62,6 +63,10 @@ func checkNewPaths(l *ledger.Ledger, nt *Type) error {
 	dir := path.Clean(cfg.Types.DataDir)
 	if dir != "." && !strings.HasPrefix(data, dir+"/") {
 		return fmt.Errorf("the data file must be inside the data directory %s", dir)
+	}
+	sdir := path.Clean(cfg.Types.SchemaDir)
+	if sdir != "." && !strings.HasPrefix(schema, sdir+"/") {
+		return fmt.Errorf("the schema file must be inside the schema directory %s", sdir)
 	}
 	return nil
 }

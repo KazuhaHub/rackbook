@@ -71,6 +71,18 @@ const (
 // ErrInvalid wraps every reason a token is refused. Callers answer 401.
 var ErrInvalid = errors.New("invalid access token")
 
+// ErrUnavailable means the issuer could not be asked (network error or a 5xx
+// answer): a server-side failure, not a verdict on the token. Callers answer
+// 503 and must not count it against the client or cache it.
+var ErrUnavailable = errors.New("token introspection unavailable")
+
+type statusError struct {
+	code int
+	msg  string
+}
+
+func (e *statusError) Error() string { return e.msg }
+
 func invalid(format string, a ...any) error {
 	return fmt.Errorf("%w: %s", ErrInvalid, fmt.Sprintf(format, a...))
 }
@@ -549,7 +561,7 @@ func (v *Verifier) doJSON(req *http.Request, out any) error {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("%s %s: %s", req.Method, req.URL, resp.Status)
+		return &statusError{resp.StatusCode, fmt.Sprintf("%s %s: %s", req.Method, req.URL, resp.Status)}
 	}
 	b, err := io.ReadAll(io.LimitReader(resp.Body, maxBody))
 	if err != nil {
@@ -619,7 +631,9 @@ func (v *Verifier) verifyOpaque(ctx context.Context, raw string, m config.AuthMC
 	}
 	c, err := v.introspect(ctx, raw, *ti, m.Audience(*ti))
 	if err != nil {
-		v.cacheIntro(key, nil, now.Add(NegativeTTL))
+		if !errors.Is(err, ErrUnavailable) { // only a verdict is remembered
+			v.cacheIntro(key, nil, now.Add(NegativeTTL))
+		}
 		return nil, err
 	}
 	v.cacheIntro(key, c, now.Add(IntrospectionTTL))
@@ -681,7 +695,11 @@ func (v *Verifier) introspect(ctx context.Context, raw string, ti config.Trusted
 	req.SetBasicAuth(url.QueryEscape(in.ClientID), url.QueryEscape(secret))
 	var out map[string]any
 	if err := v.doJSON(req, &out); err != nil {
-		return nil, invalid("introspection failed: %v", err)
+		var se *statusError
+		if errors.As(err, &se) && se.code < 500 {
+			return nil, invalid("introspection failed: %v", err)
+		}
+		return nil, fmt.Errorf("%w: %v", ErrUnavailable, err)
 	}
 	if a, _ := out["active"].(bool); !a {
 		return nil, invalid("token is not active")

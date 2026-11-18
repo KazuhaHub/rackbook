@@ -160,3 +160,17 @@ func TestStateFileRefusesSymlinks(t *testing.T) {
 		t.Fatalf("something was written outside the repo: %v", ents)
 	}
 }
+
+func TestStateSettledIsFalseWhileAnUpdateRuns(t *testing.T) {
+	e := newEnv(t)
+	s := open(t, e.server, nil)
+	if !s.StateSettled() {
+		t.Fatal("an idle clone at a loaded commit is settled")
+	}
+	s.mu.Lock()
+	settled := s.StateSettled()
+	s.mu.Unlock()
+	if settled {
+		t.Fatal("not settled while a write, pull or replay holds the store")
+	}
+}

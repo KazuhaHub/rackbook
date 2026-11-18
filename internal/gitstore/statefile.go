@@ -101,6 +101,17 @@ func (s *Store) MutateStateFile(ctx context.Context, rel, subject string, who *a
 	return &StateResult{Commit: commit, PullRequest: pr}, nil
 }
 
+// StateSettled reports that no write, pull or replay is in progress and the
+// clone is at a loaded commit, so what StateFile reads is the committed truth
+// (a file that is missing then really is not there).
+func (s *Store) StateSettled() bool {
+	if !s.mu.TryLock() {
+		return false
+	}
+	defer s.mu.Unlock()
+	return s.ConfigProblem() == "" && s.Alert() == nil
+}
+
 // StateFile reads a state file from the checkout ("" content and false when it
 // does not exist).
 func (s *Store) StateFile(rel string) ([]byte, bool, error) {

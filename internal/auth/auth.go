@@ -231,8 +231,14 @@ func (a *Authenticator) Evaluate(id *Identity) *Identity {
 // RoleFor is the role auth.roles grants to a plain identity string (an e-mail
 // or UPN), as it is now. It is how an API token's creator is evaluated.
 func (a *Authenticator) RoleFor(identity string) roles.Role {
+	return a.RoleForVia(identity, MethodNone)
+}
+
+// RoleForVia is RoleFor for an identity that logged in with method (so a
+// subject identity oidc:<sub> finds its role entry).
+func (a *Authenticator) RoleForVia(identity, method string) roles.Role {
 	id := roles.FoldASCII(identity)
-	r := a.Policy().Evaluate(roles.Subject{ID: id, Email: emailOf(id), Method: MethodNone})
+	r := a.Policy().Evaluate(roles.Subject{ID: id, Email: emailOf(id), Method: method})
 	if a.cfg.Degraded != nil && a.cfg.Degraded() {
 		r = roles.Lower(r, roles.Viewer)
 	}

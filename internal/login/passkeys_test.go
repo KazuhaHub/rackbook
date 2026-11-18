@@ -460,7 +460,6 @@ func TestUnreadablePasskeyFileIsTransientNotRevocation(t *testing.T) {
 	}
 	// During a pull or replay the file can be missing or half written.
 	for name, mangle := range map[string]func(){
-		"missing": func() { os.Remove(file) },
 		"corrupt": func() { os.WriteFile(file, []byte("users: nonsense\n"), 0o644) },
 	} {
 		mangle()
@@ -471,5 +470,21 @@ func TestUnreadablePasskeyFileIsTransientNotRevocation(t *testing.T) {
 		if st, _ := b.meta(); st != 200 {
 			t.Fatalf("%s: the session (cookie kept) must work again once the file is back: %d", name, st)
 		}
+	}
+}
+
+func TestMissingPasskeyFileAtASettledCommitRevokes(t *testing.T) {
+	e := newEnv(t, options{passkeys: true, nogit: true})
+	owner := e.browser()
+	owner.login("admin", "")
+	dev := e.newDevice()
+	dev.enrol(owner, "laptop")
+	b := e.browser()
+	dev.login(b, "")
+	if err := os.Remove(filepath.Join(e.dir, PasskeysPath)); err != nil {
+		t.Fatal(err)
+	}
+	if st, _ := b.meta(); st != 401 {
+		t.Fatalf("no passkeys file at a settled commit means no passkeys: %d", st)
 	}
 }

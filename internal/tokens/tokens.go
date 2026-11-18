@@ -53,6 +53,10 @@ type Token struct {
 	Actions     []string `yaml:"actions,omitempty" json:"actions,omitempty"`
 	WriteMode   string   `yaml:"write_mode,omitempty" json:"writeMode,omitempty"`
 	CreatedBy   string   `yaml:"created_by" json:"createdBy"`
+	// CreatedVia is how the creator was logged in (oidc, passkey, cloudflare-access,
+	// none), so the token is evaluated against the creator's real role entries
+	// (oidc:<sub> for identity: subject). Empty on older tokens.
+	CreatedVia string `yaml:"created_via,omitempty" json:"-"`
 	Created     string   `yaml:"created" json:"created"`
 	Expires     string   `yaml:"expires,omitempty" json:"expires,omitempty"`
 	Revoked     string   `yaml:"revoked,omitempty" json:"revoked,omitempty"`

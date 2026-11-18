@@ -494,6 +494,11 @@ func TestCreateRefusesFilesAnotherPartOwns(t *testing.T) {
 		"data and schema are the same":  func(ty *Type) { ty.File, ty.SchemaFile = "docs/ledger/x.yml", "docs/ledger/x.yml" },
 		"the schema is the config file": func(ty *Type) { ty.SchemaFile = "rackbook.yml" },
 		"the schema is a data file":     func(ty *Type) { ty.SchemaFile = "docs/ledger/devices.yml" },
+		"schema outside the schema dir": func(ty *Type) { ty.SchemaFile = "docs/contacts.json" },
+		"schema under .git":             func(ty *Type) { ty.SchemaFile = ".git/contacts.json" },
+		"schema under .rackbook":        func(ty *Type) { ty.SchemaFile = ".rackbook/contacts.json" },
+		"schema escaping the repo":      func(ty *Type) { ty.SchemaFile = "../contacts.json" },
+		"schema that already exists":    func(ty *Type) { ty.SchemaFile = "schemas/device.json" },
 	} {
 		nt := newType()
 		mut(nt)

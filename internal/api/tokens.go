@@ -60,7 +60,7 @@ func (s *server) describe(t tokens.Token) tokenOut {
 	if lu, ok := s.o.Tokens.LastUsed(t.Name); ok {
 		out.LastUsed = lu.UTC().Format(time.RFC3339)
 	}
-	role := s.o.Auth.RoleFor(t.CreatedBy)
+	role := s.o.Auth.RoleForVia(t.CreatedBy, t.SubjectMethod())
 	out.CreatorRole = role.String()
 	want := roles.Viewer
 	if t.Scope == tokens.ScopeWrite {

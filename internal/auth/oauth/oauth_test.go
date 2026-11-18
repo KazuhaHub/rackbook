@@ -548,3 +548,45 @@ func TestKnownKeysKeepVerifyingWhileARefetchRuns(t *testing.T) {
 		t.Fatalf("the new key after the refetch: %v", err)
 	}
 }
+
+type failIntro struct {
+	next http.RoundTripper
+	mode string // "5xx", "net" or ""
+	hits atomic.Int32
+}
+
+func (g *failIntro) RoundTrip(r *http.Request) (*http.Response, error) {
+	if strings.HasSuffix(r.URL.Path, "/introspect") {
+		g.hits.Add(1)
+		switch g.mode {
+		case "5xx":
+			return &http.Response{StatusCode: 503, Status: "503 Service Unavailable", Body: http.NoBody, Header: http.Header{}, Request: r}, nil
+		case "net":
+			return nil, errors.New("connection refused")
+		}
+	}
+	return g.next.RoundTrip(r)
+}
+
+func TestIntrospectionOutagesAreNotVerdicts(t *testing.T) {
+	f := introspectingFixture(t, nil)
+	g := &failIntro{next: http.DefaultTransport}
+	f.v.HTTP = &http.Client{Transport: g, Timeout: 5 * time.Second}
+	for _, mode := range []string{"5xx", "net"} {
+		g.mode = mode
+		_, err := f.verify("tok-" + mode)
+		if !errors.Is(err, ErrUnavailable) || errors.Is(err, ErrInvalid) {
+			t.Fatalf("%s: want ErrUnavailable, got %v", mode, err)
+		}
+		// Not cached as a refusal: the next attempt asks again.
+		n := g.hits.Load()
+		f.verify("tok-" + mode)
+		if g.hits.Load() != n+1 {
+			t.Fatalf("%s: an outage must not be cached", mode)
+		}
+	}
+	// Once the issuer answers, active:false is the verdict.
+	g.mode = ""
+	_, err := f.verify("tok-5xx")
+	wantInvalid(t, err, "not active")
+}

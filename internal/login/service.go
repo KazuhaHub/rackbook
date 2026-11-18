@@ -33,6 +33,8 @@ import (
 // store implements it.
 type StateFiles interface {
 	StateFile(rel string) (content []byte, exists bool, err error)
+	// StateSettled says no pull, replay or write is in progress and the clone is at a loaded commit.
+	StateSettled() bool
 	MutateStateFile(ctx context.Context, rel, subject string, who *auth.Identity, mutate func(old []byte, exists bool) ([]byte, error), opts ...gitstore.StateOption) (*gitstore.StateResult, error)
 }
 
