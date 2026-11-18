@@ -8,33 +8,12 @@ on:
 permissions:
   contents: read
 
-jobs:
-  go:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-      - name: Vet
-        run: go vet ./cmd/... ./internal/... ./web
-      - name: Test
-        run: go test -race ./cmd/... ./internal/... ./web
-      - name: Check the example ledger
-        run: go run ./cmd/rackbook check --config examples/homelab/rackbook.yml
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
-  web:
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: web
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: web/package-lock.json
-      - run: npm ci
-      - run: npm run lint --if-present
-      - run: npm run build
+jobs:
+  verify:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/verify.yml

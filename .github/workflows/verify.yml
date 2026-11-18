@@ -1,0 +1,97 @@
+# Reusable verification: the console build once, then the Go tests and a smoke
+# test of the built binary natively on every supported platform. ci.yml runs it
+# on pull requests and on main; release.yml runs it as the gate before anything
+# is published, and publishes the very console build that was tested here.
+name: verify
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  web:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+      - run: npm run lint --if-present
+      - run: npm run build
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: web-dist
+          path: web/dist
+          if-no-files-found: error
+          retention-days: 7
+
+  native:
+    name: ${{ matrix.name }}
+    needs: web
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: linux-amd64, runner: ubuntu-latest, exe: "", race: true }
+          - { name: linux-arm64, runner: ubuntu-24.04-arm, exe: "", race: true }
+          - { name: macos-amd64, runner: macos-26-intel, exe: "", race: true }
+          - { name: macos-arm64, runner: macos-latest, exe: "", race: true }
+          - { name: windows-amd64, runner: windows-latest, exe: ".exe", race: true }
+          # The race detector does not exist for windows/arm64.
+          - { name: windows-arm64, runner: windows-11-arm, exe: ".exe", race: false }
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version-file: go.mod
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: web-dist
+          path: web/dist
+      - name: Environment
+        run: |
+          go version
+          git version
+          go env GOOS GOARCH
+      - name: Vet
+        run: go vet ./cmd/... ./internal/... ./web
+      - name: Test
+        env:
+          RACE: ${{ matrix.race }}
+        run: |
+          if [ "$RACE" = "true" ]; then
+            CGO_ENABLED=1 go test -race -count=1 -v ./cmd/... ./internal/... ./web 2>&1 | tee test.log
+          else
+            go test -count=1 -v ./cmd/... ./internal/... ./web 2>&1 | tee test.log
+          fi
+          # Every skipped test must say why; list them in the job summary.
+          { echo '### Skipped tests on ${{ matrix.name }}'; echo '```'; grep -hA1 -- '--- SKIP' test.log | grep -v '^--$' || true; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+        # pipefail is on in the bash shell, so a failing go test fails the step.
+      - name: Build
+        env:
+          EXE: ${{ matrix.exe }}
+        run: CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=ci-${GITHUB_SHA::7}" -o "rackbook$EXE" ./cmd/rackbook
+      - name: Smoke test
+        env:
+          EXE: ${{ matrix.exe }}
+        run: bash scripts/smoke.sh "./rackbook$EXE" examples/homelab/rackbook.yml
