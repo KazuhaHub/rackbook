@@ -357,3 +357,59 @@ Agreed with the owner on 2026-11-18:
    in the token list.
 4. No database: roles in `rackbook.yml`, passkeys and token hashes in
    `.rackbook/` in the data repo, short-lived state in memory (section 1).
+
+### Decisions, round 2 (2026-11-18)
+
+5. **AI agents may write through MCP**, with the same validation and Git path
+   as the console.
+   - MCP write tools: `create_record`, `update_record` (needs `hash`) and
+     `delete_record` (needs `hash`).
+   - Commits carry `Edited-via: mcp (token:<name>)` and
+     `Edited-by: <token creator>`.
+   - **Token writes land as a pull request by default**, not on the tracked
+     branch. Each call opens its own PR from `rackbook/token/<name>/<timestamp>`,
+     so token writes are contributor-level.
+   - **Deletes through MCP or a token always go through a PR**, even for a
+     token that is allowed to push directly.
+   - A token may be granted direct push (`write_mode: push`) only by an admin,
+     and only for create and update.
+   - PR mode needs `RACKBOOK_GITHUB_TOKEN` on the server, with pull-request
+     permission on the data repo.
+   - **A token can never exceed the permissions of the user who created it**:
+     - it is evaluated against the creator's *current* role on every request;
+     - it is optionally narrowed per collection and per action
+       (`collections: [services, addresses]`, `actions: [create, update]`);
+     - if the creator loses a role, the token shrinks with it; if the creator
+       has no role, it stops working.
+   - This replaces decision 3 ("keeps working with a warning") for anything
+     beyond what the creator still holds. The token list warns when a token is
+     limited by its creator's role.
+6. **Never force push or rewrite history.**
+   - Rackbook never runs `push --force`, `--force-with-lease` or a `+refspec`.
+     It never deletes or rewrites remote branches or tags, and never resets
+     anything on the remote.
+   - Every push is fast-forward only (`git push origin HEAD:refs/heads/<branch>`).
+   - If the remote moved, Rackbook fetches, re-applies the semantic edit on the
+     new tip, re-validates and pushes again (at most 3 attempts). If that still
+     fails, the user or agent gets a clear conflict error.
+   - The only resets are on the server's own local clone, to the remote tip.
+     They happen only after the ancestry check below.
+   - A test runs every git invocation through a recorder and fails if any push
+     carries a force flag or a `+` refspec, or if any `branch -D`, `push
+     --delete` or `push :ref` appears. `git` is wrapped so that one function
+     builds every push command line.
+   - **Rewritten-history detection.** The server remembers the last remote
+     commit it accepted (in memory, and in `.git/rackbook-last-good` inside its
+     clone). On every fetch, at startup and before each write, it checks that the
+     new `origin/<branch>` is a descendant of that commit
+     (`git merge-base --is-ancestor`). If it is not:
+     - Rackbook stops writing: API and MCP writes return
+       `503 history_rewritten`;
+     - it keeps serving read-only from the last good commit, without resetting
+       the clone;
+     - it logs an error and shows a red banner in the console ("远端历史被改写，
+       已暂停写入"), with both commit ids.
+     - An admin clears it by acknowledging after checking. The CLI command is
+       `rackbook serve --accept-remote <commit>`, or the same action on an
+       admin-only page; either records the new base.
+   - Documented in the README and in design.md's Git section.
