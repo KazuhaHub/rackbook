@@ -116,14 +116,14 @@ function Show({ col, id }: { col: Collection; id: string }) {
         }
       />
 
-      <div className="grid grid-cols-[minmax(0,1fr)] gap-4 xl:grid-cols-[minmax(0,1fr)_22rem]">
-        <div className="min-w-0 space-y-4">
+      <div className="grid grid-cols-[minmax(0,1fr)] gap-5 xl:grid-cols-[minmax(0,1fr)_22rem]">
+        <div className="min-w-0 space-y-5">
           <Card>
             <CardHeader>
               <CardTitle>{t.show.fields}</CardTitle>
             </CardHeader>
             <CardContent>
-              <dl className="grid gap-x-6 gap-y-4 sm:grid-cols-[minmax(7rem,12rem)_minmax(0,1fr)]">
+              <dl className="grid gap-x-8 gap-y-5 sm:grid-cols-[minmax(7rem,12rem)_minmax(0,1fr)]">
                 {props.map(([field, schema]) => (
                   <div key={field} className="contents">
                     <dt className="text-sm text-muted-foreground" title={schema.description || field}>
@@ -164,7 +164,7 @@ function Show({ col, id }: { col: Collection; id: string }) {
           })}
         </div>
 
-        <div className="space-y-4">
+        <div className="space-y-5">
           <Card>
             <CardHeader>
               <CardTitle>{t.show.history}</CardTitle>
