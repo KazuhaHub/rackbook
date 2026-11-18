@@ -514,6 +514,28 @@ Logins, refusals and logouts go to the server log (stdout). Starting a login or 
 passkey ceremony is rate limited per client (the first `CF-Connecting-IP` /
 `X-Forwarded-For` address when the request comes from a loopback or private proxy).
 
+## Windows
+
+Release archives for Windows (amd64 and arm64) are zips containing
+`rackbook.exe`. The test suite and a smoke test of the built binary run natively
+on Windows Server (amd64) and Windows 11 (arm64) for every change, and every
+command works there: `check`, `export`, `list`, `get`, `add`, `set`, `rm`,
+`token`, `mcp` and `serve` (console, API, MCP, Git-backed writes and pull
+requests).
+
+- Git for Windows must be on `PATH` for anything that uses Git (`serve` with a
+  repository, `--commit` / `--push`). Rackbook runs Git with
+  `core.autocrlf=false` so files are committed byte for byte.
+- Put `* text=auto eol=lf` in a `.gitattributes` at the root of your data
+  repository (or clone with `core.autocrlf=false`). Otherwise a Windows clone
+  checks files out with CRLF and the server reports the clone as modified.
+- Paths in `rackbook.yml` are relative, with `/` or `\`; drive letters, UNC
+  paths, rooted paths and `:` in a name are refused.
+- Not exercised on Windows (skipped in the tests, with a message): committing
+  symbolic links, and directory permission bits (`chmod`), which Windows does
+  not have. The race detector is not available on Windows arm64, so the tests
+  there run without `-race`.
+
 ## Development
 
 ```bash
