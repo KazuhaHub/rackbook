@@ -144,7 +144,7 @@ func (t *tools) write(ctx context.Context, req *mcp.CallToolRequest, action stri
 		}
 	}
 	opts := gitstore.WriteOptionsFor(id, t.backend.Config(), op.Kind, collection)
-	res, err := t.backend.WriteFunc(ctx, gitstore.ApplyOp(op), id, opts)
+	res, err := t.backend.WriteFunc(ctx, gitstore.ApplyOpAs(id, op), id, opts)
 	if err != nil {
 		info := apierr.Classify(err)
 		if info.Status == http.StatusInternalServerError {

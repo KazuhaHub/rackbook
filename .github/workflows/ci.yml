@@ -150,7 +150,9 @@ jobs:
           for os in linux darwin windows; do
             for arch in amd64 arm64; do
               echo "== $os/$arch"
-              GOOS=$os GOARCH=$arch go build -trimpath -o /dev/null ./cmd/rackbook
+              for cmd in rackbook rackbook-entra rackbook-notify; do
+                GOOS=$os GOARCH=$arch go build -trimpath -o /dev/null "./cmd/$cmd"
+              done
             done
           done
       # Build for the runner itself and run it once. The full smoke test runs natively on every platform in verify.yml at release.
@@ -161,6 +163,10 @@ jobs:
           go build -trimpath -o rackbook ./cmd/rackbook
           ./rackbook version
           ./rackbook check --config examples/homelab/rackbook.yml
+          go build -trimpath -o rackbook-entra ./cmd/rackbook-entra
+          go build -trimpath -o rackbook-notify ./cmd/rackbook-notify
+          ./rackbook-entra --version
+          ./rackbook-notify --version
 
   docker:
     name: docker

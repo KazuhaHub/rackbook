@@ -332,6 +332,19 @@ func ApplyOp(op edit.Op) ApplyFunc {
 	return func(cfg *config.Config) (*edit.Result, error) { return edit.Apply(cfg, op) }
 }
 
+// ApplyOpAs is ApplyOp with the modules allow list (ModuleGuard) applied for
+// who. The guard reads the config of the checkout the write is applied to, so
+// a modules: entry that a pull or a retry just brought in is already in force.
+func ApplyOpAs(who *auth.Identity, op edit.Op) ApplyFunc {
+	return func(cfg *config.Config) (*edit.Result, error) {
+		op, err := ModuleGuard(who, cfg, op)
+		if err != nil {
+			return nil, err
+		}
+		return edit.Apply(cfg, op)
+	}
+}
+
 // WriteFunc is the one write path for any change to the data repository:
 // record edits (ApplyOp), data type changes (types.Apply) and the MCP write
 // tools all go through it. Without Git the files are changed in place. With Git

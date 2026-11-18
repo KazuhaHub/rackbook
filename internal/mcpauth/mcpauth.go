@@ -67,7 +67,7 @@ func tokenPath(p string) bool {
 	switch {
 	case IsMCPPath(p):
 		return true
-	case strings.HasPrefix(p, "/api/c/"), p == "/api/meta", p == "/api/check", p == "/api/history":
+	case strings.HasPrefix(p, "/api/c/"), p == "/api/meta", p == "/api/check", p == "/api/history", p == "/api/expiring":
 		return true
 	}
 	return strings.HasPrefix(p, "/export.") || strings.HasPrefix(p, "/llms")

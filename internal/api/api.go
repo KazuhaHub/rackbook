@@ -17,12 +17,14 @@ import (
 	"net/http"
 	"net/url"
 	"path"
+	"sort"
 	"strconv"
 	"strings"
 
 	"github.com/kazuhahub/rackbook/internal/apierr"
 	"github.com/kazuhahub/rackbook/internal/auth"
 	"github.com/kazuhahub/rackbook/internal/edit"
+	"github.com/kazuhahub/rackbook/internal/expiry"
 	"github.com/kazuhahub/rackbook/internal/export"
 	"github.com/kazuhahub/rackbook/internal/gitstore"
 	"github.com/kazuhahub/rackbook/internal/ledger"
@@ -82,6 +84,7 @@ func New(o Options) http.Handler {
 	mux.HandleFunc("GET /api/meta", s.meta)
 	mux.HandleFunc("GET /api/check", s.check)
 	mux.HandleFunc("GET /api/history", s.history)
+	mux.HandleFunc("GET /api/expiring", s.expiring)
 	mux.HandleFunc("GET /api/c/{collection}", s.list)
 	mux.HandleFunc("GET /api/c/{collection}/{id}", s.get)
 	mux.HandleFunc("POST /api/c/{collection}", s.add)
@@ -270,23 +273,32 @@ type noteOut struct {
 }
 
 type collectionOut struct {
-	Name        string           `json:"name"`
-	Title       string           `json:"title"`
-	Description string           `json:"description"`
-	Group       string           `json:"group"`
-	Icon        string           `json:"icon,omitempty"`
-	File        string           `json:"file"`
-	Path        string           `json:"path,omitempty"`
-	SchemaFile  string           `json:"schemaFile"`
-	Key         []string         `json:"key"`
-	Label       string           `json:"label"`
-	List        []string         `json:"list"`
-	Facets      []facetOut       `json:"facets"`
-	Schema      json.RawMessage  `json:"schema"`
-	Refs        []ledger.RefInfo `json:"refs"`
-	Backrefs    []ledger.BackRef `json:"backrefs"`
-	Notes       []noteOut        `json:"notes"`
-	Count       int              `json:"count"`
+	Name         string           `json:"name"`
+	Title        string           `json:"title"`
+	Description  string           `json:"description"`
+	Group        string           `json:"group"`
+	Icon         string           `json:"icon,omitempty"`
+	File         string           `json:"file"`
+	Path         string           `json:"path,omitempty"`
+	SchemaFile   string           `json:"schemaFile"`
+	Key          []string         `json:"key"`
+	Label        string           `json:"label"`
+	List         []string         `json:"list"`
+	Facets       []facetOut       `json:"facets"`
+	Schema       json.RawMessage  `json:"schema"`
+	Refs         []ledger.RefInfo `json:"refs"`
+	Backrefs     []ledger.BackRef `json:"backrefs"`
+	Notes        []noteOut        `json:"notes"`
+	Count        int              `json:"count"`
+	ExpiryField  string           `json:"expiryField"`
+	RevokedField string           `json:"revokedField"`
+}
+
+type moduleOut struct {
+	Name       string   `json:"name"`
+	Collection string   `json:"collection"`
+	Fields     []string `json:"fields"`
+	DirectPush bool     `json:"directPush"`
 }
 
 func strs(s []string) []string {
@@ -315,6 +327,7 @@ func (s *server) meta(w http.ResponseWriter, r *http.Request) {
 			File: c.File, Path: c.Path, SchemaFile: c.Collection.Schema,
 			Key: strs(c.Key), Label: c.Label, List: strs(c.List), Facets: []facetOut{},
 			Schema: c.SchemaRaw, Refs: l.Refs(c.Name), Backrefs: l.BackRefs(c.Name), Notes: []noteOut{}, Count: len(c.Records),
+			ExpiryField: expiry.ExpiryField(c), RevokedField: expiry.RevokedField(c),
 		}
 		if out.Schema == nil {
 			out.Schema = json.RawMessage("{}")
@@ -329,9 +342,14 @@ func (s *server) meta(w http.ResponseWriter, r *http.Request) {
 		}
 		cols = append(cols, out)
 	}
+	mods := make([]moduleOut, 0, len(cfg.Modules))
+	for name, m := range cfg.Modules {
+		mods = append(mods, moduleOut{Name: name, Collection: m.Collection, Fields: strs(m.Fields), DirectPush: m.DirectPush})
+	}
+	sort.Slice(mods, func(i, j int) bool { return mods[i].Name < mods[j].Name })
 	meta := map[string]any{
 		"title": cfg.Title, "description": cfg.Description,
-		"readOnly": s.o.ReadOnly, "writeMode": cfg.Write.Mode, "user": user, "collections": cols,
+		"readOnly": s.o.ReadOnly, "writeMode": cfg.Write.Mode, "user": user, "collections": cols, "modules": mods,
 	}
 	meta["branding"] = map[string]any{"name": cfg.Branding.Name, "logo": cfg.BrandLogo() != nil}
 	if a := s.o.Store.Alert(); a != nil {
@@ -354,6 +372,29 @@ func (s *server) history(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"commits": commits})
+}
+
+func (s *server) expiring(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	days := expiry.DefaultDays
+	if v := q.Get("days"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "bad_request", "days must be a whole number")
+			return
+		}
+		days = n
+	}
+	res, err := expiry.List(s.o.Store.Ledger(), expiry.Options{Days: days, Collections: q["collection"], Unknown: q.Get("unknown") == "true"})
+	if errors.Is(err, expiry.ErrUnknownCollection) {
+		writeError(w, http.StatusNotFound, "not_found", err.Error())
+		return
+	}
+	if err != nil {
+		s.internal(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
 }
 
 func (s *server) collection(w http.ResponseWriter, r *http.Request) (*ledger.Ledger, *ledger.Collection) {
@@ -464,7 +505,7 @@ func (s *server) permits(w http.ResponseWriter, r *http.Request, action, collect
 func (s *server) apply(w http.ResponseWriter, r *http.Request, op edit.Op) *gitstore.WriteResult {
 	// Tokens are contributor level: their writes open pull requests unless granted otherwise.
 	opts := gitstore.WriteOptionsFor(s.who(r), s.o.Store.Config(), op.Kind, op.Collection)
-	res, err := s.o.Store.WriteFunc(r.Context(), gitstore.ApplyOp(op), s.who(r), opts)
+	res, err := s.o.Store.WriteFunc(r.Context(), gitstore.ApplyOpAs(s.who(r), op), s.who(r), opts)
 	if err == nil {
 		return res
 	}

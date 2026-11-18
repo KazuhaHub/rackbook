@@ -1,6 +1,7 @@
 # MCP surface (decision 16)
 
-Status: accepted direction, to be implemented in v0.3.0. Tool names, their
+Status: accepted direction, to be implemented in v0.4.0 (the `expiry` family
+already ships in v0.3.0). Tool names, their
 arguments and their result shapes are part of Rackbook's SemVer promise (README,
 "Versioning and compatibility"), so this document fixes the shape before 1.0.
 
@@ -24,12 +25,13 @@ arguments and their result shapes are part of Rackbook's SemVer promise (README,
 
 | family | tools | since | scope |
 |---|---|---|---|
-| `ledger` (server-wide) | `ledger_info`, `ledger_search`, `ledger_check`, `ledger_export` | v0.3.0 | read |
-| `collections` | `collections_list`, `collections_describe` | v0.3.0 | read |
-| `records` | `records_query`, `records_get`, `records_create`, `records_update`, `records_delete` | v0.3.0 | read / write |
-| `docs` | `docs_get`, `docs_put`, `docs_delete` | v0.3.0 (decision 15) | read / docs |
-| `history` | `history_list`, `history_diff` | v0.3.0 | read |
-| `changes` | `changes_list`, `changes_get`, `changes_status`, `changes_comment` | v0.3.0 | read / write |
+| `ledger` (server-wide) | `ledger_info`, `ledger_search`, `ledger_check`, `ledger_export` | v0.4.0 | read |
+| `collections` | `collections_list`, `collections_describe` | v0.4.0 | read |
+| `records` | `records_query`, `records_get`, `records_create`, `records_update`, `records_delete` | v0.4.0 | read / write |
+| `docs` | `docs_get`, `docs_put`, `docs_delete` | v0.4.0 (decision 15) | read / docs |
+| `history` | `history_list`, `history_diff` | v0.4.0 | read |
+| `changes` | `changes_list`, `changes_get`, `changes_status`, `changes_comment` | v0.4.0 | read / write |
+| `expiry` | `expiry_list` | v0.3.0 (decision 17) | read |
 | `facts` | `facts_list`, `facts_get`, later `facts_adopt` | later | read / write |
 | `admin` | `admin_types_list`, `admin_types_plan`, `admin_types_apply`, `admin_users_list`, `admin_tokens_list`, … | later | admin |
 
@@ -196,13 +198,13 @@ arguments and their result shapes are part of Rackbook's SemVer promise (README,
 - CI runs it on every PR. Updating the golden file needs `-update` and shows in
   review.
 
-## 10. v0.2 tools → v0.3.0
+## 10. v0.2 tools → v0.4.0
 
-The renames ship in **v0.3.0** with deprecated aliases, removed in **v0.4.0**.
+The renames ship in **v0.4.0** with deprecated aliases, removed in **v0.5.0**.
 They aren't patch-released: aliases would double the tool list in clients,
 which costs more than waiting.
 
-| v0.2 tool | v0.3.0 | change |
+| v0.2 tool | v0.4.0 | change |
 |---|---|---|
 | `list_collections` | `collections_list` | rename |
 | `get_schema` | `collections_describe` | rename; result adds keys, refs, facets, notes, counts |
@@ -218,7 +220,7 @@ which costs more than waiting.
 | `delete_record` | `records_delete` | rename; same; `clear_references` option |
 | — | `ledger_info`, `history_diff`, `docs_*`, `changes_*`, resources, prompts | new |
 
-Other v0.2 → v0.3.0 changes:
+Other v0.2 → v0.4.0 changes:
 
 - Annotations: add `destructiveHint`, `idempotentHint` and `openWorldHint`
   everywhere. Today only `readOnlyHint` is set.

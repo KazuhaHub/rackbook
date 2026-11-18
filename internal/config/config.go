@@ -36,7 +36,9 @@ type Config struct {
 	Write       Write         `yaml:"write"`
 	Auth        Auth          `yaml:"auth"`
 	Types       Types         `yaml:"types"`
-	Branding    Branding      `yaml:"branding"`
+	// Modules is the allow list of write modules (docs/modules.md), by name.
+	Modules  map[string]*Module `yaml:"modules"`
+	Branding Branding           `yaml:"branding"`
 	// SecretScan configures the built-in scan for secrets on every write. It is
 	// on unless secret_scan.enabled is false.
 	SecretScan secretscan.Config `yaml:"secret_scan"`
@@ -56,6 +58,56 @@ func (c *Config) SecretScanner() *secretscan.Scanner {
 		return secretscan.Default()
 	}
 	return c.scanner
+}
+
+// Module is one entry of the modules block: a token that may only create and
+// update records of one collection, tagged with the module's name as source.
+type Module struct {
+	Token      string   `yaml:"token"`
+	Collection string   `yaml:"collection"`
+	Fields     []string `yaml:"fields"`
+	DirectPush bool     `yaml:"direct_push"`
+}
+
+// ModuleForToken returns the module that uses the named API token, if any.
+func (c *Config) ModuleForToken(token string) (string, *Module) {
+	if c == nil || token == "" {
+		return "", nil
+	}
+	for name, m := range c.Modules {
+		if m != nil && m.Token == token {
+			return name, m
+		}
+	}
+	return "", nil
+}
+
+func (c *Config) checkModules() error {
+	tokens := map[string]string{}
+	for name, m := range c.Modules {
+		if !aliasRe.MatchString(name) || name == "manual" {
+			return fmt.Errorf("modules.%s: the name must be 1-32 characters of a-z 0-9 . _ - and not \"manual\"", name)
+		}
+		if m == nil || m.Token == "" {
+			return fmt.Errorf("modules.%s.token is required", name)
+		}
+		if other, dup := tokens[m.Token]; dup {
+			return fmt.Errorf("modules.%s.token %q is also used by modules.%s", name, m.Token, other)
+		}
+		tokens[m.Token] = name
+		if c.Collection(m.Collection) == nil {
+			return fmt.Errorf("modules.%s.collection %q is not a known collection", name, m.Collection)
+		}
+		if len(m.Fields) == 0 {
+			return fmt.Errorf("modules.%s.fields must list the fields the module may write", name)
+		}
+		for _, f := range m.Fields {
+			if f == "source" {
+				return fmt.Errorf("modules.%s.fields must not list source: it is always the module's name", name)
+			}
+		}
+	}
+	return nil
 }
 
 // Types holds where the console puts the files of a new data type.
@@ -685,7 +737,7 @@ func (c *Config) finish() error {
 			return fmt.Errorf("rules[%d]: %w", i, err)
 		}
 	}
-	return nil
+	return c.checkModules()
 }
 
 // SplitRef splits "collection.field".

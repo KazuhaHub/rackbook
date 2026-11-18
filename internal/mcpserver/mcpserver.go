@@ -27,7 +27,8 @@ const instructions = `Read-only access to an infrastructure ledger kept as YAML 
 Start with list_collections to see what exists. Records are addressed by id (the key fields joined with "/").
 - "What runs on host X?": list_records collection=services where={"device":"X"}; services whose device is "all" apply to every host, so also list_records services where={"device":"all"}. get_record on the device returns all of its addresses and services as backrefs in one call.
 - "Who uses port N?": search query="N" (substring over every field of every collection), or list_records on ports for the port convention.
-- "Is the ledger consistent?": check.`
+- "Is the ledger consistent?": check.
+- "What expires soon?": expiry_list (days, collections, include_unknown); items are sorted most overdue first, daysLeft below 0 means already expired, and include_unknown adds records whose date is still to be filled in.`
 
 // New builds a read-only MCP server.
 func New(src Source, version string) *mcp.Server {
@@ -72,6 +73,7 @@ func NewWithOptions(o Options) *mcp.Server {
 	mcp.AddTool(s, &mcp.Tool{Name: "list_problems", Annotations: readOnly,
 		Description: "List what is wrong with the ledger: validation errors (collection, record id, field path, message) and any store state that pauses writes (history_rewritten, config_error). Check this before writing, and after."},
 		t.listProblems)
+	t.addExpiryTools(s)
 	if o.Backend != nil {
 		mcp.AddTool(s, &mcp.Tool{Name: "record_history", Annotations: readOnly,
 			Description: "List the commits that changed one record (newest first: hash, author, date, subject), falling back to the collection's file history for records edited before per-record history existed."},

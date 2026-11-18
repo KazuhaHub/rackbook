@@ -54,6 +54,67 @@ type Op struct {
 	// that becomes a pull request). ConfirmedBy names who confirmed.
 	ConfirmNotSecret bool
 	ConfirmedBy      string
+	// Module, when set, applies the write rules of a module token (ModuleRule).
+	Module *ModuleRule
+}
+
+// ModuleRule is what a module's write may do (docs/modules.md, section 2.3):
+// create records tagged source=Name, and update records that carry that source,
+// changing only Fields (and source). A module never deletes.
+type ModuleRule struct {
+	Name   string
+	Fields []string
+}
+
+// ModuleError means a module write breaks its rules. It is reported as 403
+// forbidden.
+type ModuleError struct{ Message string }
+
+func (e *ModuleError) Error() string { return e.Message }
+
+func (m *ModuleRule) checkAdd(data map[string]any) error {
+	if data["source"] != m.Name {
+		return &ModuleError{fmt.Sprintf("module %q may only create records with source %q", m.Name, m.Name)}
+	}
+	return nil
+}
+
+// checkEdit compares the new record with the current one, both normalized, so a
+// key that was added or removed counts as a change.
+func (m *ModuleRule) checkEdit(cur, data map[string]any) error {
+	if cur["source"] != m.Name {
+		return &ModuleError{fmt.Sprintf("module %q may only update records with source %q, not manual records or those of another module", m.Name, m.Name)}
+	}
+	if data["source"] != m.Name {
+		return &ModuleError{fmt.Sprintf("module %q must keep source %q on the records it updates", m.Name, m.Name)}
+	}
+	own := map[string]bool{"source": true}
+	for _, f := range m.Fields {
+		own[f] = true
+	}
+	cur = Normalize(cur)
+	var changed []string
+	for k, v := range cur {
+		if !own[k] && !sameJSON(v, data[k]) {
+			changed = append(changed, k)
+		}
+	}
+	for k := range data {
+		if _, ok := cur[k]; !ok && !own[k] {
+			changed = append(changed, k)
+		}
+	}
+	if len(changed) > 0 {
+		sort.Strings(changed)
+		return &ModuleError{fmt.Sprintf("module %q may not change %s: only %s are its own", m.Name, strings.Join(changed, ", "), strings.Join(m.Fields, ", "))}
+	}
+	return nil
+}
+
+func sameJSON(a, b any) bool {
+	x, _ := json.Marshal(a)
+	y, _ := json.Marshal(b)
+	return string(x) == string(y)
 }
 
 // Result describes a successful change.
@@ -242,6 +303,9 @@ func Apply(cfg *config.Config, op Op) (*Result, error) {
 		opts.GroupField = c.Key[0]
 	}
 	var confirmed []string
+	if op.Module != nil && op.Kind == Delete {
+		return nil, &ModuleError{fmt.Sprintf("module %q may not delete records; mark the record revoked instead", op.Module.Name)}
+	}
 	if op.Kind != Delete {
 		if len(op.Data) == 0 {
 			return nil, fmt.Errorf("%w: data must not be empty", ErrBadRequest)
@@ -283,6 +347,11 @@ func Apply(cfg *config.Config, op Op) (*Result, error) {
 	var cleared []ledger.Reference
 	switch op.Kind {
 	case Add:
+		if op.Module != nil {
+			if err := op.Module.checkAdd(op.Data); err != nil {
+				return nil, err
+			}
+		}
 		newID = ledger.ID(c.Collection, len(c.Records), op.Data)
 		if ex := c.Get(newID); ex != nil && len(c.Key) > 0 {
 			return nil, &ConflictError{Message: fmt.Sprintf("%s %q already exists", c.Name, ledger.SafeID(cfg, c.Name, newID)), Current: ex}
@@ -293,6 +362,11 @@ func Apply(cfg *config.Config, op Op) (*Result, error) {
 			return nil, err
 		}
 		if op.Kind == Edit {
+			if op.Module != nil {
+				if err := op.Module.checkEdit(cur.Data, op.Data); err != nil {
+					return nil, err
+				}
+			}
 			newID = ledger.ID(c.Collection, cur.Index, op.Data)
 			if ex := c.Get(newID); ex != nil && ex != cur && len(c.Key) > 0 {
 				return nil, &ConflictError{Message: fmt.Sprintf("%s %q already exists", c.Name, ledger.SafeID(cfg, c.Name, newID)), Current: ex}
@@ -327,6 +401,9 @@ func Apply(cfg *config.Config, op Op) (*Result, error) {
 		return nil, err
 	}
 	res := &Result{Kind: op.Kind, Collection: op.Collection, ID: newID, Data: op.Data, Cleared: cleared, SubjectID: ledger.SafeID(cfg, op.Collection, newID), Trailers: confirmed}
+	if op.Module != nil {
+		res.Trailers = append(res.Trailers, "Source: "+op.Module.Name)
+	}
 	if string(out) == string(src) && len(files) == 0 {
 		res.Hash = ledger.Hash(op.Data)
 		return res, nil

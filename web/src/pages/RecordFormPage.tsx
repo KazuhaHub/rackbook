@@ -13,7 +13,7 @@ import { NotFound, PageHeader } from '@/components/common'
 import { RecordForm } from '@/components/RecordForm'
 import { t } from '@/i18n/zh-CN'
 import { ApiError, errorMessage } from '@/lib/api'
-import { canEdit, fieldTitle, idFromPath, pointerToPath, recordHref, recordLabel, schemaProps, str } from '@/lib/ledger'
+import { canEdit, fieldTitle, idFromPath, moduleFor, pointerToPath, recordHref, recordLabel, schemaProps, str } from '@/lib/ledger'
 import type { CheckError, Collection, LedgerRecord } from '@/lib/types'
 import { useAfterWrite, useCollection, useMeta } from '@/providers/meta'
 
@@ -126,7 +126,8 @@ function Editor({
 }) {
   const navigate = useNavigate()
   const afterWrite = useAfterWrite()
-  const { byName } = useMeta()
+  const { meta, byName } = useMeta()
+  const managedBy = mode === 'edit' ? moduleFor(meta, col.name, initial?.data.source) : undefined
   const [sp] = useSearchParams()
   const [data, setData] = useState<Record<string, unknown>>(() => {
     if (initial) return structuredClone(initial.data)
@@ -201,6 +202,15 @@ function Editor({
         description={col.description}
       />
 
+      {managedBy && (
+        <Alert className="mb-4">
+          <AlertTriangle />
+          <AlertTitle>{t.expiryForm.moduleTitle}</AlertTitle>
+          <AlertDescription>
+            {t.expiryForm.moduleBody(managedBy.name, managedBy.fields.map((f) => fieldTitle(col, f)).join('、'))}
+          </AlertDescription>
+        </Alert>
+      )}
       <div ref={alertsRef} className="scroll-mt-20" />
       {conflict && (
         <ConflictPanel

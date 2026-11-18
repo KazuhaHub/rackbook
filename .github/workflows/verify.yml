@@ -82,15 +82,15 @@ jobs:
           git version
           go env GOOS GOARCH
       - name: Vet
-        run: go vet ./cmd/... ./internal/... ./web
+        run: go vet ./cmd/... ./internal/... ./modules/... ./web
       - name: Test
         env:
           RACE: ${{ matrix.race }}
         run: |
           if [ "$RACE" = "true" ]; then
-            CGO_ENABLED=1 go test -race -count=1 -v ./cmd/... ./internal/... ./web 2>&1 | tee test.log
+            CGO_ENABLED=1 go test -race -count=1 -v ./cmd/... ./internal/... ./modules/... ./web 2>&1 | tee test.log
           else
-            go test -count=1 -v ./cmd/... ./internal/... ./web 2>&1 | tee test.log
+            go test -count=1 -v ./cmd/... ./internal/... ./modules/... ./web 2>&1 | tee test.log
           fi
           # Every skipped test must say why; list them in the job summary.
           { echo '### Skipped tests on ${{ matrix.name }}'; echo '```'; grep -hE -A1 -- '--- SKIP|SKIPPED' test.log | grep -v '^--$' | sort -u || true; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
@@ -98,8 +98,14 @@ jobs:
       - name: Build
         env:
           EXE: ${{ matrix.exe }}
-        run: CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=ci-${GITHUB_SHA::7}" -o "rackbook$EXE" ./cmd/rackbook
+        run: |
+          for cmd in rackbook rackbook-entra rackbook-notify; do
+            CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=ci-${GITHUB_SHA::7}" -o "$cmd$EXE" "./cmd/$cmd"
+          done
       - name: Smoke test
         env:
           EXE: ${{ matrix.exe }}
-        run: bash scripts/smoke.sh "./rackbook$EXE" examples/homelab/rackbook.yml
+        run: |
+          bash scripts/smoke.sh "./rackbook$EXE" examples/homelab/rackbook.yml
+          "./rackbook-entra$EXE" --version
+          "./rackbook-notify$EXE" --version

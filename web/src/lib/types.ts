@@ -35,6 +35,10 @@ export type Collection = {
   refs?: Ref[]
   backrefs?: Backref[]
   notes?: Note[]
+  /** the schema field marked as the expiry date; empty or absent when none */
+  expiryField?: string
+  /** the schema field marked as the revoked date; empty or absent when none */
+  revokedField?: string
   count: number
 }
 
@@ -54,6 +58,13 @@ export type MetaAlert =
   | { kind: 'history_rewritten'; lastGood: string; remote: string }
   /** rackbook.yml does not load: the last good config is served read-only */
   | { kind: 'config_error'; message: string }
+/** A module allowed to write one collection (rackbook.yml `modules:`, without token names). */
+export type ModuleInfo = {
+  name: string
+  collection: string
+  fields: string[]
+  directPush: boolean
+}
 export type Meta = {
   title: string
   description?: string
@@ -63,6 +74,7 @@ export type Meta = {
   alert?: MetaAlert
   branding?: { name: string; logo: boolean }
   collections: Collection[]
+  modules?: ModuleInfo[]
 }
 
 export type LedgerRecord = {
@@ -107,3 +119,16 @@ export type CreatedToken = {
   snippet: unknown
   claudeCode: string
 }
+
+export type ExpiryStatus = 'expired' | 'expiring' | 'unknown'
+export type ExpiringItem = {
+  collection: string
+  id: string
+  label: string
+  expires: string
+  daysLeft: number | null
+  status: ExpiryStatus
+  /** empty for hand-made records, else the module that wrote it */
+  source: string
+}
+export type ExpiringResult = { today: string; days: number; items: ExpiringItem[] }

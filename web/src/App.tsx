@@ -18,6 +18,7 @@ const CollectionList = lazy(() => import('@/pages/CollectionList'))
 const RecordShow = lazy(() => import('@/pages/RecordShow'))
 const RecordFormPage = lazy(() => import('@/pages/RecordFormPage'))
 const Problems = lazy(() => import('@/pages/Problems'))
+const Expiring = lazy(() => import('@/pages/Expiring'))
 const Account = lazy(() => import('@/pages/Account'))
 const Users = lazy(() => import('@/pages/Users'))
 const Login = lazy(() => import('@/pages/Login'))
@@ -62,6 +63,7 @@ function RefineApp() {
           <Route path="c/:collection/:id" element={<RecordShow />} />
           <Route path="c/:collection/:id/edit" element={<RecordFormPage mode="edit" />} />
           <Route path="check" element={<Problems />} />
+          <Route path="expiring" element={<Expiring />} />
           <Route path="account" element={<Account />} />
           <Route path="admin/users" element={<Users />} />
           <Route path="admin/tokens" element={<Tokens />} />
