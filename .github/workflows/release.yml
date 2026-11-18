@@ -43,6 +43,10 @@ jobs:
       - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
           go-version-file: go.mod
+      # setup-go installs the go line of go.mod; fail if any other Go is on PATH.
+      - name: Go version matches go.mod
+        shell: bash
+        run: test "$(go env GOVERSION)" = "go$(go list -m -f '{{.GoVersion}}')"
       # The console that the matrix tested, built once.
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:

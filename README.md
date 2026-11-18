@@ -731,16 +731,17 @@ repository's release workflow.
 
 ```sh
 # Release archives (tar.gz, zip) and checksums.txt
-gh attestation verify rackbook_0.2.1_linux_amd64.tar.gz --repo KazuhaHub/rackbook \
+gh attestation verify rackbook_0.2.3_linux_amd64.tar.gz --repo KazuhaHub/rackbook \
   --signer-workflow KazuhaHub/rackbook/.github/workflows/release.yml
 sha256sum --check --ignore-missing checksums.txt
 
 # Container image: provenance attestation
-gh attestation verify oci://ghcr.io/kazuhahub/rackbook:0.2.1 --repo KazuhaHub/rackbook \
+gh attestation verify oci://ghcr.io/kazuhahub/rackbook:0.2.3 --repo KazuhaHub/rackbook \
   --signer-workflow KazuhaHub/rackbook/.github/workflows/release.yml
 
-# Container image: cosign signature
-cosign verify ghcr.io/kazuhahub/rackbook:0.2.1 \
+# Container image: cosign signature (cosign v3 or later; v2 reports
+# "no signatures found" for this signature format)
+cosign verify ghcr.io/kazuhahub/rackbook:0.2.3 \
   --certificate-identity-regexp '^https://github\.com/KazuhaHub/rackbook/\.github/workflows/release\.yml@refs/tags/v.*$' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```

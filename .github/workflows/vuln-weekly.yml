@@ -28,4 +28,8 @@ jobs:
       - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
           go-version-file: go.mod
+      # setup-go installs the go line of go.mod; fail if any other Go is on PATH.
+      - name: Go version matches go.mod
+        shell: bash
+        run: test "$(go env GOVERSION)" = "go$(go list -m -f '{{.GoVersion}}')"
       - run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
