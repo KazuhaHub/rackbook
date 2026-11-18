@@ -180,7 +180,8 @@ func Apply(cfg *config.Config, req Request) (*edit.Result, error) {
 	}
 	// A default, an example or a fill value typed into a data type is data too.
 	// Checked before the plan's verdict, so the answer is secret_detected.
-	if bad := scanRequest(cfg, req, p); len(bad) > 0 {
+	if bad, _ := secretscan.Split(scanRequest(cfg, req, p)); len(bad) > 0 {
+		// only block-tier findings: a schema or config has no console flow to confirm a heuristic one
 		return nil, &secretscan.Error{Findings: bad}
 	}
 	if !p.Clean {

@@ -76,7 +76,7 @@ func (s *Store) MutateStateFile(ctx context.Context, rel, subject string, who *a
 		// Public keys, ids and hashes are what these files hold by design; the
 		// names and labels people type are scanned.
 		sc := s.cur.Load().Config.SecretScanner()
-		if bad := secretscan.Introduced(sc.ScanState(rel, old), sc.ScanState(rel, nw)); len(bad) > 0 {
+		if bad, _ := secretscan.Split(secretscan.Introduced(sc.ScanState(rel, old), sc.ScanState(rel, nw))); len(bad) > 0 {
 			return nil, &secretscan.Error{Findings: bad}
 		}
 		if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {

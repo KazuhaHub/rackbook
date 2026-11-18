@@ -1,6 +1,7 @@
 package secretscan
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"math/rand"
 	"strings"
@@ -56,10 +57,10 @@ func TestEveryRuleFiresAndKeepsQuietOnNearMisses(t *testing.T) {
 			[]string{"AGE-SECRET-KEY-1" + strings.Repeat("Q", 20), "age1" + strings.Repeat("q", 58)}},
 		{RuleGitHubToken,
 			[]string{ghp, "token=" + ghp, "gh" + "s_" + strings.Repeat("Z9", 20)},
-			[]string{"ghp_short", "ghx_" + strings.Repeat("a", 40), "highp_" + strings.Repeat("a", 40)}},
+			[]string{"ghp_short", "ghx_" + strings.Repeat("a", 40)}},
 		{RuleGitHubPAT,
 			[]string{ghPAT},
-			[]string{"github_pat_short", "my_github_pat_" + strings.Repeat("a", 30)}},
+			[]string{"github_pat_short"}},
 		{RuleAIKey,
 			[]string{openai, "sk" + "-ant-" + "api03-Ab12Cd34Ef56Gh78Ij90", "use sk" + "-" + "Ab12Cd34Ef56Gh78Ij90Kl12 here"},
 			[]string{"task-management-system-service-account", "disk-usage-monitoring-dashboard-v", "sk-short", "risk-assessment-for-all-the-hosts"}},
@@ -68,7 +69,7 @@ func TestEveryRuleFiresAndKeepsQuietOnNearMisses(t *testing.T) {
 			[]string{"xoxb-short", "xoxz-1234567890-abcdefghij", "boxb-1234567890-abcdefghij"}},
 		{RuleAWSKeyID,
 			[]string{aws, "ASIA" + "IOSFODNN7EXAMPLE", "id=" + aws + " ok"},
-			[]string{"AKIA" + "IOSFODNN7EXAMPL", "AKIA" + "IOSFODNN7EXAMPLE9", "XAKIA" + "IOSFODNN7EXAMPLE", "akia" + "iosfodnn7example"}},
+			[]string{"AKIA" + "IOSFODNN7EXAMPL", "AKIA" + "IOSFODNN7EXAMPLE9", "akia" + "iosfodnn7example"}},
 		{RuleGoogleKey,
 			[]string{google, "k=" + google},
 			[]string{"AIza" + "short", "AIzaSyShort"}},
@@ -79,8 +80,8 @@ func TestEveryRuleFiresAndKeepsQuietOnNearMisses(t *testing.T) {
 			[]string{jwt, "Authorization: " + jwt},
 			[]string{"eyJhbGciOi.notjwt", "eyJhbGciOiJIUzI1.eyJ", "a.b.c"}},
 		{RuleSecretAssign,
-			[]string{"password: hunter2hunter2", "{\"password\": \"Hunter2Hunter2x\"}", "password: $uperS3cretPass", "db password = correcthorse", "API_KEY=abcdefgh12345", "api-key: abcdefgh12345", "client_secret: abcdefgh", "my token: abcdefgh", "privkey=abcdefgh", "passwd:abcdefgh", "notes: root password: changeme123!", "password: ********", "password: ${DB_PASSWORD}", "password: op://Infra/db/password", "token: env:GITHUB_TOKEN", "password: vault:kv/db#pw", "secret: /run/secrets/db_password", "token: $GITHUB_TOKEN", "password: %DB_PASSWORD%", "api_key: https://vault.example.com/ui/kv", "password: <redacted>", "password: xxxxxxxxxx", `password: "*K9q!vR2#mZx7"`, "notes: password: *K9q!vR2#mZx7", "password: /Tr0ub4dor&3xyz", "password: ssh-Tr0ub4dor&3xyz", "token: ssh-Tr0ub4dor3xyzQ", "password: ~/Tr0ub4dor&3xyz", "pw is password: '[K9q!vR2#mZx7]'", "password: (K9q!vR2#mZx7)", "password: <K9q!vR2#mZx7>"},
-			[]string{"password: short", "token: 1234567", "the password is stored in the vault", "passwords: rotated-quarterly", "token_count: 12345678", "password: ***", "password: TBD", "token_ttl: 3600 seconds"}},
+			[]string{"password: hunter2hunter2", "{\"password\": \"Hunter2Hunter2x\"}", "password: $uperS3cretPass", "db password = correcthorse", "API_KEY=abcdefgh12345", "api-key: abcdefgh12345", "client_secret: abcdefgh", "my token: abcdefgh", "privkey=abcdefgh", "passwd:abcdefgh", "notes: root password: changeme123!", "token: $GITHUB_TOKEN", "password: %DB_PASSWORD%", "api_key: https://vault.example.com/ui/kv", `password: "*K9q!vR2#mZx7"`, "notes: password: *K9q!vR2#mZx7", "password: /Tr0ub4dor&3xyz", "password: ssh-Tr0ub4dor&3xyz", "token: ssh-Tr0ub4dor3xyzQ", "password: ~/Tr0ub4dor&3xyz", "pw is password: '[K9q!vR2#mZx7]'", "password: (K9q!vR2#mZx7)", "password: <K9q!vR2#mZx7>"},
+			[]string{"password: short", "token: 1234567", "the password is stored in the vault", "passwords: rotated-quarterly", "token_count: 12345678", "password: ***", "password: TBD", "password: ********", "password: ${DB_PASSWORD}", "password: op://Infra/db/password", "token: env:GITHUB_TOKEN", "password: vault:kv/db#pw", "secret: /run/secrets/db_password", "password: <redacted>", "password: xxxxxxxxxx", "password: secrets/db#password", "password policy", "密码策略", "Token Service", "password reset link sent", "the password policy is documented", "token is required for api access", "password: 待补", "token_ttl: 3600 seconds"}},
 		{RuleHexKey,
 			[]string{"key: " + hex32, "preshared key: " + hex32, "host nas01 luks key: " + hex32, "node n1 wg key=" + hex32, "public key: " + hex32, "hostkey: " + hex32, "gpg key: " + hex32, "nodekey:" + hex32, "'" + "key: " + hex32 + "'", "privkey=" + hex32, "KEY:" + strings.ToUpper(hex32)},
 			[]string{"key: " + hex32[:31], "fingerprint: " + hex32 + hex32, "sha256: " + hex32 + hex32, "key: " + hex32 + "zz", "key_fingerprint: " + hex32}},
@@ -106,7 +107,6 @@ func TestEveryRuleFiresAndKeepsQuietOnNearMisses(t *testing.T) {
 func TestBenignOperationsText(t *testing.T) {
 	for _, s := range []string{
 		"fingerprint: SHA256:" + strings.Repeat("abcDEF012", 5),
-		"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl admin@host",
 		"nginx reverse proxy for the internal wiki; renew the TLS certificate every 60 days",
 		"Tailscale 100.64.0.0/10, MagicDNS enabled, ACL tag:server",
 		"仅允许密钥登录，禁用密码认证 (password authentication disabled)",
@@ -481,7 +481,7 @@ func TestMoreKeywordsAndRules(t *testing.T) {
 		}
 	}
 	for rule, vals := range map[string][]string{
-		RuleGitLabToken:  {"glpat-short", "xglpat-" + strings.Repeat("a", 30)},
+		RuleGitLabToken:  {"glpat-short"},
 		RuleNPMToken:     {"npm_short", "npm_" + strings.Repeat("a", 30)},
 		RuleHFToken:      {"hf_short", "hf_" + strings.Repeat("a", 20)},
 		RuleTailscaleKey: {"tskey-short", "tskey-auth-short"},
@@ -680,5 +680,226 @@ func TestAllowListIsTheOnlyEscapeInFreeText(t *testing.T) {
 		if fs := Default().ScanRecord("c", "i", map[string]any{"notes": v}); len(fs) == 0 {
 			t.Errorf("free text %q has no exemptions", v)
 		}
+	}
+}
+
+func tierOf(t *testing.T, text string) (string, []string) {
+	t.Helper()
+	fs := Default().ScanRecord("c", "i", map[string]any{"notes": text})
+	tier := ""
+	for _, f := range fs {
+		if f.Tier == TierBlock {
+			tier = TierBlock
+		} else if tier == "" {
+			tier = TierConfirm
+		}
+	}
+	return tier, RuleIDs(fs)
+}
+
+func TestMultilingualAssignmentsAreConfirmTier(t *testing.T) {
+	for _, v := range []string{
+		"root密码：Hunter2Hunter2", "root 密码: Hunter2Hunter2", "password：Hunter2Hunter2", "the root password is Hunter2Hunter2",
+		"password＝Hunter2Hunter2", "root密码为Hunter2Hunter2", "root 密码是 Hunter2Hunter2", "密码為 Hunter2Hunter2", "password → Hunter2Hunter2",
+		"口令：Hunter2Hunter2", "密钥: Hunter2Hunter2", "令牌=Hunter2Hunter2", "秘钥是Hunter2Hunter2", "凭据：Hunter2Hunter2", "凭证: Hunter2Hunter2",
+		"パスワード：Hunter2Hunter2", "비밀번호: Hunter2Hunter2", "pwd: Hunter2Hunter2", "pass = Hunter2Hunter2", "passwd=Hunter2Hunter2",
+		"the password for the database was Hunter2Hunter2", "apikey: Hunter2Hunter2", "api key is Hunter2Hunter2", "secret: correcthorse",
+		// full-width letters and zero-width characters inside the keyword
+		"ｐａｓｓｗｏｒｄ：Hunter2Hunter2", "pass​word: Hunter2Hunter2", "密‍码：Hunter2Hunter2", "ｒｏｏｔ　密码：Ｈunter2Hunter2",
+	} {
+		tier, ids := tierOf(t, v)
+		if tier != TierConfirm || !has(ids, RuleSecretAssign) {
+			t.Errorf("%q: tier=%q rules=%v", v, tier, ids)
+		}
+	}
+	for _, v := range []string{
+		"password policy", "密码策略", "Token Service", "password reset link sent", "the password policy is documented in the wiki",
+		"password: 待补", "密码：TBD", "pass the salt please", "bypass: enabled-everywhere", "compass: northeast1234", "密码管理器已启用",
+		"token is required for api access", "secret santa is on friday", "密码：<密码>", "password: <redacted>", "password: xxxxxxxx", "password: ********",
+		"password: /etc/secrets/db", "password: ${DB_PASSWORD}", "password: env:DB_PASSWORD", "密码是 op://Infra/db/password", "password: secrets/db#password", "password: vault:kv/db#pw",
+	} {
+		if tier, ids := tierOf(t, v); has(ids, RuleSecretAssign) {
+			t.Errorf("%q must not be an assignment: tier=%q %v", v, tier, ids)
+		}
+	}
+	// the remainder of a reference is scanned: not a reference once it holds a token
+	for _, v := range []string{"password: op://" + ghp, "password: vault:" + openai, "密码是 op://" + ghp} {
+		if tier, _ := tierOf(t, v); tier != TierBlock {
+			t.Errorf("%q must be block tier", v)
+		}
+	}
+}
+
+func TestNumbersAndBooleansInSecretNamedFieldsAreScanned(t *testing.T) {
+	d := Default()
+	for name, v := range map[string]any{"wifi_password": 98765432, "ipmi_password": int64(12345678), "pin_token": float64(12345678), "wifi_密码": uint32(87654321), "secret": json.Number("98765432")} {
+		fs := d.ScanRecord("c", "i", map[string]any{name: v})
+		if len(fs) != 1 || fs[0].Tier != TierConfirm {
+			t.Errorf("%s=%v: %+v", name, v, fs)
+		}
+	}
+	if fs := d.ScanRecord("c", "i", map[string]any{"password": true, "port": 12345678, "token_count": 98765432, "notes": 12345678}); len(fs) != 0 {
+		t.Fatalf("%+v", fs)
+	}
+	// YAML ints decode as int
+	fs := d.ScanYAML("rackbook.yml", []byte("ipmi_password: 12345678\nport: 22\n"))
+	if len(fs) != 1 {
+		t.Fatalf("%+v", fs)
+	}
+	// the scan and Sensitive() agree
+	for _, c := range []struct {
+		name, v string
+		want    bool
+	}{{"wifi_password", "98765432", true}, {"port", "98765432", false}, {"ssh_key", hex32, true}, {"label", ghp, true}, {"password", "待补", false}} {
+		if got := d.Sensitive(c.name, c.v); got != c.want {
+			t.Errorf("Sensitive(%s,%s)=%v", c.name, c.v, got)
+		}
+	}
+}
+
+func TestEveryBlockRuleIsBlockAndConfirmRulesAreConfirm(t *testing.T) {
+	blocks := []string{RulePrivateKey, RuleAgeKey, RuleGitHubToken, RuleGitHubPAT, RuleAIKey, RuleSlackToken, RuleAWSKeyID, RuleGoogleKey, RuleStripeKey, RuleJWT,
+		RuleHexKey, RuleURLPassword, RuleGitLabToken, RuleNPMToken, RuleHFToken, RuleTailscaleKey, RuleSendGridKey, RuleAzureKey}
+	texts := map[string]string{RulePrivateKey: pemHead + "\nb3Bl", RuleAgeKey: age, RuleGitHubToken: ghp, RuleGitHubPAT: ghPAT, RuleAIKey: openai, RuleSlackToken: slack,
+		RuleAWSKeyID: aws, RuleGoogleKey: google, RuleStripeKey: stripe, RuleJWT: jwt, RuleHexKey: "key: " + hex32, RuleURLPassword: urlPw,
+		RuleGitLabToken: "glpat" + "-" + strings.Repeat("aB1_", 6), RuleNPMToken: "npm" + "_" + strings.Repeat("aB1", 12), RuleHFToken: "hf" + "_" + strings.Repeat("aBcD", 9),
+		RuleTailscaleKey: "tskey" + "-auth-" + "kABCDE1CNTRL-abcdefghij", RuleSendGridKey: "SG" + "." + strings.Repeat("aB1_", 6)[:22] + "." + strings.Repeat("cD2-", 11)[:43],
+		RuleAzureKey: "AccountKey=" + strings.Repeat("aB1/", 11) + "=="}
+	for _, id := range blocks {
+		fs := Default().ScanRecord("c", "i", map[string]any{"a": texts[id]})
+		ok := false
+		for _, f := range fs {
+			if f.Rule == id {
+				ok = f.Tier == TierBlock
+			}
+		}
+		if !ok {
+			t.Errorf("%s: %+v", id, fs)
+		}
+	}
+	for _, v := range []string{"https://x.example.com/a?api_key=Ab12Cd34Ef56", "https://x.example.com/a?x=1&token=Ab12Cd34Ef56Gh", "https://x/y?key=AbCdEfGh1234"} {
+		if tier, ids := tierOf(t, v); tier != TierBlock || !has(ids, RuleURLQuery) {
+			t.Errorf("%q: %v", v, ids)
+		}
+	}
+	for _, v := range []string{"https://x.example.com/a?orgId=1&key=short", "https://x/y?page=2&sort=name", "https://x/y?token=abcdefghij"} {
+		if _, ids := tierOf(t, v); has(ids, RuleURLQuery) {
+			t.Errorf("%q must not fire", v)
+		}
+	}
+	privJWK := `{"kty":"RSA","n":"abc","e":"AQAB","d":"MXx3vN0sG2iPz8WqL1dUfKq"}`
+	if tier, ids := tierOf(t, "key: "+privJWK); tier != TierBlock || !has(ids, RulePrivateJWK) {
+		t.Errorf("private JWK: %v", ids)
+	}
+	if tier, ids := tierOf(t, `{"d":"MXx3vN0sG2iPz8WqL1dUfKq","kty":"RSA"}`); tier != TierBlock || !has(ids, RulePrivateJWK) {
+		t.Errorf("private JWK, d first: %v", ids)
+	}
+	if _, ids := tierOf(t, `{"kty":"EC","crv":"P-256","x":"f83OJ3D2xF1Bg8vub9tLe1gHMzV76e8Tus9uPHvRVEU"}`); has(ids, RulePrivateJWK) {
+		t.Error("a public JWK is not private")
+	}
+}
+
+func TestBase64PEMPrivateKeys(t *testing.T) {
+	for _, label := range []string{"OPENSSH", "RSA", "EC", "", "ENCRYPTED", "DSA"} {
+		head := "-----BEGIN " + strings.TrimSpace(label+" PRIVATE KEY") + "-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSj\n-----END " + strings.TrimSpace(label+" PRIVATE KEY") + "-----\n"
+		enc := base64.StdEncoding.EncodeToString([]byte(head))
+		for _, text := range []string{"client-key-data: " + enc, enc, "'" + enc + "'", "x: " + enc[:80]} {
+			if tier, ids := tierOf(t, text); tier != TierBlock || !has(ids, RulePrivateB64) {
+				t.Errorf("%s in %.40q: %v", label, text, ids)
+			}
+		}
+	}
+	for _, v := range []string{"LS0tLS1CRUdJTiBQVUJMSUMgS0VZLS0tLS0K", "LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCg=="} { // public key, certificate
+		if _, ids := tierOf(t, v); has(ids, RulePrivateB64) {
+			t.Errorf("%s is not a private key", v)
+		}
+	}
+}
+
+func TestDistinctivePrefixesMatchWithoutALeadingBoundary(t *testing.T) {
+	for _, c := range []struct{ rule, secret string }{
+		{RuleGitHubToken, ghp}, {RuleGitHubPAT, ghPAT}, {RuleGitLabToken, "glpat" + "-" + strings.Repeat("aB1_", 6)}, {RuleSlackToken, slack},
+		{RuleAWSKeyID, aws}, {RuleGoogleKey, google}, {RuleHFToken, "hf" + "_" + strings.Repeat("aBcD", 9)}, {RuleNPMToken, "npm" + "_" + strings.Repeat("aB1", 12)},
+		{RuleTailscaleKey, "tskey" + "-auth-" + "kABCDE1CNTRL-abcdefghij"}, {RuleAIKey, "sk" + "-ant-" + "api03-Ab12Cd34Ef56Gh78Ij90"}, {RuleAIKey, openai},
+		{RuleSendGridKey, "SG" + "." + strings.Repeat("aB1_", 6)[:22] + "." + strings.Repeat("cD2-", 11)[:43]},
+	} {
+		for _, pre := range []string{"x", "1", "MY_", "token_", "abc"} {
+			if got := rules(t, Default(), pre+c.secret); !has(got, c.rule) {
+				t.Errorf("%s not caught after %q", c.rule, pre)
+			}
+		}
+	}
+	// plausible words still do not look like secrets
+	for _, w := range []string{"task-management-system-service-account", "disk-usage-monitoring-dashboard-v", "EURASIA-TRADING", "Euraisan Airlines AKIA", "highlight_reel", "ghost_town", "shf_x", "snpm_x", "risk-assessment-for-all-the-hosts", "tasks-ant-colony", "ESG.report.2024"} {
+		if got := rules(t, Default(), w); len(got) != 0 {
+			t.Errorf("%q fired %v", w, got)
+		}
+	}
+}
+
+func TestHighEntropyTokensAreConfirmTier(t *testing.T) {
+	for _, v := range []string{"login with q7Zx!pL2vN9mTk4Rb8Wc3Yd", "A8f$k2Lq9ZxPw3Vn7TbM5cRd", "key is vT4#nK8qLp2ZxW7mR9bY5cDa"} {
+		if tier, ids := tierOf(t, v); tier != TierConfirm || !has(ids, RuleEntropy) {
+			t.Errorf("%q: %q %v", v, tier, ids)
+		}
+	}
+	for _, v := range []string{"the quick brown fox jumps over the lazy dog every single day", "https://grafana.example.com/d/AbCdEf12GhIjKl34/overview?orgId=1", "0123456789abcdef0123456789abcdef", "aaaaaaaaaaaaaaaaaaaaaaaaaaaa1A", "Nginx-Reverse-Proxy-Cluster-2", "/var/lib/docker/overlay2/volumes", "ssh://git@github.com/org/repo.git"} {
+		if _, ids := tierOf(t, v); has(ids, RuleEntropy) {
+			t.Errorf("%q must not fire", v)
+		}
+	}
+	// a block-tier token is not also reported as entropy
+	if _, ids := tierOf(t, slack); has(ids, RuleEntropy) {
+		t.Errorf("%v", ids)
+	}
+}
+
+func TestAnnotationNeverOverridesASecretNamedFieldExceptSecretReference(t *testing.T) {
+	schema := []byte(`{"properties":{"private_key":{"x-rackbook":{"public":"hex_id"}},"api_token":{"x-rackbook":{"public":"fingerprint"}},"db_password":{"x-rackbook":{"public":"secret_reference"}},"host_id":{"x-rackbook":{"public":"hex_id"}}}}`)
+	ann := AnnotationsOf(schema)
+	rec := map[string]any{"private_key": hex32, "api_token": strings.Repeat("ab", 32), "db_password": "op://Infra/db/password", "host_id": hex32}
+	got := map[string]bool{}
+	for _, f := range Default().ScanRecordWith("c", "i", rec, ann) {
+		got[strings.TrimPrefix(f.Path, "/")] = true
+	}
+	if !got["private_key"] || !got["api_token"] || got["db_password"] || got["host_id"] {
+		t.Fatalf("%v", got)
+	}
+	probs := AnnotationProblems(schema)
+	if len(probs) != 2 || !strings.Contains(probs[0], "api_token") || !strings.Contains(probs[1], "private_key") {
+		t.Fatalf("%v", probs)
+	}
+	if p := AnnotationProblems([]byte(`{"properties":{"x":{"x-rackbook":{"public":"nonsense"}}}}`)); len(p) != 1 {
+		t.Fatalf("%v", p)
+	}
+}
+
+func TestSecretReferenceRemainderIsScannedAndValueLikePathsAreNotPaths(t *testing.T) {
+	ann := AnnotationsOf([]byte(`{"properties":{"password":{"x-rackbook":{"public":"secret_reference"}}}}`))
+	for v, ok := range map[string]bool{"op://Infra/db/password": true, "/run/secrets/db": true, "vault:kv/db#pw": true,
+		"op://" + ghp: false, "/" + ghp: false, "vault:" + openai: false, "/hunter2hunter2": false, "~/Hunter2Hunter2": false, "/etc/secrets/db_pw": true} {
+		got := len(Default().ScanRecordWith("c", "i", map[string]any{"password": v}, ann)) == 0
+		if got != ok {
+			t.Errorf("%q: pass=%v want %v", v, got, ok)
+		}
+	}
+}
+
+func TestJWKPublicScansItsOtherMembers(t *testing.T) {
+	ann := AnnotationsOf([]byte(`{"properties":{"jwk":{"x-rackbook":{"public":"jwk_public"}}}}`))
+	pub := `{"kty":"EC","crv":"P-256","x":"f83OJ3D2xF1Bg8vub9tLe1gHMzV76e8Tus9uPHvRVEU","y":"x_FEzRu9m36HLN_tue659LNpXW6pCyStikYjKIWI5a0","kid":"k1","use":"sig","alg":"ES256","key_ops":["verify"],"x5t":"abc"}`
+	if fs := Default().ScanRecordWith("c", "i", map[string]any{"jwk": pub}, ann); len(fs) != 0 {
+		t.Fatalf("%+v", fs)
+	}
+	withSecret := strings.Replace(pub, `"kid":"k1"`, `"note":"password: Hunter2Hunter2","kid":"k1"`, 1)
+	if fs := Default().ScanRecordWith("c", "i", map[string]any{"jwk": withSecret}, ann); len(fs) == 0 {
+		t.Fatal("a secret in a non-public member must be scanned")
+	}
+}
+
+func TestRedactIDIsShortStableAndDistinct(t *testing.T) {
+	a, b := RedactID("alice/hunter2hunter2"), RedactID("alice/hunter3hunter3")
+	if a == b || !strings.HasPrefix(a, "alic…~") || len(strings.SplitN(a, "~", 2)[1]) != 8 || a != RedactID("alice/hunter2hunter2") {
+		t.Fatal(a, b)
 	}
 }

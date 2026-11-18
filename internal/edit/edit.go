@@ -48,6 +48,12 @@ type Op struct {
 	// asked for every collection whose records ClearReferences would edit; nil
 	// means yes. A "no" refuses the delete with a *ForbiddenError.
 	MayUpdate func(collection string) bool
+	// ConfirmNotSecret accepts confirm-tier secret findings (heuristics) on add and
+	// edit: the editor said "this is not a secret". Block-tier findings ignore
+	// it. Callers set it only when they may accept it (never for a token write
+	// that becomes a pull request). ConfirmedBy names who confirmed.
+	ConfirmNotSecret bool
+	ConfirmedBy      string
 }
 
 // Result describes a successful change.
@@ -58,6 +64,8 @@ type Result struct {
 	Hash       string
 	Data       map[string]any
 	Files      []string // config-relative files that were written; empty when nothing changed
+	// Trailers are extra commit trailers: Secret-scan when a confirmation was used.
+	Trailers []string
 	// SubjectID is the id shown in the commit subject and the Record trailer: ID,
 	// or its redacted form when the key fields hold a secret.
 	SubjectID string
@@ -233,6 +241,7 @@ func Apply(cfg *config.Config, op Op) (*Result, error) {
 	if len(c.Key) > 0 {
 		opts.GroupField = c.Key[0]
 	}
+	var confirmed []string
 	if op.Kind != Delete {
 		if len(op.Data) == 0 {
 			return nil, fmt.Errorf("%w: data must not be empty", ErrBadRequest)
@@ -255,7 +264,15 @@ func Apply(cfg *config.Config, op Op) (*Result, error) {
 			}
 		}
 		if len(bad) > 0 {
-			return nil, &secretscan.Error{Findings: bad}
+			block, confirm := secretscan.Split(bad)
+			if len(block) > 0 || !op.ConfirmNotSecret {
+				return nil, &secretscan.Error{Findings: bad}
+			}
+			by := strings.TrimSpace(op.ConfirmedBy)
+			if by == "" {
+				by = "unknown"
+			}
+			confirmed = []string{"Secret-scan: confirmed-not-secret by " + by + " (" + strings.Join(secretscan.RuleIDs(confirm), ", ") + ")"}
 		}
 	}
 
@@ -309,7 +326,7 @@ func Apply(cfg *config.Config, op Op) (*Result, error) {
 	if err != nil {
 		return nil, err
 	}
-	res := &Result{Kind: op.Kind, Collection: op.Collection, ID: newID, Data: op.Data, Cleared: cleared, SubjectID: ledger.SafeID(cfg, op.Collection, newID)}
+	res := &Result{Kind: op.Kind, Collection: op.Collection, ID: newID, Data: op.Data, Cleared: cleared, SubjectID: ledger.SafeID(cfg, op.Collection, newID), Trailers: confirmed}
 	if string(out) == string(src) && len(files) == 0 {
 		res.Hash = ledger.Hash(op.Data)
 		return res, nil

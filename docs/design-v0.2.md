@@ -601,100 +601,34 @@ would be committed and pushed. v0.2.2 closes that with a deterministic,
 pattern-based scan (`internal/secretscan`, on by default, configured under
 `secret_scan` in `rackbook.yml`) that runs before anything touches the disk or
 Git, on every write path: `edit.Apply` (API, MCP and CLI record writes, and the
-edits made by `clearReferences`), `types.Apply` (defaults and examples in
-schemas) and `MutateStateFile` (names and labels in passkey and token files;
-public keys, ids and hashes are exempt). A violation is `422 secret_detected`
-with redacted findings; `rackbook check` reports secrets already in the data as
-`rule: secret`. Nothing from the data repository is ever executed.
-### Versioning (2026-11-18)
+edits made by `clearReferences`), `types.Apply` (schemas and the rackbook.yml
+entry) and `MutateStateFile` (names and labels in passkey and token files;
+public keys, ids and hashes are exempt). Nothing from the data repository is
+ever executed. The scan is a safety net, not a guarantee: a secret with no
+keyword and no known shape ("Hunter2Hunter2 is what we use") is out of scope.
 
-Rackbook uses SemVer (Go modules require SemVer tags). Release plan:
+Two tiers:
 
-- **v0.2.1** — the release pipeline only: Windows builds, a native test
-  matrix on six runners, SHA-pinned actions, build provenance attestations,
-  and cosign signing. No feature changes.
-- **v0.3.0** — the built-in authorization server (decision 12).
-- **v0.4.0** — storage: one record per file (design in
-  `design-v0.4-storage.md`).
-- **1.0** — once the storage layout, config format and API are stable.
+- **Block (deterministic):** key material and known token formats (PEM and
+  OpenSSH, also base64-encoded; AGE-SECRET-KEY; GitHub, GitLab, npm, Hugging
+  Face, Tailscale, SendGrid, Slack, AWS, Google, Stripe, OpenAI and Anthropic
+  tokens; JWT; `key`/`privkey` plus hex; URL userinfo; key-bearing query
+  parameters; private JWK). Always refused (`422 secret_detected`); only the
+  allow list by value hash overrides it.
+- **Confirm (heuristic):** keyword assignments in any language (after NFKC
+  normalisation and zero-width stripping), the whole value of secret-named
+  fields (numbers and booleans included) and high-entropy tokens in free text.
+  Refused with `422 secret_suspected` until the editor confirms: the console
+  holds the write behind a "不是密钥" tick, API and MCP retry with
+  `confirm_not_secret: true` (editor and admin sessions, OAuth/MCP identities
+  with write rights; never for a token write that becomes a pull request, never
+  for block-tier findings), the CLI takes `--confirm-not-secret`. Every
+  confirmation is committed as `Secret-scan: confirmed-not-secret by <user>
+  (<rule ids>)`. `rackbook check` reports confirm-tier hits as warnings, and
+  not at all for a record whose last commit carries that trailer.
 
-See README, "Versioning and compatibility".
-
-### Decisions, round 6 (2026-11-18): separate ledger repository, GitHub App credentials (v0.3.0)
-
-13. **Rackbook writes only to a dedicated data repository** (for the owner:
-    KazuhaHub/ledger), never to an infrastructure repo. In the owner's setup
-    the infra repo's `main` is applied as root on every host, so a write
-    credential for it would amount to root. Infra may *read* the ledger;
-    Rackbook never holds a credential for infra.
-14. **GitHub App authentication (v0.3.0)**, as an alternative to deploy key +
-    PAT. One credential replaces both.
-    - An org-owned GitHub App, installed **only** on the data repository, with
-      repository permissions `contents: write` and `pull_requests: write`.
-      Nothing else.
-    - Configuration:
-      `write.github_app: {app_id, installation_id (optional, looked up from
-      the repo), private_key_file}`. The key can also come from env
-      `RACKBOOK_GITHUB_APP_KEY` or a systemd `LoadCredential` path. It never
-      goes into Git.
-    - Token flow: an RS256 app JWT (≤ 10 min) is exchanged for an installation
-      access token. That token is narrowed in the request to the data repository
-      and the two permissions, and lasts about 1 h. It is cached in memory only,
-      refreshed 5 min before expiry, and never logged.
-    - Git over **HTTPS** with the installation token. The token is passed to git
-      through the environment (`GIT_CONFIG_COUNT`/`KEY`/`VALUE` for an
-      `http.<url>.extraheader`), never on the command line, in the remote URL,
-      or in `.git/config`. The git runner's allow-lists gain exactly this, and
-      the never-force rules are unchanged.
-    - PR mode uses the same token for the REST API. `RACKBOOK_GITHUB_TOKEN`
-      stays supported for non-App setups.
-    - Commit authorship is unchanged (author = the user; committer = the
-      configured identity).
-    - Tests: a fake GitHub API issues installation tokens. They cover expiry and
-      refresh, a token that must not appear in argv or logs, push over HTTPS to
-      a local smart-HTTP test server, and PRs.
-
-### Decision 15 (2026-11-18): record documents (v0.3.0)
-
-15. **A Markdown document per record**, for runbooks, history and anything
-    else that doesn't fit fields. Generic for every collection.
-    - **Location:** `docs/<collection>/<key>.md` in the data repo, linked by
-      record key with no field needed. The root is configurable
-      (`documents.root`, default `docs`) and so is the per-collection
-      directory. A composite key uses the record id with its usual escaping,
-      and the file name is made safe for every OS: Windows reserved names and
-      characters are escaped. Owner's first real example: KazuhaHub/ledger
-      `docs/devices/development-ovh-hillsboro-or-us-dc.md`.
-    - **Lifecycle:**
-      - renaming a record (a key change) moves its document in the same commit
-        (`git mv` semantics);
-      - deleting a record whose document exists asks whether to delete the
-        document too or keep it as an orphan; nothing is removed silently;
-      - `rackbook check` reports orphaned documents.
-    - **Rendering:** on the record page, CommonMark + GFM tables and task lists.
-      **No raw HTML** (stripped, not rendered). Links are limited to
-      `http(s)`, `mailto` and relative links (relative links resolve to
-      records or documents). Images come only from relative paths in the data
-      repo or `https`; there are no `javascript:` or `data:` URLs.
-      - Server side: the API returns the Markdown source, and the console
-        renders it with a sanitizing renderer (react-markdown + rehype-sanitize
-        with a strict schema).
-      - Exports and MCP get the source.
-    - **Editing:** in the console, with the same roles as record edits
-      (editor+). Commits go through the same Git write path with the never-force
-      rules, history detection and identity trailers. Commit subject:
-      `ledger(<collection>): edit document <id>`.
-    - **Secret scan:** covers documents too, as whole-text scanning with the
-      same rules and allow-list keyed on the document path.
-    - **Search and AI:**
-      - full-text search covers documents;
-      - `export markdown` and `llms-full.txt` include each document under its
-        record;
-      - `llms.txt` links to them;
-      - MCP read tool `get_document(collection, id)`;
-      - MCP write tool `put_document(collection, id, markdown, base_hash)`,
-        which follows the PR-by-default rule (deletes always a PR).
-    - **Concurrency:** writes carry the document's content hash. A mismatch is
-      a 409 with the current text, as for records.
-    - **Documentation:** a README section for open-source users (layout,
-      config, safety rules).
+Exemptions come only from structure: a schema annotation
+`x-rackbook: {public: <kind>}` whose whole value has the kind's strict format,
+the exact placeholders, and the allow list. Free text has none. A secret-named
+field may only be annotated `secret_reference`. Record ids that carry a secret are
+shown as 4 characters plus 8 hex digits of a hash (not a secure hash; it only tells ids apart).

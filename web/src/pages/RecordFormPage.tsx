@@ -6,6 +6,8 @@ import { AlertTriangle, ChevronRight, Lock, Save } from 'lucide-react'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
+import { Checkbox } from '@/components/ui/checkbox'
+import { Label } from '@/components/ui/label'
 import { Skeleton } from '@/components/ui/skeleton'
 import { NotFound, PageHeader } from '@/components/common'
 import { RecordForm } from '@/components/RecordForm'
@@ -137,6 +139,9 @@ function Editor({
   const [serverErrors, setServerErrors] = useState<CheckError[]>([])
   const [conflict, setConflict] = useState<ApiError | null>(null)
   const [banner, setBanner] = useState<string | null>(null)
+  // the server held the write: it looks like a secret (heuristic); the editor may confirm it is not
+  const [suspected, setSuspected] = useState(false)
+  const [notSecret, setNotSecret] = useState(false)
   const [clientInvalid, setClientInvalid] = useState<string[] | null>(null)
   const alertsRef = useRef<HTMLDivElement>(null)
   const showAlerts = () => requestAnimationFrame(() => alertsRef.current?.scrollIntoView({ block: 'center', behavior: 'smooth' }))
@@ -156,8 +161,10 @@ function Editor({
     setServerErrors([])
     setConflict(null)
     setBanner(null)
+    setSuspected(false)
     showAlerts()
     if (e instanceof ApiError) {
+      if (e.code === 'secret_suspected') setSuspected(true)
       if (e.statusCode === 422) return setServerErrors(e.errors.length ? e.errors : [{ message: e.message }])
       if (e.statusCode === 409) return setConflict(e)
     }
@@ -171,9 +178,9 @@ function Editor({
     setBanner(null)
     const opts = { successNotification: false as const, errorNotification: false as const }
     if (mode === 'create') {
-      create.mutate({ resource: col.name, values: { data: d }, ...opts }, { onSuccess: onDone, onError })
+      create.mutate({ resource: col.name, values: { data: d, ...(notSecret ? { confirm_not_secret: true } : {}) }, ...opts }, { onSuccess: onDone, onError })
     } else {
-      update.mutate({ resource: col.name, id: id!, values: { data: d, hash }, ...opts }, { onSuccess: onDone, onError })
+      update.mutate({ resource: col.name, id: id!, values: { data: d, hash, ...(notSecret ? { confirm_not_secret: true } : {}) }, ...opts }, { onSuccess: onDone, onError })
     }
   }
 
@@ -223,9 +230,15 @@ function Editor({
       {serverErrors.length > 0 && (
         <Alert variant="destructive" className="mb-4">
           <AlertTriangle />
-          <AlertTitle>{t.errors.summaryTitle}</AlertTitle>
+          <AlertTitle>{suspected ? t.errors.suspectedTitle : t.errors.summaryTitle}</AlertTitle>
           <AlertDescription>
-            <p>{t.errors.summaryBody}</p>
+            <p>{suspected ? t.errors.suspectedBody : t.errors.summaryBody}</p>
+            {suspected && (
+              <div className="mt-2 flex items-center gap-2">
+                <Checkbox id="not-a-secret" checked={notSecret} onCheckedChange={(v) => setNotSecret(v === true)} />
+                <Label htmlFor="not-a-secret">{t.errors.notASecret}</Label>
+              </div>
+            )}
             <ul className="mt-2 list-disc space-y-0.5 pl-5">
               {serverErrors.map((e, i) => {
                 const own = !e.collection || e.collection === col.name

@@ -272,6 +272,9 @@ export const t = {
     secret: (rule: string, excerpt: string) =>
       `疑似密钥或口令（${rule}，${excerpt}）：请不要把密钥写进台账，改为记录它存放的位置（密码管理器、环境变量）`,
     summaryBody: '服务器拒绝了这次修改，请按下列提示更正：',
+    suspectedTitle: '这看起来像密钥/密码',
+    suspectedBody: '保存已暂停。如果确实不是密钥，请勾选下面的选项后再保存；这次确认会记录在提交里。',
+    notASecret: '不是密钥',
     readOnly: '当前为只读模式，或你没有修改权限，无法保存。',
     historyRewritten: '远端历史被改写，已暂停写入，请联系管理员。',
     configError: '配置文件无法加载，已暂停写入，请联系管理员。',

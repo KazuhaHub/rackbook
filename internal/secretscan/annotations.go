@@ -2,7 +2,9 @@ package secretscan
 
 import (
 	"encoding/json"
+	"fmt"
 	"regexp"
+	"sort"
 	"strings"
 )
 
@@ -107,10 +109,6 @@ var (
 	ageRecip  = regexp.MustCompile(`^age1[0-9a-z]{58}$`)
 	pemPublic = regexp.MustCompile(`^-----BEGIN (?:RSA )?PUBLIC KEY-----\s*[A-Za-z0-9+/=\s]+-----END (?:RSA )?PUBLIC KEY-----$`)
 	hexID     = regexp.MustCompile(`^(?:0x)?[0-9a-fA-F]{8,128}$`)
-	refOP     = regexp.MustCompile(`^op://\S+$`)
-	refVault  = regexp.MustCompile(`^vault:\S+$`)
-	refEnv    = regexp.MustCompile(`^(?:env:[A-Z_][A-Z0-9_]*|\$\{[A-Z_][A-Z0-9_]*\})$`)
-	refPath   = regexp.MustCompile(`^(?:/|~/|\./)[A-Za-z0-9._@%+=,:/-]+$`)
 )
 
 // validFor reports whether the whole value v has the strict format of kind.
@@ -134,8 +132,15 @@ func (s *Scanner) validFor(kind, v string) bool {
 		if json.Unmarshal([]byte(v), &jwk) != nil || jwk["kty"] == nil {
 			return false
 		}
-		for _, k := range []string{"d", "p", "q", "dp", "dq", "qi", "oth", "k"} {
-			if _, has := jwk[k]; has {
+		for k, val := range jwk {
+			switch {
+			case k == "d" || k == "p" || k == "q" || k == "dp" || k == "dq" || k == "qi" || k == "oth" || k == "k":
+				return false // private or symmetric members
+			case publicJWK[k] || strings.HasPrefix(k, "x5"):
+				continue
+			}
+			// every other member is scanned
+			if len(s.matches(fmt.Sprint(val))) > 0 {
 				return false
 			}
 		}
@@ -143,7 +148,63 @@ func (s *Scanner) validFor(kind, v string) bool {
 	case KindHexID:
 		return hexID.MatchString(v)
 	case KindSecretReference:
-		return refOP.MatchString(v) || refVault.MatchString(v) || refEnv.MatchString(v) || refPath.MatchString(v)
+		// the remainder after the prefix is scanned again: "op://ghp_..." and
+		// "/ghp_..." are not references, and a path that looks like a value is not a path
+		return s.isReference(v) || (isPathValue(v) && len(s.matchText(v)) == 0)
 	}
 	return false
+}
+
+var publicJWK = map[string]bool{"kty": true, "crv": true, "x": true, "y": true, "n": true, "e": true, "kid": true, "use": true, "alg": true, "key_ops": true}
+
+// AnnotationProblems lists the schema properties that are annotated wrongly: an
+// unknown kind, or any kind other than secret_reference on a field named like a
+// secret (hex_id and fingerprint cannot tell a 32-byte key from an id).
+func AnnotationProblems(schema []byte) []string {
+	var doc map[string]any
+	if json.Unmarshal(schema, &doc) != nil {
+		return nil
+	}
+	var out []string
+	var walk func(node map[string]any, name string)
+	walk = func(node map[string]any, name string) {
+		if x, ok := node["x-rackbook"].(map[string]any); ok {
+			if k, ok := x["public"].(string); ok && name != "" {
+				known := false
+				for _, kk := range Kinds {
+					known = known || kk == k
+				}
+				switch {
+				case !known:
+					out = append(out, fmt.Sprintf("property %q: unknown x-rackbook public kind %q", name, k))
+				case isSecretName(name) && k != KindSecretReference:
+					out = append(out, fmt.Sprintf("property %q is named like a secret: only the secret_reference kind may annotate it, not %s", name, k))
+				}
+			}
+		}
+		if props, ok := node["properties"].(map[string]any); ok {
+			for n, p := range props {
+				if pm, ok := p.(map[string]any); ok {
+					walk(pm, n)
+				}
+			}
+		}
+		if items, ok := node["items"].(map[string]any); ok {
+			walk(items, name)
+		}
+	}
+	walk(doc, "")
+	sort.Strings(out)
+	return out
+}
+
+// lastName is the property name a data path ends in (list indices skipped).
+func lastName(path string) string {
+	segs := strings.Split(path, "/")
+	for i := len(segs) - 1; i >= 0; i-- {
+		if segs[i] != "" && segs[i] != "*" && !isIndex(segs[i]) {
+			return strings.NewReplacer("~1", "/", "~0", "~").Replace(segs[i])
+		}
+	}
+	return ""
 }

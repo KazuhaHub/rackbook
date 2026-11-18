@@ -210,3 +210,56 @@ func TestIDWithASecretIsRedactedInCommitsErrorsAndEveryIssueKind(t *testing.T) {
 		t.Fatalf("%q %q", res.Subject(), res.Record())
 	}
 }
+
+func TestConfirmTierNeedsConfirmationAndBlockTierIgnoresIt(t *testing.T) {
+	dir, apply := setup(t)
+	before := snapshot(t, dir)
+	suspect := map[string]any{"item": "the root password is Hunter2Hunter2", "status": "待办"}
+	_, err := apply(edit.Op{Kind: edit.Add, Collection: "todo", Data: suspect})
+	se := asSecretErr(t, err)
+	if !se.Suspected() || se.Findings[0].Tier != secretscan.TierConfirm {
+		t.Fatalf("%+v", se.Findings)
+	}
+	sameTree(t, before, snapshot(t, dir))
+
+	res, err := apply(edit.Op{Kind: edit.Add, Collection: "todo", Data: suspect, ConfirmNotSecret: true, ConfirmedBy: "ann@example.com"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Trailers) != 1 || res.Trailers[0] != "Secret-scan: confirmed-not-secret by ann@example.com (secret-assignment)" {
+		t.Fatalf("%v", res.Trailers)
+	}
+
+	// a block-tier finding is not helped by a confirmation, even next to a heuristic one
+	for _, item := range []string{"use " + ghToken, "root密码：Hunter2Hunter2 and " + ghToken} {
+		_, err = apply(edit.Op{Kind: edit.Add, Collection: "todo", Data: map[string]any{"item": item, "status": "待办"}, ConfirmNotSecret: true, ConfirmedBy: "ann@example.com"})
+		if se := asSecretErr(t, err); se.Suspected() {
+			t.Fatalf("a block-tier finding must stay refused: %+v", se.Findings)
+		}
+	}
+	// an unconfirmed write carries no trailer
+	res, err = apply(edit.Op{Kind: edit.Add, Collection: "todo", Data: map[string]any{"item": "plain", "status": "待办"}, ConfirmNotSecret: true, ConfirmedBy: "ann@example.com"})
+	if err != nil || len(res.Trailers) != 0 {
+		t.Fatalf("%v %v", err, res.Trailers)
+	}
+}
+
+func TestSecretNamedNumberAndAnnotationErrorsInSchemas(t *testing.T) {
+	dir := refLedger(t)
+	testutil.Replace(t, dir, "schemas/people.json", `"name": {"type": "string"}`, `"name": {"type": "string"}, "wifi_password": {"type": "integer"}`)
+	cfg := testutil.LoadConfig(t, dir)
+	_, err := edit.Apply(cfg, edit.Op{Kind: edit.Add, Collection: "people", Data: map[string]any{"name": "gus", "wifi_password": 98765432}})
+	if se := asSecretErr(t, err); !se.Suspected() {
+		t.Fatalf("%+v", se.Findings)
+	}
+	// a schema that annotates a secret-named field with anything but secret_reference is a config problem
+	testutil.Replace(t, dir, "schemas/people.json", `"wifi_password": {"type": "integer"}`, `"wifi_password": {"type": "string", "x-rackbook": {"public": "hex_id"}}`)
+	l := ledger.Load(testutil.LoadConfig(t, dir), nil)
+	found := false
+	for _, i := range validate.Run(l) {
+		found = found || (i.Rule == ledger.RuleConfig && strings.Contains(i.Message, "wifi_password") && strings.Contains(i.Message, "secret_reference"))
+	}
+	if !found {
+		t.Fatal("check must report the annotation")
+	}
+}

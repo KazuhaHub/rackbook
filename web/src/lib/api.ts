@@ -69,7 +69,7 @@ export async function apiFetch<T>(path: string, init: RequestInit = {}): Promise
     }
     // A refused secret is shown like a validation error, on the field it was found in.
     const findings: CheckError[] | undefined =
-      body?.error === 'secret_detected' && Array.isArray(body.findings)
+      (body?.error === 'secret_detected' || body?.error === 'secret_suspected') && Array.isArray(body.findings)
         ? body.findings.map((f: any) => ({
             collection: f.collection,
             id: f.id,

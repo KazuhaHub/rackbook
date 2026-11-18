@@ -37,11 +37,17 @@ type Issue struct {
 	Path       string `json:"path"` // JSON pointer inside the record, may be empty
 	Rule       string `json:"rule"`
 	Message    string `json:"message"`
+	// Severity is "warning" for a heuristic finding (a confirm-tier secret); empty
+	// means an error.
+	Severity string `json:"severity,omitempty"`
 	// Hash identifies the record content the issue was found on. It is not
 	// part of the API; validate.Introduced uses it to match issues across
 	// edits of keyless collections, whose ids shift.
 	Hash string `json:"-"`
 }
+
+// Warning reports whether the issue is a warning, not an error.
+func (i Issue) Warning() bool { return i.Severity == "warning" }
 
 func (i Issue) String() string {
 	var b strings.Builder
@@ -172,6 +178,9 @@ func (l *Ledger) loadSchema(c *Collection) {
 		return
 	}
 	c.Schema = s
+	for _, p := range secretscan.AnnotationProblems(raw) {
+		l.Issues = append(l.Issues, Issue{Collection: c.Name, Rule: RuleConfig, Message: "schema " + c.Collection.Schema + ": " + p})
+	}
 }
 
 func (l *Ledger) loadRecords(c *Collection, doc func(string) (*yamledit.Doc, error), reported map[string]bool) {

@@ -63,6 +63,9 @@ type Finding struct {
 	Path    string `json:"path"`
 	Excerpt string `json:"excerpt"`
 	In      string `json:"in,omitempty"`
+	// Tier is "block" (key material and known token formats: always refused) or
+	// "confirm" (heuristic: the editor may confirm it is not a secret).
+	Tier string `json:"tier"`
 
 	fp string // sha256 of the matched value, to tell new findings from old ones
 }
@@ -79,9 +82,50 @@ func (f Finding) Message() string {
 // Error is returned by a write that the scan refused. Nothing was written.
 type Error struct{ Findings []Finding }
 
+// Suspected reports that every finding is confirm tier: the editor may confirm
+// they are not secrets and retry. Any block-tier finding makes it false.
+func (e *Error) Suspected() bool {
+	for _, f := range e.Findings {
+		if f.Tier != TierConfirm {
+			return false
+		}
+	}
+	return len(e.Findings) > 0
+}
+
+// RuleIDs lists the distinct rule IDs of fs, sorted.
+func RuleIDs(fs []Finding) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, f := range fs {
+		if !seen[f.Rule] {
+			seen[f.Rule] = true
+			out = append(out, f.Rule)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// Split separates block-tier from confirm-tier findings.
+func Split(fs []Finding) (block, confirm []Finding) {
+	for _, f := range fs {
+		if f.Tier == TierConfirm {
+			confirm = append(confirm, f)
+		} else {
+			block = append(block, f)
+		}
+	}
+	return
+}
+
 func (e *Error) Error() string {
 	var b strings.Builder
-	b.WriteString("secret detected, nothing was written:")
+	if e.Suspected() {
+		b.WriteString("this looks like a secret, nothing was written (confirm it is not one to save):")
+	} else {
+		b.WriteString("secret detected, nothing was written:")
+	}
 	for _, f := range e.Findings {
 		b.WriteString("\n  " + f.Location() + ": " + f.Message())
 	}
@@ -160,7 +204,7 @@ func New(c Config) (*Scanner, error) {
 		}
 		s.minLen = 1 // an extra pattern may match anything
 		known[p.ID] = true
-		r := &rule{id: p.ID, description: p.Description, re: re}
+		r := &rule{id: p.ID, description: p.Description, re: re, tier: TierBlock}
 		if re.NumSubexp() > 0 {
 			r.group = 1
 		}
@@ -240,41 +284,52 @@ const minLen = 8
 type hit struct {
 	rule  string
 	value string
+	tier  string
 }
 
-var tokenSplit = regexp.MustCompile("[\\s,;()\\[\\]{}<>\"'`|]+")
-
-// matches runs every rule over the whole text and over each token of it (text
-// split on whitespace, punctuation, quotes and brackets), so that a leading
-// "*", "/", quote or bracket never prevents a match. Duplicates are dropped.
-func (s *Scanner) matches(text string) []hit {
-	out := s.matchText(text)
-	toks := tokenSplit.Split(text, -1)
-	if len(toks) <= 1 {
-		return out
-	}
-	seen := map[hit]bool{}
-	for _, h := range out {
-		seen[h] = true
-	}
-	for _, t := range toks {
-		for _, h := range s.matchText(t) {
-			if !seen[h] {
-				seen[h] = true
-				out = append(out, h)
-			}
-		}
-	}
-	return out
-}
+// matches runs every rule over text. The text is normalised first (NFKC,
+// zero-width characters removed). The rules are unanchored, so they find a
+// secret wherever it sits: after a "*", "/", quote, bracket or CJK text.
+func (s *Scanner) matches(text string) []hit { return s.matchText(text) }
 
 // matchText runs every rule over one piece of text.
 func (s *Scanner) matchText(text string) []hit {
 	if len(text) < s.minLen {
 		return nil
 	}
+	text = normalizeText(text)
+	var lower string
+	haveLower := false
+	lowered := func() string {
+		if !haveLower {
+			lower, haveLower = asciiLower(text), true
+		}
+		return lower
+	}
 	var out []hit
 	for _, r := range s.rules {
+		if len(r.hints) > 0 { // cheap prefilter: skip the regexp unless a literal is there
+			hay := text
+			if r.ci {
+				hay = lowered()
+			}
+			found := false
+			for _, h := range r.hints {
+				if strings.Contains(hay, h) {
+					found = true
+					break
+				}
+			}
+			if !found {
+				continue
+			}
+		}
+		if r.proc != nil {
+			for _, v := range r.proc(s, text, lowered()) {
+				out = append(out, hit{r.id, v, r.tier})
+			}
+			continue
+		}
 		for _, m := range r.re.FindAllStringSubmatchIndex(text, -1) {
 			g := r.group
 			if m[2*g] < 0 { // an optional group that did not take part: the whole match
@@ -284,7 +339,34 @@ func (s *Scanner) matchText(text string) []hit {
 			if g > 0 {
 				value = strings.Trim(value, `"',;`)
 			}
-			out = append(out, hit{r.id, value})
+			if r.filter != nil && !r.filter(value) {
+				continue
+			}
+			out = append(out, hit{r.id, value, r.tier})
+		}
+	}
+	return dropCovered(out)
+}
+
+// dropCovered removes a high-entropy hit that is only another rule's match seen
+// again (a token, or the body of a private key).
+func dropCovered(hits []hit) []hit {
+	if len(hits) < 2 {
+		return hits
+	}
+	out := hits[:0:0]
+	for _, h := range hits {
+		covered := false
+		if h.rule == RuleEntropy {
+			for _, g := range hits {
+				if g.rule != RuleEntropy && (strings.Contains(g.value, h.value) || strings.Contains(h.value, g.value)) {
+					covered = true
+					break
+				}
+			}
+		}
+		if !covered {
+			out = append(out, h)
 		}
 	}
 	return out
@@ -299,7 +381,7 @@ func (s *Scanner) namedHit(value string) (hit, bool) {
 	if len(v) < 6 || isPlaceholder(v) || !s.ruleOn(RuleSecretAssign) {
 		return hit{}, false
 	}
-	return hit{RuleSecretAssign, v}, true
+	return hit{RuleSecretAssign, v, TierConfirm}, true
 }
 
 func (s *Scanner) ruleOn(id string) bool {
@@ -322,13 +404,14 @@ func (s *Scanner) pairMatches(name, value string) []hit {
 		if r.id != RuleHexKey {
 			continue
 		}
-		text := name + ": " + value
+		text := normalizeText(name + ": " + value)
+		nameLen := len(normalizeText(name))
 		for _, m := range r.re.FindAllStringSubmatchIndex(text, -1) {
-			if m[2] < 0 || m[0] >= len(name) { // the keyword must be in the field name
+			if m[2] < 0 || m[0] >= nameLen { // the keyword must be in the field name
 				continue
 			}
 			v := strings.Trim(text[m[2]:m[3]], `"',;`)
-			out = append(out, hit{r.id, v})
+			out = append(out, hit{r.id, v, r.tier})
 		}
 	}
 	return out
@@ -370,7 +453,7 @@ func (c *collector) add(h hit, path, in string) {
 	if c.s.allowed(h, c.collection, path) {
 		return
 	}
-	f := Finding{Rule: h.rule, Collection: c.collection, ID: c.id, Path: path, Excerpt: Excerpt(h.value), In: in, fp: Hash(h.value)}
+	f := Finding{Rule: h.rule, Collection: c.collection, ID: c.id, Path: path, Excerpt: Excerpt(h.value), In: in, Tier: h.tier, fp: Hash(h.value)}
 	k := f.Rule + "\x00" + f.Path + "\x00" + f.In + "\x00" + f.fp
 	if c.seen[k] {
 		return
@@ -386,7 +469,14 @@ func (c *collector) exempt(text, path string) bool {
 		return true
 	}
 	k := c.ann.kindOf(path)
-	return k != "" && c.s.validFor(k, text)
+	if k == "" {
+		return false
+	}
+	// An annotation never overrides a secret-named field, except secret_reference.
+	if k != KindSecretReference && isSecretName(lastName(path)) {
+		return false
+	}
+	return c.s.validFor(k, text)
 }
 
 func (c *collector) text(text, path, in string, named bool) {
@@ -408,6 +498,19 @@ func (c *collector) text(text, path, in string, named bool) {
 	}
 }
 
+// scalarString renders a number or boolean the way a person would type it.
+func scalarString(rv reflect.Value) string {
+	switch rv.Kind() {
+	case reflect.Float32, reflect.Float64:
+		return strconv.FormatFloat(rv.Float(), 'f', -1, 64)
+	case reflect.Bool:
+		return strconv.FormatBool(rv.Bool())
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		return strconv.FormatUint(rv.Uint(), 10)
+	}
+	return strconv.FormatInt(rv.Int(), 10)
+}
+
 // ptr escapes one JSON pointer segment.
 func ptr(seg string) string {
 	return strings.ReplaceAll(strings.ReplaceAll(seg, "~", "~0"), "/", "~1")
@@ -423,6 +526,9 @@ func (c *collector) walk(v any, path string, named bool) {
 		c.text(x, path, "", named)
 		return
 	case json.Number:
+		if named {
+			c.text(x.String(), path, "", true)
+		}
 		return
 	}
 	rv := reflect.ValueOf(v)
@@ -433,6 +539,11 @@ func (c *collector) walk(v any, path string, named bool) {
 		rv = rv.Elem()
 	}
 	switch rv.Kind() {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Float32, reflect.Float64, reflect.Bool:
+		if named { // numbers and booleans in a secret-named field are scanned as text
+			c.text(scalarString(rv), path, "", true)
+		}
 	case reflect.Map:
 		keys := make([]string, 0, rv.Len())
 		byKey := map[string]reflect.Value{}
@@ -480,8 +591,9 @@ func (c *collector) walk(v any, path string, named bool) {
 }
 
 // RedactID is how a record id that carries a secret is shown everywhere: at
-// most 4 characters of it, and a short hash so that it stays stable and
-// distinct (history lookups use it too).
+// most 4 characters of it and a short hash so that it stays stable and
+// distinct (history lookups use it too). The hash is not secure: it only tells
+// ids apart.
 func RedactID(id string) string { return Excerpt(id) + "~" + Hash(id)[:8] }
 
 // Sensitive reports whether the value of a key field called name would be
@@ -491,7 +603,7 @@ func (s *Scanner) Sensitive(name, value string) bool {
 	if !s.enabled || isPlaceholder(value) {
 		return false
 	}
-	if len(s.matches(value)) > 0 {
+	if len(s.matches(value)) > 0 || len(s.pairMatches(name, value)) > 0 {
 		return true
 	}
 	if isSecretName(name) {

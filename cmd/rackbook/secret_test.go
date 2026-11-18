@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -94,5 +95,68 @@ func TestCheckScansStateFileLabelsButNotKeysOrHashes(t *testing.T) {
 	var ee exitError
 	if !errors.As(err, &ee) || !strings.Contains(out, ".rackbook/tokens.yml") || !strings.Contains(out, "github-token") || strings.Contains(out, cliSecret[:8]) {
 		t.Fatalf("%v\n%s", err, out)
+	}
+}
+
+func gitIn(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+func TestConfirmTierIsAWarningInCheckAndConfirmationIsRecorded(t *testing.T) {
+	dir := testutil.CopyExample(t)
+	cfg := filepath.Join(dir, "rackbook.yml")
+	gitIn(t, dir, "init", "-q", "-b", "main")
+	gitIn(t, dir, "config", "user.name", "Ann")
+	gitIn(t, dir, "config", "user.email", "ann@example.com")
+	testutil.Replace(t, dir, "docs/ledger/todo.yml", "scope: gw, status: 待决定", "scope: \"gw 密码：Hunter2Hunter2\", status: 待决定")
+	gitIn(t, dir, "add", ".")
+	gitIn(t, dir, "commit", "-q", "-m", "seed")
+
+	// a heuristic hit already in the data is a warning: exit 0
+	out, err := run(t, "check", "--config", cfg)
+	if err != nil || !strings.Contains(out, "warning: ") || !strings.Contains(out, "secret-assignment") || strings.Contains(out, "Hunter") {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	out, err = run(t, "check", "--config", cfg, "--format", "json")
+	if err != nil || !strings.Contains(out, `"ok": true`) || !strings.Contains(out, `"warnings"`) || !strings.Contains(out, `"severity": "warning"`) {
+		t.Fatalf("%v\n%s", err, out)
+	}
+
+	// a write is held until it is confirmed
+	add := []string{"add", "todo", "item=x", "status=待办", "scope=root密码：Hunter2Hunter2", "--config", cfg, "--commit"}
+	_, err = run(t, add...)
+	if err == nil || !strings.Contains(err.Error(), "--confirm-not-secret") {
+		t.Fatalf("%v", err)
+	}
+	if _, err = run(t, append(add, "--confirm-not-secret")...); err != nil {
+		t.Fatal(err)
+	}
+	if msg := gitIn(t, dir, "log", "-1", "--format=%B"); !strings.Contains(msg, "Secret-scan: confirmed-not-secret by ann@example.com (secret-assignment)") {
+		t.Fatal(msg)
+	}
+	// block tier cannot be confirmed
+	if _, err = run(t, "add", "todo", "item=y", "status=待办", "scope="+cliSecret, "--config", cfg, "--confirm-not-secret"); err == nil || strings.Contains(err.Error(), "repeat the command") {
+		t.Fatalf("%v", err)
+	}
+
+	// the confirmed record no longer warns; the hand-committed one still does
+	out, _ = run(t, "check", "--config", cfg)
+	if strings.Count(out, "warning: ") != 1 || strings.Contains(out, "todo/x ") {
+		t.Fatalf("%s", out)
+	}
+	// once a later, unconfirmed commit changes the record, it warns again
+	if _, err = run(t, "set", "todo", "x", "status=完成", "--config", cfg, "--commit"); err != nil {
+		t.Fatal(err)
+	}
+	out, _ = run(t, "check", "--config", cfg)
+	if strings.Count(out, "warning: ") != 2 {
+		t.Fatalf("%s", out)
 	}
 }

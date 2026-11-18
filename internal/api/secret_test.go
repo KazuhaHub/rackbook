@@ -59,7 +59,7 @@ func TestAPIRefusesSecretsOnCreateAndUpdate(t *testing.T) {
 	rec := arr(t, l["records"])[0].(map[string]any)
 	id, hash := rec["id"].(string), rec["hash"].(string)
 	code, r, _ = f.do(t, "PUT", "/api/c/todo/"+url.PathEscape(id), map[string]any{"hash": hash, "data": map[string]any{"item": "ok", "scope": "password: hunter2hunter2", "status": "待办"}}, nil)
-	if code != 422 || r["error"] != "secret_detected" || arr(t, r["findings"])[0].(map[string]any)["path"] != "/scope" {
+	if code != 422 || r["error"] != "secret_suspected" || arr(t, r["findings"])[0].(map[string]any)["path"] != "/scope" {
 		t.Fatalf("%d %v", code, r)
 	}
 	if tree(t, f.dir) != before {
@@ -119,7 +119,7 @@ func TestTypeTitlesDescriptionsAndConfigEntryAreScanned(t *testing.T) {
 	for name, mut := range map[string]func(ty map[string]any){
 		"type description":  func(ty map[string]any) { ty["description"] = "login with " + apiToken },
 		"type title":        func(ty map[string]any) { ty["title"] = "pw " + apiToken },
-		"field title":       func(ty map[string]any) { ty["fields"].([]any)[0].(map[string]any)["title"] = "token: abcdefgh12345" },
+		"field title":       func(ty map[string]any) { ty["fields"].([]any)[0].(map[string]any)["title"] = "token: " + apiToken },
 		"field description": func(ty map[string]any) { ty["fields"].([]any)[0].(map[string]any)["description"] = apiToken },
 	} {
 		nt := map[string]any{"name": "contacts", "title": "c", "key": []string{"name"}, "fields": []any{map[string]any{"name": "name", "type": "text", "required": true}}}

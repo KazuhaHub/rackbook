@@ -367,7 +367,7 @@ func (s *Store) WriteFunc(ctx context.Context, apply ApplyFunc, who *auth.Identi
 			return nil, err
 		}
 		res = r
-		return &change{Files: r.Files, Subject: r.Subject(), Record: r.Record()}, nil
+		return &change{Files: r.Files, Subject: r.Subject(), Record: r.Record(), Trailers: r.Trailers}, nil
 	})
 	if err != nil {
 		return nil, err
@@ -386,6 +386,8 @@ type change struct {
 	Files   []string // config-relative files written; empty = nothing changed
 	Subject string
 	Record  string // Record trailer value, "" for none
+	// Trailers are extra trailers after Record (Secret-scan confirmations).
+	Trailers []string
 }
 
 // commitLoop is the Git write path shared by record edits and state files:
@@ -417,7 +419,7 @@ func (s *Store) commitLoop(ctx context.Context, who *auth.Identity, opts WriteOp
 			return "", false, nil
 		}
 		parent, _ := s.repo.Head(ctx)
-		msg := CommitMessage(ch.Subject, who, s.via, ch.Record)
+		msg := CommitMessage(ch.Subject, who, s.via, ch.Record, ch.Trailers...)
 		short, err := s.repo.Commit(ctx, ch.Files, msg, author, s.opts.Committer)
 		if err != nil {
 			s.discard(ctx, parent, ch.Files)

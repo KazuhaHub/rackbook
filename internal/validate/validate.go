@@ -27,13 +27,37 @@ var printer = message.NewPrinter(language.English)
 
 // Run returns every problem in the ledger: load issues first, then schema,
 // unique, ref and same_set findings. The order is deterministic.
-func Run(l *ledger.Ledger) []ledger.Issue {
+func Run(l *ledger.Ledger) []ledger.Issue { return RunWith(l, Options{}) }
+
+// Options adjusts RunWith.
+type Options struct {
+	// Confirmed says an editor confirmed "this is not a secret" for the record in
+	// the last commit that changed it; its confirm-tier secret findings are then
+	// not reported at all.
+	Confirmed func(collection, id string) bool
+}
+
+// Split separates errors from warnings.
+func Split(issues []ledger.Issue) (errs, warns []ledger.Issue) {
+	errs, warns = []ledger.Issue{}, []ledger.Issue{}
+	for _, i := range issues {
+		if i.Warning() {
+			warns = append(warns, i)
+		} else {
+			errs = append(errs, i)
+		}
+	}
+	return
+}
+
+// RunWith is Run with options.
+func RunWith(l *ledger.Ledger, o Options) []ledger.Issue {
 	issues := append([]ledger.Issue{}, l.Issues...)
 	for _, c := range l.Collections {
 		issues = append(issues, keyIssues(c)...)
 		issues = append(issues, schemaIssues(c)...)
 		issues = append(issues, uniqueIssues(c, c.Key, true)...)
-		issues = append(issues, secretIssues(l, c)...)
+		issues = append(issues, secretIssues(l, c, o)...)
 	}
 	issues = append(issues, stateSecretIssues(l)...)
 	for _, r := range l.Config.Rules {
@@ -57,9 +81,19 @@ func Run(l *ledger.Ledger) []ledger.Issue {
 	return issues
 }
 
+func secretIssue(f secretscan.Finding, c *ledger.Collection, hash string) ledger.Issue {
+	i := ledger.Issue{Collection: c.Name, ID: f.ID, Path: f.Path, Rule: ledger.RuleSecret, Message: f.Message(), Hash: hash}
+	if f.Tier == secretscan.TierConfirm {
+		i.Severity = "warning"
+	}
+	return i
+}
+
 // secretIssues reports secrets that are already in the data (hand-committed,
 // or from before the scan existed), with the same redaction as a refused write.
-func secretIssues(l *ledger.Ledger, c *ledger.Collection) []ledger.Issue {
+// Block-tier findings are errors; confirm-tier ones are warnings, and are left
+// out when the record's last commit carries a confirmation.
+func secretIssues(l *ledger.Ledger, c *ledger.Collection, o Options) []ledger.Issue {
 	sc := l.Config.SecretScanner()
 	if !sc.Enabled() {
 		return nil
@@ -67,13 +101,20 @@ func secretIssues(l *ledger.Ledger, c *ledger.Collection) []ledger.Issue {
 	var out []ledger.Issue
 	ann := secretscan.AnnotationsOf(c.SchemaRaw)
 	for _, r := range c.Records {
-		for _, f := range sc.ScanRecordWith(c.Name, ledger.SafeID(l.Config, c.Name, r.ID), r.Data, ann) {
-			out = append(out, ledger.Issue{Collection: c.Name, ID: f.ID, Path: f.Path, Rule: ledger.RuleSecret, Message: f.Message(), Hash: r.Hash})
+		id := ledger.SafeID(l.Config, c.Name, r.ID)
+		for _, f := range sc.ScanRecordWith(c.Name, id, r.Data, ann) {
+			i := secretIssue(f, c, r.Hash)
+			if i.Warning() && o.Confirmed != nil && o.Confirmed(c.Name, i.ID) {
+				continue
+			}
+			out = append(out, i)
 		}
 	}
 	if c.SchemaRaw != nil {
 		for _, f := range sc.ScanSchema(c.Name, c.SchemaRaw) {
-			out = append(out, ledger.Issue{Collection: c.Name, Path: f.Path, Rule: ledger.RuleSecret, Message: f.Message()})
+			i := secretIssue(f, c, "")
+			i.ID = ""
+			out = append(out, i)
 		}
 	}
 	return out
@@ -107,7 +148,11 @@ func stateSecretIssues(l *ledger.Ledger) []ledger.Issue {
 		}
 		rel := config.StateDir + "/" + name
 		for _, f := range sc.ScanState(rel, b) {
-			out = append(out, ledger.Issue{Collection: rel, Path: f.Path, Rule: ledger.RuleSecret, Message: f.Message()})
+			i := ledger.Issue{Collection: rel, Path: f.Path, Rule: ledger.RuleSecret, Message: f.Message()}
+			if f.Tier == secretscan.TierConfirm {
+				i.Severity = "warning"
+			}
+			out = append(out, i)
 		}
 	}
 	return out
