@@ -30,6 +30,7 @@ func Run(l *ledger.Ledger) []ledger.Issue {
 		issues = append(issues, keyIssues(c)...)
 		issues = append(issues, schemaIssues(c)...)
 		issues = append(issues, uniqueIssues(c, c.Key, true)...)
+		issues = append(issues, secretIssues(l, c)...)
 	}
 	for _, r := range l.Config.Rules {
 		switch {
@@ -46,6 +47,27 @@ func Run(l *ledger.Ledger) []ledger.Issue {
 	return issues
 }
 
+// secretIssues reports secrets that are already in the data (hand-committed,
+// or from before the scan existed), with the same redaction as a refused write.
+func secretIssues(l *ledger.Ledger, c *ledger.Collection) []ledger.Issue {
+	sc := l.Config.SecretScanner()
+	if !sc.Enabled() {
+		return nil
+	}
+	var out []ledger.Issue
+	for _, r := range c.Records {
+		for _, f := range sc.ScanRecord(c.Name, r.ID, r.Data) {
+			out = append(out, ledger.Issue{Collection: c.Name, ID: f.ID, Path: f.Path, Rule: ledger.RuleSecret, Message: f.Message(), Hash: r.Hash})
+		}
+	}
+	if c.SchemaRaw != nil {
+		for _, f := range sc.ScanSchema(c.Name, c.SchemaRaw) {
+			out = append(out, ledger.Issue{Collection: c.Name, Path: f.Path, Rule: ledger.RuleSecret, Message: f.Message()})
+		}
+	}
+	return out
+}
+
 var lineRe = regexp.MustCompile(`line \d+`)
 
 type issueKey struct{ collection, rule, path, message, who string }
@@ -54,7 +76,7 @@ type issueKey struct{ collection, rule, path, message, who string }
 // before. An issue is already present when the same message exists on the same
 // record id or on a record with the same content hash (keyless collections
 // address records by position, so their ids shift when a record is deleted).
-// Line numbers in yaml issues are ignored.
+// Line numbers in yaml issues are ignored. Secret findings are never "introduced".
 func Introduced(before, after []ledger.Issue) []ledger.Issue {
 	norm := func(i ledger.Issue) string {
 		if i.Rule == ledger.RuleYAML {
@@ -71,6 +93,12 @@ func Introduced(before, after []ledger.Issue) []ledger.Issue {
 	}
 	out := []ledger.Issue{}
 	for _, i := range after {
+		// Secrets are the secret scan's to refuse, on the data being written. An
+		// old one in a record that a change merely touched (its id or hash moves)
+		// is for `check` to report, not a reason to refuse the change.
+		if i.Rule == ledger.RuleSecret {
+			continue
+		}
 		if seen[issueKey{i.Collection, i.Rule, i.Path, norm(i), "id:" + i.ID}] {
 			continue
 		}

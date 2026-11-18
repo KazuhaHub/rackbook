@@ -10,6 +10,7 @@ import (
 
 	"github.com/kazuhahub/rackbook/internal/auth"
 	"github.com/kazuhahub/rackbook/internal/config"
+	"github.com/kazuhahub/rackbook/internal/secretscan"
 )
 
 // StateResult is the outcome of MutateStateFile.
@@ -71,6 +72,12 @@ func (s *Store) MutateStateFile(ctx context.Context, rel, subject string, who *a
 		if exists && bytes.Equal(old, nw) {
 			return &change{}, nil
 		}
+		// Public keys, ids and hashes are what these files hold by design; the
+		// names and labels people type are scanned.
+		sc := s.cur.Load().Config.SecretScanner()
+		if bad := secretscan.Introduced(sc.ScanState(rel, old), sc.ScanState(rel, nw)); len(bad) > 0 {
+			return nil, &secretscan.Error{Findings: bad}
+		}
 		if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
 			return nil, err
 		}
@@ -125,3 +132,7 @@ func (s *Store) StateFile(rel string) ([]byte, bool, error) {
 	}
 	return b, err == nil, err
 }
+
+// SecretScanner is the scanner of the current config, for callers that want to
+// refuse a label before starting a longer flow (a passkey nickname).
+func (s *Store) SecretScanner() *secretscan.Scanner { return s.Config().SecretScanner() }

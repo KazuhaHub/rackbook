@@ -123,7 +123,7 @@ is not a Git checkout.
 All writes: `403 {"error":"read_only"}` in read-only mode and
 `403 {"error":"forbidden"}` when the caller's role may not do it (creating and
 editing need `editor`, deleting needs `editor`); any request from an
-identity without a role gets `403 {"error":"no_role"}`; `422 {"error":"invalid","errors":[…check errors…]}` when the result
+identity without a role gets `403 {"error":"no_role"}`; `422 {"error":"secret_detected","findings":[…]}` when a value looks like a secret (see below); `422 {"error":"invalid","errors":[…check errors…]}` when the result
 would not validate (errors as in `/api/check`, limited to the ones the write
 introduced); `409 {"error":"conflict","current":{id,hash,data}|null}` when the
 record changed since `hash` (or a record with the new id already exists, or
@@ -264,3 +264,24 @@ omitted) in the records that lack it. The plan lists what is on offer (`migratio
 
 `DELETE /api/c/{collection}/{id}` answers 409 `referenced` with `references: [{collection, id, field}]` when other
 records point at the record; `?clearReferences=true` removes those references in the same commit.
+
+## Secret detection
+
+Every write path scans what it is about to write (records, data types, passkey
+and token names) and refuses it with
+
+```json
+{"error": "secret_detected", "message": "a possible secret was found; nothing was written",
+ "findings": [{"rule": "github-token", "collection": "devices", "id": "web-1",
+               "path": "/notes", "excerpt": "ghp_…"}]}
+```
+
+status `422`. `path` is the JSON pointer of the field (`in: "key"` is added when
+the secret is a field name, and `path` is then its map). `excerpt` is at most the
+first 4 characters of the match. The MCP write tools return the same body as a
+tool error (`isError`), and the CLI exits 1. `GET /api/check` (and `rackbook
+check`) report secrets already in the data as errors with `rule: "secret"`, the
+same redaction and the message `possible secret (<rule>): <excerpt>`. Passkey
+enrolment with a name that is a secret answers the same `422` before the
+ceremony starts. Configure it under `secret_scan` in `rackbook.yml`; see the
+README.

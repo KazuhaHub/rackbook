@@ -592,3 +592,17 @@ Agreed with the owner on 2026-11-18:
       Inspector and Claude Code against the built-in server and against an
       external issuer, and **restarts the server to show the client keeps
       working without a browser prompt**.
+
+## v0.2.2 security fix: built-in secret scan
+
+Rackbook runs Git without hooks (decision above), so a repository's
+pre-commit scanners never see its commits, and a secret typed into a record
+would be committed and pushed. v0.2.2 closes that with a deterministic,
+pattern-based scan (`internal/secretscan`, on by default, configured under
+`secret_scan` in `rackbook.yml`) that runs before anything touches the disk or
+Git, on every write path: `edit.Apply` (API, MCP and CLI record writes, and the
+edits made by `clearReferences`), `types.Apply` (defaults and examples in
+schemas) and `MutateStateFile` (names and labels in passkey and token files;
+public keys, ids and hashes are exempt). A violation is `422 secret_detected`
+with redacted findings; `rackbook check` reports secrets already in the data as
+`rule: secret`. Nothing from the data repository is ever executed.

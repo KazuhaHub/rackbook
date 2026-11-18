@@ -469,6 +469,67 @@ Logins, refusals and logouts go to the server log (stdout). Starting a login or 
 passkey ceremony is rate limited per client (the first `CF-Connecting-IP` /
 `X-Forwarded-For` address when the request comes from a loopback or private proxy).
 
+## Secret scanning
+
+Rackbook runs Git with hooks disabled, so a pre-commit hook in your data
+repository (gitleaks and the like) never sees its commits. Without a check of
+its own, a password pasted into a record would be committed and pushed into
+history. Rackbook therefore scans what it is about to write, before anything
+touches the disk or Git. It is on by default.
+
+It covers every write path: records created or updated through the console and
+API, the MCP write tools and `rackbook add` / `set`; data type changes (the
+defaults, examples, constants and enum values in schemas); the names and labels
+in the passkey and token state files (public keys, ids and hashes are exempt);
+and the edits made when a delete clears references. Every string in a record is
+scanned, including nested values and field names. A refused write returns
+`422 {"error":"secret_detected","findings":[...]}` (the console shows it on the
+field), an MCP tool error with the same findings, or exit code 1 from the CLI.
+A finding gives the rule, collection, record id, the JSON pointer of the field
+and the first few characters of the match; never the secret. Secrets already in
+the repository are reported by `rackbook check` and `/api/check` as issues with
+rule `secret`, so CI catches hand-committed ones.
+
+The rules: PEM private keys, age secret keys, GitHub tokens, OpenAI and
+Anthropic style keys, Slack tokens, AWS access key IDs, Google API keys, Stripe
+live keys, JWTs, `password:` / `secret=` / `token:` style assignments (also a
+field named `password`), long hex strings assigned to `key:`, and URLs with a
+password in them. The rule IDs (`private-key`, `age-secret-key`,
+`github-token`, `github-pat`, `openai-api-key`, `slack-token`,
+`aws-access-key-id`, `google-api-key`, `stripe-live-key`, `jwt`,
+`secret-assignment`, `hex-key`, `url-credentials`) are stable.
+
+```yaml
+# rackbook.yml
+secret_scan:
+  enabled: true                 # default; false logs a startup warning
+  extra_patterns:               # your own rules; group 1, if any, is the secret
+    - {id: corp-token, pattern: 'corp_(tok_[a-z0-9]{12,})', description: internal token}
+  allow:                        # a known false positive, as precisely as you can
+    - rule: secret-assignment
+      collection: devices
+      field: /notes             # JSON pointer, covers everything below it
+      value_sha256: 3b4c...     # sha256 of the matched value (see below)
+  disable_rules: [hex-key]
+```
+
+An `allow` entry needs a `rule` and at least one of `collection`, `field` or
+`value_sha256`. The matched value is the whole match, except for
+`secret-assignment` and `hex-key` (the text after the `:` or `=`),
+`url-credentials` (`user:password`) and extra patterns with a capture group
+(group 1); quotes and a trailing `,` or `;` are not part of it. Compute it with
+`printf %s 'the value' | shasum -a 256`. An invalid pattern or an unknown rule
+ID is a config error. References to where a secret lives are not flagged:
+`password: op://vault/item`, `token: env:NAME`, `secret: $NAME`, a file path.
+
+This is pattern based. It catches secrets with a recognisable shape or a
+telltale label, not arbitrary high-entropy strings, and it is not a replacement
+for an entropy-based scanner such as gitleaks or trufflehog in CI over the
+whole repository. Known false-positive risks: free text such as
+`password: required-for-ssh` after a keyword, hostnames that start with `sk-`
+and contain a digit, and long hex values assigned to a name ending in `key`
+that are not secret.
+
 ## Development
 
 ```bash

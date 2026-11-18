@@ -138,6 +138,9 @@ func Open(ctx context.Context, o Options) (*Store, error) {
 		}
 	}
 	s.cur.Store(ledger.Load(cfg, nil))
+	if !cfg.SecretScanner().Enabled() {
+		s.log.Warn("secret_scan.enabled is false: nothing checks the records, data types and state files Rackbook writes for secrets, and Rackbook's commits bypass repository pre-commit hooks")
+	}
 	if s.git && s.remote != "" {
 		s.initLastGood(ctx)
 		if err := s.Pull(ctx); err != nil && !errors.Is(err, ErrHistoryRewritten) {

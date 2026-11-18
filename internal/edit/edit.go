@@ -17,6 +17,7 @@ import (
 
 	"github.com/kazuhahub/rackbook/internal/config"
 	"github.com/kazuhahub/rackbook/internal/ledger"
+	"github.com/kazuhahub/rackbook/internal/secretscan"
 	"github.com/kazuhahub/rackbook/internal/validate"
 	"github.com/kazuhahub/rackbook/internal/yamledit"
 )
@@ -226,6 +227,24 @@ func Apply(cfg *config.Config, op Op) (*Result, error) {
 			return nil, fmt.Errorf("%w: data must not be empty", ErrBadRequest)
 		}
 		op.Data = Normalize(op.Data)
+		// Before anything is read further or written: Rackbook runs Git without
+		// hooks, so no pre-commit scanner would see this record.
+		id := op.ID
+		if op.Kind == Add {
+			id = ledger.ID(c.Collection, len(c.Records), op.Data)
+		}
+		sc := cfg.SecretScanner()
+		bad := sc.ScanRecord(c.Name, id, op.Data)
+		if op.Kind == Edit && len(bad) > 0 {
+			// A secret the record already holds is for `rackbook check` to report;
+			// refusing every edit of such a record would also lock out the fix.
+			if cur, err := findRecord(c, Op{Kind: Edit, ID: op.ID}); err == nil {
+				bad = secretscan.Introduced(sc.ScanRecord(c.Name, id, cur.Data), bad)
+			}
+		}
+		if len(bad) > 0 {
+			return nil, &secretscan.Error{Findings: bad}
+		}
 	}
 
 	var out []byte
@@ -261,7 +280,7 @@ func Apply(cfg *config.Config, op Op) (*Result, error) {
 						return nil, &ForbiddenError{Collection: r.Collection}
 					}
 				}
-				if files, err = clearReferences(base, refs); err != nil {
+				if files, err = clearReferences(base, refs, cfg.SecretScanner()); err != nil {
 					return nil, err
 				}
 				cleared = refs
@@ -316,7 +335,7 @@ func Apply(cfg *config.Config, op Op) (*Result, error) {
 // and returns the new content of every file it changed (config-relative path).
 // Record positions do not move, so the references of one file are applied one
 // after the other on the evolving text.
-func clearReferences(l *ledger.Ledger, refs []ledger.Reference) (map[string][]byte, error) {
+func clearReferences(l *ledger.Ledger, refs []ledger.Reference, sc *secretscan.Scanner) (map[string][]byte, error) {
 	type recKey struct{ coll, id string }
 	targets := map[recKey]map[string]map[string]bool{} // record -> field -> referenced values
 	var order []recKey
@@ -332,6 +351,7 @@ func clearReferences(l *ledger.Ledger, refs []ledger.Reference) (map[string][]by
 		targets[k][r.Field][r.Value] = true
 	}
 	files := map[string][]byte{}
+	var bad []secretscan.Finding
 	for _, k := range order {
 		c := l.Collection(k.coll)
 		rec := c.Get(k.id)
@@ -356,6 +376,9 @@ func clearReferences(l *ledger.Ledger, refs []ledger.Reference) (map[string][]by
 				}
 			}
 		}
+		// Rewriting a record must not slip a secret in; one that was already
+		// there is for `rackbook check` to report, not a reason to refuse.
+		bad = append(bad, secretscan.Introduced(sc.ScanRecord(k.coll, k.id, rec.Data), sc.ScanRecord(k.coll, k.id, data))...)
 		src, ok := files[c.File]
 		if !ok {
 			var err error
@@ -372,6 +395,9 @@ func clearReferences(l *ledger.Ledger, refs []ledger.Reference) (map[string][]by
 			return nil, err
 		}
 		files[c.File] = out
+	}
+	if len(bad) > 0 {
+		return nil, &secretscan.Error{Findings: bad}
 	}
 	return files, nil
 }

@@ -20,6 +20,7 @@ import (
 	"github.com/kazuhahub/rackbook/internal/clientip"
 	"github.com/kazuhahub/rackbook/internal/gitstore"
 	"github.com/kazuhahub/rackbook/internal/roles"
+	"github.com/kazuhahub/rackbook/internal/secretscan"
 )
 
 const (
@@ -352,6 +353,14 @@ func (p *passkeys) enrolBegin(w http.ResponseWriter, r *http.Request) {
 	nick := cleanName(b.Name)
 	if len(nick) > 100 {
 		nick = strings.ToValidUTF8(nick[:100], "")
+	}
+	// Refuse a nickname that is a secret before the authenticator is involved;
+	// the state file write checks again.
+	if sc, ok := p.s.o.Files.(interface{ SecretScanner() *secretscan.Scanner }); ok {
+		if bad := sc.SecretScanner().ScanRecord(PasskeysPath, "", map[string]any{"name": nick, "user_name": who.Name}); len(bad) > 0 {
+			writeJSON(w, http.StatusUnprocessableEntity, map[string]any{"error": "secret_detected", "message": "a possible secret was found in the passkey name; nothing was written", "findings": bad})
+			return
+		}
 	}
 	file, err := p.store.load()
 	if err != nil {

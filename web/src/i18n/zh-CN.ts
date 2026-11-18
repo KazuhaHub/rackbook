@@ -269,6 +269,8 @@ export const t = {
   },
   errors: {
     summaryTitle: '保存失败：校验未通过',
+    secret: (rule: string, excerpt: string) =>
+      `疑似密钥或口令（${rule}，${excerpt}）：请不要把密钥写进台账，改为记录它存放的位置（密码管理器、环境变量）`,
     summaryBody: '服务器拒绝了这次修改，请按下列提示更正：',
     readOnly: '当前为只读模式，或你没有修改权限，无法保存。',
     historyRewritten: '远端历史被改写，已暂停写入，请联系管理员。',

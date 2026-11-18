@@ -134,7 +134,11 @@ func (s *server) createToken(w http.ResponseWriter, r *http.Request) {
 		return
 	default:
 		if info := apierr.Classify(err); info.Status != http.StatusInternalServerError {
-			writeError(w, info.Status, info.Code, info.Message)
+			extra := make([]any, 0, 2*len(info.Extra))
+			for k, v := range info.Extra {
+				extra = append(extra, k, v)
+			}
+			writeError(w, info.Status, info.Code, info.Message, extra...)
 		} else {
 			s.internal(w, err)
 		}
@@ -165,7 +169,11 @@ func (s *server) revokeToken(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "not_found", "no such token")
 	default:
 		if info := apierr.Classify(err); info.Status != http.StatusInternalServerError {
-			writeError(w, info.Status, info.Code, info.Message)
+			extra := make([]any, 0, 2*len(info.Extra))
+			for k, v := range info.Extra {
+				extra = append(extra, k, v)
+			}
+			writeError(w, info.Status, info.Code, info.Message, extra...)
 		} else {
 			s.internal(w, err)
 		}

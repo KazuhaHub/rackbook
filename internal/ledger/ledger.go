@@ -26,6 +26,7 @@ const (
 	RuleRef     = "ref"
 	RuleSameSet = "same_set"
 	RuleConfig  = "config"
+	RuleSecret  = "secret"
 )
 
 // Issue is one problem found while loading or checking the ledger.
