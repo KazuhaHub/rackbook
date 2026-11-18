@@ -114,7 +114,7 @@ func newEnv(t *testing.T, o options) *env {
 			(*hp).ServeHTTP(w, r)
 			return
 		}
-		http.Error(w, "starting", 503)
+		http.Error(w, "starting", http.StatusServiceUnavailable)
 	}))
 	e.app.StartTLS()
 	e.base = "https://localhost:" + e.app.Listener.Addr().(*net.TCPAddr).AddrPort().String()[len("127.0.0.1:"):]

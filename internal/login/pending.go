@@ -105,16 +105,6 @@ func (p *pendingStore) take(id, state string) (*pendingEntry, takeResult) {
 	return e, takeOK
 }
 
-// drop forgets id (used when the IdP reports an error).
-func (p *pendingStore) drop(id string) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if e, ok := p.items[id]; ok {
-		p.order.Remove(e.elem)
-		delete(p.items, id)
-	}
-}
-
 func (p *pendingStore) len() int {
 	p.mu.Lock()
 	defer p.mu.Unlock()

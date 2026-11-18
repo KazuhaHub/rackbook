@@ -18,11 +18,6 @@ type omap struct {
 
 func newOmap() *omap { return &omap{vals: map[string]any{}} }
 
-func (m *omap) get(k string) (any, bool) {
-	v, ok := m.vals[k]
-	return v, ok
-}
-
 // set replaces the value in place or appends the key.
 func (m *omap) set(k string, v any) {
 	if _, ok := m.vals[k]; !ok {

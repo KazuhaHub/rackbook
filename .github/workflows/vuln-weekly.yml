@@ -1,0 +1,35 @@
+name: vuln-weekly
+
+# New advisories appear without any change to this repo, so scan main on a timer too.
+on:
+  schedule:
+    - cron: "0 6 * * 1" # Mondays 06:00 UTC
+  workflow_dispatch:
+
+permissions: {}
+
+env:
+  GOWORK: "off"
+  GOTOOLCHAIN: local
+
+jobs:
+  govulncheck:
+    name: govulncheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      # Always scan main, even when the run is started by hand from another branch.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          persist-credentials: false
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version-file: go.mod
+      # setup-go installs the go line of go.mod; fail if any other Go is on PATH.
+      - name: Go version matches go.mod
+        shell: bash
+        run: test "$(go env GOVERSION)" = "go$(go list -m -f '{{.GoVersion}}')"
+      - run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...

@@ -81,7 +81,6 @@ type Store struct {
 	lastStamp              time.Time
 	beforePush             func()                                         // test seam: runs between commit and push
 	pushFn                 func(ctx context.Context, branch string) error // test seam: replaces the push
-	loadErr                atomic.Value                                   // string, last reload error
 
 	lastGood string                 // last accepted remote commit; guarded by mu
 	alert    atomic.Pointer[Alert]  // set while the remote history is rewritten

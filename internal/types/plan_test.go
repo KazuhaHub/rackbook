@@ -104,7 +104,7 @@ func TestPlanRequiredFieldOffersDefaultMigration(t *testing.T) {
 	}
 	// a value given with the migration wins over the default
 	p = update(t, cfg, "services", add, Migration{Kind: MigFillDefault, Field: "owner", Value: "ann"})
-	if !strings.Contains(file(p, "docs/ledger/services.yml").Diff, "owner: ann") && !strings.Contains(file(p, "docs/ledger/services.yml").Diff, "owner: ann") {
+	if !strings.Contains(file(p, "docs/ledger/services.yml").Diff, "owner: ann") {
 		t.Fatal(file(p, "docs/ledger/services.yml").Diff[:400])
 	}
 }

@@ -1,7 +1,7 @@
 # Reusable verification: the console build once, then the Go tests and a smoke
-# test of the built binary natively on every supported platform. ci.yml runs it
-# on pull requests and on main; release.yml runs it as the gate before anything
-# is published, and publishes the very console build that was tested here.
+# test of the built binary natively on every supported platform. Only
+# release.yml runs it, as the gate before anything is published; it publishes
+# the very console build that was tested here. Pull request CI (ci.yml) is lighter.
 name: verify
 
 on:
@@ -9,6 +9,10 @@ on:
 
 permissions:
   contents: read
+
+# Use exactly the Go that setup-go installed from go.mod; never let go switch toolchains.
+env:
+  GOTOOLCHAIN: local
 
 jobs:
   web:
@@ -64,6 +68,10 @@ jobs:
       - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
           go-version-file: go.mod
+      # setup-go installs the go line of go.mod; fail if any other Go is on PATH.
+      - name: Go version matches go.mod
+        shell: bash
+        run: test "$(go env GOVERSION)" = "go$(go list -m -f '{{.GoVersion}}')"
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: web-dist

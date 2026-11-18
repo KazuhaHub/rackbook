@@ -705,7 +705,7 @@ func TestMultilingualAssignmentsAreConfirmTier(t *testing.T) {
 		"パスワード：Hunter2Hunter2", "비밀번호: Hunter2Hunter2", "pwd: Hunter2Hunter2", "pass = Hunter2Hunter2", "passwd=Hunter2Hunter2",
 		"the password for the database was Hunter2Hunter2", "apikey: Hunter2Hunter2", "api key is Hunter2Hunter2", "secret: correcthorse",
 		// full-width letters and zero-width characters inside the keyword
-		"ｐａｓｓｗｏｒｄ：Hunter2Hunter2", "pass​word: Hunter2Hunter2", "密‍码：Hunter2Hunter2", "ｒｏｏｔ　密码：Ｈunter2Hunter2",
+		"ｐａｓｓｗｏｒｄ：Hunter2Hunter2", "pass\u200bword: Hunter2Hunter2", "密\u200d码：Hunter2Hunter2", "ｒｏｏｔ　密码：Ｈunter2Hunter2",
 	} {
 		tier, ids := tierOf(t, v)
 		if tier != TierConfirm || !has(ids, RuleSecretAssign) {
@@ -962,7 +962,7 @@ func TestRoundFiveFixes(t *testing.T) {
 		}
 	}
 	// more invisible characters inside the keyword
-	for _, v := range []string{"pass‎word: Hunter2Hunter2", "pass‏word: Hunter2Hunter2", "pass­word: Hunter2Hunter2", "pass⁡⁢⁣⁤word: Hunter2Hunter2"} {
+	for _, v := range []string{"pass\u200eword: Hunter2Hunter2", "pass\u200fword: Hunter2Hunter2", "pass\u00adword: Hunter2Hunter2", "pass\u2061\u2062\u2063\u2064word: Hunter2Hunter2"} {
 		if got := rules(t, d, v); !has(got, RuleSecretAssign) {
 			t.Errorf("%q: %v", v, got)
 		}

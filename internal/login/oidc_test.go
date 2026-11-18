@@ -258,8 +258,6 @@ func TestCallbackParameterChecks(t *testing.T) {
 	// cannot kill someone else's login.
 	b := e.browser()
 	r1 := b.get("/auth/oidc/start")
-	az, _ := url.Parse(r1.Loc())
-	state := az.Query().Get("state")
 	cb := b.get(r1.Loc()).Loc()
 	if r := b.get("/auth/oidc/callback?error=access_denied"); r.Loc() != "/auth/login?error=idp_error" || b.cookie(LoginCookie) == nil {
 		t.Fatalf("idp error without state: %q", r.Loc())
@@ -273,8 +271,8 @@ func TestCallbackParameterChecks(t *testing.T) {
 	// With the matching state the pending login is dropped.
 	b = e.browser()
 	r1 = b.get("/auth/oidc/start")
-	az, _ = url.Parse(r1.Loc())
-	state = az.Query().Get("state")
+	az, _ := url.Parse(r1.Loc())
+	state := az.Query().Get("state")
 	cb = b.get(r1.Loc()).Loc()
 	bind := b.cookie(LoginCookie).Value
 	if r := b.get("/auth/oidc/callback?error=access_denied&state=" + state); r.Loc() != "/auth/login?error=idp_error" {

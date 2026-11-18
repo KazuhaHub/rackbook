@@ -346,8 +346,7 @@ func TestConsoleAndSecurityHeaders(t *testing.T) {
 }
 
 func TestMCPMounted(t *testing.T) {
-	var f *fixture
-	f = newFixture(t, func(o *api.Options) {
+	f := newFixture(t, func(o *api.Options) {
 		o.MCP = mcpserver.Handler(mcpserver.New(o.Store.Ledger, "test"), false)
 	}, "")
 	req, _ := http.NewRequest("POST", f.ts.URL+"/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}`))

@@ -132,25 +132,6 @@ func stringList(v any) ([]string, bool) {
 	return out, true
 }
 
-// plain converts an ordered value to ordinary Go data (maps are unordered).
-func plain(v any) any {
-	switch x := v.(type) {
-	case *omap:
-		m := make(map[string]any, len(x.keys))
-		for _, k := range x.keys {
-			m[k] = plain(x.vals[k])
-		}
-		return m
-	case []any:
-		out := make([]any, len(x))
-		for i, e := range x {
-			out[i] = plain(e)
-		}
-		return out
-	}
-	return v
-}
-
 func isScalar(v any) bool {
 	switch v.(type) {
 	case string, json.Number, bool, nil:

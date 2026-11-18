@@ -153,7 +153,7 @@ func LLMS(l *ledger.Ledger, baseURL string) string {
 	fmt.Fprintf(&b, "Infrastructure ledger kept as YAML in Git and exported by Rackbook: %d collections, %d records.\n\n", len(l.Collections), records)
 	b.WriteString("## Collections\n\n")
 	for _, c := range l.Collections {
-		name := c.Title
+		var name string
 		if baseURL != "" {
 			name = fmt.Sprintf("[%s](%s/api/c/%s)", c.Title, baseURL, c.Name)
 		} else {
