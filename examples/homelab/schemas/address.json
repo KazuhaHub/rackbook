@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "内网地址",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["device", "network", "address"],
+  "properties": {
+    "device": {"type": "string", "title": "设备"},
+    "network": {"type": "string", "title": "所属网络"},
+    "address": {"type": "string", "title": "地址"},
+    "subnet": {"type": "string", "title": "网段"},
+    "domain": {"type": "string", "title": "域名"},
+    "notes": {"type": "string", "title": "备注", "format": "textarea"}
+  }
+}

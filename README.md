@@ -1,3 +1,179 @@
 # Rackbook
 
-Git-native infrastructure ledger: schema-checked YAML as the source of truth, with a web console, CLI and MCP server for humans and AI.
+Git-native infrastructure ledger: schema-checked YAML as the source of truth,
+with a web console, CLI and MCP server for humans and AI.
+
+[中文说明](#中文说明)
+
+Rackbook keeps the facts about your infrastructure — devices, addresses,
+service ports, network plans, sites, conventions, to-dos — as plain YAML
+files in a Git repository. It gives you:
+
+- **`rackbook check`** — JSON Schema validation of every record plus
+  cross-collection rules (unique keys, references, "this set equals that
+  inventory group"), all declared in config. Run it in CI.
+- **`rackbook serve`** — a web console (search, filter, sort, per-record
+  detail pages with everything that references the record, schema-driven
+  create/edit/delete forms). Every save is a Git commit with the editor's
+  identity, pushed to your repository. The server never holds state of its
+  own.
+- **`rackbook mcp`** — an MCP server so AI agents can read the ledger
+  (list, get, search, schema, check).
+- **`rackbook export`** — Markdown, `llms.txt` and JSON.
+- **`rackbook list/get/add/set/rm`** — scriptable edits from the terminal.
+
+Edits touch only the lines of the record that changed: comments, blank lines
+and formatting in your YAML stay exactly as you wrote them, so diffs stay
+reviewable.
+
+The console UI is in Simplified Chinese. Field labels come from the `title`
+of each schema property, so they are whatever language your schemas use.
+
+## Quick start
+
+```bash
+# binary from the releases page, or:
+go install github.com/kazuhahub/rackbook/cmd/rackbook@latest   # API + CLI (console not embedded)
+
+git clone https://github.com/KazuhaHub/rackbook && cd rackbook
+rackbook check  --config examples/homelab/rackbook.yml
+rackbook list   --config examples/homelab/rackbook.yml services --where device=web-hostco-ashburn-va-us-dc
+rackbook export --config examples/homelab/rackbook.yml --format markdown
+rackbook serve  --config examples/homelab/rackbook.yml --no-git   # http://127.0.0.1:8080
+```
+
+With Docker:
+
+```bash
+docker run --rm -p 127.0.0.1:8080:8080 \
+  -v "$PWD/examples/homelab:/data" ghcr.io/kazuhahub/rackbook:latest \
+  serve --listen 0.0.0.0:8080 --config /data/rackbook.yml --no-git --insecure-no-auth
+```
+
+Inside a container Rackbook listens on all interfaces, so it refuses to run
+without authentication unless you pass `--insecure-no-auth` — only do that for
+a local demo published on `127.0.0.1` as above.
+
+`go install` builds without the web console (it is compiled from `web/` by
+`make build`); release binaries and images include it.
+
+## Your own ledger
+
+A data repository needs a `rackbook.yml`, one JSON Schema per collection and
+your YAML files, in any layout. `examples/homelab/` is a complete template:
+
+```yaml
+title: My ledger
+collections:
+  devices:
+    title: Devices
+    file: ledger/devices.yml        # a top-level YAML list…
+    schema: schemas/device.json
+    key: [name]                     # record id + uniqueness
+    facets: [category, site]
+  tailscale_ranges:
+    file: ledger/networks.yml
+    path: tailscale                 # …or a list under a key path
+    schema: schemas/network-range.json
+    key: [range]
+rules:
+  - ref: {from: services.device, to: devices.name, allow: [all]}
+  - same_set:
+      left:  {collection: devices, field: name, where: {managed: true}}
+      right: {file: inventory/hosts.yml, path: all.children.managed.hosts, take: keys}
+write:
+  mode: push      # or: pr (opens a GitHub pull request per edit)
+  branch: main
+```
+
+See [docs/design.md](docs/design.md) for every option and
+[docs/api.md](docs/api.md) for the HTTP API.
+
+## Deployment behind Cloudflare Access
+
+Rackbook is designed to run on a private host behind Cloudflare Access
+(Cloudflare Tunnel or a reverse proxy in front). It works in its own clone of
+the data repository and pushes every edit.
+
+1. **Deploy key.** Create an SSH key and add it to the data repository as a
+   deploy key *with write access*. Clone the repository on the server with
+   that key into a directory the container can write, e.g. `/srv/rackbook/repo`.
+2. **Access application.** In Cloudflare Zero Trust create a self-hosted
+   application for the hostname, with a policy for the people allowed in.
+   Note your team name (`<team>.cloudflareaccess.com`) and the application's
+   **AUD tag**.
+3. **Run it.**
+
+   ```yaml
+   # compose.yaml
+   services:
+     rackbook:
+       image: ghcr.io/kazuhahub/rackbook:1
+       restart: unless-stopped
+       command: serve --listen 0.0.0.0:8080 --config /data/repo/rackbook.yml
+       environment:
+         RACKBOOK_AUTH: cloudflare-access
+         RACKBOOK_CF_TEAM: your-team
+         RACKBOOK_CF_AUD: your-aud-tag
+         RACKBOOK_BASE_URL: https://ledger.example.com
+         RACKBOOK_COMMITTER: "Rackbook <rackbook@example.com>"
+         GIT_SSH_COMMAND: ssh -i /data/deploy_key -o IdentitiesOnly=yes
+       volumes:
+         - /srv/rackbook:/data
+       ports:
+         - "127.0.0.1:8080:8080"
+   ```
+
+   Point the tunnel / reverse proxy at `127.0.0.1:8080`. `RACKBOOK_BASE_URL` is
+   the public URL: it is used in `llms.txt` and accepted as the browser origin
+   for writes when your proxy rewrites the `Host` header. Rackbook verifies
+   the `Cf-Access-Jwt-Assertion` header on every request (signature, issuer,
+   audience, expiry) — a request that bypasses Access is rejected — and uses
+   the `email` claim as the Git author of edits. Restrict who may edit with
+   `auth.editors` in `rackbook.yml`; everyone else Access lets in can read.
+4. **AI agents.** Give an agent an Access service token and point its MCP
+   client at `https://<host>/mcp`, sending `CF-Access-Client-Id` /
+   `CF-Access-Client-Secret`. Or run `rackbook mcp` locally against a clone.
+
+Rackbook fetches the remote every minute, so changes pushed from elsewhere
+appear without a restart. If someone changed the same record in the meantime,
+the console shows a conflict instead of overwriting it.
+
+## Development
+
+```bash
+make build        # web console (npm) + Go binary with the console embedded
+make test         # go test ./...
+npm --prefix web run dev:mock   # console against a mock API built from the example
+```
+
+## License
+
+[Apache-2.0](LICENSE)
+
+---
+
+## 中文说明
+
+Rackbook 是一个以 Git 为核心的基础设施台账：设备、内网地址、服务端口、网段规划、
+站点、端口规范、待办等，以 YAML 文件的形式放在 Git 仓库里，作为唯一的真实来源。
+
+- `rackbook check`：按 JSON Schema 校验每条记录，并检查配置里声明的跨表规则
+  （主键唯一、引用存在、与 inventory 分组一致等），适合放进 CI。
+- `rackbook serve`：中文网页控制台，可搜索、筛选、排序；设备详情页列出它的内网地址和
+  服务端口；新增 / 编辑 / 删除表单按 Schema 校验，保存即提交到 Git（作者为编辑者）并推送。
+- `rackbook mcp`：MCP 服务，让 AI 读取台账。
+- `rackbook export`：导出 Markdown、`llms.txt`、JSON。
+
+写入时只替换被修改的那一条记录所在的行，注释、空行和原有格式保持不变，Git diff 一目了然。
+
+快速试用：
+
+```bash
+rackbook check --config examples/homelab/rackbook.yml
+rackbook serve --config examples/homelab/rackbook.yml --no-git   # 打开 http://127.0.0.1:8080
+```
+
+部署：放在 Cloudflare Access 后面（见上文 “Deployment behind Cloudflare Access”）。
+服务器用带写权限的 deploy key 克隆数据仓库；Rackbook 校验每个请求的
+`Cf-Access-Jwt-Assertion`，用其中的邮箱作为提交作者；`auth.editors` 可限定谁能编辑。

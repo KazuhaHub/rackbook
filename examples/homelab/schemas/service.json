@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "服务端口",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["device", "service", "port"],
+  "properties": {
+    "device": {"type": "string", "title": "设备", "description": "设备名；all 表示所有设备"},
+    "service": {"type": "string", "title": "服务"},
+    "port": {"type": "string", "title": "协议 / 端口", "examples": ["TCP 10511", "UDP 41641"]},
+    "exposure": {"type": "string", "title": "开放范围", "examples": ["公网", "公网 + Tailscale", "仅 Tailscale", "本机"]},
+    "managed": {"type": "boolean", "title": "纳管", "default": false},
+    "notes": {"type": "string", "title": "备注", "format": "textarea"}
+  }
+}

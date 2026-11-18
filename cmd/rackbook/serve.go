@@ -1,0 +1,161 @@
+package main
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io/fs"
+	"log/slog"
+	"net"
+	"net/http"
+	"os"
+	"os/signal"
+	"strings"
+	"syscall"
+	"time"
+
+	"github.com/spf13/cobra"
+
+	"github.com/kazuhahub/rackbook/internal/api"
+	"github.com/kazuhahub/rackbook/internal/auth"
+	"github.com/kazuhahub/rackbook/internal/config"
+	"github.com/kazuhahub/rackbook/internal/gitstore"
+	"github.com/kazuhahub/rackbook/internal/mcpserver"
+	"github.com/kazuhahub/rackbook/web"
+)
+
+func newServe() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "serve",
+		Short: "Serve the web console, JSON API and MCP endpoint",
+		Long: `Serve the web console, the JSON API (/api), the exports (/llms.txt, /export.md, ...) and MCP (/mcp).
+
+Run it on a clone it owns (--repo): the server fetches and resets that clone to
+origin and commits every write. It listens on 127.0.0.1 by default and is meant to
+sit behind Cloudflare Tunnel or a reverse proxy; use --auth cloudflare-access to
+verify Cloudflare Access tokens.
+
+Pull request mode (write.mode: pr in rackbook.yml) reads a GitHub token from
+RACKBOOK_GITHUB_TOKEN.`,
+		Args: cobra.NoArgs,
+		RunE: runServe,
+	}
+	f := cmd.Flags()
+	f.String("listen", "127.0.0.1:8080", "address to listen on")
+	f.String("repo", "", "data repository directory (default: the directory of the config)")
+	f.String("auth", "none", "authentication: none or cloudflare-access")
+	f.String("cf-team", "", "Cloudflare Access team name (<team>.cloudflareaccess.com)")
+	f.String("cf-aud", "", "Cloudflare Access application audience (AUD) tag")
+	f.String("editor", "", `attribute writes to "Name <email>" (auth none)`)
+	f.StringSlice("editors", nil, "emails / service-token names allowed to write (default: everyone)")
+	f.Bool("read-only", false, "refuse all writes")
+	f.Bool("no-git", false, "edit files in place without Git, even inside a repository")
+	f.Duration("pull-interval", time.Minute, "how often to fetch and fast-forward from origin (0 disables)")
+	f.String("committer", gitstore.DefaultCommitter.String(), `committer identity of server commits ("Name <email>")`)
+	f.String("base-url", "", "public URL of the console, used in /llms.txt (default: derived from the request)")
+	f.Bool("insecure-no-auth", false, "allow --auth none on a non-loopback --listen address (anyone who can reach it can edit)")
+	f.String("github-repo", "", "owner/repo for pull requests (default: parsed from the origin URL)")
+	f.String("github-api", "", "GitHub REST API base URL (default: derived from the origin host)")
+	return cmd
+}
+
+func runServe(cmd *cobra.Command, _ []string) error {
+	f := cmd.Flags()
+	repo, _ := f.GetString("repo")
+	path, err := configPath(cmd, repo)
+	if err != nil {
+		return err
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		return err
+	}
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	mode, _ := f.GetString("auth")
+	team, _ := f.GetString("cf-team")
+	aud, _ := f.GetString("cf-aud")
+	editor, _ := f.GetString("editor")
+	editors, _ := f.GetStringSlice("editors")
+	editors = append(append([]string{}, cfg.Auth.Editors...), editors...)
+	authn, err := auth.New(ctx, auth.Config{Mode: mode, Team: team, Audience: aud, Editor: editor, Editors: editors})
+	if err != nil {
+		return err
+	}
+
+	committerStr, _ := f.GetString("committer")
+	committer, err := gitstore.ParseIdentity(committerStr)
+	if err != nil {
+		return fmt.Errorf("--committer: %w", err)
+	}
+	noGit, _ := f.GetBool("no-git")
+	interval, _ := f.GetDuration("pull-interval")
+	ghRepo, _ := f.GetString("github-repo")
+	ghAPI, _ := f.GetString("github-api")
+	store, err := gitstore.Open(ctx, gitstore.Options{
+		ConfigPath: path, NoGit: noGit, Committer: committer, PullInterval: interval,
+		GitHubToken: os.Getenv("RACKBOOK_GITHUB_TOKEN"), GitHubRepo: ghRepo, GitHubAPI: ghAPI, Logger: logger,
+	})
+	if err != nil {
+		return err
+	}
+	go store.Run(ctx)
+
+	dist, err := fs.Sub(web.FS, "dist")
+	if err != nil {
+		return err
+	}
+	readOnly, _ := f.GetBool("read-only")
+	baseURL, _ := f.GetString("base-url")
+	handler := api.New(api.Options{
+		Store: store, Auth: authn, ReadOnly: readOnly, BaseURL: baseURL, Web: dist, Logger: logger, RestrictHost: mode == auth.ModeNone,
+		MCP: mcpserver.Handler(mcpserver.New(store.Ledger, version), mode != auth.ModeNone || baseURL != ""),
+	})
+
+	addr, _ := f.GetString("listen")
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return err
+	}
+	if insecure, _ := f.GetBool("insecure-no-auth"); mode == auth.ModeNone && !isLoopback(ln.Addr().String()) {
+		if !insecure {
+			ln.Close()
+			return fmt.Errorf("refusing to listen on %s without authentication: use --auth cloudflare-access, listen on 127.0.0.1, or pass --insecure-no-auth (RACKBOOK_INSECURE_NO_AUTH=true) to accept the risk", ln.Addr())
+		}
+		logger.Warn("listening on a non-loopback address with --auth none: anyone who can reach it can read and edit the ledger")
+	}
+	srv := &http.Server{Handler: handler, ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 2 * time.Minute, IdleTimeout: 2 * time.Minute}
+	logger.Info("rackbook serving", "version", version, "title", cfg.Title, "listen", ln.Addr().String(),
+		"git", store.GitEnabled(), "remote", store.HasRemote(), "auth", mode, "readOnly", readOnly, "writeMode", cfg.Write.Mode,
+		"console", consoleBuilt(dist))
+
+	errc := make(chan error, 1)
+	go func() { errc <- srv.Serve(ln) }()
+	select {
+	case err := <-errc:
+		return err
+	case <-ctx.Done():
+	}
+	shutdown, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(shutdown); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		return err
+	}
+	return nil
+}
+
+func isLoopback(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return false
+	}
+	ip := net.ParseIP(strings.Trim(host, "[]"))
+	return ip != nil && ip.IsLoopback()
+}
+
+func consoleBuilt(dist fs.FS) bool {
+	_, err := fs.Stat(dist, "index.html")
+	return err == nil
+}
