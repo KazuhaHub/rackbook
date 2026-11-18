@@ -10,6 +10,10 @@ on:
 permissions:
   contents: read
 
+# Use exactly the Go that setup-go installed from go.mod; never let go switch toolchains.
+env:
+  GOTOOLCHAIN: local
+
 jobs:
   web:
     runs-on: ubuntu-latest
