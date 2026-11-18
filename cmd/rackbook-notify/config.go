@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/mail"
 	"os"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -46,6 +47,8 @@ type SMTPConfig struct {
 	PasswordFile string   `yaml:"password_file"`
 	From         string   `yaml:"from"`
 	To           []string `yaml:"to"`
+	// Helo is the name sent in EHLO; default the host's name (heloName).
+	Helo string `yaml:"helo"`
 }
 
 type WebhookConfig struct {
@@ -150,6 +153,9 @@ func (s *SMTPConfig) normalize() error {
 	if s.Username != "" && s.PasswordFile == "" {
 		return errors.New("config: smtp.username needs smtp.password_file")
 	}
+	if s.Helo != "" && !heloRe.MatchString(s.Helo) {
+		return fmt.Errorf("config: smtp.helo %q must be a host name such as notify.example.org", s.Helo)
+	}
 	if s.From == "" || len(s.To) == 0 {
 		return errors.New("config: smtp.from and smtp.to are required")
 	}
@@ -162,6 +168,24 @@ func (s *SMTPConfig) normalize() error {
 		}
 	}
 	return nil
+}
+
+var heloRe = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9.-]{0,252})$`)
+
+// hostname is os.Hostname, replaceable in tests.
+var hostname = os.Hostname
+
+// heloName is the name sent in EHLO: smtp.helo, else the host's name when it
+// is a fully qualified name, else "localhost". Some relays (smtp-relay.gmail.com)
+// do not offer STARTTLS to a client that calls itself localhost.
+func heloName(s *SMTPConfig) string {
+	if s.Helo != "" {
+		return s.Helo
+	}
+	if h, err := hostname(); err == nil && strings.Contains(h, ".") && heloRe.MatchString(h) {
+		return h
+	}
+	return "localhost"
 }
 
 func parseAddress(s string) (*mail.Address, error) {

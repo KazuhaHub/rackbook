@@ -530,6 +530,9 @@ tokens, domains, contracts). Design and module contract: [docs/modules.md](docs/
 - Modules are separate programs (`rackbook-entra` reads Microsoft Entra ID,
   `rackbook-notify` sends reminders) that use only the public API with an API
   token; the server contains no code for any upstream system.
+- `rackbook-notify` greets the mail server with this host's name (or
+  `smtp.helo`), because some relays offer no STARTTLS to a client that says
+  `localhost`, and it never sends mail without STARTTLS.
 - The optional `modules:` block in `rackbook.yml` is an allow list: a token
   named there may only create and update records of one collection, every record
   it writes must carry `source: <module name>`, it may only update records
