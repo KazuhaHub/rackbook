@@ -301,10 +301,15 @@ smtp:                               # optional
   password_file: smtp-password      # in $CREDENTIALS_DIRECTORY
   from: Rackbook <rackbook@example.org>
   to: [ops@example.org]
+  helo: notify.example.org          # optional; default: this host's name
 webhook:                            # optional
   url_file: webhook-url             # in $CREDENTIALS_DIRECTORY (webhook URLs are secrets)
 ```
 
+- `helo` is the name the module gives the mail server in `EHLO`. It
+  defaults to the host's fully qualified name (else `localhost`); some relays,
+  such as smtp-relay.gmail.com, offer no STARTTLS to a client that calls
+  itself `localhost`, and the module never sends without STARTTLS.
 - The state is saved only after every configured channel accepted the
   message; a failed send is retried on the next run.
 - The webhook receives `POST` JSON

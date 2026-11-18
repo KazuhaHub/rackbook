@@ -104,7 +104,7 @@ func sendMail(ctx context.Context, cfg *SMTPConfig, password, subject, body stri
 		return fmt.Errorf("smtp greeting: %w", err)
 	}
 	defer c.Close()
-	if err := c.Hello("localhost"); err != nil {
+	if err := c.Hello(heloName(cfg)); err != nil {
 		return fmt.Errorf("smtp EHLO: %w", err)
 	}
 	if ok, _ := c.Extension("STARTTLS"); !ok {

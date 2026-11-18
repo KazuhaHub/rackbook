@@ -11,6 +11,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -559,13 +560,16 @@ func TestSMTPSend(t *testing.T) {
 	os.WriteFile(pw, []byte("s3cret\n"), 0o600)
 	e.cfg.Language = "zh"
 	e.cfg.SMTP = &SMTPConfig{Host: "127.0.0.1", Port: f.port(), Username: "u", PasswordFile: pw,
-		From: "Rackbook <rb@example.org>", To: []string{"ops@example.org", "b@example.org"}}
+		From: "Rackbook <rb@example.org>", To: []string{"ops@example.org", "b@example.org"}, Helo: "notify.example.org"}
 	e.rb.set(item("credentials", "tls-www", "2026-11-10", -8), item("credentials", "x", "2026-11-25", 7))
 	if err := e.run(t, false); err != nil {
 		t.Fatal(err)
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if len(f.plainCmds) == 0 || f.plainCmds[0] != "EHLO notify.example.org" {
+		t.Fatalf("first command %v, want EHLO notify.example.org", f.plainCmds)
+	}
 	for _, c := range f.plainCmds {
 		u := strings.ToUpper(c)
 		if strings.HasPrefix(u, "MAIL") || strings.HasPrefix(u, "AUTH") || u == "DATA" {
@@ -679,5 +683,32 @@ func TestOnceExitCodes(t *testing.T) {
 	e.rb.fail = true
 	if code := realMain([]string{"--config", cfg, "--once"}, &out, &errb); code != 1 {
 		t.Fatalf("code %d", code)
+	}
+}
+
+func TestHeloName(t *testing.T) {
+	t.Cleanup(func() { hostname = os.Hostname })
+	for _, tc := range []struct {
+		helo, host string
+		err        error
+		want       string
+	}{
+		{"mail.example.org", "box.example.org", nil, "mail.example.org"},
+		{"", "box.example.org", nil, "box.example.org"},
+		{"", "box", nil, "localhost"},
+		{"", "", nil, "localhost"},
+		{"", "bad host.example.org", nil, "localhost"},
+		{"", "box.example.org", errors.New("no hostname"), "localhost"},
+	} {
+		hostname = func() (string, error) { return tc.host, tc.err }
+		if got := heloName(&SMTPConfig{Helo: tc.helo}); got != tc.want {
+			t.Errorf("helo %q host %q: got %q, want %q", tc.helo, tc.host, got, tc.want)
+		}
+	}
+	for _, bad := range []string{"a b", "x\r\nMAIL FROM:<e>", "-x", ".x"} {
+		s := &SMTPConfig{Host: "h", From: "a@b.c", To: []string{"a@b.c"}, Helo: bad}
+		if err := s.normalize(); err == nil {
+			t.Errorf("helo %q accepted", bad)
+		}
 	}
 }
