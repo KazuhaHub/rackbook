@@ -35,13 +35,29 @@ export type Collection = {
   count: number
 }
 
-export type MetaUser = { email?: string; name?: string; canEdit: boolean }
+export type Role = 'admin' | 'editor' | 'viewer'
+export type MetaUser = {
+  id?: string
+  email?: string
+  name?: string
+  role?: Role
+  authMethod?: string
+  /** role is editor or higher and the server is not read-only */
+  canEdit: boolean
+  canAdmin?: boolean
+}
+/** Shown as a banner while the server pauses writes. */
+export type MetaAlert =
+  | { kind: 'history_rewritten'; lastGood: string; remote: string }
+  /** rackbook.yml does not load: the last good config is served read-only */
+  | { kind: 'config_error'; message: string }
 export type Meta = {
   title: string
   description?: string
   readOnly: boolean
   writeMode?: string
   user: MetaUser | null
+  alert?: MetaAlert
   collections: Collection[]
 }
 

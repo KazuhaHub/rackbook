@@ -3,6 +3,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -24,6 +25,7 @@ import (
 	"github.com/kazuhahub/rackbook/internal/export"
 	"github.com/kazuhahub/rackbook/internal/gitstore"
 	"github.com/kazuhahub/rackbook/internal/ledger"
+	"github.com/kazuhahub/rackbook/internal/roles"
 	"github.com/kazuhahub/rackbook/internal/validate"
 	"github.com/kazuhahub/rackbook/internal/yamledit"
 )
@@ -33,7 +35,7 @@ const maxBody = 1 << 20
 // Options configures the handler.
 type Options struct {
 	Store    *gitstore.Store
-	Auth     *auth.Authenticator // nil = no authentication
+	Auth     *auth.Authenticator // nil = auth mode none, roles from the store's config
 	ReadOnly bool
 	BaseURL  string       // public URL used in llms.txt; derived from the request when empty
 	Web      fs.FS        // console files (root of dist); may lack index.html
@@ -55,6 +57,14 @@ func New(o Options) http.Handler {
 	if s.log == nil {
 		s.log = slog.New(slog.DiscardHandler)
 	}
+	if s.o.Auth == nil {
+		// No authentication, but roles (and the v0.1 editors list) still apply.
+		a, err := auth.New(context.Background(), auth.Config{Mode: auth.ModeNone, Config: o.Store.Config, Degraded: func() bool { return o.Store.ConfigProblem() != "" }})
+		if err != nil {
+			panic(err) // mode none cannot fail
+		}
+		s.o.Auth = a
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, "ok\n") })
 	mux.HandleFunc("GET /api/meta", s.meta)
@@ -65,6 +75,7 @@ func New(o Options) http.Handler {
 	mux.HandleFunc("POST /api/c/{collection}", s.add)
 	mux.HandleFunc("PUT /api/c/{collection}/{id}", s.put)
 	mux.HandleFunc("DELETE /api/c/{collection}/{id}", s.del)
+	mux.HandleFunc("POST /api/admin/accept-remote", s.acceptRemote)
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "not_found", "no such API endpoint")
 	})
@@ -78,17 +89,14 @@ func New(o Options) http.Handler {
 	}
 	mux.HandleFunc("/", s.static)
 
-	var h http.Handler = mux
-	if o.Auth != nil {
-		authed := o.Auth.Middleware(mux)
-		h = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path == "/healthz" {
-				mux.ServeHTTP(w, r)
-				return
-			}
-			authed.ServeHTTP(w, r)
-		})
-	}
+	authed := s.o.Auth.Middleware(mux)
+	var h http.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/healthz" {
+			mux.ServeHTTP(w, r)
+			return
+		}
+		authed.ServeHTTP(w, r)
+	})
 	return securityHeaders(s.guard(h))
 }
 
@@ -213,16 +221,13 @@ func writeError(w http.ResponseWriter, status int, code, msg string, extra ...an
 	writeJSON(w, status, body)
 }
 
-func (s *server) user(r *http.Request) *auth.User { return auth.UserFrom(r.Context()) }
+// who is the caller authenticated by the middleware (never nil there).
+func (s *server) who(r *http.Request) *auth.Identity { return auth.FromContext(r.Context()) }
 
+// canEdit reports whether the caller may write: not in read-only mode and with
+// at least the editor role.
 func (s *server) canEdit(r *http.Request) bool {
-	if s.o.ReadOnly {
-		return false
-	}
-	if s.o.Auth == nil {
-		return true
-	}
-	return s.o.Auth.CanEdit(s.user(r))
+	return !s.o.ReadOnly && auth.Can(r.Context(), roles.Write)
 }
 
 // Read endpoints -------------------------------------------------------------
@@ -264,9 +269,14 @@ func strs(s []string) []string {
 func (s *server) meta(w http.ResponseWriter, r *http.Request) {
 	l := s.o.Store.Ledger()
 	cfg := l.Config
-	var user any
-	if u := s.user(r); u != nil {
-		user = map[string]any{"email": u.Email, "name": u.Name, "canEdit": s.canEdit(r)}
+	user := map[string]any{"canEdit": s.canEdit(r), "canAdmin": auth.Can(r.Context(), roles.Manage)}
+	if id := s.who(r); id != nil {
+		user["role"], user["authMethod"] = id.EffectiveRole().String(), id.Method
+		for k, v := range map[string]string{"id": id.ID, "email": id.Email, "name": id.Name} {
+			if v != "" {
+				user[k] = v
+			}
+		}
 	}
 	cols := make([]collectionOut, 0, len(l.Collections))
 	for _, c := range l.Collections {
@@ -288,11 +298,14 @@ func (s *server) meta(w http.ResponseWriter, r *http.Request) {
 		}
 		cols = append(cols, out)
 	}
-	mode := cfg.Write.Mode
-	writeJSON(w, http.StatusOK, map[string]any{
+	meta := map[string]any{
 		"title": cfg.Title, "description": cfg.Description,
-		"readOnly": s.o.ReadOnly, "writeMode": mode, "user": user, "collections": cols,
-	})
+		"readOnly": s.o.ReadOnly, "writeMode": cfg.Write.Mode, "user": user, "collections": cols,
+	}
+	if a := s.o.Store.Alert(); a != nil {
+		meta["alert"] = a
+	}
+	writeJSON(w, http.StatusOK, meta)
 }
 
 func (s *server) check(w http.ResponseWriter, r *http.Request) {
@@ -305,7 +318,7 @@ func (s *server) check(w http.ResponseWriter, r *http.Request) {
 
 func (s *server) history(w http.ResponseWriter, r *http.Request) {
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	commits, err := s.o.Store.History(r.Context(), limit, r.URL.Query().Get("collection"))
+	commits, err := s.o.Store.History(r.Context(), limit, r.URL.Query().Get("collection"), r.URL.Query().Get("id"))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
@@ -373,28 +386,22 @@ func (s *server) readBody(w http.ResponseWriter, r *http.Request) (body, bool) {
 	return b, true
 }
 
-// writable runs the shared checks of write endpoints.
-func (s *server) writable(w http.ResponseWriter, r *http.Request) bool {
-	if !s.canEdit(r) {
-		msg := "the ledger is read-only"
-		if !s.o.ReadOnly {
-			msg = "you are not allowed to edit"
-		}
-		writeError(w, http.StatusForbidden, "read_only", msg)
+// writable runs the shared checks of write endpoints: the server must not be
+// read-only and the caller's role must allow action.
+func (s *server) writable(w http.ResponseWriter, r *http.Request, action roles.Action) bool {
+	if s.o.ReadOnly {
+		writeError(w, http.StatusForbidden, "read_only", "the ledger is read-only")
+		return false
+	}
+	if !auth.Can(r.Context(), action) {
+		writeError(w, http.StatusForbidden, "forbidden", fmt.Sprintf("your role (%s) may not do this", s.who(r).EffectiveRole()))
 		return false
 	}
 	return true
 }
 
-func (s *server) identity(r *http.Request) gitstore.Identity {
-	if u := s.user(r); u != nil {
-		return gitstore.Identity{Name: u.Name, Email: u.Email}
-	}
-	return gitstore.Identity{}
-}
-
 func (s *server) apply(w http.ResponseWriter, r *http.Request, op edit.Op) *gitstore.WriteResult {
-	res, err := s.o.Store.Write(r.Context(), op, s.identity(r))
+	res, err := s.o.Store.Write(r.Context(), op, s.who(r))
 	if err == nil {
 		return res
 	}
@@ -413,6 +420,10 @@ func (s *server) apply(w http.ResponseWriter, r *http.Request, op edit.Op) *gits
 		writeError(w, http.StatusNotFound, "not_found", err.Error())
 	case errors.Is(err, edit.ErrBadRequest):
 		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
+	case errors.Is(err, gitstore.ErrHistoryRewritten):
+		s.historyRewritten(w, err)
+	case errors.Is(err, gitstore.ErrConfig):
+		writeError(w, http.StatusServiceUnavailable, "config_error", err.Error())
 	case errors.Is(err, gitstore.ErrRepoDirty):
 		writeError(w, http.StatusServiceUnavailable, "repo_dirty", err.Error())
 	case errors.Is(err, gitstore.ErrRepoDiverged):
@@ -425,12 +436,57 @@ func (s *server) apply(w http.ResponseWriter, r *http.Request, op edit.Op) *gits
 	return nil
 }
 
+// historyRewritten answers 503: writes are paused until an admin accepts the
+// remote's new history.
+func (s *server) historyRewritten(w http.ResponseWriter, err error) {
+	var he *gitstore.HistoryRewrittenError
+	errors.As(err, &he)
+	writeError(w, http.StatusServiceUnavailable, "history_rewritten", err.Error(), "lastGood", he.LastGood, "remote", he.Remote)
+}
+
+func (s *server) acceptRemote(w http.ResponseWriter, r *http.Request) {
+	if s.o.ReadOnly {
+		writeError(w, http.StatusForbidden, "read_only", "the ledger is read-only")
+		return
+	}
+	if !auth.Can(r.Context(), roles.Manage) {
+		writeError(w, http.StatusForbidden, "forbidden", "only administrators may accept the remote history")
+		return
+	}
+	var b struct {
+		Commit string `json:"commit"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBody)).Decode(&b); err != nil || b.Commit == "" {
+		writeError(w, http.StatusBadRequest, "bad_request", `body must be {"commit": "<remote tip>"}`)
+		return
+	}
+	who := s.who(r)
+	hash, err := s.o.Store.AcceptRemote(r.Context(), b.Commit)
+	switch {
+	case err == nil:
+		s.log.Warn("remote history accepted", "by", who.ID, "remote", hash)
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "lastGood": hash})
+	case errors.Is(err, gitstore.ErrConfig):
+		writeError(w, http.StatusServiceUnavailable, "config_error", "the accepted commit's rackbook.yml does not load, nothing was changed: "+err.Error())
+	case errors.Is(err, gitstore.ErrNoAlert):
+		writeError(w, http.StatusConflict, "no_alert", err.Error())
+	case errors.Is(err, gitstore.ErrNotRemoteTip):
+		writeError(w, http.StatusConflict, "not_remote_tip", err.Error())
+	case errors.Is(err, gitstore.ErrLocalCommits):
+		writeError(w, http.StatusConflict, "local_commits", err.Error())
+	case errors.Is(err, gitstore.ErrRepoDirty):
+		writeError(w, http.StatusServiceUnavailable, "repo_dirty", err.Error())
+	default:
+		s.internal(w, err)
+	}
+}
+
 func recordResponse(res *gitstore.WriteResult) map[string]any {
 	return map[string]any{"id": res.ID, "hash": res.Hash, "data": res.Data, "commit": res.Commit}
 }
 
 func (s *server) add(w http.ResponseWriter, r *http.Request) {
-	if !s.writable(w, r) {
+	if !s.writable(w, r, roles.Write) {
 		return
 	}
 	_, c := s.collection(w, r)
@@ -447,7 +503,7 @@ func (s *server) add(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) put(w http.ResponseWriter, r *http.Request) {
-	if !s.writable(w, r) {
+	if !s.writable(w, r, roles.Write) {
 		return
 	}
 	_, c := s.collection(w, r)
@@ -468,7 +524,7 @@ func (s *server) put(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) del(w http.ResponseWriter, r *http.Request) {
-	if !s.writable(w, r) {
+	if !s.writable(w, r, roles.Delete) {
 		return
 	}
 	_, c := s.collection(w, r)

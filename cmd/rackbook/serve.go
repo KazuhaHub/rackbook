@@ -47,7 +47,8 @@ RACKBOOK_GITHUB_TOKEN.`,
 	f.String("cf-team", "", "Cloudflare Access team name (<team>.cloudflareaccess.com)")
 	f.String("cf-aud", "", "Cloudflare Access application audience (AUD) tag")
 	f.String("editor", "", `attribute writes to "Name <email>" (auth none)`)
-	f.StringSlice("editors", nil, "emails / service-token names allowed to write (default: everyone)")
+	f.StringSlice("editors", nil, "emails / service-token names allowed to write, added to auth.editors / auth.roles.editor (default: everyone)")
+	f.String("accept-remote", "", "accept the remote's rewritten history: the commit hash of the current origin tip, checked first (see docs/design.md, Git)")
 	f.Bool("read-only", false, "refuse all writes")
 	f.Bool("no-git", false, "edit files in place without Git, even inside a repository")
 	f.Duration("pull-interval", time.Minute, "how often to fetch and fast-forward from origin (0 disables)")
@@ -70,20 +71,14 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
+	if commit, _ := f.GetString("accept-remote"); commit != "" {
+		if ro, _ := f.GetBool("read-only"); ro {
+			return errors.New("--accept-remote changes the server's clone, so it cannot be combined with --read-only")
+		}
+	}
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-
-	mode, _ := f.GetString("auth")
-	team, _ := f.GetString("cf-team")
-	aud, _ := f.GetString("cf-aud")
-	editor, _ := f.GetString("editor")
-	editors, _ := f.GetStringSlice("editors")
-	editors = append(append([]string{}, cfg.Auth.Editors...), editors...)
-	authn, err := auth.New(ctx, auth.Config{Mode: mode, Team: team, Audience: aud, Editor: editor, Editors: editors})
-	if err != nil {
-		return err
-	}
 
 	committerStr, _ := f.GetString("committer")
 	committer, err := gitstore.ParseIdentity(committerStr)
@@ -101,7 +96,26 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
+	if commit, _ := f.GetString("accept-remote"); commit != "" {
+		hash, err := store.AcceptRemote(ctx, commit)
+		if err != nil {
+			return fmt.Errorf("--accept-remote: %w", err)
+		}
+		logger.Warn("accepted the remote history", "remote", hash)
+	}
 	go store.Run(ctx)
+
+	// auth.roles and auth.editors are read from the store's current config on every
+	// request, so a config reload on pull changes roles without a restart.
+	mode, _ := f.GetString("auth")
+	team, _ := f.GetString("cf-team")
+	aud, _ := f.GetString("cf-aud")
+	editor, _ := f.GetString("editor")
+	editors, _ := f.GetStringSlice("editors")
+	authn, err := auth.New(ctx, auth.Config{Mode: mode, Team: team, Audience: aud, Editor: editor, Editors: editors, Config: store.Config, Degraded: func() bool { return store.ConfigProblem() != "" }})
+	if err != nil {
+		return err
+	}
 
 	dist, err := fs.Sub(web.FS, "dist")
 	if err != nil {

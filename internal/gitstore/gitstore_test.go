@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/kazuhahub/rackbook/internal/auth"
 	"github.com/kazuhahub/rackbook/internal/edit"
 	"github.com/kazuhahub/rackbook/internal/testutil"
 )
@@ -63,7 +64,7 @@ func open(t *testing.T, dir string, mut func(*Options)) *Store {
 	return s
 }
 
-var editor = Identity{Name: "Ann Editor", Email: "ann@example.com"}
+var editor = &auth.Identity{ID: "ann@example.com", Name: "Ann Editor", Email: "ann@example.com", Method: auth.MethodCloudflareAccess}
 
 func sshEdit(t *testing.T, s *Store, port string) edit.Op {
 	t.Helper()
@@ -84,7 +85,7 @@ func TestWritePushesCommitWithAuthorAndTrailers(t *testing.T) {
 		t.Fatalf("%+v", res)
 	}
 	got := sh(t, e.bare, "log", "-1", "--format=%an <%ae>|%cn <%ce>|%B")
-	want := "Ann Editor <ann@example.com>|Rackbook <rackbook@example.org>|ledger(services): edit web-hostco-ashburn-va-us-dc/SSH\n\nEdited-by: ann@example.com\nEdited-via: rackbook"
+	want := "Ann Editor <ann@example.com>|Rackbook <rackbook@example.org>|ledger(services): edit web-hostco-ashburn-va-us-dc/SSH\n\nEdited-by: ann@example.com\nEdited-via: rackbook (cloudflare-access)\nRecord: services/web-hostco-ashburn-va-us-dc/SSH"
 	if got != want {
 		t.Fatalf("commit:\n%s\nwant:\n%s", got, want)
 	}
@@ -226,11 +227,11 @@ func TestHistory(t *testing.T) {
 	if _, err := s.Write(context.Background(), sshEdit(t, s, "TCP 22"), editor); err != nil {
 		t.Fatal(err)
 	}
-	h, err := s.History(context.Background(), 10, "")
+	h, err := s.History(context.Background(), 10, "", "")
 	if err != nil || len(h) != 2 || h[0].Author != "Ann Editor" || h[0].Email != "ann@example.com" || h[0].Subject != "ledger(services): edit web-hostco-ashburn-va-us-dc/SSH" || !strings.HasSuffix(h[0].Date, "Z") {
 		t.Fatalf("%v %+v", err, h)
 	}
-	h, _ = s.History(context.Background(), 10, "todo")
+	h, _ = s.History(context.Background(), 10, "todo", "")
 	if len(h) != 1 || h[0].Subject != "seed" {
 		t.Fatalf("filtered: %+v", h)
 	}
@@ -290,11 +291,11 @@ func TestNoGitMode(t *testing.T) {
 	if s.GitEnabled() {
 		t.Fatal("not a repo")
 	}
-	res, err := s.Write(context.Background(), sshEdit(t, s, "TCP 22"), Identity{})
+	res, err := s.Write(context.Background(), sshEdit(t, s, "TCP 22"), nil)
 	if err != nil || res.Commit != "" || !res.Changed() {
 		t.Fatalf("%v %+v", err, res)
 	}
-	if h, err := s.History(context.Background(), 5, ""); err != nil || len(h) != 0 {
+	if h, err := s.History(context.Background(), 5, "", ""); err != nil || len(h) != 0 {
 		t.Fatalf("%v %v", h, err)
 	}
 	// Hand edits show up without a reload step.
@@ -305,7 +306,7 @@ func TestNoGitMode(t *testing.T) {
 	// --no-git inside a repository behaves the same.
 	e := newEnv(t)
 	s = open(t, e.server, func(o *Options) { o.NoGit = true })
-	if _, err := s.Write(context.Background(), sshEdit(t, s, "TCP 22"), Identity{}); err != nil || sh(t, e.bare, "rev-list", "--count", "main") != "1" {
+	if _, err := s.Write(context.Background(), sshEdit(t, s, "TCP 22"), nil); err != nil || sh(t, e.bare, "rev-list", "--count", "main") != "1" {
 		t.Fatalf("%v", err)
 	}
 }
@@ -342,11 +343,11 @@ func TestCommitFilesInWorkingTree(t *testing.T) {
 	sh(t, e.server, "config", "user.email", "me@example.com")
 	testutil.Replace(t, e.server, "docs/ledger/todo.yml", "status: 推迟}", "status: 完成}")
 	testutil.Replace(t, e.server, "docs/ledger/ports.yml", "TCP 10510", "TCP 10509")
-	short, err := CommitFiles(context.Background(), e.server, []string{"docs/ledger/todo.yml"}, "ledger(todo): edit x", Identity{}, "rackbook")
+	short, err := CommitFiles(context.Background(), e.server, []string{"docs/ledger/todo.yml"}, "ledger(todo): edit x", nil, "todo/x")
 	if err != nil || short == "" {
 		t.Fatal(err)
 	}
-	if got := sh(t, e.server, "log", "-1", "--format=%an|%cn|%B"); !strings.HasPrefix(got, "Me|Me|ledger(todo): edit x\n\nEdited-by: me@example.com") {
+	if got := sh(t, e.server, "log", "-1", "--format=%an|%cn|%B"); !strings.HasPrefix(got, "Me|Me|ledger(todo): edit x\n\nEdited-by: me@example.com\nEdited-via: rackbook (cli)\nRecord: todo/x") {
 		t.Fatal(got)
 	}
 	if st := sh(t, e.server, "status", "--porcelain"); st != "M docs/ledger/ports.yml" && st != " M docs/ledger/ports.yml" {

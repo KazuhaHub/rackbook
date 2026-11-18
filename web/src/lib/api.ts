@@ -23,6 +23,7 @@ export class ApiError extends Error {
   }
   /** The server is not there (or a proxy in front of it says so). */
   get unreachable() {
+    if (this.code === 'config_error' || this.code === 'history_rewritten' || this.code === 'repo_dirty' || this.code === 'repo_diverged') return false
     return this.statusCode === 0 || [502, 503, 504].includes(this.statusCode)
   }
 }
@@ -66,6 +67,8 @@ export async function apiFetch<T>(path: string, init: RequestInit = {}): Promise
 export function errorMessage(e: unknown): string {
   if (e instanceof ApiError) {
     if (e.statusCode === 403) return t.errors.readOnly
+    if (e.code === 'history_rewritten') return t.errors.historyRewritten
+    if (e.code === 'config_error') return t.errors.configError
     if (e.unreachable) return t.errors.network
     if (e.statusCode === 409) {
       return e.current === null ? t.errors.conflictDeleted : t.errors.conflictChanged

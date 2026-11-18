@@ -24,7 +24,10 @@ except the export endpoints. Errors always have the shape
   "description": "…",
   "readOnly": false,
   "writeMode": "push",
-  "user": {"email": "a@example.com", "name": "a", "canEdit": true},
+  "user": {"id": "a@example.com", "email": "a@example.com", "name": "a",
+           "role": "editor", "authMethod": "cloudflare-access",
+           "canEdit": true, "canAdmin": false},
+  "alert": {"kind": "history_rewritten", "lastGood": "<40 hex>", "remote": "<40 hex>"},
   "collections": [
     {
       "name": "services",
@@ -48,7 +51,18 @@ except the export endpoints. Errors always have the shape
 }
 ```
 
-- `user` is `null` when auth is `none` and no editor identity is configured.
+- `user` is always present. `role` is `admin`, `editor` or `viewer` (the role
+  after any scope narrowing, from `auth.roles` evaluated on this request).
+  `authMethod` is `none`, `cloudflare-access`, `oidc`, `passkey`, `mcphub` or
+  `token`. `canEdit` is `role` ≥ editor and the server is not read-only;
+  `canAdmin` is `role` = admin. `id` (lowercased identity), `email` and `name`
+  are left out when unknown (auth `none` without `--editor`).
+- `alert` is present only while the remote Git history was rewritten (see
+  [design.md](design.md), section 3): writes return `503` until an
+  administrator accepts it with `POST /api/admin/accept-remote`. It can also be
+  `{"kind": "config_error", "message": "…"}` when `rackbook.yml` no longer
+  loads (writes `503 config_error`, everyone is capped at viewer); a rewritten
+  history takes precedence.
 - `list` empty → the client shows all schema properties in order.
 - `facets[].match`: `exact` (values = distinct field values, computed by
   the client when `values` is empty), `contains` (a record matches a value if
@@ -91,25 +105,32 @@ applies to every device). 404 `{"error":"not_found"}` if missing.
 `rule` ∈ `yaml`, `schema`, `unique`, `ref`, `same_set`, `config`.
 `path` is a JSON pointer inside the record (may be empty).
 
-### `GET /api/history?limit=20[&collection=c]`
+### `GET /api/history?limit=20[&collection=c[&id=<record id>]]`
 
 ```json
 {"commits": [{"hash": "abc1234", "author": "a", "email": "a@example.com",
   "date": "2026-11-17T12:00:00Z", "subject": "ledger(services): edit x/SSH"}]}
 ```
 
-`collection` limits to commits touching that collection's file. Empty list
-when the data directory is not a Git checkout.
+`collection` limits to commits touching that collection's file. With `id` too
+(needs `collection`, else 400) the list is that record's history: the commits
+carrying the trailer `Record: <collection>/<id>`, falling back to the
+collection file's history when none does. Empty list when the data directory
+is not a Git checkout.
 
 ## Write
 
-All writes: `403 {"error":"read_only"}` in read-only mode or when the user may
-not edit; `422 {"error":"invalid","errors":[…check errors…]}` when the result
+All writes: `403 {"error":"read_only"}` in read-only mode and
+`403 {"error":"forbidden"}` when the caller's role may not do it (creating and
+editing need `editor`, deleting needs `editor`); any request from an
+identity without a role gets `403 {"error":"no_role"}`; `422 {"error":"invalid","errors":[…check errors…]}` when the result
 would not validate (errors as in `/api/check`, limited to the ones the write
 introduced); `409 {"error":"conflict","current":{id,hash,data}|null}` when the
 record changed since `hash` (or a record with the new id already exists, or
 it was deleted); `415 {"error":"unsupported_media_type"}` when POST/PUT is not
 `application/json`; `403 {"error":"cross_site"}` for cross-site requests;
+`503 {"error":"history_rewritten","lastGood":"…","remote":"…"}` while the
+remote's history is rewritten (full commit hashes; see `alert` above);
 `503 {"error":"repo_dirty"|"repo_diverged"}` when the server's clone has local
 changes or unpushed commits (an administrator must fix the clone). Other
 failures are `500 {"error":"internal","message":"…","requestId":"…"}`; the
@@ -128,6 +149,18 @@ Changing key fields changes the id (rename).
 ### `DELETE /api/c/{collection}/{id}?hash=<base hash>`
 
 → `200 {"commit": "…"}`.
+
+### `POST /api/admin/accept-remote`
+
+Admin only (`403 forbidden` otherwise). Body `{"commit": "<hash>"}`, the
+current tip of the remote branch as shown in `alert.remote` (at least 7 hex
+characters) → `200 {"ok": true, "lastGood": "<full hash>"}`. The server moves
+its clone to that commit and records it as the new base, which clears `alert`.
+`409 {"error":"no_alert"}` when no rewrite is active, `409 not_remote_tip` when
+the commit is not the tip after a fresh fetch, `409 local_commits` when the
+clone has commits that exist nowhere else, `400` without a commit, `503
+repo_dirty` if the clone has local changes, `403 read_only` in `--read-only`
+mode. A refused request changes nothing.
 
 ## Exports
 

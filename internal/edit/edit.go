@@ -4,6 +4,8 @@
 package edit
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -53,6 +55,31 @@ func (r *Result) Changed() bool { return len(r.Files) > 0 }
 // Subject is the commit subject for the change.
 func (r *Result) Subject() string {
 	return fmt.Sprintf("ledger(%s): %s %s", r.Collection, r.Kind, sanitizeSubject(r.ID))
+}
+
+// Record is the value of the "Record:" commit trailer for this change.
+func (r *Result) Record() string { return RecordRef(r.Collection, r.ID) }
+
+// maxRecordID is how many characters of an id the trailer keeps.
+const maxRecordID = 100
+
+// RecordRef is the one definition of the "Record:" trailer value:
+// "<collection>/<id>" on a single line. Control characters in the id become
+// spaces; an id longer than 100 characters is cut to 100 and gets "~" and the
+// first 8 hex digits of the SHA-256 of the whole id, so long ids stay stable
+// and distinct. Both the commit trailer and the history search call this.
+func RecordRef(collection, id string) string {
+	clean := strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f || r == 0x85 || r == 0x2028 || r == 0x2029 {
+			return ' '
+		}
+		return r
+	}, id)
+	if r := []rune(clean); len(r) > maxRecordID {
+		sum := sha256.Sum256([]byte(id))
+		clean = string(r[:maxRecordID]) + "~" + hex.EncodeToString(sum[:4])
+	}
+	return strings.TrimSpace(collection + "/" + clean)
 }
 
 // sanitizeSubject keeps ids from injecting extra lines or trailers into a

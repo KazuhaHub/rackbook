@@ -146,8 +146,13 @@ export function mockApi(root: string): Plugin {
   }))
 
   const user = readOnly
-    ? { email: 'viewer@example.com', name: 'viewer', canEdit: false }
-    : { email: 'editor@example.com', name: 'Mock Editor', canEdit: true }
+    ? { id: 'viewer@example.com', email: 'viewer@example.com', name: 'viewer', role: 'viewer', authMethod: 'none', canEdit: false, canAdmin: false }
+    : { id: 'editor@example.com', email: 'editor@example.com', name: 'Mock Editor', role: 'admin', authMethod: 'none', canEdit: true, canAdmin: true }
+  // MOCK_ALERT=1 shows the "history rewritten" banner until it is accepted.
+  let alert: { kind: string; lastGood: string; remote: string } | undefined =
+    process.env.MOCK_ALERT === '1'
+      ? { kind: 'history_rewritten', lastGood: 'a1b2c3d4e5f60718293a4b5c6d7e8f9012345678', remote: '9f8e7d6c5b4a39281706f5e4d3c2b1a098765432' }
+      : undefined
 
   function meta() {
     return {
@@ -156,6 +161,7 @@ export function mockApi(root: string): Plugin {
       readOnly,
       writeMode: cfg.write?.mode ?? 'push',
       user,
+      ...(alert ? { alert } : {}),
       collections: [...colls.values()].map((c) => ({
         name: c.name,
         title: c.cfg.title ?? c.name,
@@ -218,6 +224,12 @@ export function mockApi(root: string): Plugin {
     const [head, cname, ...rest] = parts
     const rid = rest.length ? rest.join('/') : undefined
     if (head === 'meta' && method === 'GET') return send(res, 200, meta()), true
+    if (head === 'admin' && cname === 'accept-remote' && method === 'POST') {
+      const body = await readBody(req)
+      if (!alert || body.commit !== alert.remote) return send(res, 409, { error: 'not_remote_tip', message: 'not the remote tip' }), true
+      alert = undefined
+      return send(res, 200, { ok: true }), true
+    }
     if (head === 'check' && method === 'GET') {
       const errors = check()
       return send(res, 200, { ok: errors.length === 0, errors }), true
@@ -251,6 +263,7 @@ export function mockApi(root: string): Plugin {
     }
 
     if (readOnly || !user.canEdit) return send(res, 403, { error: 'read_only', message: 'read-only' }), true
+    if (alert) return send(res, 503, { error: 'history_rewritten', message: 'writes are paused', lastGood: alert.lastGood, remote: alert.remote }), true
 
     if (method === 'POST' && rid === undefined) {
       const { data } = await readBody(req)

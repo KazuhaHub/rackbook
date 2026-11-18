@@ -26,6 +26,7 @@ import { useMeta } from '@/providers/meta'
 import { PageFallback } from '@/components/common'
 import { ErrorBoundary } from '@/components/ErrorBoundary'
 import { CheckBadge } from './CheckBadge'
+import { HistoryAlert } from './HistoryAlert'
 import { GlobalSearch } from './GlobalSearch'
 import { ThemeToggle } from './ThemeToggle'
 
@@ -128,6 +129,7 @@ export function AppShell() {
       <CloseMobileOnNavigate />
       <AppSidebar />
       <SidebarInset className="min-w-0">
+        <HistoryAlert />
         <header className="sticky top-0 z-30 flex h-14 items-center gap-2 border-b bg-background/80 px-4 backdrop-blur">
           <SidebarTrigger aria-label={t.nav.toggleSidebar} />
           <div className="flex min-w-0 flex-1 items-center">

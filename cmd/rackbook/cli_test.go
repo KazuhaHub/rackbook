@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -190,5 +191,77 @@ func TestServeRefusesNonLoopbackWithoutAuth(t *testing.T) {
 	}
 	if isLoopback("0.0.0.0:80") || !isLoopback("127.0.0.1:80") || !isLoopback("[::1]:80") {
 		t.Fatal("isLoopback")
+	}
+}
+
+func TestCommitRefusedWhenRemoteHistoryWasRewritten(t *testing.T) {
+	root := t.TempDir()
+	g := func(dir string, args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+		cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=T", "GIT_AUTHOR_EMAIL=t@e.com", "GIT_COMMITTER_NAME=T", "GIT_COMMITTER_EMAIL=t@e.com")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	bare, mine, other := filepath.Join(root, "o.git"), filepath.Join(root, "mine"), filepath.Join(root, "other")
+	g(root, "init", "--bare", "-b", "main", bare)
+	seed := testutil.CopyExample(t)
+	g(seed, "init", "-b", "main")
+	g(seed, "add", ".")
+	g(seed, "commit", "-m", "seed")
+	g(seed, "remote", "add", "origin", bare)
+	g(seed, "push", "origin", "main")
+	g(root, "clone", bare, mine)
+	g(root, "clone", bare, other)
+	g(mine, "config", "user.name", "Me")
+	g(mine, "config", "user.email", "me@example.com")
+	cfg := filepath.Join(mine, "rackbook.yml")
+
+	// Normal case: commits carry the Record trailer.
+	if out, err := run(t, "set", "todo", "统一代理入站端口", "status=完成", "--config", cfg, "--commit"); err != nil || !strings.Contains(out, "committed") {
+		t.Fatalf("%v %s", err, out)
+	}
+	if msg, _ := exec.Command("git", "-C", mine, "log", "-1", "--format=%B").Output(); !strings.Contains(string(msg), "Edited-via: rackbook (cli)\nRecord: todo/统一代理入站端口") {
+		t.Fatalf("%s", msg)
+	}
+	// Somebody rewrites the remote's history.
+	g(other, "commit", "--amend", "-qm", "rewritten seed", "--allow-empty")
+	g(other, "push", "--quiet", "--force", "origin", "main")
+	todo := filepath.Join(mine, "docs/ledger/todo.yml")
+	before, _ := os.ReadFile(todo)
+	out, err := run(t, "set", "todo", "统一代理入站端口", "status=推迟", "--config", cfg, "--commit")
+	if err == nil || !strings.Contains(err.Error(), "history was rewritten") || !strings.Contains(err.Error(), "rackbook accept-remote") {
+		t.Fatalf("%v %s", err, out)
+	}
+	if after, _ := os.ReadFile(todo); string(after) != string(before) {
+		t.Fatal("no file may be edited when the commit would be refused")
+	}
+	// rackbook accept-remote records the new base; it never resets the user's clone.
+	tip, _ := exec.Command("git", "-C", other, "rev-parse", "HEAD").Output()
+	remote := strings.TrimSpace(string(tip))
+	headBefore, _ := exec.Command("git", "-C", mine, "rev-parse", "HEAD").Output()
+	if out, err := run(t, "accept-remote", "0123456", "--config", cfg); err == nil || !strings.Contains(err.Error(), "not the current tip") {
+		t.Fatalf("%v %s", err, out)
+	}
+	if out, err := run(t, "accept-remote", remote, "--config", cfg); err != nil || !strings.Contains(out, "accepted "+remote) {
+		t.Fatalf("%v %s", err, out)
+	}
+	if headAfter, _ := exec.Command("git", "-C", mine, "rev-parse", "HEAD").Output(); string(headAfter) != string(headBefore) {
+		t.Fatal("accept-remote must not move the user's branch")
+	}
+	if out, err := run(t, "accept-remote", remote, "--config", cfg); err == nil || !strings.Contains(err.Error(), "no_alert") {
+		t.Fatalf("%v %s", err, out)
+	}
+	// serve --accept-remote refuses anything but the current remote tip (and exits instead of serving).
+	if out, err := run(t, "serve", "--repo", mine, "--listen", "127.0.0.1:0", "--accept-remote", "0123456789abcdef"); err == nil || !strings.Contains(err.Error(), "--accept-remote") {
+		t.Fatalf("%v %s", err, out)
+	}
+}
+
+func TestServeAcceptRemoteCannotBeReadOnly(t *testing.T) {
+	cfg := filepath.Join(testutil.CopyExample(t), "rackbook.yml")
+	if out, err := run(t, "serve", "--config", cfg, "--listen", "127.0.0.1:0", "--read-only", "--accept-remote", "0123456"); err == nil || !strings.Contains(err.Error(), "--read-only") {
+		t.Fatalf("%v %s", err, out)
 	}
 }

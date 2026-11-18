@@ -130,7 +130,8 @@ the data repository and pushes every edit.
    the `Cf-Access-Jwt-Assertion` header on every request (signature, issuer,
    audience, expiry) — a request that bypasses Access is rejected — and uses
    the `email` claim as the Git author of edits. Restrict who may edit with
-   `auth.editors` in `rackbook.yml`; everyone else Access lets in can read.
+   `auth.editors` in `rackbook.yml`, or assign roles with `auth.roles` (below);
+   everyone else Access lets in can read.
 4. **AI agents.** Give an agent an Access service token and point its MCP
    client at `https://<host>/mcp`, sending `CF-Access-Client-Id` /
    `CF-Access-Client-Secret`. Or run `rackbook mcp` locally against a clone.
@@ -138,6 +139,49 @@ the data repository and pushes every edit.
 Rackbook fetches the remote every minute, so changes pushed from elsewhere
 appear without a restart. If someone changed the same record in the meantime,
 the console shows a conflict instead of overwriting it.
+
+### Roles
+
+```yaml
+# rackbook.yml
+auth:
+  roles:
+    admin:  [owner@example.com]
+    editor: ["*@example.com", "mcphub:alice"]
+    viewer: ["*"]
+```
+
+Entries are exact identities, `*@domain`, `mcphub:<username>`, `group:<id>` or
+`*` (anyone authenticated), matched case-insensitively; the highest role wins.
+Viewers read, editors also create, edit and delete records, admins also do
+administrative actions. Without a `roles` block every authenticated identity
+is an editor, and `auth.editors` keeps working. Matching folds ASCII case only.
+MCPHub users match only `mcphub:<username>` entries (or `mcphub:*`), plus
+exact/`*@domain` entries for e-mail usernames if `auth.mcp.match_email: true`. Roles are read from the
+current config on every request, so a change pulled from Git applies at once.
+`/api/meta` reports `user.role`, `user.canEdit` and `user.canAdmin`.
+
+### Rackbook never force-pushes
+
+Rackbook never runs `git push --force`, `--force-with-lease`, a `+refspec`,
+`--mirror` or a branch/tag deletion, and never resets anything on the remote.
+Every push is a plain fast-forward of one branch; if the remote moved, the edit
+is re-applied on the new tip, and if that keeps failing you get a conflict
+error. Tests enforce this on every git command the code runs.
+
+It also notices when somebody else rewrites the remote's history. The server
+remembers the last remote commit it accepted (`.git/rackbook-last-good` in its
+clone). If `origin/<branch>` stops being a descendant of it, Rackbook pauses
+all writes (HTTP `503 history_rewritten`, also for the CLI and MCP), keeps
+serving the last good commit read-only without touching its clone, logs an
+error and shows a red banner in the console. After checking the new history, an
+administrator resumes with the banner's confirm button
+(`POST /api/admin/accept-remote`) or
+`rackbook serve --accept-remote <commit-of-the-current-remote-tip>`; in a plain
+clone use `rackbook accept-remote <commit>` (it only records the base and never
+touches your work tree). Accepting is refused unless a rewrite is active and the
+new tip's config loads. The server's clone must contain only tracked files:
+anything else makes writes fail with `repo_dirty` rather than risk overwriting it.
 
 ## Development
 
@@ -176,4 +220,9 @@ rackbook serve --config examples/homelab/rackbook.yml --no-git   # 打开 http:/
 
 部署：放在 Cloudflare Access 后面（见上文 “Deployment behind Cloudflare Access”）。
 服务器用带写权限的 deploy key 克隆数据仓库；Rackbook 校验每个请求的
-`Cf-Access-Jwt-Assertion`，用其中的邮箱作为提交作者；`auth.editors` 可限定谁能编辑。
+`Cf-Access-Jwt-Assertion`，用其中的邮箱作为提交作者；`auth.editors` 可限定谁能编辑，
+`auth.roles`（admin / editor / viewer）可按身份、`*@域名`、`mcphub:用户名`、`*` 分配角色。
+
+Rackbook 永远不会 force push，也不会改写或删除远端分支和标签。若发现远端历史被他人改写，
+会暂停所有写入（返回 503 `history_rewritten`）、继续只读提供最后一个可信提交，并在控制台显示红色横幅；
+管理员确认后用横幅按钮或 `rackbook serve --accept-remote <提交>` 恢复。

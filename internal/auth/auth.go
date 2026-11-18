@@ -1,7 +1,9 @@
-// Package auth identifies the caller. In "none" mode every request is
-// accepted (writes are attributed to a configured editor); in
-// "cloudflare-access" mode every request must carry a valid Cloudflare Access
-// JWT.
+// Package auth identifies the caller and decides what the caller may do. In
+// "none" mode every request is accepted (writes are attributed to a configured
+// editor); in "cloudflare-access" mode every request must carry a valid
+// Cloudflare Access JWT. Either way the result is an Identity in the request
+// context, whose Role comes from auth.roles (package roles) evaluated against
+// the current config on every request.
 package auth
 
 import (
@@ -12,8 +14,12 @@ import (
 	"net/http"
 	"net/mail"
 	"strings"
+	"sync/atomic"
 
 	"github.com/coreos/go-oidc/v3/oidc"
+
+	"github.com/kazuhahub/rackbook/internal/config"
+	"github.com/kazuhahub/rackbook/internal/roles"
 )
 
 // Modes.
@@ -25,10 +31,20 @@ const (
 // Config selects and configures the authentication mode.
 type Config struct {
 	Mode     string
-	Team     string // cloudflare-access: team name (<team>.cloudflareaccess.com)
-	Audience string // cloudflare-access: Application Audience (AUD) tag
-	Editor   string // none: attribute writes to "Name <email>"
-	Editors  []string
+	Team     string   // cloudflare-access: team name (<team>.cloudflareaccess.com)
+	Audience string   // cloudflare-access: Application Audience (AUD) tag
+	Editor   string   // none: attribute writes to "Name <email>"
+	Editors  []string // extra editor entries (--editors); auth.editors from the config is added
+
+	// Config returns the current config. It is called on every request, so a
+	// reload shows up at once. Nil = no auth.roles (v0.1 behaviour), with
+	// Editors as the only allow-list.
+	Config func() *config.Config
+
+	// Degraded reports that the latest config failed to load. Roles then come
+	// from the last good config, but nobody may do more than read: writes and
+	// admin actions fail closed until the config loads again.
+	Degraded func() bool
 
 	// JWKSURL and Issuer override the values derived from Team. They exist
 	// for tests and self-hosted setups.
@@ -36,22 +52,18 @@ type Config struct {
 	Issuer  string
 }
 
-// User is an identified caller.
-type User struct {
-	Email   string `json:"email"`
-	Name    string `json:"name"`
-	CanEdit bool   `json:"canEdit"`
-}
-
-// Authenticator verifies requests.
+// Authenticator verifies requests and evaluates roles.
 type Authenticator struct {
 	cfg      Config
 	verifier *oidc.IDTokenVerifier
-	editors  map[string]bool
-	fixed    *User // none mode with an editor
+	fixed    *Identity // none mode with an editor
+	cached   atomic.Pointer[cachedPolicy]
 }
 
-type ctxKey struct{}
+type cachedPolicy struct {
+	cfg    *config.Config
+	policy *roles.Policy
+}
 
 // New validates cfg and prepares verification. ctx bounds the lifetime of the
 // background JWKS refresh.
@@ -59,11 +71,9 @@ func New(ctx context.Context, cfg Config) (*Authenticator, error) {
 	if cfg.Mode == "" {
 		cfg.Mode = ModeNone
 	}
-	a := &Authenticator{cfg: cfg, editors: map[string]bool{}}
-	for _, e := range cfg.Editors {
-		if e = strings.ToLower(strings.TrimSpace(e)); e != "" {
-			a.editors[e] = true
-		}
+	a := &Authenticator{cfg: cfg}
+	if _, err := roles.Compile(nil, roles.Options{}, cfg.Editors...); err != nil {
+		return nil, err
 	}
 	switch cfg.Mode {
 	case ModeNone:
@@ -76,8 +86,7 @@ func New(ctx context.Context, cfg Config) (*Authenticator, error) {
 			if name == "" {
 				name = strings.SplitN(addr.Address, "@", 2)[0]
 			}
-			a.fixed = &User{Email: addr.Address, Name: name}
-			a.fixed.CanEdit = a.canEdit(addr.Address)
+			a.fixed = &Identity{ID: roles.FoldASCII(addr.Address), Email: addr.Address, Name: name, Method: MethodNone}
 		}
 	case ModeCloudflareAccess:
 		issuer, jwks := cfg.Issuer, cfg.JWKSURL
@@ -99,27 +108,61 @@ func New(ctx context.Context, cfg Config) (*Authenticator, error) {
 	return a, nil
 }
 
-func (a *Authenticator) canEdit(identity string) bool {
-	return len(a.editors) == 0 || a.editors[strings.ToLower(identity)]
+// Policy returns the role policy for the current config. It is recompiled
+// only when the config object changes (after a reload).
+func (a *Authenticator) Policy() *roles.Policy {
+	var cur *config.Config
+	if a.cfg.Config != nil {
+		cur = a.cfg.Config()
+	}
+	if c := a.cached.Load(); c != nil && c.cfg == cur {
+		return c.policy
+	}
+	var spec *roles.Spec
+	editors := append([]string{}, a.cfg.Editors...)
+	if cur != nil {
+		spec = cur.Auth.Roles
+		editors = append(editors, cur.Auth.Editors...)
+	}
+	var opt roles.Options
+	if cur != nil {
+		opt.MCPMatchEmail = cur.Auth.MCP.MatchEmail
+	}
+	p, err := roles.Compile(spec, opt, editors...)
+	if err != nil { // config.Load validates, so this is a defensive fallback: deny
+		p, _ = roles.Compile(&roles.Spec{}, roles.Options{})
+	}
+	a.cached.Store(&cachedPolicy{cfg: cur, policy: p})
+	return p
 }
 
-// CanEdit reports whether u may write. A nil user (auth none, no editor
-// configured) may write unless an editors allow-list exists.
-func (a *Authenticator) CanEdit(u *User) bool {
-	if u == nil {
-		return len(a.editors) == 0
+// Evaluate sets id.Role from the current auth.roles. An anonymous identity
+// (auth none without --editor: there is nobody to authenticate) never ends up
+// below viewer, so a local server stays readable.
+func (a *Authenticator) Evaluate(id *Identity) *Identity {
+	id.Role = a.Policy().Evaluate(id.Subject())
+	if a.cfg.Degraded != nil && a.cfg.Degraded() {
+		id.Role = roles.Lower(id.Role, roles.Viewer)
 	}
-	return u.CanEdit
+	if id.Anonymous() && id.Method == MethodNone && id.Role == roles.None {
+		id.Role = roles.Viewer
+	}
+	return id
 }
 
 // ErrUnauthenticated is returned when no valid credential is present.
 var ErrUnauthenticated = errors.New("authentication required")
 
-// Authenticate identifies the caller of r. In none mode it returns the
-// configured editor, possibly nil.
-func (a *Authenticator) Authenticate(r *http.Request) (*User, error) {
+// Authenticate identifies the caller of r and evaluates its role. In none
+// mode it returns the configured editor, or an anonymous identity.
+func (a *Authenticator) Authenticate(r *http.Request) (*Identity, error) {
 	if a.cfg.Mode == ModeNone {
-		return a.fixed, nil
+		id := &Identity{Method: MethodNone}
+		if a.fixed != nil {
+			c := *a.fixed
+			id = &c
+		}
+		return a.Evaluate(id), nil
 	}
 	raw := r.Header.Get("Cf-Access-Jwt-Assertion")
 	if raw == "" {
@@ -153,30 +196,29 @@ func (a *Authenticator) Authenticate(r *http.Request) (*User, error) {
 	if name == "" {
 		name = strings.SplitN(identity, "@", 2)[0]
 	}
-	return &User{Email: identity, Name: name, CanEdit: a.canEdit(identity)}, nil
+	id := &Identity{ID: roles.FoldASCII(identity), Name: name, Email: claims.Email, Method: MethodCloudflareAccess}
+	return a.Evaluate(id), nil
 }
 
-// Middleware rejects unauthenticated requests with 401 and stores the user in the context.
+func writeJSONError(w http.ResponseWriter, status int, code, msg string) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]string{"error": code, "message": msg})
+}
+
+// Middleware rejects unauthenticated requests with 401, identities without a
+// role with 403 "no_role", and stores the Identity in the context otherwise.
 func (a *Authenticator) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		u, err := a.Authenticate(r)
+		id, err := a.Authenticate(r)
 		if err != nil {
-			w.Header().Set("Content-Type", "application/json; charset=utf-8")
-			w.WriteHeader(http.StatusUnauthorized)
-			_ = json.NewEncoder(w).Encode(map[string]string{"error": "unauthorized", "message": err.Error()})
+			writeJSONError(w, http.StatusUnauthorized, "unauthorized", err.Error())
 			return
 		}
-		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), ctxKey{}, u)))
+		if id.EffectiveRole() == roles.None {
+			writeJSONError(w, http.StatusForbidden, "no_role", "you are not allowed to use this ledger")
+			return
+		}
+		next.ServeHTTP(w, r.WithContext(WithIdentity(r.Context(), id)))
 	})
-}
-
-// UserFrom returns the authenticated user stored by Middleware, or nil.
-func UserFrom(ctx context.Context) *User {
-	u, _ := ctx.Value(ctxKey{}).(*User)
-	return u
-}
-
-// WithUser stores u in ctx (used when no Middleware is installed).
-func WithUser(ctx context.Context, u *User) context.Context {
-	return context.WithValue(ctx, ctxKey{}, u)
 }

@@ -101,3 +101,34 @@ func TestResolveRefusesSymlinksOutOfTheRoot(t *testing.T) {
 		}
 	}
 }
+
+func TestParseRoles(t *testing.T) {
+	c, err := Parse([]byte(sample+"auth:\n  editors: [old@x.org]\n  roles:\n    admin: [A@x.org]\n    editor: ['*@x.org', 'mcphub:alice', 'group:ops']\n    viewer: ['*']\n"), "/r/rackbook.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := c.Auth.Roles
+	if r == nil || r.Admin[0] != "A@x.org" || len(r.Editor) != 3 || r.Viewer[0] != "*" || c.Auth.Editors[0] != "old@x.org" {
+		t.Fatalf("%+v", c.Auth)
+	}
+	c, err = Parse([]byte(sample), "/r/rackbook.yml")
+	if err != nil || c.Auth.Roles != nil {
+		t.Fatalf("no roles block must stay nil: %v %+v", err, c.Auth)
+	}
+	for _, bad := range []string{"{admin: ['*@']}", "{editor: ['']}", "{viewer: ['a*b']}", "{editor: ['group:']}"} {
+		if _, err := Parse([]byte(sample+"auth:\n  roles: "+bad+"\n"), "/r/rackbook.yml"); err == nil || !strings.Contains(err.Error(), "auth.roles") {
+			t.Errorf("%s: %v", bad, err)
+		}
+	}
+}
+
+func TestParseMCPMatchEmail(t *testing.T) {
+	c, err := Parse([]byte(sample), "/r/rackbook.yml")
+	if err != nil || c.Auth.MCP.MatchEmail {
+		t.Fatalf("default must be off: %v %+v", err, c.Auth)
+	}
+	c, err = Parse([]byte(sample+"auth:\n  mcp:\n    match_email: true\n"), "/r/rackbook.yml")
+	if err != nil || !c.Auth.MCP.MatchEmail {
+		t.Fatalf("%v %+v", err, c.Auth)
+	}
+}

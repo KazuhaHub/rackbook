@@ -9,6 +9,8 @@ import (
 	"strings"
 
 	"go.yaml.in/yaml/v3"
+
+	"github.com/kazuhahub/rackbook/internal/roles"
 )
 
 // FileName is the default config file name.
@@ -137,9 +139,21 @@ type Write struct {
 	Branch string `yaml:"branch"`
 }
 
-// Auth holds the optional editor allow-list.
+// Auth holds the access policy. Roles is nil when rackbook.yml has no
+// auth.roles block (every authenticated identity may then edit). Editors is
+// the v0.1 allow-list; it is read as extra editor entries.
 type Auth struct {
-	Editors []string `yaml:"editors"`
+	Editors []string    `yaml:"editors"`
+	Roles   *roles.Spec `yaml:"roles"`
+	MCP     AuthMCP     `yaml:"mcp"`
+}
+
+// AuthMCP is the auth.mcp block (MCP over MCPHub tokens).
+type AuthMCP struct {
+	// MatchEmail lets exact and *@domain role entries match an MCPHub user
+	// whose username is an e-mail address. Default false: MCPHub users match
+	// only mcphub:<username> entries.
+	MatchEmail bool `yaml:"match_email"`
 }
 
 // Collection returns the collection with the given name, or nil.
@@ -261,6 +275,9 @@ func (c *Config) finish() error {
 	}
 	if c.Write.Mode != "push" && c.Write.Mode != "pr" {
 		return fmt.Errorf("write.mode must be push or pr, got %q", c.Write.Mode)
+	}
+	if _, err := roles.Compile(c.Auth.Roles, roles.Options{MCPMatchEmail: c.Auth.MCP.MatchEmail}, c.Auth.Editors...); err != nil {
+		return err
 	}
 	if len(c.Collections) == 0 {
 		return errors.New("no collections defined")

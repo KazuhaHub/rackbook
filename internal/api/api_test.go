@@ -87,7 +87,7 @@ func arr(t *testing.T, v any) []any {
 func TestMetaListGetCheck(t *testing.T) {
 	f := newFixture(t, nil, "")
 	code, m, _ := f.do(t, "GET", "/api/meta", nil, nil)
-	if code != 200 || m["title"] != "示例网络台账" || m["writeMode"] != "push" || m["readOnly"] != false || m["user"] != nil {
+	if code != 200 || m["title"] != "示例网络台账" || m["writeMode"] != "push" || m["readOnly"] != false || m["alert"] != nil {
 		t.Fatalf("%d %v", code, m)
 	}
 	cols := arr(t, m["collections"])
@@ -264,11 +264,11 @@ func TestReadOnlyAndEditors(t *testing.T) {
 	}
 	f = newFixture(t, func(o *api.Options) { o.Auth = a }, "")
 	code, r, _ = f.do(t, "POST", "/api/c/todo", map[string]any{"data": map[string]any{"item": "x", "status": "待办"}}, nil)
-	if code != 403 || r["error"] != "read_only" {
+	if code != 403 || r["error"] != "forbidden" {
 		t.Fatalf("%d %v", code, r)
 	}
 	_, m, _ = f.do(t, "GET", "/api/meta", nil, nil)
-	if u := m["user"].(map[string]any); u["email"] != "ann@example.com" || u["canEdit"] != false {
+	if u := m["user"].(map[string]any); u["email"] != "ann@example.com" || u["canEdit"] != false || u["role"] != "viewer" {
 		t.Fatalf("%v", u)
 	}
 }

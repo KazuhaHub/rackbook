@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/kazuhahub/rackbook/internal/auth"
 	"github.com/kazuhahub/rackbook/internal/config"
 	"github.com/kazuhahub/rackbook/internal/edit"
 	"github.com/kazuhahub/rackbook/internal/ledger"
@@ -30,7 +31,8 @@ type Options struct {
 	NoGit        bool          // never use git, even inside a repository
 	Committer    Identity      // zero = DefaultCommitter
 	PullInterval time.Duration // 0 = no periodic pull from Run
-	Via          string        // Edited-via trailer value, default "rackbook"
+	Via          string        // product name in the Edited-via trailer, default "rackbook"
+	Runner       Runner        // runs git; nil = the real git
 
 	GitHubToken string       // pr mode: token for the REST API
 	GitHubRepo  string       // "owner/repo"; default parsed from the origin URL
@@ -75,6 +77,10 @@ type Store struct {
 	beforePush             func()                                         // test seam: runs between commit and push
 	pushFn                 func(ctx context.Context, branch string) error // test seam: replaces the push
 	loadErr                atomic.Value                                   // string, last reload error
+
+	lastGood string                 // last accepted remote commit; guarded by mu
+	alert    atomic.Pointer[Alert]  // set while the remote history is rewritten
+	cfgErr   atomic.Pointer[string] // why the latest config failed to load
 }
 
 // Open loads the config and ledger and detects Git. Inside a repository with
@@ -105,7 +111,7 @@ func Open(ctx context.Context, o Options) (*Store, error) {
 		s.ghOwner, s.ghRepo = parts[0], parts[1]
 	}
 	s.ghAPI = o.GitHubAPI
-	s.repo = &Repo{Dir: cfg.Dir}
+	s.repo = &Repo{Dir: cfg.Dir, Runner: o.Runner, IgnoreUserConfig: true}
 	if !o.NoGit && s.repo.IsRepo(ctx) {
 		s.git = true
 		s.remote = s.repo.RemoteURL(ctx)
@@ -128,7 +134,8 @@ func Open(ctx context.Context, o Options) (*Store, error) {
 	}
 	s.cur.Store(ledger.Load(cfg, nil))
 	if s.git && s.remote != "" {
-		if err := s.Pull(ctx); err != nil {
+		s.initLastGood(ctx)
+		if err := s.Pull(ctx); err != nil && !errors.Is(err, ErrHistoryRewritten) {
 			s.log.Warn("initial pull failed", "err", err)
 		}
 	}
@@ -154,21 +161,50 @@ func (s *Store) Ledger() *ledger.Ledger {
 	return s.cur.Load()
 }
 
-// Config returns the current config.
-func (s *Store) Config() *config.Config { return s.cur.Load().Config }
+// Config returns the current config (re-read from disk without Git, like Ledger).
+func (s *Store) Config() *config.Config { return s.Ledger().Config }
 
 // reload re-reads config and ledger; callers hold mu. On a config error the
 // previous ledger stays in place.
 func (s *Store) reload() error {
 	cfg, err := config.Load(s.opts.ConfigPath)
 	if err != nil {
-		return err
+		msg := err.Error()
+		if old := s.cfgErr.Swap(&msg); old == nil || *old != msg {
+			s.log.Error("rackbook.yml does not load: serving the last good config read-only", "err", err)
+		}
+		return &ConfigError{Err: err}
 	}
+	s.cfgErr.Store(nil)
 	s.cur.Store(ledger.Load(cfg, nil))
 	return nil
 }
 
+// ErrConfig is matched by errors.Is for a *ConfigError.
+var ErrConfig = errors.New("rackbook.yml does not load")
+
+// ConfigError says the config on disk (after a pull, a reset or a hand edit)
+// failed to load. The store keeps serving the last good config and ledger for
+// reads and refuses writes until a config loads again.
+type ConfigError struct{ Err error }
+
+func (e *ConfigError) Error() string {
+	return "the configuration does not load, writes are paused: " + e.Err.Error()
+}
+func (e *ConfigError) Unwrap() error   { return e.Err }
+func (e *ConfigError) Is(t error) bool { return t == ErrConfig }
+
+// ConfigProblem returns why the latest config failed to load, or "".
+func (s *Store) ConfigProblem() string {
+	if p := s.cfgErr.Load(); p != nil {
+		return *p
+	}
+	return ""
+}
+
 // Pull fetches and fast-forwards to origin/<branch>, reloading if HEAD moved.
+// If the remote history was rewritten it returns *HistoryRewrittenError and
+// leaves the clone alone.
 func (s *Store) Pull(ctx context.Context) error {
 	if !s.HasRemote() {
 		return nil
@@ -179,9 +215,17 @@ func (s *Store) Pull(ctx context.Context) error {
 	if _, err := s.repo.git(ctx, "fetch", "--quiet", "origin"); err != nil {
 		return err
 	}
+	remote, err := s.verifyRemote(ctx)
+	if err != nil {
+		return err
+	}
+	if err := s.repo.cloneProblem(ctx); err != nil {
+		return err
+	}
 	if _, err := s.repo.git(ctx, "merge", "--quiet", "--ff-only", "origin/"+s.branch); err != nil {
 		return err
 	}
+	s.advance(ctx, remote)
 	if after, _ := s.repo.Head(ctx); after != before || before == "" {
 		return s.reload()
 	}
@@ -200,7 +244,7 @@ func (s *Store) Run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			if err := s.Pull(ctx); err != nil {
+			if err := s.Pull(ctx); err != nil && !errors.Is(err, ErrHistoryRewritten) {
 				s.log.Warn("pull failed", "err", err)
 			}
 		}
@@ -209,22 +253,24 @@ func (s *Store) Run(ctx context.Context) {
 
 // Errors for a server clone that is not in the state the store requires.
 var (
-	ErrRepoDirty    = errors.New("the server's clone of the data repository has uncommitted local changes; an administrator must clean it on the server before edits can be saved")
+	ErrRepoDirty    = errors.New("the server's clone of the data repository has uncommitted, untracked or ignored files (it must contain only tracked files); an administrator must clean it on the server before edits can be saved")
 	ErrRepoDiverged = errors.New("the server's clone of the data repository has local commits that are not on the remote; an administrator must fix it on the server before edits can be saved")
 )
 
 // syncLocked moves the work tree to origin/<branch>; callers hold mu. It
 // refuses to discard uncommitted or unpushed work: the clone is server-owned.
 func (s *Store) syncLocked(ctx context.Context) error {
-	if dirty, err := s.repo.Dirty(ctx); err != nil {
+	if err := s.repo.cloneProblem(ctx); err != nil {
 		return err
-	} else if dirty {
-		return ErrRepoDirty
 	}
 	if !s.HasRemote() {
 		return s.reload()
 	}
 	if _, err := s.repo.git(ctx, "fetch", "--quiet", "origin"); err != nil {
+		return err
+	}
+	remote, err := s.verifyRemote(ctx)
+	if err != nil {
 		return err
 	}
 	if n, err := s.repo.git(ctx, "rev-list", "--count", "origin/"+s.branch+"..HEAD"); err == nil && n != "0" {
@@ -233,16 +279,14 @@ func (s *Store) syncLocked(ctx context.Context) error {
 	if _, err := s.repo.git(ctx, "reset", "--quiet", "--hard", "origin/"+s.branch); err != nil {
 		return err
 	}
+	s.advance(ctx, remote)
 	return s.reload()
 }
 
-// editorIdentity picks the commit author: the editor, else the Git config, else the committer.
-func (s *Store) editorIdentity(ctx context.Context, editor Identity) Identity {
-	if !editor.IsZero() {
-		if editor.Name == "" {
-			editor.Name = strings.SplitN(editor.Email, "@", 2)[0]
-		}
-		return editor
+// authorFor picks the commit author: who, else the Git config, else the committer.
+func (s *Store) authorFor(ctx context.Context, who *auth.Identity) Identity {
+	if a := AuthorOf(who); !a.IsZero() {
+		return a
 	}
 	if id := s.repo.ConfigIdentity(ctx); id.Name != "" && id.Email != "" {
 		return id
@@ -250,11 +294,12 @@ func (s *Store) editorIdentity(ctx context.Context, editor Identity) Identity {
 	return s.opts.Committer
 }
 
-// Write applies op. Without Git the files are edited in place. With Git the
-// edit is committed (author = editor, committer = service identity) and
+// Write applies op on behalf of who (nil = anonymous). Without Git the files
+// are edited in place. With Git the edit is committed (author = who, committer
+// = service identity; message built by CommitMessage, with a Record trailer) and
 // pushed; if the push is rejected because the remote moved, the same edit is
 // replayed on the new tip, at most MaxAttempts times.
-func (s *Store) Write(ctx context.Context, op edit.Op, editor Identity) (*WriteResult, error) {
+func (s *Store) Write(ctx context.Context, op edit.Op, who *auth.Identity) (*WriteResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if !s.git {
@@ -277,7 +322,7 @@ func (s *Store) Write(ctx context.Context, op edit.Op, editor Identity) (*WriteR
 	if pr && !s.HasRemote() {
 		return nil, errors.New("write.mode is pr but the repository has no origin remote")
 	}
-	author := s.editorIdentity(ctx, editor)
+	author := s.authorFor(ctx, who)
 	var lastErr error
 	for attempt := 1; attempt <= MaxAttempts; attempt++ {
 		if err := s.syncLocked(ctx); err != nil {
@@ -291,7 +336,7 @@ func (s *Store) Write(ctx context.Context, op edit.Op, editor Identity) (*WriteR
 			return &WriteResult{Result: res}, nil
 		}
 		parent, _ := s.repo.Head(ctx)
-		msg := CommitMessage(res.Subject(), author, s.via)
+		msg := CommitMessage(res.Subject(), who, s.via, res.Record())
 		short, err := s.repo.Commit(ctx, res.Files, msg, author, s.opts.Committer)
 		if err != nil {
 			s.discard(ctx, parent, res.Files)
@@ -325,6 +370,7 @@ func (s *Store) Write(ctx context.Context, op edit.Op, editor Identity) (*WriteR
 			_, ferr := s.repo.git(ctx, "fetch", "--quiet", "origin")
 			if ferr == nil {
 				if _, aerr := s.repo.git(ctx, "merge-base", "--is-ancestor", "HEAD", "origin/"+s.branch); aerr == nil {
+					s.advanceToHead(ctx)
 					if err := s.reload(); err != nil {
 						return nil, err
 					}
@@ -340,6 +386,7 @@ func (s *Store) Write(ctx context.Context, op edit.Op, editor Identity) (*WriteR
 			s.log.Info("push rejected, replaying edit on the new tip", "attempt", attempt)
 			continue
 		}
+		s.advanceToHead(ctx)
 		if err := s.reload(); err != nil {
 			return nil, err
 		}
@@ -386,23 +433,54 @@ func (s *Store) openPR(ctx context.Context, res *edit.Result, author Identity, m
 	return s.createPR(ctx, branch, s.branch, res.Subject(), body)
 }
 
-// History lists recent commits, optionally only those touching a collection's file.
-func (s *Store) History(ctx context.Context, limit int, collection string) ([]Commit, error) {
+// History lists recent commits, optionally only those touching a collection's
+// file. With collection and id it lists the commits that carry the trailer
+// "Record: <collection>/<id>" (per-record history; the value comes from
+// edit.RecordRef, the same function that writes it) and falls back to the
+// collection's file history when no commit does (records edited before the
+// trailer existed, or by hand).
+func (s *Store) History(ctx context.Context, limit int, collection, id string) ([]Commit, error) {
 	if !s.git {
 		return []Commit{}, nil
 	}
 	if limit <= 0 || limit > 200 {
 		limit = 20
 	}
-	args := []string{"log", "-n", fmt.Sprint(limit), "--format=%h%x1f%an%x1f%ae%x1f%aI%x1f%s"}
+	if id != "" && collection == "" {
+		return nil, errors.New("id needs a collection")
+	}
+	var file string
 	if collection != "" {
 		c := s.cur.Load().Collection(collection)
 		if c == nil {
 			return nil, fmt.Errorf("unknown collection %q", collection)
 		}
-		args = append(args, "--", filepath.FromSlash(c.File))
+		file = filepath.FromSlash(c.File)
 	}
-	out, err := s.repo.git(ctx, args...)
+	if id != "" {
+		want := edit.RecordRef(collection, id)
+		// --fixed-strings makes the prefilter literal whatever grep.patternType
+		// says; it is a substring match, so the exact value is checked below.
+		commits, err := s.gitLog(ctx, limit, want, "--fixed-strings", "--grep=Record: "+want)
+		if err != nil || len(commits) > 0 {
+			return commits, err
+		}
+	}
+	if file != "" {
+		return s.gitLog(ctx, limit, "", "--", file)
+	}
+	return s.gitLog(ctx, limit, "")
+}
+
+// gitLog runs git log with extra selection arguments. With record set, only
+// commits with exactly that Record trailer are returned (the limit then applies
+// after this check, since the git-side filter is a substring match).
+func (s *Store) gitLog(ctx context.Context, limit int, record string, extra ...string) ([]Commit, error) {
+	args := []string{"log", "--format=%h%x1f%an%x1f%ae%x1f%aI%x1f%s%x1f%(trailers:key=Record,valueonly,separator=%x1e)"}
+	if record == "" {
+		args = append(args, "-n", fmt.Sprint(limit))
+	}
+	out, err := s.repo.git(ctx, append(args, extra...)...)
 	if err != nil {
 		if strings.Contains(err.Error(), "does not have any commits") {
 			return []Commit{}, nil
@@ -412,14 +490,26 @@ func (s *Store) History(ctx context.Context, limit int, collection string) ([]Co
 	commits := []Commit{}
 	for _, line := range strings.Split(out, "\n") {
 		f := strings.Split(line, "\x1f")
-		if len(f) != 5 {
+		if len(f) != 6 {
 			continue
+		}
+		if record != "" {
+			found := false
+			for _, v := range strings.Split(f[5], "\x1e") {
+				found = found || strings.TrimSpace(v) == record
+			}
+			if !found {
+				continue
+			}
 		}
 		date := f[3]
 		if t, err := time.Parse(time.RFC3339, f[3]); err == nil {
 			date = t.UTC().Format(time.RFC3339)
 		}
 		commits = append(commits, Commit{Hash: f[0], Author: f[1], Email: f[2], Date: date, Subject: f[4]})
+		if len(commits) == limit {
+			break
+		}
 	}
 	return commits, nil
 }
