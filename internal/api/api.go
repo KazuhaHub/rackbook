@@ -76,6 +76,7 @@ func New(o Options) http.Handler {
 	mux.HandleFunc("PUT /api/c/{collection}/{id}", s.put)
 	mux.HandleFunc("DELETE /api/c/{collection}/{id}", s.del)
 	mux.HandleFunc("POST /api/admin/accept-remote", s.acceptRemote)
+	s.typesRoutes(mux)
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "not_found", "no such API endpoint")
 	})
@@ -248,6 +249,10 @@ type collectionOut struct {
 	Title       string           `json:"title"`
 	Description string           `json:"description"`
 	Group       string           `json:"group"`
+	Icon        string           `json:"icon,omitempty"`
+	File        string           `json:"file"`
+	Path        string           `json:"path,omitempty"`
+	SchemaFile  string           `json:"schemaFile"`
 	Key         []string         `json:"key"`
 	Label       string           `json:"label"`
 	List        []string         `json:"list"`
@@ -281,7 +286,8 @@ func (s *server) meta(w http.ResponseWriter, r *http.Request) {
 	cols := make([]collectionOut, 0, len(l.Collections))
 	for _, c := range l.Collections {
 		out := collectionOut{
-			Name: c.Name, Title: c.Title, Description: c.Description, Group: c.Group,
+			Name: c.Name, Title: c.Title, Description: c.Description, Group: c.Group, Icon: c.Icon,
+			File: c.File, Path: c.Path, SchemaFile: c.Collection.Schema,
 			Key: strs(c.Key), Label: c.Label, List: strs(c.List), Facets: []facetOut{},
 			Schema: c.SchemaRaw, Refs: l.Refs(c.Name), Backrefs: l.BackRefs(c.Name), Notes: []noteOut{}, Count: len(c.Records),
 		}
@@ -405,9 +411,18 @@ func (s *server) apply(w http.ResponseWriter, r *http.Request, op edit.Op) *gits
 	if err == nil {
 		return res
 	}
+	s.writeFailure(w, err)
+	return nil
+}
+
+// writeFailure maps an error of the write path to its HTTP answer.
+func (s *server) writeFailure(w http.ResponseWriter, err error) {
 	var ce *edit.ConflictError
 	var ie *edit.InvalidError
+	var re *edit.ReferencedError
 	switch {
+	case errors.As(err, &re):
+		writeError(w, http.StatusConflict, "referenced", re.Error(), "references", re.Refs)
 	case errors.As(err, &ce):
 		var cur any
 		if ce.Current != nil {
@@ -433,7 +448,6 @@ func (s *server) apply(w http.ResponseWriter, r *http.Request, op edit.Op) *gits
 	default:
 		s.internal(w, err)
 	}
-	return nil
 }
 
 // historyRewritten answers 503: writes are paused until an admin accepts the
@@ -536,8 +550,13 @@ func (s *server) del(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_request", "hash is required: send the hash of the record you started from")
 		return
 	}
-	if res := s.apply(w, r, edit.Op{Kind: edit.Delete, Collection: c.Name, ID: r.PathValue("id"), Hash: hash}); res != nil {
-		writeJSON(w, http.StatusOK, map[string]any{"commit": res.Commit})
+	clear := r.URL.Query().Get("clearReferences") == "true"
+	if res := s.apply(w, r, edit.Op{Kind: edit.Delete, Collection: c.Name, ID: r.PathValue("id"), Hash: hash, ClearReferences: clear}); res != nil {
+		out := map[string]any{"commit": res.Commit}
+		if len(res.Cleared) > 0 {
+			out["cleared"] = res.Cleared
+		}
+		writeJSON(w, http.StatusOK, out)
 	}
 }
 

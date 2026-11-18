@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -37,6 +38,10 @@ type Op struct {
 	ID         string         // edit, delete: the record being changed
 	Hash       string         // edit, delete: base hash; empty skips the check
 	Data       map[string]any // add, edit: the full new record
+	// ClearReferences (delete): remove the references to the record from the
+	// records that hold them, in the same change. Without it a record that is
+	// still referenced is not deleted (*ReferencedError).
+	ClearReferences bool
 }
 
 // Result describes a successful change.
@@ -47,6 +52,13 @@ type Result struct {
 	Hash       string
 	Data       map[string]any
 	Files      []string // config-relative files that were written; empty when nothing changed
+
+	// SubjectText and RecordText replace the commit subject and the Record
+	// trailer for changes that are not record edits (data type changes).
+	SubjectText string
+	RecordText  string
+	// Cleared lists the references removed by a delete with ClearReferences.
+	Cleared []ledger.Reference
 }
 
 // Changed reports whether any file was written.
@@ -54,11 +66,19 @@ func (r *Result) Changed() bool { return len(r.Files) > 0 }
 
 // Subject is the commit subject for the change.
 func (r *Result) Subject() string {
+	if r.SubjectText != "" {
+		return r.SubjectText
+	}
 	return fmt.Sprintf("ledger(%s): %s %s", r.Collection, r.Kind, sanitizeSubject(r.ID))
 }
 
 // Record is the value of the "Record:" commit trailer for this change.
-func (r *Result) Record() string { return RecordRef(r.Collection, r.ID) }
+func (r *Result) Record() string {
+	if r.SubjectText != "" {
+		return r.RecordText
+	}
+	return RecordRef(r.Collection, r.ID)
+}
 
 // maxRecordID is how many characters of an id the trailer keeps.
 const maxRecordID = 100
@@ -110,6 +130,25 @@ type ConflictError struct {
 }
 
 func (e *ConflictError) Error() string { return e.Message }
+
+// ReferencedError means other records still point at the record to delete.
+type ReferencedError struct {
+	Collection string
+	ID         string
+	Refs       []ledger.Reference
+}
+
+func (e *ReferencedError) Error() string {
+	parts := make([]string, 0, len(e.Refs))
+	for i, r := range e.Refs {
+		if i == 5 {
+			parts = append(parts, fmt.Sprintf("and %d more", len(e.Refs)-5))
+			break
+		}
+		parts = append(parts, fmt.Sprintf("%s/%s (%s)", r.Collection, r.ID, r.Field))
+	}
+	return fmt.Sprintf("%s %q is still referenced by %s", e.Collection, e.ID, strings.Join(parts, ", "))
+}
 
 // InvalidError carries the check errors a write would introduce.
 type InvalidError struct{ Issues []ledger.Issue }
@@ -180,6 +219,8 @@ func Apply(cfg *config.Config, op Op) (*Result, error) {
 	var out []byte
 	var cur *ledger.Record
 	newID := op.ID
+	files := map[string][]byte{} // other files changed by the operation
+	var cleared []ledger.Reference
 	switch op.Kind {
 	case Add:
 		newID = ledger.ID(c.Collection, len(c.Records), op.Data)
@@ -198,7 +239,21 @@ func Apply(cfg *config.Config, op Op) (*Result, error) {
 			}
 			out, err = yamledit.Edit(src, c.Path, cur.Index, op.Data, opts)
 		} else {
-			out, err = yamledit.Delete(src, c.Path, cur.Index, opts)
+			delSrc := src
+			if refs := base.ReferencesTo(c.Name, cur); len(refs) > 0 {
+				if !op.ClearReferences {
+					return nil, &ReferencedError{Collection: c.Name, ID: cur.ID, Refs: refs}
+				}
+				if files, err = clearReferences(base, refs); err != nil {
+					return nil, err
+				}
+				cleared = refs
+				if b, ok := files[c.File]; ok {
+					delSrc = b // the record's own file also holds references to it
+					delete(files, c.File)
+				}
+			}
+			out, err = yamledit.Delete(delSrc, c.Path, cur.Index, opts)
 		}
 	default:
 		return nil, fmt.Errorf("%w: unknown operation %q", ErrBadRequest, op.Kind)
@@ -206,20 +261,27 @@ func Apply(cfg *config.Config, op Op) (*Result, error) {
 	if err != nil {
 		return nil, err
 	}
-	res := &Result{Kind: op.Kind, Collection: op.Collection, ID: newID, Data: op.Data}
-	if string(out) == string(src) {
+	res := &Result{Kind: op.Kind, Collection: op.Collection, ID: newID, Data: op.Data, Cleared: cleared}
+	if string(out) == string(src) && len(files) == 0 {
 		res.Hash = ledger.Hash(op.Data)
 		return res, nil
 	}
 
-	after := ledger.Load(cfg, map[string][]byte{c.File: out})
+	overlay := map[string][]byte{c.File: out}
+	for f, b := range files {
+		overlay[f] = b
+	}
+	after := ledger.Load(cfg, overlay)
 	if bad := validate.Introduced(validate.Run(base), validate.Run(after)); len(bad) > 0 {
 		return nil, &InvalidError{Issues: bad}
 	}
-	if err := writeFile(filepath.Join(cfg.Dir, filepath.FromSlash(c.File)), out); err != nil {
-		return nil, err
+	for f, b := range overlay {
+		if err := writeFile(filepath.Join(cfg.Dir, filepath.FromSlash(f)), b); err != nil {
+			return nil, err
+		}
+		res.Files = append(res.Files, f)
 	}
-	res.Files = []string{c.File}
+	sort.Strings(res.Files)
 	if op.Kind != Delete {
 		if ac := after.Collection(op.Collection); ac != nil {
 			if r := ac.Get(newID); r != nil {
@@ -231,6 +293,70 @@ func Apply(cfg *config.Config, op Op) (*Result, error) {
 		}
 	}
 	return res, nil
+}
+
+// clearReferences removes the references refs from the records that hold them
+// and returns the new content of every file it changed (config-relative path).
+// Record positions do not move, so the references of one file are applied one
+// after the other on the evolving text.
+func clearReferences(l *ledger.Ledger, refs []ledger.Reference) (map[string][]byte, error) {
+	type recKey struct{ coll, id string }
+	targets := map[recKey]map[string]map[string]bool{} // record -> field -> referenced values
+	var order []recKey
+	for _, r := range refs {
+		k := recKey{r.Collection, r.ID}
+		if targets[k] == nil {
+			targets[k] = map[string]map[string]bool{}
+			order = append(order, k)
+		}
+		if targets[k][r.Field] == nil {
+			targets[k][r.Field] = map[string]bool{}
+		}
+		targets[k][r.Field][r.Value] = true
+	}
+	files := map[string][]byte{}
+	for _, k := range order {
+		c := l.Collection(k.coll)
+		rec := c.Get(k.id)
+		if rec == nil {
+			continue
+		}
+		data := map[string]any{}
+		for f, v := range rec.Data {
+			data[f] = v
+		}
+		for field, values := range targets[k] {
+			delete(data, field)
+			if list, ok := rec.Data[field].([]any); ok { // a many-reference keeps its other values
+				keep := []any{}
+				for _, v := range list {
+					if !values[ledger.Str(v)] {
+						keep = append(keep, v)
+					}
+				}
+				if len(keep) > 0 {
+					data[field] = keep
+				}
+			}
+		}
+		src, ok := files[c.File]
+		if !ok {
+			var err error
+			if src, err = l.ReadFile(c.File); err != nil {
+				return nil, err
+			}
+		}
+		opts := yamledit.Opts{Order: c.Schema.Order()}
+		if len(c.Key) > 0 {
+			opts.GroupField = c.Key[0]
+		}
+		out, err := yamledit.Edit(src, c.Path, rec.Index, data, opts)
+		if err != nil {
+			return nil, err
+		}
+		files[c.File] = out
+	}
+	return files, nil
 }
 
 func findRecord(c *ledger.Collection, op Op) (*ledger.Record, error) {
@@ -255,7 +381,9 @@ func findRecord(c *ledger.Collection, op Op) (*ledger.Record, error) {
 	return rec, nil
 }
 
-// writeFile replaces path atomically, keeping its permissions.
+// WriteFile replaces path atomically, keeping its permissions (0644 for a new file).
+func WriteFile(path string, data []byte) error { return writeFile(path, data) }
+
 func writeFile(path string, data []byte) error {
 	mode := os.FileMode(0o644)
 	if st, err := os.Stat(path); err == nil {

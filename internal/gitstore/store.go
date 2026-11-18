@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -300,13 +301,26 @@ func (s *Store) authorFor(ctx context.Context, who *auth.Identity) Identity {
 // pushed; if the push is rejected because the remote moved, the same edit is
 // replayed on the new tip, at most MaxAttempts times.
 func (s *Store) Write(ctx context.Context, op edit.Op, who *auth.Identity) (*WriteResult, error) {
+	return s.WriteFunc(ctx, func(cfg *config.Config) (*edit.Result, error) { return edit.Apply(cfg, op) }, who)
+}
+
+// ApplyFunc performs one change on the files under cfg.Dir and reports which
+// files it wrote and the commit subject and trailer (see edit.Result). It is
+// called again on the new tip when a push is rejected, so it must be
+// repeatable: it describes the change, not the file positions.
+type ApplyFunc func(cfg *config.Config) (*edit.Result, error)
+
+// WriteFunc is Write for any change: record edits (edit.Apply) and data type
+// changes (types.Apply) share this one path, so they get the same sync,
+// commit identity, push, replay and pull-request behaviour.
+func (s *Store) WriteFunc(ctx context.Context, apply ApplyFunc, who *auth.Identity) (*WriteResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if !s.git {
 		if err := s.reload(); err != nil {
 			return nil, err
 		}
-		res, err := edit.Apply(s.cur.Load().Config, op)
+		res, err := apply(s.cur.Load().Config)
 		if err != nil {
 			return nil, err
 		}
@@ -328,7 +342,7 @@ func (s *Store) Write(ctx context.Context, op edit.Op, who *auth.Identity) (*Wri
 		if err := s.syncLocked(ctx); err != nil {
 			return nil, err
 		}
-		res, err := edit.Apply(s.cur.Load().Config, op)
+		res, err := apply(s.cur.Load().Config)
 		if err != nil {
 			return nil, err
 		}
@@ -396,7 +410,8 @@ func (s *Store) Write(ctx context.Context, op edit.Op, who *auth.Identity) (*Wri
 }
 
 // discard drops our unpushed commit and restores only the files the edit
-// touched; changes the store did not make are never reset.
+// touched; changes the store did not make are never reset. A file the edit
+// created (it is not in the parent commit) is removed again.
 func (s *Store) discard(ctx context.Context, parent string, files []string) {
 	if parent == "" {
 		return
@@ -405,9 +420,19 @@ func (s *Store) discard(ctx context.Context, parent string, files []string) {
 		s.log.Error("could not reset the index", "err", err)
 		return
 	}
-	if len(files) > 0 {
-		if _, err := s.repo.git(ctx, append([]string{"checkout", "--quiet", "--"}, files...)...); err != nil {
-			s.log.Error("could not restore the edited files", "err", err)
+	for _, f := range files {
+		if _, err := s.repo.git(ctx, "cat-file", "blob", parent+":"+f); err != nil {
+			if msg := err.Error(); !strings.Contains(msg, "Not a valid object name") && !strings.Contains(msg, "does not exist") && !strings.Contains(msg, "but not in") {
+				s.log.Error("could not tell whether the edit created the file", "file", f, "err", err)
+				continue
+			}
+			if err := os.Remove(filepath.Join(s.repo.Dir, filepath.FromSlash(f))); err != nil && !errors.Is(err, os.ErrNotExist) {
+				s.log.Error("could not remove the created file", "file", f, "err", err)
+			}
+			continue
+		}
+		if _, err := s.repo.git(ctx, "checkout", "--quiet", "--", f); err != nil {
+			s.log.Error("could not restore the edited file", "file", f, "err", err)
 		}
 	}
 }

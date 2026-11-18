@@ -26,10 +26,17 @@ type Config struct {
 	Rules       []Rule        `yaml:"rules"`
 	Write       Write         `yaml:"write"`
 	Auth        Auth          `yaml:"auth"`
+	Types       Types         `yaml:"types"`
 
 	// Path is the absolute path of the config file; Dir its directory.
 	Path string `yaml:"-"`
 	Dir  string `yaml:"-"`
+}
+
+// Types holds where the console puts the files of a new data type.
+type Types struct {
+	DataDir   string `yaml:"data_dir"`   // default docs/ledger
+	SchemaDir string `yaml:"schema_dir"` // default schemas
 }
 
 // Collection is a list of records inside one YAML file.
@@ -38,6 +45,7 @@ type Collection struct {
 	Title       string   `yaml:"title"`
 	Description string   `yaml:"description"`
 	Group       string   `yaml:"group"`
+	Icon        string   `yaml:"icon"` // optional lucide icon name for the console
 	File        string   `yaml:"file"`
 	Path        string   `yaml:"path"` // dotted path of the list inside the file; "" = top level
 	Schema      string   `yaml:"schema"`
@@ -106,6 +114,10 @@ type RefRule struct {
 	Allow   []string `yaml:"allow"`
 	Many    bool     `yaml:"many"`
 	Message string   `yaml:"message"`
+	// BackrefTitle and BackrefColumns shape the section that lists, on the
+	// target's detail page, the records pointing at it.
+	BackrefTitle   string   `yaml:"backref_title"`
+	BackrefColumns []string `yaml:"backref_columns"`
 }
 
 // SameSetRule: the set of values of a collection field equals a key set in another file.
@@ -278,6 +290,17 @@ func (c *Config) finish() error {
 	}
 	if _, err := roles.Compile(c.Auth.Roles, roles.Options{MCPMatchEmail: c.Auth.MCP.MatchEmail}, c.Auth.Editors...); err != nil {
 		return err
+	}
+	if c.Types.DataDir == "" {
+		c.Types.DataDir = "docs/ledger"
+	}
+	if c.Types.SchemaDir == "" {
+		c.Types.SchemaDir = "schemas"
+	}
+	for _, d := range []string{c.Types.DataDir, c.Types.SchemaDir} {
+		if _, err := c.Resolve(d); err != nil {
+			return fmt.Errorf("types: %w", err)
+		}
 	}
 	if len(c.Collections) == 0 {
 		return errors.New("no collections defined")

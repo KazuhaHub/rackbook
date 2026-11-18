@@ -145,6 +145,7 @@ func compile(c *ledger.Collection) (*jsonschema.Schema, error) {
 		return nil, err
 	}
 	comp := jsonschema.NewCompiler()
+	registerFormats(comp)
 	url := "mem:///" + c.Name + ".json"
 	if err := comp.AddResource(url, doc); err != nil {
 		return nil, err
