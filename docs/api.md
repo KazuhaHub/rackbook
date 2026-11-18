@@ -45,8 +45,14 @@ except the export endpoints. Errors always have the shape
       "refs": [{"field": "device", "to": "devices", "toField": "name", "allow": ["all"]}],
       "backrefs": [],
       "notes": [{"title": "…", "text": "…"}],
-      "count": 12
+      "count": 12,
+      "expiryField": "",
+      "revokedField": ""
     }
+  ],
+  "modules": [
+    {"name": "entra", "collection": "credentials",
+     "fields": ["kind", "expires", "kid"], "directPush": true}
   ]
 }
 ```
@@ -67,6 +73,11 @@ except the export endpoints. Errors always have the shape
 - `facets[].match`: `exact` (values = distinct field values, computed by
   the client when `values` is empty), `contains` (a record matches a value if
   the field contains it as a substring), `prefix`.
+- `expiryField` and `revokedField`: the properties marked
+  `x-rackbook: {expires: true}` and `{revoked: true}` in the collection's
+  schema, or `""` ([modules.md](modules.md), section 1.1).
+- `modules`: the `modules:` allow list of `rackbook.yml` (always an array,
+  empty without one; token names are never shown).
 - `refs`: this collection's fields that reference another collection.
 - `backrefs`: `[{"collection": "addresses", "field": "device"}]` on
   `devices` — other collections whose field references this one.
@@ -104,6 +115,27 @@ applies to every device). 404 `{"error":"not_found"}` if missing.
 
 `rule` ∈ `yaml`, `schema`, `unique`, `ref`, `same_set`, `config`.
 `path` is a JSON pointer inside the record (may be empty).
+
+### `GET /api/expiring?days=30[&collection=<name>…][&unknown=true]`
+
+```json
+{"today": "2026-11-18", "days": 30,
+ "items": [
+   {"collection": "credentials", "id": "tls-www", "label": "tls-www",
+    "expires": "2026-11-10", "daysLeft": -8, "status": "expired", "source": ""}
+ ]}
+```
+
+The records of collections with an `expires` mark that are expired or expire
+within `days` (default 30, clamped to 0..3650; today is the UTC date; today
+counts as `expiring`, 0 days left). `collection` can repeat to limit the
+listing. Empty or missing dates and records with a non-empty `revoked` field
+are left out; with `unknown=true`, records whose date is not a date (for
+example `待补`) are listed too, with `status: "unknown"` and `daysLeft: null`.
+`label` is the collection's label field, else the id; `source` is `""` for a
+record entered by hand. Sorted by `daysLeft`, unknown last. `400 bad_request`
+for a `days` that is not a whole number, `404 not_found` for an unknown
+collection. Needs read access; API tokens may call it.
 
 ### `GET /api/history?limit=20[&collection=c[&id=<record id>]]`
 
@@ -154,6 +186,13 @@ Changing key fields changes the id (rename).
 
 → `200 {"commit": "…"}`.
 
+Writes with a token listed under `modules:` in `rackbook.yml` follow the
+module rules ([modules.md](modules.md), section 2.3): `403 forbidden` for a
+write to another collection, any delete, a create whose `source` is not the
+module's name, an update of a record whose `source` is not the module's name,
+and an update that changes a field outside the module's `fields`. The commit
+carries the trailer `Source: <module>`.
+
 ### `POST /api/admin/accept-remote`
 
 Admin only (`403 forbidden` otherwise). Body `{"commit": "<hash>"}`, the
@@ -175,7 +214,7 @@ is on (it is in `rackbook serve`).
 - `POST /api/admin/tokens` `{"name", "scope": "read"|"write", "collections": [], "actions": ["create","update","delete"], "writeMode": ""|"pr"|"push", "expiresDays": 0}` → `201 {"token", "secret", "snippet", "claudeCode", "commit", "pullRequest"}`. The secret is shown only here. `400` for invalid input, `409 exists` for a taken name.
 - `DELETE /api/admin/tokens/{name}` → `200 {"ok", "commit"}`; `404` for an unknown name.
 
-Bearer tokens are accepted on `/mcp`, `/api/c/…`, `/api/meta`, `/api/check`, `/api/history`, `/export.*` and `/llms*` (`403 forbidden` on any other path); `401
+Bearer tokens are accepted on `/mcp`, `/api/c/…`, `/api/meta`, `/api/check`, `/api/history`, `/api/expiring`, `/export.*` and `/llms*` (`403 forbidden` on any other path); `401
 invalid_token` (expired, revoked or unknown) and `429 rate_limited` with
 `Retry-After` after repeated failures from one address.
 

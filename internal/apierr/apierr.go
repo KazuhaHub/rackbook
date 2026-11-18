@@ -29,6 +29,7 @@ func Classify(err error) Info {
 	var he *gitstore.HistoryRewrittenError
 	var re *edit.ReferencedError
 	var fe *edit.ForbiddenError
+	var me *edit.ModuleError
 	var se *secretscan.Error
 	switch {
 	case errors.As(err, &se) && se.Suspected():
@@ -37,6 +38,8 @@ func Classify(err error) Info {
 		return Info{422, "secret_detected", "a possible secret was found; nothing was written", map[string]any{"findings": se.Findings}}
 	case errors.As(err, &fe):
 		return Info{403, "forbidden", fe.Error(), nil}
+	case errors.As(err, &me):
+		return Info{403, "forbidden", me.Error(), nil}
 	case errors.As(err, &re):
 		return Info{409, "referenced", re.Error(), map[string]any{"references": re.Refs}}
 	case errors.As(err, &ce):

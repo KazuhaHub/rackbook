@@ -377,7 +377,7 @@ only its SHA-256 (committed as `rackbook(auth): create token <name>` /
   still an admin. Trailers: `Edited-by: <creator>`, `Edited-via: rackbook
   (token:<name>)` (`mcp (token:<name>)` over `/mcp`).
 - API tokens reach only `/mcp`, record and collection reads and writes
-  (`/api/c/…`, `/api/meta`, `/api/check`, `/api/history`), exports and
+  (`/api/c/…`, `/api/meta`, `/api/check`, `/api/history`, `/api/expiring`), exports and
   `/llms*`. Account, passkey, user, token and type endpoints refuse them.
 - Failed attempts are rate-limited per client IP (10 per minute, then `429`);
   the console login endpoints use the same client address, IPv6 counted per
@@ -513,6 +513,41 @@ edit `rackbook.yml` or `.rackbook/passkeys.yml` in Git.
 Logins, refusals and logouts go to the server log (stdout). Starting a login or a
 passkey ceremony is rate limited per client (the first `CF-Connecting-IP` /
 `X-Forwarded-For` address when the request comes from a loopback or private proxy).
+
+## Expiry tracking and modules
+
+Rackbook can list what is about to expire (certificates, client secrets, API
+tokens, domains, contracts). Design and module contract: [docs/modules.md](docs/modules.md).
+
+- A collection opts in by marking schema properties: `"x-rackbook": {"expires": true}`
+  on the date field, and optionally `{"revoked": true}` on a field whose
+  non-empty value retires a record. A date is `YYYY-MM-DD` or an RFC 3339
+  time; empty means never expires; any other value (for example `待补`) is
+  an unknown date, listed only on request.
+- `GET /api/expiring?days=30`, the MCP tool `expiry_list` and the console page
+  **到期** list the expired and expiring records; `/api/meta` shows each
+  collection's `expiryField` and `revokedField`.
+- Modules are separate programs (`rackbook-entra` reads Microsoft Entra ID,
+  `rackbook-notify` sends reminders) that use only the public API with an API
+  token; the server contains no code for any upstream system.
+- The optional `modules:` block in `rackbook.yml` is an allow list: a token
+  named there may only create and update records of one collection, every record
+  it writes must carry `source: <module name>`, it may only update records
+  that already have that source and only the listed `fields`, and it can never
+  delete. The server enforces this on every write.
+- `direct_push: true` lets that module's creates and updates commit straight to
+  the branch instead of opening a pull request per run; it counts only while the
+  token's creator is an admin, like a token's `write_mode: push`.
+
+```yaml
+# rackbook.yml
+modules:
+  entra:
+    token: entra-sync
+    collection: credentials
+    fields: [kind, purpose, expires, kid, revoked]
+    direct_push: true
+```
 
 ## Secret scanning
 
@@ -801,3 +836,12 @@ Rackbook 校验 `Cf-Access-Jwt-Assertion` 并用其中的邮箱作为提交作�
 Rackbook 永远不会 force push，也不会改写或删除远端分支和标签。若发现远端历史被他人改写，
 会暂停所有写入（返回 503 `history_rewritten`）、继续只读提供最后一个可信提交，并在控制台显示红色横幅；
 管理员确认后用横幅按钮或 `rackbook serve --accept-remote <提交>` 恢复。
+
+到期跟踪：在集合的 Schema 里给日期字段加 `"x-rackbook": {"expires": true}`（可选再给“已吊销”字段加
+`{"revoked": true}`），Rackbook 就能列出已过期和即将到期的记录：`GET /api/expiring`、MCP 工具
+`expiry_list`、控制台“到期”页。日期格式 `YYYY-MM-DD`，留空表示永不过期，`待补` 之类视为日期未知。
+自动录入由独立的模块程序完成（`rackbook-entra` 读取 Entra ID，`rackbook-notify` 发送提醒），
+它们只通过公开 API 和 API 令牌工作。`rackbook.yml` 的 `modules:` 是白名单：列出的令牌只能在指定集合里
+新建记录并更新自己的记录，每条记录必须带 `source: <模块名>`，只能改 `fields` 里列出的字段，且不能删除；
+服务器在每次写入时强制检查。`direct_push: true` 让模块的新增和更新直接提交到分支而不是每次开一个 PR
+（同样要求令牌创建者仍是管理员）。详见 [docs/modules.md](docs/modules.md)。

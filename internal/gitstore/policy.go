@@ -1,6 +1,7 @@
 package gitstore
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/kazuhahub/rackbook/internal/auth"
@@ -37,6 +38,9 @@ func WriteOptionsFor(who *auth.Identity, cfg *config.Config, kind edit.Kind, col
 		return opts
 	}
 	direct := who.Method == auth.MethodToken && who.DirectPush
+	if _, m := ModuleFor(who, cfg); m != nil && m.DirectPush && m.Collection == collection && who.Role == roles.Admin {
+		direct = true // a module's creates and updates, while its token's creator is an admin
+	}
 	if (who.Method == auth.MethodMCPHub || who.Method == auth.MethodOAuth) && cfg != nil {
 		direct = directPushListed(who, cfg.Auth.MCP, collection)
 	}
@@ -44,6 +48,33 @@ func WriteOptionsFor(who *auth.Identity, cfg *config.Config, kind edit.Kind, col
 		opts.ForcePR = false
 	}
 	return opts
+}
+
+// ModuleFor returns the module whose token the request used, or nil.
+func ModuleFor(who *auth.Identity, cfg *config.Config) (string, *config.Module) {
+	if who == nil || who.Method != auth.MethodToken {
+		return "", nil
+	}
+	return cfg.ModuleForToken(who.Token)
+}
+
+// ModuleGuard applies the module allow list to a write: for a module token it
+// refuses deletes and writes to other collections (as *edit.ModuleError, a 403)
+// and sets the rule that edit.Apply enforces on the record itself. Other
+// identities pass unchanged.
+func ModuleGuard(who *auth.Identity, cfg *config.Config, op edit.Op) (edit.Op, error) {
+	name, m := ModuleFor(who, cfg)
+	if m == nil {
+		return op, nil
+	}
+	switch {
+	case op.Collection != m.Collection:
+		return op, &edit.ModuleError{Message: fmt.Sprintf("module %q may only write to %s", name, m.Collection)}
+	case op.Kind == edit.Delete:
+		return op, &edit.ModuleError{Message: fmt.Sprintf("module %q may not delete records; mark the record revoked instead", name)}
+	}
+	op.Module = &edit.ModuleRule{Name: name, Fields: m.Fields}
+	return op, nil
 }
 
 // MayConfirm says whether who may confirm "this is not a secret" on a write.

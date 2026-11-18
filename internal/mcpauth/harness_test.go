@@ -94,6 +94,8 @@ type hopts struct {
 	mcpYAML   string // extra lines under auth.mcp
 	// extraIssuer is a second trusted issuer (YAML flow mapping body without braces).
 	extraIssuer string
+	// modules is a top-level modules: block; the todo schema then gets a source field.
+	modules string
 }
 
 const defaultRoles = `    admin: [boss@example.com]
@@ -111,6 +113,10 @@ func newHarness(t *testing.T, o hopts) *harness {
 	cfgPath := filepath.Join(seed, "rackbook.yml")
 	b, _ := os.ReadFile(cfgPath)
 	b = append(b, []byte("\nauth:\n  roles:\n"+o.rolesYAML+"  mcp:\n    resource: "+resourceURL+"\n    trusted_issuers:\n      - {issuer: "+h.iss.URL+", kind: mcphub}\n"+issuerLine(o.extraIssuer)+o.mcpYAML)...)
+	if o.modules != "" {
+		b = append(b, []byte("\n"+o.modules)...)
+		testutil.Replace(t, seed, "schemas/todo.json", `"status":`, `"source": {"type": "string"}, "status":`)
+	}
 	os.WriteFile(cfgPath, b, 0o644)
 	h.dir = seed
 	sopts := gitstore.Options{ConfigPath: cfgPath, Committer: gitstore.Identity{Name: "Rackbook", Email: "rackbook@example.org"}}

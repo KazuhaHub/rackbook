@@ -220,3 +220,45 @@ func TestResolveRefusesRootedAndDrivePaths(t *testing.T) {
 		}
 	}
 }
+
+func TestModules(t *testing.T) {
+	const cols = "collections:\n  creds: {file: c.yml, schema: s.json}\n"
+	c, err := Parse([]byte(cols+"modules:\n  entra: {token: entra-sync, collection: creds, fields: [expires, kid], direct_push: true}\n  m2.x: {token: other, collection: creds, fields: [a]}\n"), "/r/rackbook.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	name, m := c.ModuleForToken("entra-sync")
+	if name != "entra" || m == nil || m.Collection != "creds" || !m.DirectPush || len(m.Fields) != 2 {
+		t.Fatalf("module: %q %+v", name, m)
+	}
+	if name, m := c.ModuleForToken("other"); name != "m2.x" || m.DirectPush {
+		t.Fatalf("module: %q %+v", name, m)
+	}
+	if name, m := c.ModuleForToken("nobody"); name != "" || m != nil {
+		t.Fatal("unknown token matched a module")
+	}
+	if _, m := c.ModuleForToken(""); m != nil {
+		t.Fatal("empty token matched a module")
+	}
+	plain, err := Parse([]byte(cols), "/r/rackbook.yml")
+	if err != nil || plain.Modules != nil {
+		t.Fatalf("v0.2 config: %v %v", err, plain.Modules)
+	}
+	bad := map[string]string{
+		"manual":      "  manual: {token: t, collection: creds, fields: [a]}\n",
+		"uppercase":   "  Entra: {token: t, collection: creds, fields: [a]}\n",
+		"toolong":     "  " + strings.Repeat("a", 33) + ": {token: t, collection: creds, fields: [a]}\n",
+		"no token":    "  m: {collection: creds, fields: [a]}\n",
+		"dup token":   "  m: {token: t, collection: creds, fields: [a]}\n  n: {token: t, collection: creds, fields: [a]}\n",
+		"unknown col": "  m: {token: t, collection: nope, fields: [a]}\n",
+		"no col":      "  m: {token: t, fields: [a]}\n",
+		"no fields":   "  m: {token: t, collection: creds}\n",
+		"source":      "  m: {token: t, collection: creds, fields: [a, source]}\n",
+		"null":        "  m:\n",
+	}
+	for name, block := range bad {
+		if _, err := Parse([]byte(cols+"modules:\n"+block), "/r/rackbook.yml"); err == nil {
+			t.Errorf("%s: expected error", name)
+		}
+	}
+}
