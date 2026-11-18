@@ -1,0 +1,6 @@
+# 端口规范。改端口先改这里，再改实现，最后核对 services.yml。
+- {service: 管理面板, port: TCP 10510, scope: 装了面板的服务器, notes: 管理类端口段 10510–10599}
+- {service: SSH, port: TCP 10511, scope: 所有服务器和路由器, notes: 统一端口，只允许密钥登录}
+- {service: （预留）, port: TCP 10515–10599, scope: "—", notes: 以后的管理类 / 远程访问服务}
+- {service: Tailscale, port: UDP 41641, scope: 所有设备}
+- {service: 本机网页应用, port: TCP 20000–20999（只绑定 127.0.0.1）, scope: 所有服务器, notes: 只给本机 nginx 反向代理用，每个应用一个号}

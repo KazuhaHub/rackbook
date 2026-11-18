@@ -1,0 +1,12 @@
+# Console build output (embedded into the binary; only the placeholder is tracked)
+web/dist/*
+!web/dist/.gitkeep
+web/node_modules
+
+# Go build output
+/rackbook
+/dist/
+*.test
+coverage.out
+
+.DS_Store

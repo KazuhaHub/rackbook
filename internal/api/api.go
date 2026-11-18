@@ -1,0 +1,592 @@
+// Package api implements the HTTP API of docs/api.md and serves the console.
+package api
+
+import (
+	"bytes"
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"io/fs"
+	"log/slog"
+	"mime"
+	"net"
+	"net/http"
+	"net/url"
+	"path"
+	"strconv"
+	"strings"
+
+	"github.com/kazuhahub/rackbook/internal/auth"
+	"github.com/kazuhahub/rackbook/internal/edit"
+	"github.com/kazuhahub/rackbook/internal/export"
+	"github.com/kazuhahub/rackbook/internal/gitstore"
+	"github.com/kazuhahub/rackbook/internal/ledger"
+	"github.com/kazuhahub/rackbook/internal/validate"
+	"github.com/kazuhahub/rackbook/internal/yamledit"
+)
+
+const maxBody = 1 << 20
+
+// Options configures the handler.
+type Options struct {
+	Store    *gitstore.Store
+	Auth     *auth.Authenticator // nil = no authentication
+	ReadOnly bool
+	BaseURL  string       // public URL used in llms.txt; derived from the request when empty
+	Web      fs.FS        // console files (root of dist); may lack index.html
+	MCP      http.Handler // optional, mounted at /mcp
+	// RestrictHost limits accepted Host headers to loopback names and the host
+	// of BaseURL (DNS-rebinding protection for --auth none).
+	RestrictHost bool
+	Logger       *slog.Logger
+}
+
+type server struct {
+	o   Options
+	log *slog.Logger
+}
+
+// New returns the full handler: API, exports, MCP and console.
+func New(o Options) http.Handler {
+	s := &server{o: o, log: o.Logger}
+	if s.log == nil {
+		s.log = slog.New(slog.DiscardHandler)
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, "ok\n") })
+	mux.HandleFunc("GET /api/meta", s.meta)
+	mux.HandleFunc("GET /api/check", s.check)
+	mux.HandleFunc("GET /api/history", s.history)
+	mux.HandleFunc("GET /api/c/{collection}", s.list)
+	mux.HandleFunc("GET /api/c/{collection}/{id}", s.get)
+	mux.HandleFunc("POST /api/c/{collection}", s.add)
+	mux.HandleFunc("PUT /api/c/{collection}/{id}", s.put)
+	mux.HandleFunc("DELETE /api/c/{collection}/{id}", s.del)
+	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
+		writeError(w, http.StatusNotFound, "not_found", "no such API endpoint")
+	})
+	mux.HandleFunc("GET /export.md", s.exportMD)
+	mux.HandleFunc("GET /export.json", s.exportJSON)
+	mux.HandleFunc("GET /llms.txt", s.llms)
+	mux.HandleFunc("GET /llms-full.txt", s.llmsFull)
+	if o.MCP != nil {
+		mux.Handle("/mcp", o.MCP)
+		mux.Handle("/mcp/", o.MCP)
+	}
+	mux.HandleFunc("/", s.static)
+
+	var h http.Handler = mux
+	if o.Auth != nil {
+		authed := o.Auth.Middleware(mux)
+		h = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/healthz" {
+				mux.ServeHTTP(w, r)
+				return
+			}
+			authed.ServeHTTP(w, r)
+		})
+	}
+	return securityHeaders(s.guard(h))
+}
+
+// guard rejects DNS-rebinding (unexpected Host) and cross-site or non-JSON writes.
+func (s *server) guard(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if s.o.RestrictHost && !s.hostAllowed(r.Host) {
+			writeError(w, http.StatusForbidden, "forbidden_host", "this Host is not allowed; use localhost or the configured --base-url host")
+			return
+		}
+		switch r.Method {
+		case http.MethodGet, http.MethodHead, http.MethodOptions:
+		default:
+			if !s.sameOrigin(r) {
+				writeError(w, http.StatusForbidden, "cross_site", "cross-site requests are not allowed")
+				return
+			}
+			if (r.Method == http.MethodPost || r.Method == http.MethodPut) && strings.HasPrefix(r.URL.Path, "/api/") {
+				if mt, _, err := mime.ParseMediaType(r.Header.Get("Content-Type")); err != nil || mt != "application/json" {
+					writeError(w, http.StatusUnsupportedMediaType, "unsupported_media_type", "Content-Type must be application/json")
+					return
+				}
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// sameOrigin decides whether a state-changing request comes from our own
+// console. Sec-Fetch-Site, when the browser sends it, decides alone (it stays
+// correct behind a proxy that rewrites Host). Otherwise an Origin must match
+// the Host, X-Forwarded-Host or the --base-url host. Requests with neither
+// header are non-browser clients and pass.
+func (s *server) sameOrigin(r *http.Request) bool {
+	if site := r.Header.Get("Sec-Fetch-Site"); site != "" {
+		return site == "same-origin" || site == "none"
+	}
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		return true
+	}
+	u, err := url.Parse(origin)
+	if err != nil || u.Host == "" {
+		return false
+	}
+	allowed := []string{r.Host}
+	if h := r.Header.Get("X-Forwarded-Host"); h != "" {
+		allowed = append(allowed, strings.TrimSpace(strings.Split(h, ",")[0]))
+	}
+	if s.o.BaseURL != "" {
+		if b, err := url.Parse(s.o.BaseURL); err == nil {
+			allowed = append(allowed, b.Host)
+		}
+	}
+	for _, h := range allowed {
+		if strings.EqualFold(u.Host, h) {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *server) hostAllowed(hostport string) bool {
+	host := hostport
+	if h, _, err := net.SplitHostPort(hostport); err == nil {
+		host = h
+	}
+	host = strings.Trim(strings.ToLower(host), "[]")
+	if host == "localhost" || strings.HasSuffix(host, ".localhost") {
+		return true
+	}
+	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+		return true
+	}
+	if s.o.BaseURL != "" {
+		if u, err := url.Parse(s.o.BaseURL); err == nil && strings.EqualFold(u.Hostname(), host) {
+			return true
+		}
+	}
+	return false
+}
+
+// internal logs the real error with a request id and returns a generic 500.
+func (s *server) internal(w http.ResponseWriter, err error) {
+	var b [6]byte
+	_, _ = rand.Read(b[:])
+	id := hex.EncodeToString(b[:])
+	s.log.Error("request failed", "request_id", id, "err", err)
+	writeError(w, http.StatusInternalServerError, "internal", "internal error (request id "+id+")", "requestId", id)
+}
+
+func securityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h := w.Header()
+		h.Set("X-Content-Type-Options", "nosniff")
+		h.Set("X-Frame-Options", "DENY")
+		h.Set("Referrer-Policy", "no-referrer")
+		// 'unsafe-eval': the console validates forms with ajv, which compiles each JSON Schema
+		// to a function at runtime. The console loads no third-party scripts and renders no
+		// ledger value as HTML.
+		h.Set("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-eval'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'")
+		next.ServeHTTP(w, r)
+	})
+}
+
+// JSON helpers -------------------------------------------------------------
+
+func writeJSON(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(status)
+	enc := json.NewEncoder(w)
+	enc.SetEscapeHTML(false)
+	_ = enc.Encode(v)
+}
+
+func writeError(w http.ResponseWriter, status int, code, msg string, extra ...any) {
+	body := map[string]any{"error": code, "message": msg}
+	for i := 0; i+1 < len(extra); i += 2 {
+		body[extra[i].(string)] = extra[i+1]
+	}
+	writeJSON(w, status, body)
+}
+
+func (s *server) user(r *http.Request) *auth.User { return auth.UserFrom(r.Context()) }
+
+func (s *server) canEdit(r *http.Request) bool {
+	if s.o.ReadOnly {
+		return false
+	}
+	if s.o.Auth == nil {
+		return true
+	}
+	return s.o.Auth.CanEdit(s.user(r))
+}
+
+// Read endpoints -------------------------------------------------------------
+
+type facetOut struct {
+	Field  string   `json:"field"`
+	Match  string   `json:"match"`
+	Values []string `json:"values"`
+}
+
+type noteOut struct {
+	Title string `json:"title"`
+	Text  string `json:"text"`
+}
+
+type collectionOut struct {
+	Name        string           `json:"name"`
+	Title       string           `json:"title"`
+	Description string           `json:"description"`
+	Group       string           `json:"group"`
+	Key         []string         `json:"key"`
+	Label       string           `json:"label"`
+	List        []string         `json:"list"`
+	Facets      []facetOut       `json:"facets"`
+	Schema      json.RawMessage  `json:"schema"`
+	Refs        []ledger.RefInfo `json:"refs"`
+	Backrefs    []ledger.BackRef `json:"backrefs"`
+	Notes       []noteOut        `json:"notes"`
+	Count       int              `json:"count"`
+}
+
+func strs(s []string) []string {
+	if s == nil {
+		return []string{}
+	}
+	return s
+}
+
+func (s *server) meta(w http.ResponseWriter, r *http.Request) {
+	l := s.o.Store.Ledger()
+	cfg := l.Config
+	var user any
+	if u := s.user(r); u != nil {
+		user = map[string]any{"email": u.Email, "name": u.Name, "canEdit": s.canEdit(r)}
+	}
+	cols := make([]collectionOut, 0, len(l.Collections))
+	for _, c := range l.Collections {
+		out := collectionOut{
+			Name: c.Name, Title: c.Title, Description: c.Description, Group: c.Group,
+			Key: strs(c.Key), Label: c.Label, List: strs(c.List), Facets: []facetOut{},
+			Schema: c.SchemaRaw, Refs: l.Refs(c.Name), Backrefs: l.BackRefs(c.Name), Notes: []noteOut{}, Count: len(c.Records),
+		}
+		if out.Schema == nil {
+			out.Schema = json.RawMessage("{}")
+		}
+		for _, f := range c.Facets {
+			out.Facets = append(out.Facets, facetOut{Field: f.Field, Match: f.Match, Values: strs(f.Values)})
+		}
+		for _, n := range l.Notes {
+			if n.Collection == c.Name {
+				out.Notes = append(out.Notes, noteOut{Title: n.Title, Text: n.Text})
+			}
+		}
+		cols = append(cols, out)
+	}
+	mode := cfg.Write.Mode
+	writeJSON(w, http.StatusOK, map[string]any{
+		"title": cfg.Title, "description": cfg.Description,
+		"readOnly": s.o.ReadOnly, "writeMode": mode, "user": user, "collections": cols,
+	})
+}
+
+func (s *server) check(w http.ResponseWriter, r *http.Request) {
+	issues := validate.Run(s.o.Store.Ledger())
+	if issues == nil {
+		issues = []ledger.Issue{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": len(issues) == 0, "errors": issues})
+}
+
+func (s *server) history(w http.ResponseWriter, r *http.Request) {
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	commits, err := s.o.Store.History(r.Context(), limit, r.URL.Query().Get("collection"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"commits": commits})
+}
+
+func (s *server) collection(w http.ResponseWriter, r *http.Request) (*ledger.Ledger, *ledger.Collection) {
+	l := s.o.Store.Ledger()
+	c := l.Collection(r.PathValue("collection"))
+	if c == nil {
+		writeError(w, http.StatusNotFound, "not_found", fmt.Sprintf("unknown collection %q", r.PathValue("collection")))
+		return nil, nil
+	}
+	return l, c
+}
+
+func (s *server) list(w http.ResponseWriter, r *http.Request) {
+	_, c := s.collection(w, r)
+	if c == nil {
+		return
+	}
+	recs := c.Records
+	if recs == nil {
+		recs = []*ledger.Record{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"records": recs})
+}
+
+func (s *server) get(w http.ResponseWriter, r *http.Request) {
+	l, c := s.collection(w, r)
+	if c == nil {
+		return
+	}
+	rec := c.Get(r.PathValue("id"))
+	if rec == nil {
+		writeError(w, http.StatusNotFound, "not_found", fmt.Sprintf("no record %q in %s", r.PathValue("id"), c.Name))
+		return
+	}
+	back := map[string][]*ledger.Record{}
+	for _, b := range l.BackRefs(c.Name) {
+		back[b.Collection] = []*ledger.Record{}
+	}
+	for coll, recs := range l.Backrefs(c.Name, rec) {
+		back[coll] = recs
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"id": rec.ID, "hash": rec.Hash, "data": rec.Data, "backrefs": back})
+}
+
+// Write endpoints ------------------------------------------------------------
+
+type body struct {
+	Data map[string]any `json:"data"`
+	Hash string         `json:"hash"`
+}
+
+func (s *server) readBody(w http.ResponseWriter, r *http.Request) (body, bool) {
+	var b body
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBody))
+	dec.UseNumber()
+	if err := dec.Decode(&b); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "invalid JSON body: "+err.Error())
+		return b, false
+	}
+	return b, true
+}
+
+// writable runs the shared checks of write endpoints.
+func (s *server) writable(w http.ResponseWriter, r *http.Request) bool {
+	if !s.canEdit(r) {
+		msg := "the ledger is read-only"
+		if !s.o.ReadOnly {
+			msg = "you are not allowed to edit"
+		}
+		writeError(w, http.StatusForbidden, "read_only", msg)
+		return false
+	}
+	return true
+}
+
+func (s *server) identity(r *http.Request) gitstore.Identity {
+	if u := s.user(r); u != nil {
+		return gitstore.Identity{Name: u.Name, Email: u.Email}
+	}
+	return gitstore.Identity{}
+}
+
+func (s *server) apply(w http.ResponseWriter, r *http.Request, op edit.Op) *gitstore.WriteResult {
+	res, err := s.o.Store.Write(r.Context(), op, s.identity(r))
+	if err == nil {
+		return res
+	}
+	var ce *edit.ConflictError
+	var ie *edit.InvalidError
+	switch {
+	case errors.As(err, &ce):
+		var cur any
+		if ce.Current != nil {
+			cur = ce.Current
+		}
+		writeError(w, http.StatusConflict, "conflict", ce.Message, "current", cur)
+	case errors.As(err, &ie):
+		writeError(w, http.StatusUnprocessableEntity, "invalid", ie.Error(), "errors", ie.Issues)
+	case errors.Is(err, edit.ErrUnknownCollection):
+		writeError(w, http.StatusNotFound, "not_found", err.Error())
+	case errors.Is(err, edit.ErrBadRequest):
+		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
+	case errors.Is(err, gitstore.ErrRepoDirty):
+		writeError(w, http.StatusServiceUnavailable, "repo_dirty", err.Error())
+	case errors.Is(err, gitstore.ErrRepoDiverged):
+		writeError(w, http.StatusServiceUnavailable, "repo_diverged", err.Error())
+	case errors.Is(err, yamledit.ErrUnsupported):
+		writeError(w, http.StatusUnprocessableEntity, "unsupported", err.Error())
+	default:
+		s.internal(w, err)
+	}
+	return nil
+}
+
+func recordResponse(res *gitstore.WriteResult) map[string]any {
+	return map[string]any{"id": res.ID, "hash": res.Hash, "data": res.Data, "commit": res.Commit}
+}
+
+func (s *server) add(w http.ResponseWriter, r *http.Request) {
+	if !s.writable(w, r) {
+		return
+	}
+	_, c := s.collection(w, r)
+	if c == nil {
+		return
+	}
+	b, ok := s.readBody(w, r)
+	if !ok {
+		return
+	}
+	if res := s.apply(w, r, edit.Op{Kind: edit.Add, Collection: c.Name, Data: b.Data}); res != nil {
+		writeJSON(w, http.StatusCreated, recordResponse(res))
+	}
+}
+
+func (s *server) put(w http.ResponseWriter, r *http.Request) {
+	if !s.writable(w, r) {
+		return
+	}
+	_, c := s.collection(w, r)
+	if c == nil {
+		return
+	}
+	b, ok := s.readBody(w, r)
+	if !ok {
+		return
+	}
+	if b.Hash == "" {
+		writeError(w, http.StatusBadRequest, "bad_request", "hash is required: send the hash of the record you started from")
+		return
+	}
+	if res := s.apply(w, r, edit.Op{Kind: edit.Edit, Collection: c.Name, ID: r.PathValue("id"), Hash: b.Hash, Data: b.Data}); res != nil {
+		writeJSON(w, http.StatusOK, recordResponse(res))
+	}
+}
+
+func (s *server) del(w http.ResponseWriter, r *http.Request) {
+	if !s.writable(w, r) {
+		return
+	}
+	_, c := s.collection(w, r)
+	if c == nil {
+		return
+	}
+	hash := r.URL.Query().Get("hash")
+	if hash == "" {
+		writeError(w, http.StatusBadRequest, "bad_request", "hash is required: send the hash of the record you started from")
+		return
+	}
+	if res := s.apply(w, r, edit.Op{Kind: edit.Delete, Collection: c.Name, ID: r.PathValue("id"), Hash: hash}); res != nil {
+		writeJSON(w, http.StatusOK, map[string]any{"commit": res.Commit})
+	}
+}
+
+// Exports --------------------------------------------------------------------
+
+func (s *server) baseURL(r *http.Request) string {
+	if s.o.BaseURL != "" {
+		return strings.TrimRight(s.o.BaseURL, "/")
+	}
+	scheme := "http"
+	if r.TLS != nil {
+		scheme = "https"
+	}
+	if p := r.Header.Get("X-Forwarded-Proto"); p == "https" || p == "http" {
+		scheme = p
+	}
+	host := r.Host
+	if h := r.Header.Get("X-Forwarded-Host"); h != "" {
+		host = strings.TrimSpace(strings.Split(h, ",")[0])
+	}
+	return scheme + "://" + host
+}
+
+func writeText(w http.ResponseWriter, contentType, text string) {
+	w.Header().Set("Content-Type", contentType)
+	io.WriteString(w, text)
+}
+
+func (s *server) exportMD(w http.ResponseWriter, r *http.Request) {
+	writeText(w, "text/markdown; charset=utf-8", export.Markdown(s.o.Store.Ledger()))
+}
+
+func (s *server) llmsFull(w http.ResponseWriter, r *http.Request) {
+	writeText(w, "text/plain; charset=utf-8", export.Markdown(s.o.Store.Ledger()))
+}
+
+func (s *server) llms(w http.ResponseWriter, r *http.Request) {
+	writeText(w, "text/plain; charset=utf-8", export.LLMS(s.o.Store.Ledger(), s.baseURL(r)))
+}
+
+func (s *server) exportJSON(w http.ResponseWriter, r *http.Request) {
+	b, err := export.JSON(s.o.Store.Ledger())
+	if err != nil {
+		s.internal(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Write(b)
+}
+
+// Console ---------------------------------------------------------------------
+
+const notBuilt = `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Rackbook</title>
+<style>body{font:16px/1.5 system-ui,sans-serif;max-width:40rem;margin:4rem auto;padding:0 1rem;color:#222}
+@media(prefers-color-scheme:dark){body{background:#111;color:#ddd}a{color:#8ab4f8}}code{background:#8882;padding:.1em .3em;border-radius:3px}</style>
+</head><body>
+<h1>Rackbook</h1>
+<p>The web console is not built into this binary.</p>
+<p>Build it with <code>make build</code> (or <code>npm --prefix web ci &amp;&amp; npm --prefix web run build</code>, then <code>go build ./cmd/rackbook</code>).</p>
+<p>The API is up: <a href="/api/meta">/api/meta</a>, <a href="/api/check">/api/check</a>, <a href="/llms.txt">/llms.txt</a>, <a href="/export.md">/export.md</a>.</p>
+</body></html>
+`
+
+func (s *server) static(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		w.Header().Set("Allow", "GET, HEAD")
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
+		return
+	}
+	web := s.o.Web
+	index, err := readIndex(web)
+	if err != nil {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-store")
+		io.WriteString(w, notBuilt)
+		return
+	}
+	name := strings.TrimPrefix(path.Clean("/"+r.URL.Path), "/")
+	if name != "" && name != "index.html" {
+		if st, err := fs.Stat(web, name); err == nil && !st.IsDir() {
+			if strings.HasPrefix(name, "assets/") {
+				w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+			}
+			http.ServeFileFS(w, r, web, name)
+			return
+		}
+		if path.Ext(name) != "" && strings.HasPrefix(name, "assets/") {
+			http.NotFound(w, r)
+			return
+		}
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Write(index)
+}
+
+func readIndex(web fs.FS) ([]byte, error) {
+	if web == nil {
+		return nil, fs.ErrNotExist
+	}
+	b, err := fs.ReadFile(web, "index.html")
+	if err == nil && len(bytes.TrimSpace(b)) == 0 {
+		return nil, fs.ErrNotExist
+	}
+	return b, err
+}
