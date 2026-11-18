@@ -535,7 +535,10 @@ already in the repository, so CI catches hand-committed secrets.
 **In plain words.** Before Rackbook saves anything, it reads the text for
 things that look like passwords and keys. If it finds a real key or a known kind
 of token (an SSH private key, a GitHub token, a password inside a URL and so
-on), it refuses to save, and nothing you type can override that. If it only
+on), it refuses to save, and nothing you type can override that. The rule is one
+sentence: **block-tier formats are refused in every string, always; schema
+annotations, placeholders and `confirm_not_secret` only silence the confirm
+tier.** If it only
 *suspects* a password, for example a line like `root密码：...` or a field called
 `password`, it stops and asks you to confirm that it is not one; your name is
 recorded in the commit when you do. It cannot catch a secret that has no
@@ -548,8 +551,8 @@ add an `allow` entry in `rackbook.yml`; the sections below show how.
 
 | tier | what | what happens |
 |---|---|---|
-| **block** (deterministic) | key material and known token formats: PEM and OpenSSH private keys (also base64-encoded, as in a kubeconfig `client-key-data`), `AGE-SECRET-KEY`, GitHub, GitLab, npm, Hugging Face, Tailscale, SendGrid, Slack, AWS, Google, Stripe, OpenAI and Anthropic tokens, JWTs, `key:` / `privkey:` plus hex, URLs with a password, key-bearing URL query parameters (`?api_key=...`), private JWKs, and your `extra_patterns` | always refused; only the allow list (by value hash) overrides it |
-| **confirm** (heuristic) | a keyword assignment in any language, the whole value of a secret-named field, `Bearer` tokens and high-entropy tokens in free text | refused until the editor confirms it is not a secret; `rackbook check` reports it as a warning |
+| **block** (deterministic) | key material and known token formats: PEM and OpenSSH private keys (also base64-encoded, as in a kubeconfig `client-key-data`), `AGE-SECRET-KEY`, GitHub, GitLab, npm, Hugging Face, Tailscale, SendGrid, Slack, AWS, Google, Stripe, OpenAI and Anthropic tokens, JWTs, URLs with a password, key-bearing URL query parameters (`?api_key=...`), private JWKs, and your `extra_patterns` | always refused; only the allow list (by value hash) overrides it |
+| **confirm** (heuristic) | a keyword assignment in any language, `key:` / `privkey:` plus 32 or more hex characters (`hex-key`: it could as well be a node key, fingerprint or hash), the whole value of a secret-named field, `Bearer` tokens and high-entropy tokens in free text | refused until the editor confirms it is not a secret; `rackbook check` reports it as a warning |
 
 A block-tier refusal is `422 {"error":"secret_detected","findings":[...]}`, an
 MCP tool error with the same findings, or exit code 1 from the CLI. A confirm-tier
@@ -578,8 +581,8 @@ field and at most the first 4 characters of the match; never the secret.
 `github-pat`, `gitlab-token`, `npm-token`, `huggingface-token`,
 `tailscale-key`, `sendgrid-key`, `slack-token`, `aws-access-key-id`,
 `google-api-key`, `stripe-live-key`, `openai-api-key`, `azure-account-key`,
-`jwt`, `hex-key`, `url-credentials`, `url-query-secret`, `private-jwk` (block);
-`secret-assignment`, `bearer-token`, `high-entropy` (confirm). The IDs are stable.
+`jwt`, `url-credentials`, `url-query-secret`, `private-jwk` (block);
+`secret-assignment`, `hex-key`, `bearer-token`, `high-entropy` (confirm). The IDs are stable.
 
 Text is normalised before it is matched: NFKC (so full-width `：` `＝` and
 letters match as `:` `=` and ASCII) and zero-width characters removed. The
@@ -638,8 +641,9 @@ leniency. The only ways out are:
    `pem_public_key`, `jwk_public` (no private members; its other members are
    scanned), `hex_id` and `secret_reference` (`op://...`, `vault:...`,
    `env:NAME`, `${NAME}` or a path without spaces). Only an annotated field whose
-   whole value has the strict format of its kind is exempt; any other value in it
-   is scanned as text. On an array, or on its `items`, every item is checked.
+   whole value has the strict format of its kind is exempt from the confirm tier;
+   any other value in it is scanned as text, and block-tier formats are refused
+   in it as anywhere else. On an array, or on its `items`, every item is checked.
    `hex_id` and `fingerprint` cannot tell a 32-byte key from an id, so a field
    named like a secret may only be annotated `secret_reference`; any other kind
    on it is a config error (reported by `check`, refused by a type change).

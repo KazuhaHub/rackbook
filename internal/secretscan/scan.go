@@ -285,6 +285,9 @@ type hit struct {
 	rule  string
 	value string
 	tier  string
+	// start and end are the byte span of value in the normalised text a rule
+	// found it in (set by run; unused elsewhere).
+	start, end int
 }
 
 // matches runs every rule over text. The text is normalised first (NFKC,
@@ -334,8 +337,8 @@ func (s *Scanner) run(text string, blockOnly bool) []hit {
 			}
 		}
 		if r.proc != nil {
-			for _, v := range r.proc(s, text, lowered()) {
-				out = append(out, hit{r.id, v, r.tier})
+			for _, sp := range r.proc(s, text, lowered()) {
+				out = append(out, hit{rule: r.id, value: text[sp.start:sp.end], tier: r.tier, start: sp.start, end: sp.end})
 			}
 			continue
 		}
@@ -351,14 +354,18 @@ func (s *Scanner) run(text string, blockOnly bool) []hit {
 			if r.filter != nil && !r.filter(value) {
 				continue
 			}
-			out = append(out, hit{r.id, value, r.tier})
+			out = append(out, hit{rule: r.id, value: value, tier: r.tier, start: m[2*g], end: m[2*g+1]})
 		}
 	}
 	return dropCovered(out)
 }
 
 // dropCovered removes a high-entropy hit that is only another rule's match seen
-// again (a token, or the body of a private key).
+// again (a token, or the body of a private key): one whose span overlaps the
+// span of a non-entropy hit. The other spans are sorted by start with a running
+// maximum of their ends, so each entropy hit is one binary search: O(n log n),
+// where comparing every pair of hits took quadratic time on a megabyte of
+// keyword assignments and tokens.
 func dropCovered(hits []hit) []hit {
 	var others []hit
 	for _, h := range hits {
@@ -369,20 +376,24 @@ func dropCovered(hits []hit) []hit {
 	if len(others) == len(hits) || len(others) == 0 {
 		return hits // nothing to compare, or no other rule matched at all
 	}
+	sort.Slice(others, func(i, j int) bool { return others[i].start < others[j].start })
+	maxEnd := make([]int, len(others)) // maxEnd[i]: the largest end among others[:i+1]
+	for i, o := range others {
+		maxEnd[i] = o.end
+		if i > 0 && maxEnd[i-1] > o.end {
+			maxEnd[i] = maxEnd[i-1]
+		}
+	}
 	out := hits[:0:0]
 	for _, h := range hits {
-		covered := false
-		if h.rule == RuleEntropy { // entropy hits are only compared with the others
-			for _, g := range others {
-				if strings.Contains(g.value, h.value) || strings.Contains(h.value, g.value) {
-					covered = true
-					break
-				}
+		if h.rule == RuleEntropy {
+			// the others that start before h ends: one of them reaching past h's start overlaps it
+			n := sort.Search(len(others), func(i int) bool { return others[i].start >= h.end })
+			if n > 0 && maxEnd[n-1] > h.start {
+				continue
 			}
 		}
-		if !covered {
-			out = append(out, h)
-		}
+		out = append(out, h)
 	}
 	return out
 }
@@ -396,7 +407,7 @@ func (s *Scanner) namedHit(value string) (hit, bool) {
 	if len(v) < 6 || isPlaceholder(v) || !s.ruleOn(RuleSecretAssign) {
 		return hit{}, false
 	}
-	return hit{RuleSecretAssign, v, TierConfirm}, true
+	return hit{rule: RuleSecretAssign, value: v, tier: TierConfirm}, true
 }
 
 func (s *Scanner) ruleOn(id string) bool {
@@ -426,7 +437,7 @@ func (s *Scanner) pairMatches(name, value string) []hit {
 				continue
 			}
 			v := strings.Trim(text[m[2]:m[3]], `"',;`)
-			out = append(out, hit{r.id, v, r.tier})
+			out = append(out, hit{rule: r.id, value: v, tier: r.tier})
 		}
 	}
 	return out
@@ -462,6 +473,9 @@ type collector struct {
 	seen       map[string]bool
 	out        []Finding
 	ann        Annotations
+	// kind and name, when set, replace the annotation lookup: the schema scan
+	// sets them to the property whose default, example or enum it is walking.
+	kind, name string
 }
 
 func (c *collector) add(h hit, path, in string) {
@@ -477,39 +491,106 @@ func (c *collector) add(h hit, path, in string) {
 	c.out = append(c.out, f)
 }
 
-// exempt says the string at path needs no scan: an exact placeholder, or an
-// annotated field holding the strict format of its kind.
-func (c *collector) exempt(text, path string) bool {
+// exemptValue says a confirm-tier finding in text needs no report: an exact
+// placeholder, or an annotated field (kind, on a field called name) holding the
+// strict format of its kind. An annotation never overrides a secret-named
+// field, except secret_reference. This is the one exemption function; it never
+// silences the block tier (see text).
+func (s *Scanner) exemptValue(text, kind, name string) bool {
 	if isPlaceholder(text) {
 		return true
 	}
-	k := c.ann.kindOf(path)
-	if k == "" {
+	if kind == "" || (kind != KindSecretReference && isSecretName(name)) {
 		return false
 	}
-	// An annotation never overrides a secret-named field, except secret_reference.
-	if k != KindSecretReference && isSecretName(lastName(path)) {
-		return false
-	}
-	return c.s.validFor(k, text)
+	return s.validFor(kind, text)
 }
 
-func (c *collector) text(text, path, in string, named bool) {
-	// An annotated field whose whole value has its kind's strict format is the
-	// one exemption there is; any other value is scanned as text.
-	if in == "" && c.exempt(text, path) {
-		return
+// exempt is exemptValue for the string at a data path of a record (or, in a
+// schema scan, for the kind and name of the property being scanned).
+func (c *collector) exempt(text, path string) bool {
+	kind, name := c.kindName(path)
+	return c.s.exemptValue(text, kind, name)
+}
+
+func (c *collector) kindName(path string) (kind, name string) {
+	if c.kind != "" {
+		return c.kind, c.name
 	}
-	if named {
+	return c.ann.kindOf(path), lastName(path)
+}
+
+var base64URL = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
+
+// blankJWKNumbers empties the n, e, x and y members of a JWK when each is a pure
+// base64url string: they are random key numbers that would trip token patterns
+// (sk-...) by chance. The values are removed from the original text (a pure
+// base64url string appears there literally), not by re-encoding the parsed
+// object, so every other member stays exactly as written, duplicates included.
+// Text that does not parse as a JSON object is returned as it is.
+func blankJWKNumbers(text string) string {
+	var m map[string]any
+	if json.Unmarshal([]byte(strings.TrimSpace(text)), &m) != nil {
+		return text
+	}
+	for _, k := range []string{"n", "e", "x", "y"} {
+		if v, ok := m[k].(string); ok && base64URL.MatchString(v) {
+			text = strings.ReplaceAll(text, `"`+v+`"`, `""`)
+		}
+	}
+	return text
+}
+
+// text scans one string. Block-tier formats are refused in every string,
+// always: an exempt string is still run through the block-tier rules, whole.
+// Exemption only silences the confirm tier.
+func (c *collector) text(text, path, in string, named bool) {
+	exempt := in == "" && c.exempt(text, path)
+	// a private JWK held as JSON text, whatever its escaping or nesting (block
+	// tier, so exempt values too); the parsed value is not parsed again
+	if t := strings.TrimSpace(text); t != "" && (t[0] == '{' || t[0] == '[') && c.s.ruleOn(RulePrivateJWK) {
+		var v any
+		if json.Unmarshal([]byte(t), &v) == nil {
+			c.privateJWKs(v, path, in)
+		}
+	}
+	if named && !exempt {
 		if h, ok := c.s.namedHit(text); ok {
 			c.add(h, path, in)
 		}
 	}
-	for _, h := range c.s.matches(text) {
+	scan := text
+	if kind, _ := c.kindName(path); exempt && in == "" && kind == KindJWKPublic {
+		scan = blankJWKNumbers(text)
+	}
+	for _, h := range c.s.matches(scan) {
+		if exempt && h.tier != TierBlock {
+			continue
+		}
 		if named && h.rule == RuleSecretAssign {
 			continue // the whole value was judged already
 		}
 		c.add(h, path, in)
+	}
+}
+
+// privateJWKs reports every object at any depth of a parsed JSON value that has
+// a "kty" member and a "d" string member of 8 or more characters.
+func (c *collector) privateJWKs(v any, path, in string) {
+	switch x := v.(type) {
+	case map[string]any:
+		if _, ok := x["kty"]; ok {
+			if d, ok := x["d"].(string); ok && len(d) >= 8 {
+				c.add(hit{rule: RulePrivateJWK, value: d, tier: TierBlock}, path, in)
+			}
+		}
+		for _, e := range x {
+			c.privateJWKs(e, path, in)
+		}
+	case []any:
+		for _, e := range x {
+			c.privateJWKs(e, path, in)
+		}
 	}
 }
 
@@ -573,7 +654,7 @@ func (c *collector) walk(v any, path string, named bool) {
 		if _, ok := byKey["kty"]; ok {
 			if dv, ok := byKey["d"]; ok {
 				if d, ok := dv.Interface().(string); ok && len(d) >= 8 && c.s.ruleOn(RulePrivateJWK) {
-					c.add(hit{RulePrivateJWK, d, TierBlock}, path, "")
+					c.add(hit{rule: RulePrivateJWK, value: d, tier: TierBlock}, path, "")
 				}
 			}
 		}
@@ -691,8 +772,8 @@ func (s *Scanner) ScanSchema(collection string, schema []byte) []Finding {
 		return nil
 	}
 	c := &collector{s: s, collection: collection, seen: map[string]bool{}}
-	var visit func(v any, path string)
-	visit = func(v any, path string) {
+	var visit func(v any, path, name string)
+	visit = func(v any, path, name string) {
 		switch x := v.(type) {
 		case map[string]any:
 			keys := make([]string, 0, len(x))
@@ -705,65 +786,96 @@ func (s *Scanner) ScanSchema(collection string, schema []byte) []Finding {
 				kind, _ = xr["public"].(string)
 			}
 			if props, ok := x["properties"].(map[string]any); ok { // a property called password with a default
-				for name, p := range props {
-					if pm, ok := p.(map[string]any); ok {
-						pk := ""
-						if xr, ok := pm["x-rackbook"].(map[string]any); ok {
-							pk, _ = xr["public"].(string)
-						}
-						if d, ok := pm["default"].(string); ok && !(pk != "" && s.validFor(pk, d)) && !isPlaceholder(d) {
-							dp := path + "/properties/" + ptr(name) + "/default"
-							for _, h := range s.pairMatches(name, d) {
-								c.add(h, dp, "")
-							}
-							if isSecretName(name) {
-								c.walk(d, dp, true)
-							}
-						}
+				for pname, p := range props {
+					pm, ok := p.(map[string]any)
+					if !ok {
+						continue
+					}
+					pk := ""
+					if xr, ok := pm["x-rackbook"].(map[string]any); ok {
+						pk, _ = xr["public"].(string)
+					}
+					d, ok := pm["default"].(string)
+					if !ok || s.exemptValue(d, pk, pname) {
+						continue // the default is walked below in any case, block tier included
+					}
+					dp := path + "/properties/" + ptr(pname) + "/default"
+					for _, h := range s.pairMatches(pname, d) {
+						c.add(h, dp, "")
+					}
+					if isSecretName(pname) {
+						c.walk(d, dp, true)
 					}
 				}
 			}
 			for _, k := range keys {
-				if str, ok := x[k].(string); ok && (k == "title" || k == "description") {
-					c.text(str, path+"/"+ptr(k), "", false)
-				} else if schemaKeys[k] {
-					c.walk(s.dropValid(kind, x[k]), path+"/"+ptr(k), false)
-				} else {
-					visit(x[k], path+"/"+ptr(k))
+				switch {
+				case k == "title" || k == "description":
+					if str, ok := x[k].(string); ok {
+						c.text(str, path+"/"+ptr(k), "", false)
+						continue
+					}
+					visit(x[k], path+"/"+ptr(k), name)
+				case schemaKeys[k]:
+					// a default, example or enum is scanned under its property's
+					// annotation, which silences the confirm tier only
+					c.kind, c.name = kind, name
+					c.walk(x[k], path+"/"+ptr(k), false)
+					c.kind, c.name = "", ""
+				case k == "properties":
+					if props, ok := x[k].(map[string]any); ok {
+						names := make([]string, 0, len(props))
+						for n := range props {
+							names = append(names, n)
+						}
+						sort.Strings(names)
+						for _, n := range names {
+							visit(props[n], path+"/properties/"+ptr(n), n)
+						}
+						continue
+					}
+					visit(x[k], path+"/"+ptr(k), name)
+				default:
+					visit(x[k], path+"/"+ptr(k), name)
 				}
 			}
 		case []any:
 			for i, e := range x {
-				visit(e, path+"/"+strconv.Itoa(i))
+				visit(e, path+"/"+strconv.Itoa(i), name)
 			}
 		}
 	}
-	visit(doc, "/schema")
+	visit(doc, "/schema", "")
+	// block tier everywhere: every key and every string of the document, whatever
+	// the keyword ($comment, pattern, a property name); the walk above has
+	// already added what it found, and c.add drops the duplicates
+	var blockPass func(v any, path string)
+	blockPass = func(v any, path string) {
+		switch x := v.(type) {
+		case string:
+			c.blockOnly(x, path, "")
+		case map[string]any:
+			for k, e := range x {
+				c.blockOnly(k, path, "key")
+				blockPass(e, path+"/"+ptr(k))
+			}
+		case []any:
+			for i, e := range x {
+				blockPass(e, path+"/"+strconv.Itoa(i))
+			}
+		}
+	}
+	blockPass(doc, "/schema")
 	return c.out
 }
 
-// dropValid removes from a default, example or enum the values that have the
-// strict format of the property's annotated kind.
-func (s *Scanner) dropValid(kind string, v any) any {
-	if kind == "" {
-		return v
-	}
-	switch x := v.(type) {
-	case string:
-		if s.validFor(kind, x) {
-			return nil
+// blockOnly adds the block-tier findings of one string.
+func (c *collector) blockOnly(text, path, in string) {
+	for _, h := range c.s.matches(text) {
+		if h.tier == TierBlock {
+			c.add(h, path, in)
 		}
-	case []any:
-		out := make([]any, 0, len(x))
-		for _, e := range x {
-			if str, ok := e.(string); ok && s.validFor(kind, str) {
-				continue
-			}
-			out = append(out, e)
-		}
-		return out
 	}
-	return v
 }
 
 // ScanYAML scans every value of a YAML file the way a record is scanned. It is

@@ -65,11 +65,11 @@ func TestEveryRuleFiresAndKeepsQuietOnNearMisses(t *testing.T) {
 			[]string{openai, "sk" + "-ant-" + "api03-Ab12Cd34Ef56Gh78Ij90", "use sk" + "-" + "Ab12Cd34Ef56Gh78Ij90Kl12 here"},
 			[]string{"task-management-system-service-account", "disk-usage-monitoring-dashboard-v", "sk-short", "risk-assessment-for-all-the-hosts"}},
 		{RuleSlackToken,
-			[]string{slack, "xox" + "p-" + "1234567890-abcdefghij"},
-			[]string{"xoxb-short", "xoxz-1234567890-abcdefghij", "boxb-1234567890-abcdefghij"}},
+			[]string{slack, "xox" + "p-" + "1234567890-abcdefghij", "xa" + "pp-1-A0123456789-1234567890123-abcdef0123456789abcdef"},
+			[]string{"xoxb-short", "xoxz-1234567890-abcdefghij", "xapp-x-A0123456789", "xapp-1-short", "boxb-1234567890-abcdefghij"}},
 		{RuleAWSKeyID,
-			[]string{aws, "ASIA" + "IOSFODNN7EXAMPLE", "id=" + aws + " ok"},
-			[]string{"AKIA" + "IOSFODNN7EXAMPL", "AKIA" + "IOSFODNN7EXAMPLE9", "akia" + "iosfodnn7example"}},
+			[]string{aws, "ASIA" + "IOSFODNN7EXAMPLE", "id=" + aws + " ok", aws + "_x", aws + "9"},
+			[]string{"AKIA" + "IOSFODNN7EXAMPL", "akia" + "iosfodnn7example"}},
 		{RuleGoogleKey,
 			[]string{google, "k=" + google},
 			[]string{"AIza" + "short", "AIzaSyShort"}},
@@ -759,7 +759,7 @@ func TestNumbersAndBooleansInSecretNamedFieldsAreScanned(t *testing.T) {
 
 func TestEveryBlockRuleIsBlockAndConfirmRulesAreConfirm(t *testing.T) {
 	blocks := []string{RulePrivateKey, RuleAgeKey, RuleGitHubToken, RuleGitHubPAT, RuleAIKey, RuleSlackToken, RuleAWSKeyID, RuleGoogleKey, RuleStripeKey, RuleJWT,
-		RuleHexKey, RuleURLPassword, RuleGitLabToken, RuleNPMToken, RuleHFToken, RuleTailscaleKey, RuleSendGridKey, RuleAzureKey}
+		RuleURLPassword, RuleGitLabToken, RuleNPMToken, RuleHFToken, RuleTailscaleKey, RuleSendGridKey, RuleAzureKey}
 	texts := map[string]string{RulePrivateKey: pemHead + "\nb3Bl", RuleAgeKey: age, RuleGitHubToken: ghp, RuleGitHubPAT: ghPAT, RuleAIKey: openai, RuleSlackToken: slack,
 		RuleAWSKeyID: aws, RuleGoogleKey: google, RuleStripeKey: stripe, RuleJWT: jwt, RuleHexKey: "key: " + hex32, RuleURLPassword: urlPw,
 		RuleGitLabToken: "glpat" + "-" + strings.Repeat("aB1_", 6), RuleNPMToken: "npm" + "_" + strings.Repeat("aB1", 12), RuleHFToken: "hf" + "_" + strings.Repeat("aBcD", 9),
@@ -777,6 +777,11 @@ func TestEveryBlockRuleIsBlockAndConfirmRulesAreConfirm(t *testing.T) {
 			t.Errorf("%s: %+v", id, fs)
 		}
 	}
+	// a long hex string after "key" is ambiguous (nodekey:<hex>, fingerprints,
+	// hashes), so it is a heuristic: confirm tier
+	if tier, ids := tierOf(t, "api_key: "+strings.Repeat("ab", 32)); tier != TierConfirm || !has(ids, RuleHexKey) {
+		t.Errorf("hex-key: %v %v", tier, ids)
+	}
 	for _, v := range []string{"https://x.example.com/a?api_key=Ab12Cd34Ef56", "https://x.example.com/a?x=1&token=Ab12Cd34Ef56Gh", "https://x/y?key=AbCdEfGh1234"} {
 		if tier, ids := tierOf(t, v); tier != TierBlock || !has(ids, RuleURLQuery) {
 			t.Errorf("%q: %v", v, ids)
@@ -793,6 +798,15 @@ func TestEveryBlockRuleIsBlockAndConfirmRulesAreConfirm(t *testing.T) {
 	}
 	if tier, ids := tierOf(t, `{"d":"MXx3vN0sG2iPz8WqL1dUfKq","kty":"RSA"}`); tier != TierBlock || !has(ids, RulePrivateJWK) {
 		t.Errorf("private JWK, d first: %v", ids)
+	}
+	for _, v := range []string{
+		`{\"kty\":\"EC\",\"crv\":\"P-256\",\"d\":\"jpsQnnGQmL-YBIffH1136cspYG6-0iY7X1fCE9-E9LI\"}`,
+		`{"kty":"EC","crv":"P-256","d":"jpsQnnGQmL+YBIffH1136cspYG6/0iY7X1fCE9+E9LI="}`,
+		`{\"d\":\"jpsQnnGQmL+YBIffH1136cspYG6/0iY7X1fCE9+E9LI=\",\"kty\":\"EC\"}`,
+	} {
+		if tier, ids := tierOf(t, v); tier != TierBlock || !has(ids, RulePrivateJWK) {
+			t.Errorf("private JWK %q: %v", v, ids)
+		}
 	}
 	if _, ids := tierOf(t, `{"kty":"EC","crv":"P-256","x":"f83OJ3D2xF1Bg8vub9tLe1gHMzV76e8Tus9uPHvRVEU"}`); has(ids, RulePrivateJWK) {
 		t.Error("a public JWK is not private")
@@ -968,6 +982,121 @@ func TestRoundFiveFixes(t *testing.T) {
 	for _, n := range []string{"compass", "bypass", "Compass", "passenger", "password_policy"} {
 		if fs := d.ScanRecord("c", "i", map[string]any{n: "correct horse"}); len(fs) != 0 {
 			t.Errorf("%s must not be a secret name", n)
+		}
+	}
+}
+
+// The rule: block-tier formats are refused in every string, always; schema
+// annotations, placeholders and confirm_not_secret only silence the confirm tier.
+func TestAnnotationsNeverSilenceTheBlockTier(t *testing.T) {
+	ann := AnnotationsOf([]byte(`{"properties":{"ref":{"x-rackbook":{"public":"secret_reference"}},"jwk":{"x-rackbook":{"public":"jwk_public"}},
+	 "ssh":{"x-rackbook":{"public":"ssh_public_key"}},"pem":{"x-rackbook":{"public":"pem_public_key"}}}}`))
+	b64 := base64.StdEncoding.EncodeToString
+	privPEM := "-----BEGIN RSA " + "PRIVATE KEY-----\nMIIEowIBAAKCAQEA\n-----END RSA PRIVATE KEY-----"
+	cases := []struct{ field, value, rule string }{
+		{"ref", "op://" + strings.Repeat("a", 130) + ghp, RuleGitHubToken},
+		{"jwk", `{"kty":"EC","crv":"P-256","x":"f83OJ3D2xF1Bg8vub9tLe1gHMzV76e8Tus9uPHvRVEU","y":"x_FEzRu9m36HLN_tue659LNpXW6pCyStikYjKIWI5a0","kid":"` + ghp + `"}`, RuleGitHubToken},
+		{"jwk", `{"kty":"EC","x5c":[{"kty":"EC","d":"jpsQnnGQmLYBIffH1136cspYG60iY7X1fCE9E9LI"}]}`, RulePrivateJWK},
+		{"ssh", "ssh-ed25519 AAAA" + b64([]byte(privPEM)), RulePrivateB64},
+		{"ssh", "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5+AKIAIOSFODNN7EXAMPLE+abc", RuleAWSKeyID},
+		{"pem", "-----BEGIN PUBLIC KEY-----\n" + b64([]byte(privPEM)) + "\n-----END PUBLIC KEY-----", RulePrivateB64},
+	}
+	for _, c := range cases {
+		fs := Default().ScanRecordWith("c", "i", map[string]any{c.field: c.value}, ann)
+		found := false
+		for _, f := range fs {
+			found = found || f.Rule == c.rule && f.Tier == TierBlock
+		}
+		if !found {
+			t.Errorf("%s %.40q: want a block %s finding, got %+v", c.field, c.value, c.rule, fs)
+		}
+	}
+	// the same in a schema default and in an enum
+	for _, c := range cases[:1] {
+		schema := `{"properties":{"ref":{"x-rackbook":{"public":"secret_reference"},"default":"` + c.value + `","enum":["` + c.value + `"]}}}`
+		if fs := Default().ScanSchema("c", []byte(schema)); len(fs) < 2 {
+			t.Errorf("schema default and enum: %+v", fs)
+		}
+	}
+}
+
+func TestGenuinelyPublicAnnotatedValuesStayClean(t *testing.T) {
+	ann := AnnotationsOf([]byte(`{"properties":{"node":{"x-rackbook":{"public":"nodekey"}},"fp":{"x-rackbook":{"public":"fingerprint"}},
+	 "ssh":{"x-rackbook":{"public":"ssh_public_key"}},"age":{"x-rackbook":{"public":"age_recipient"}},"hid":{"x-rackbook":{"public":"hex_id"}}}}`))
+	hex64 := strings.Repeat("ab", 32)
+	rec := map[string]any{"node": "nodekey:" + hex64, "fp": hex64, "ssh": sshPubKey, "age": "age1" + strings.Repeat("q", 58), "hid": hex32}
+	if fs := Default().ScanRecordWith("c", "i", rec, ann); len(fs) != 0 {
+		t.Fatalf("%+v", fs)
+	}
+	// without the annotation the hex after "key" is a confirm-tier finding, not a block
+	fs := Default().ScanRecord("c", "i", map[string]any{"node": "nodekey:" + hex64})
+	if len(fs) != 1 || fs[0].Rule != RuleHexKey || fs[0].Tier != TierConfirm {
+		t.Fatalf("%+v", fs)
+	}
+}
+
+func TestPrivateJWKHeldAsJSONText(t *testing.T) {
+	ann := AnnotationsOf([]byte(`{"properties":{"jwk":{"x-rackbook":{"public":"jwk_public"}}}}`))
+	for name, v := range map[string]string{
+		"escaped member names": `{"\u006b\u0074\u0079":"EC","crv":"P-256","\u0064":"jpsQnnGQmLYBIffH1136cspYG60iY7X1fCE9E9LI"}`,
+		"nested oth":           `{"kty":"RSA","n":"abc","e":"AQAB","oth":[{"kty":"RSA","d":"jpsQnnGQmLYBIffH1136cspYG60iY7X1fCE9E9LI"}]}`,
+		"escaped slash in d":   `{"kty":"EC","crv":"P-256","d":"jpsQnnGQmL+YBIffH1136cspYG6\/0iY7X1fCE9+E9LI="}`,
+	} {
+		for field, a := range map[string]Annotations{"notes": nil, "jwk": ann} {
+			fs := Default().ScanRecordWith("c", "i", map[string]any{field: v}, a)
+			found := false
+			for _, f := range fs {
+				found = found || f.Rule == RulePrivateJWK && f.Tier == TierBlock
+			}
+			if !found {
+				t.Errorf("%s in %s: %+v", name, field, fs)
+			}
+		}
+	}
+}
+
+func TestSchemaNamesAndOtherStringsGetTheBlockTier(t *testing.T) {
+	for _, schema := range []string{
+		`{"properties":{"` + ghp + `":{"type":"string"}}}`,
+		`{"$comment":"` + ghp + `"}`,
+		`{"properties":{"a":{"type":"string","pattern":"` + ghp + `"}}}`,
+	} {
+		fs := Default().ScanSchema("c", []byte(schema))
+		if len(fs) == 0 || fs[0].Rule != RuleGitHubToken || fs[0].Tier != TierBlock {
+			t.Errorf("%s: %+v", schema, fs)
+		}
+	}
+}
+
+func TestJWKPublicKeyNumbersDoNotTripTokenPatterns(t *testing.T) {
+	ann := AnnotationsOf([]byte(`{"properties":{"jwk":{"x-rackbook":{"public":"jwk_public"}}}}`))
+	scan := func(jwk string, a Annotations) []Finding {
+		return Default().ScanRecordWith("c", "i", map[string]any{"jwk": jwk}, a)
+	}
+	pad := strings.Repeat("q7Zx_", 40)
+	// a modulus that happens to contain "sk-" and 25 more base64url characters
+	n := pad + "sk-" + "Ab12Cd34Ef56Gh78Ij90Kl12M" + pad
+	for _, mod := range []string{n, strings.Repeat("0vx7agoebGcQSuuPiLJXZptN9nndrQmbXEps2aiAFbWhM78LhWx4cbbfAAtVT86zwu1RK7aPFFxuhDR1L6tSoc_BJECPebWKRXjBZCiFV4n3oknjhMstn64tZ_2W", 3),
+		strings.Repeat("sXchDaQebHnPiGvyDOAT4saGEUetSyo9MKLOoWFsueri23bOdgWp4Dy1WlUzewbgBHod5pcM9H95GQRV3JDXboKx", 3)} {
+		jwk := `{"kty":"RSA","n":"` + mod + `","e":"AQAB","kid":"k1"}`
+		if fs := scan(jwk, ann); len(fs) != 0 {
+			t.Errorf("a genuine public JWK must stay clean: %+v", fs)
+		}
+	}
+	blocked := map[string]string{
+		"token in kid":            `{"kty":"RSA","n":"abc","e":"AQAB","kid":"` + ghp + `"}`,
+		"token in unknown member": `{"kty":"RSA","n":"abc","e":"AQAB","note":"` + ghp + `"}`,
+		"token in n with a space": `{"kty":"RSA","n":"abc ` + ghp + `","e":"AQAB"}`,
+		"token in nested object":  `{"kty":"RSA","n":"abc","e":"AQAB","meta":{"k":"` + ghp + `"}}`,
+		"token in duplicate kid":  `{"kty":"RSA","kid":"` + ghp + `","n":"abc","e":"AQAB","kid":"k1"}`,
+	}
+	for name, jwk := range blocked {
+		found := false
+		for _, f := range scan(jwk, ann) {
+			found = found || f.Rule == RuleGitHubToken && f.Tier == TierBlock
+		}
+		if !found {
+			t.Errorf("%s must be blocked", name)
 		}
 	}
 }

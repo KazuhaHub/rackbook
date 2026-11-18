@@ -612,12 +612,14 @@ Two tiers:
 - **Block (deterministic):** key material and known token formats (PEM and
   OpenSSH, also base64-encoded; AGE-SECRET-KEY; GitHub, GitLab, npm, Hugging
   Face, Tailscale, SendGrid, Slack, AWS, Google, Stripe, OpenAI and Anthropic
-  tokens; JWT; `key`/`privkey` plus hex; URL userinfo; key-bearing query
+  tokens; JWT; URL userinfo; key-bearing query
   parameters; private JWK). Always refused (`422 secret_detected`); only the
   allow list by value hash overrides it.
 - **Confirm (heuristic):** keyword assignments in any language (after NFKC
   normalisation and zero-width stripping), the whole value of secret-named
-  fields (numbers and booleans included) and high-entropy tokens in free text.
+  fields (numbers and booleans included), `key`/`privkey` plus hex (`hex-key`:
+  ambiguous with node keys, fingerprints and hashes) and high-entropy tokens in
+  free text.
   Refused with `422 secret_suspected` until the editor confirms: the console
   holds the write behind a "不是密钥" tick, API and MCP retry with
   `confirm_not_secret: true` (editor and admin sessions, OAuth/MCP identities
@@ -627,8 +629,12 @@ Two tiers:
   (<rule ids>)`. `rackbook check` reports confirm-tier hits as warnings, and
   not at all for a record whose last commit carries that trailer.
 
-Exemptions come only from structure: a schema annotation
+One rule: block-tier formats are refused in every string, always; schema
+annotations, placeholders and `confirm_not_secret` only silence the confirm
+tier. An exempt value is still run, whole, through the block-tier rules. The
+confirm-tier exemptions come only from structure: a schema annotation
 `x-rackbook: {public: <kind>}` whose whole value has the kind's strict format,
-the exact placeholders, and the allow list. Free text has none. A secret-named
+and the exact placeholders. The allow list (by value hash) is the one override
+for the block tier. Free text has none. A secret-named
 field may only be annotated `secret_reference`. Record ids that carry a secret are
 shown as 4 characters plus 8 hex digits of a hash (not a secure hash; it only tells ids apart).

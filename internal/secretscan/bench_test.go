@@ -1,6 +1,7 @@
 package secretscan
 
 import (
+	"fmt"
 	"math/rand"
 	"runtime"
 	"strings"
@@ -33,6 +34,8 @@ func BenchmarkScanMegabyte(b *testing.B) {
 	}
 }
 
+// TestScanMegabyteIsFastAndLight: ordinary text of 1 MB scans within a loose
+// time bound and a bounded allocation.
 func TestScanMegabyteIsFastAndLight(t *testing.T) {
 	text := mixedText(1 << 20)
 	d := Default()
@@ -50,8 +53,8 @@ func TestScanMegabyteIsFastAndLight(t *testing.T) {
 		alloc = after.TotalAlloc - before.TotalAlloc
 	}
 	// About 0.1 s on a laptop (see BenchmarkScanMegabyte). The test bound is
-	// generous so loaded or slow CI runners don't fail it; it only has to catch
-	// regressions that are orders of magnitude slower.
+	// generous so loaded or slow CI runners don't fail it; scaling is checked
+	// by TestPathologicalInputsStayLinear. The allocation bound guards memory.
 	if best > 3*time.Second && !raceEnabled { // the race detector slows everything several times
 		t.Errorf("1 MB took %v", best)
 	}
@@ -60,31 +63,43 @@ func TestScanMegabyteIsFastAndLight(t *testing.T) {
 	}
 }
 
-// Pathological inputs: each must scan in under a second per megabyte.
-func pathological() map[string]string {
+// pathological returns n-byte inputs that each target one way a scan could go
+// super-linear: backtracking on repeated keywords, a long unterminated value, a
+// reference prefix, a flood of tokens, and many keyword assignments next to many
+// entropy tokens (the case that made hit de-duplication quadratic).
+func pathological(n int) map[string]string {
 	rep := func(unit string, n int) string { return strings.Repeat(unit, n/len(unit)+1)[:n] }
 	rng := rand.New(rand.NewSource(3))
 	const alnum = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!#$%"
-	var toks strings.Builder
-	for toks.Len() < 1<<20 {
+	const plain = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+	var toks, pairs strings.Builder
+	for toks.Len() < n {
 		for i := 0; i < 24; i++ {
 			toks.WriteByte(alnum[rng.Intn(len(alnum))])
 		}
 		toks.WriteByte(' ')
 	}
+	for i := 0; pairs.Len() < n; i++ {
+		fmt.Fprintf(&pairs, "pwd=v%07d ", i)
+		for j := 0; j < 24; j++ {
+			pairs.WriteByte(plain[rng.Intn(len(plain))])
+		}
+		pairs.WriteByte(' ')
+	}
 	zh := "今天我们讨论服务器维护计划和备份窗口，请大家准备。密码："
 	return map[string]string{
-		"password=op:// repeated": rep("password=op://", 1<<20),
-		"密码： every 54 bytes":      rep(zh, 1<<20),
-		"password= repeated":      rep("password=", 1<<20),
-		"?token= repeated":        rep("?token=", 1<<20),
-		"random 24-char tokens":   toks.String(),
+		"password=op:// repeated": rep("password=op://", n),
+		"密码： every 54 bytes":      rep(zh, n),
+		"password= repeated":      rep("password=", n),
+		"?token= repeated":        rep("?token=", n),
+		"random 24-char tokens":   toks.String()[:n],
+		"assignments and tokens":  pairs.String()[:n],
 	}
 }
 
 func BenchmarkPathological(b *testing.B) {
 	d := Default()
-	for name, text := range pathological() {
+	for name, text := range pathological(1 << 20) {
 		b.Run(name, func(b *testing.B) {
 			b.SetBytes(int64(len(text)))
 			b.ReportAllocs()
@@ -95,31 +110,51 @@ func BenchmarkPathological(b *testing.B) {
 	}
 }
 
+// TestPathologicalInputsStayLinear guards against super-linear scanning (a
+// quadratic loop, backtracking). A wall-clock bound cannot tell a slow linear
+// scan from a quadratic one, so it compares two sizes: the best of five scans at
+// 4n bytes must take at most 10 times as long as at n bytes (linear is about 4,
+// quadratic about 16). The two sizes are timed alternately so that load on the
+// machine hits both alike, and a generator is retried up to three times: it
+// fails only if every attempt is over.
 func TestPathologicalInputsStayLinear(t *testing.T) {
 	if raceEnabled {
 		t.Skip("the race detector slows everything several times")
 	}
+	const small, large = 512 << 10, 2 << 20
 	d := Default()
-	for name, text := range pathological() {
-		best := time.Hour
-		for i := 0; i < 2; i++ {
-			start := time.Now()
-			d.matches(text)
-			if el := time.Since(start); el < best {
-				best = el
+	smalls, larges := pathological(small), pathological(large)
+	for name := range smalls {
+		var ts, tl time.Duration
+		ok := false
+		for attempt := 0; attempt < 3 && !ok; attempt++ {
+			ts, tl = time.Hour, time.Hour
+			for i := 0; i < 5; i++ {
+				for _, m := range []struct {
+					text string
+					best *time.Duration
+				}{{smalls[name], &ts}, {larges[name], &tl}} {
+					start := time.Now()
+					d.matches(m.text)
+					if el := time.Since(start); el < *m.best {
+						*m.best = el
+					}
+				}
 			}
+			t.Logf("%s: %v at %d bytes, %v at %d bytes (x%.1f)", name, ts, small, tl, large, float64(tl)/float64(ts))
+			ok = tl <= 20*time.Second && tl <= 10*ts
 		}
-		// Shared CI runners (windows-arm64 especially) are a few times slower
-		// than a laptop; the regressions this guards against (exponential or
-		// quadratic scanning) take 100 s or more per megabyte, so 5 s still
-		// catches them without failing on slow hardware.
-		if best > 5*time.Second {
-			t.Errorf("%s: %d bytes took %v", name, len(text), best)
+		if !ok {
+			t.Errorf("%s: %v at %d bytes but %v at %d bytes: not linear", name, ts, small, tl, large)
 		}
 	}
-	// the exponential case was 560 bytes of this
+}
+
+// TestPasswordOpRepeatedIsNotExponential guards against exponential
+// backtracking: this input was 560 bytes of the "password=op://" case.
+func TestPasswordOpRepeatedIsNotExponential(t *testing.T) {
 	start := time.Now()
-	d.matches(strings.Repeat("password=op://", 40))
+	Default().matches(strings.Repeat("password=op://", 40))
 	if el := time.Since(start); el > time.Second {
 		t.Errorf("560 bytes of password=op:// took %v", el)
 	}

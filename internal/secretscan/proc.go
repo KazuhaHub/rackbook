@@ -139,8 +139,8 @@ func isASCIILetter(b byte) bool { return b >= 'a' && b <= 'z' || b >= 'A' && b <
 // for db is X", "root 密码是 X"). The value is the next token: at least 8
 // characters, not a placeholder, a path or a reference. After a word separator
 // or intervening words it must also look like a credential.
-func assignments(s *Scanner, text, lt string) []string {
-	var out []string
+func assignments(s *Scanner, text, lt string) []span {
+	var out []span
 	for _, m := range keywordSpans(text, lt) {
 		a, e := m[0], m[1]
 		kw := text[a:e]
@@ -155,8 +155,8 @@ func assignments(s *Scanner, text, lt string) []string {
 		}
 		// each keyword reads a bounded window, so a long run of "password=" stays linear
 		win := text[e:min(len(text), e+maxWindow)]
-		if v, ok := assignedValue(s, win); ok {
-			out = append(out, v)
+		if a2, b2, ok := assignedValue(s, win); ok {
+			out = append(out, span{e + a2, e + b2})
 		}
 	}
 	return out
@@ -169,7 +169,8 @@ const (
 	maxValue  = 256
 )
 
-func assignedValue(s *Scanner, rest string) (string, bool) {
+// assignedValue returns the byte span of the value inside rest.
+func assignedValue(s *Scanner, rest string) (int, int, bool) {
 	pos := 0
 	if pos < len(rest) && (rest[pos] == '"' || rest[pos] == '\'') {
 		pos++
@@ -180,7 +181,7 @@ func assignedValue(s *Scanner, rest string) (string, bool) {
 			pos++
 		}
 		if pos >= len(rest) {
-			return "", false
+			return 0, 0, false
 		}
 		r, size := utf8.DecodeRuneInString(rest[pos:])
 		switch {
@@ -201,7 +202,7 @@ func assignedValue(s *Scanner, rest string) (string, bool) {
 			words++
 			continue
 		default:
-			return "", false
+			return 0, 0, false
 		}
 		break
 	}
@@ -224,14 +225,18 @@ func assignedValue(s *Scanner, rest string) (string, bool) {
 		}
 		end += size
 	}
-	v := strings.Trim(rest[pos:end], `"',;。，；”’」`)
+	const cut = `"',;。，；”’」`
+	raw := rest[pos:end]
+	v := strings.Trim(raw, cut)
+	pos += len(raw) - len(strings.TrimLeft(raw, cut))
+	end = pos + len(v)
 	if utf8.RuneCountInString(v) < 8 || isPlaceholderValue(v) || isPathValue(v) || s.isReference(v) {
-		return "", false
+		return 0, 0, false
 	}
 	if (wordSep || words > 0) && !credLike(v) {
-		return "", false
+		return 0, 0, false
 	}
-	return v, true
+	return pos, end, true
 }
 
 func isWordAt(s string, pos int, w string) bool {
@@ -292,17 +297,17 @@ func (s *Scanner) isReference(v string) bool {
 // and Shannon entropy of at least 4.0 bits per character. Tokens are runs of
 // ASCII characters between whitespace, quotes, brackets and commas; URLs are
 // skipped (the userinfo and query rules look at those).
-func entropyTokens(_ *Scanner, text, _ string) []string {
-	var out []string
+func entropyTokens(_ *Scanner, text, _ string) []span {
+	var out []span
 	start := -1
 	flush := func(end int) {
 		if start < 0 {
 			return
 		}
-		tok := text[start:end]
+		tok, start0 := text[start:end], start
 		start = -1
 		if len(tok) >= 20 && len(tok) <= 512 && entropyOK(tok) {
-			out = append(out, tok)
+			out = append(out, span{start0, end})
 		}
 	}
 	for i := 0; i < len(text); i++ {

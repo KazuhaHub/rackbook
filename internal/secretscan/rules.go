@@ -7,11 +7,13 @@ import (
 )
 
 // Tiers. The block tier is deterministic: key material and known token
-// formats are always refused, and only the allow list (by value hash) overrides
-// them. The confirm tier is heuristic: keyword assignments in any language,
-// the whole value of a secret-named field and high-entropy tokens. The editor
-// may confirm "this is not a secret" (the confirmation is recorded in the
-// commit); `rackbook check` reports them as warnings.
+// formats are refused in every string, always; schema annotations,
+// placeholders and confirm_not_secret never silence it, and only the allow list
+// (by value hash) overrides it. The confirm tier is heuristic: keyword
+// assignments in any language, a long hex string after "key", the whole value
+// of a secret-named field and high-entropy tokens. The editor may confirm "this
+// is not a secret" (the confirmation is recorded in the commit); annotations and
+// placeholders silence it too; `rackbook check` reports it as warnings.
 const (
 	TierBlock   = "block"
 	TierConfirm = "confirm"
@@ -22,8 +24,12 @@ const (
 // and what allow[].value_sha256 hashes. hints are literal substrings one of
 // which the text must contain for the rule to run at all (a cheap prefilter);
 // ci says they match case-insensitively. There are no text-context exemptions:
-// a value is exempt only through a schema annotation (annotations.go), an exact
-// placeholder or the allow list.
+// a confirm-tier value is exempt only through a schema annotation
+// (annotations.go), an exact placeholder or the allow list; a block-tier value
+// only through the allow list.
+// span is a byte range of the normalised text.
+type span struct{ start, end int }
+
 type rule struct {
 	id          string
 	description string
@@ -32,8 +38,8 @@ type rule struct {
 	group       int
 	hints       []string
 	ci          bool
-	filter      func(value string) bool // drops a match whose value fails it
-	proc        func(s *Scanner, text, lower string) []string
+	filter      func(value string) bool                     // drops a match whose value fails it
+	proc        func(s *Scanner, text, lower string) []span // byte spans of the matched values in text
 }
 
 // The built-in rule IDs. They are stable: allow lists and disable_rules in
@@ -65,6 +71,15 @@ const (
 	RuleEntropy      = "high-entropy"
 )
 
+// jwkPrivate: a "kty" member and a "d" member in the same object, in either
+// order; the quotes may be JSON-escaped (\" inside a string) and d may be
+// base64url or standard base64.
+const (
+	jwkQ       = `\\?"`
+	jwkPrivate = `(?s)\{[^{}]*` + jwkQ + `kty` + jwkQ + `[^{}]*` + jwkQ + `d` + jwkQ + `\s*:\s*` + jwkQ + `[A-Za-z0-9_+/=-]{8,}` + jwkQ +
+		`|\{[^{}]*` + jwkQ + `d` + jwkQ + `\s*:\s*` + jwkQ + `[A-Za-z0-9_+/=-]{8,}` + jwkQ + `[^{}]*` + jwkQ + `kty` + jwkQ
+)
+
 const hexAssign = `(?i)(?:key|privkey)\s*[:=]\s*["']?([0-9a-f]{32,})\b`
 
 // pemB64 is the base64 of "-----BEGIN <label> PRIVATE KEY-----" as it starts a
@@ -89,8 +104,8 @@ func builtin() []*rule {
 		{id: RuleGitHubToken, tier: TierBlock, description: "GitHub token", hints: []string{"ghp_", "gho_", "ghu_", "ghs_", "ghr_"}, re: regexp.MustCompile(`gh[pousr]_[A-Za-z0-9]{36,}`)},
 		{id: RuleGitHubPAT, tier: TierBlock, description: "GitHub fine-grained token", hints: []string{"github_pat_"}, re: regexp.MustCompile(`github_pat_[A-Za-z0-9_]{22,}`)},
 		{id: RuleAIKey, tier: TierBlock, description: "OpenAI or Anthropic style API key", hints: []string{"sk-"}, re: regexp.MustCompile(`sk-(?:ant-|proj-)?[A-Za-z0-9_-]{20,}`), filter: skKey},
-		{id: RuleSlackToken, tier: TierBlock, description: "Slack token", hints: []string{"xox"}, re: regexp.MustCompile(`xox[abposr]-[A-Za-z0-9-]{10,}`)},
-		{id: RuleAWSKeyID, tier: TierBlock, description: "AWS access key ID", hints: []string{"AKIA", "ASIA"}, re: regexp.MustCompile(`(?:AKIA|ASIA)[0-9A-Z]{16}\b`)},
+		{id: RuleSlackToken, tier: TierBlock, description: "Slack token", hints: []string{"xox", "xapp-"}, re: regexp.MustCompile(`xox[abposr]-[A-Za-z0-9-]{10,}|xapp-[0-9]-[A-Za-z0-9-]{10,}`)},
+		{id: RuleAWSKeyID, tier: TierBlock, description: "AWS access key ID", hints: []string{"AKIA", "ASIA"}, re: regexp.MustCompile(`(?:AKIA|ASIA)[0-9A-Z]{16}`)},
 		{id: RuleGoogleKey, tier: TierBlock, description: "Google API key", hints: []string{"AIza"}, re: regexp.MustCompile(`AIza[0-9A-Za-z_-]{35}`)},
 		{id: RuleStripeKey, tier: TierBlock, description: "Stripe live secret key", hints: []string{"_live_"}, re: regexp.MustCompile(`(?:sk|rk)_live_[0-9a-zA-Z]{24,}`)},
 		{id: RuleJWT, tier: TierBlock, description: "JSON Web Token", hints: []string{"eyJ"}, re: regexp.MustCompile(`eyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}`)},
@@ -104,8 +119,8 @@ func builtin() []*rule {
 		{id: RuleURLQuery, tier: TierBlock, description: "secret in a URL query parameter", hints: []string{"?", "&"}, filter: credLike,
 			re: regexp.MustCompile(`(?i)[?&](?:api[_-]?key|apikey|access[_-]?token|auth[_-]?token|token|secret|password|passwd|key|sig|signature)=([^&\s#"'<>]{8,})`), group: 1},
 		{id: RulePrivateJWK, tier: TierBlock, description: "JSON Web Key with a private member", hints: []string{"kty"},
-			re: regexp.MustCompile(`(?s)\{[^{}]*"kty"[^{}]*"d"\s*:\s*"[A-Za-z0-9_-]{8,}"|\{[^{}]*"d"\s*:\s*"[A-Za-z0-9_-]{8,}"[^{}]*"kty"`)},
-		{id: RuleHexKey, tier: TierBlock, description: "long hex string assigned to a key", hints: []string{"key"}, ci: true, re: regexp.MustCompile(hexAssign), group: 1},
+			re: regexp.MustCompile(jwkPrivate)},
+		{id: RuleHexKey, tier: TierConfirm, description: "long hex string assigned to a key", hints: []string{"key"}, ci: true, re: regexp.MustCompile(hexAssign), group: 1},
 		{id: RuleBearer, tier: TierConfirm, description: "bearer token", hints: []string{"bearer"}, ci: true, re: regexp.MustCompile(`(?i)\bBearer ([A-Za-z0-9._~+/-]{20,}=*)`), group: 1},
 		{id: RuleSecretAssign, tier: TierConfirm, description: "secret, password or token assigned in text (any language)", proc: assignments},
 		{id: RuleEntropy, tier: TierConfirm, description: "high-entropy token", proc: entropyTokens},
