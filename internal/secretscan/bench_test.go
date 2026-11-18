@@ -49,7 +49,10 @@ func TestScanMegabyteIsFastAndLight(t *testing.T) {
 		runtime.ReadMemStats(&after)
 		alloc = after.TotalAlloc - before.TotalAlloc
 	}
-	if best > 300*time.Millisecond && !raceEnabled { // the race detector slows everything several times
+	// About 0.1 s on a laptop (see BenchmarkScanMegabyte). The test bound is
+	// generous so loaded or slow CI runners don't fail it; it only has to catch
+	// regressions that are orders of magnitude slower.
+	if best > 3*time.Second && !raceEnabled { // the race detector slows everything several times
 		t.Errorf("1 MB took %v", best)
 	}
 	if alloc > 10<<20 {
