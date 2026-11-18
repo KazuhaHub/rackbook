@@ -145,9 +145,15 @@ export function mockApi(root: string): Plugin {
     collection: collection as string,
   }))
 
+  // MOCK_LOGIN=1 pretends to be logged in with the built-in login (oidc), with a passkey and a user list,
+  // so the login, account and users pages can be seen without a server.
+  const login = process.env.MOCK_LOGIN === '1'
+  const passkeys: { id: string; name: string; created: string }[] = [
+    { id: 'pk1', name: 'MacBook Pro', created: new Date(Date.now() - 3 * 86400000).toISOString() },
+  ]
   const user = readOnly
     ? { id: 'viewer@example.com', email: 'viewer@example.com', name: 'viewer', role: 'viewer', authMethod: 'none', canEdit: false, canAdmin: false }
-    : { id: 'editor@example.com', email: 'editor@example.com', name: 'Mock Editor', role: 'admin', authMethod: 'none', canEdit: true, canAdmin: true }
+    : { id: 'editor@example.com', email: 'editor@example.com', name: 'Mock Editor', role: 'admin', authMethod: login ? 'oidc' : 'none', canEdit: true, canAdmin: true }
   // MOCK_ALERT=1 shows the "history rewritten" banner until it is accepted.
   let alert: { kind: string; lastGood: string; remote: string } | undefined =
     process.env.MOCK_ALERT === '1'
@@ -218,12 +224,32 @@ export function mockApi(root: string): Plugin {
       send(res, 200, { title: cfg.title, collections: Object.fromEntries([...colls.values()].map((c) => [c.name, c.rows])), notes: [] })
       return true
     }
+    if (p === '/auth/config') return send(res, 200, { oidc: true, provider: 'microsoft', passkeys: true }), true
+    if (p === '/auth/logout') return send(res, 200, { login: '/auth/login?error=logged_out' }), true
     if (!p.startsWith('/api/')) return false
     const parts = p.slice(5).split('/').filter(Boolean).map(decodeURIComponent)
     // decodeURIComponent above turns %2F inside an id into "/" after splitting, which is what the id is.
     const [head, cname, ...rest] = parts
     const rid = rest.length ? rest.join('/') : undefined
     if (head === 'meta' && method === 'GET') return send(res, 200, meta()), true
+    if (login && head === 'account' && !cname && method === 'GET') {
+      return send(res, 200, { id: user.id, name: user.name, email: user.email, role: user.role, authMethod: 'oidc', passkeysEnabled: true, canEnrol: true, enrolUntil: new Date(Date.now() + 600000).toISOString(), passkeys }), true
+    }
+    if (login && head === 'account' && cname === 'passkeys' && method === 'DELETE') {
+      const i = passkeys.findIndex((k) => k.id === rest[0])
+      if (i >= 0) passkeys.splice(i, 1)
+      return send(res, 200, { ok: true }), true
+    }
+    if (login && head === 'admin' && cname === 'users' && method === 'GET') {
+      return send(res, 200, {
+        passkeysEnabled: true,
+        users: [
+          { id: user.id, name: user.name, method: 'oidc', role: 'admin', seen: true, lastSeen: new Date().toISOString(), passkeys },
+          { id: 'ed@kazuha.org', name: 'Ed', method: 'passkey', role: 'editor', seen: true, lastSeen: new Date(Date.now() - 3600000).toISOString(), passkeys: [] },
+          { id: 'former@example.com', role: 'none', seen: false, passkeys: [{ id: 'pk9', name: 'old phone', created: new Date(Date.now() - 40 * 86400000).toISOString() }] },
+        ],
+      }), true
+    }
     if (head === 'admin' && cname === 'accept-remote' && method === 'POST') {
       const body = await readBody(req)
       if (!alert || body.commit !== alert.remote) return send(res, 409, { error: 'not_remote_tip', message: 'not the remote tip' }), true

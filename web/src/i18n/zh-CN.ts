@@ -1,5 +1,8 @@
+import { authText } from './auth.zh-CN'
+
 // All user-facing copy lives here (Simplified Chinese).
 export const t = {
+  auth: authText,
   appName: 'Rackbook',
   ledgerFallbackTitle: '台账',
   nav: {
