@@ -8,6 +8,7 @@
     "dev:mock": "vite --mode mock",
     "build": "tsc -b && vite build && node scripts/post-build.mjs",
     "typecheck": "tsc -b",
+    "check:formats": "node --experimental-strip-types scripts/check-formats.mts",
     "lint": "eslint . && tsc -b",
     "preview": "vite preview"
   },

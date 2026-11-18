@@ -18,6 +18,9 @@ const CollectionList = lazy(() => import('@/pages/CollectionList'))
 const RecordShow = lazy(() => import('@/pages/RecordShow'))
 const RecordFormPage = lazy(() => import('@/pages/RecordFormPage'))
 const Problems = lazy(() => import('@/pages/Problems'))
+// data types (admin)
+const Types = lazy(() => import('@/pages/Types'))
+const TypeEditor = lazy(() => import('@/pages/TypeEditor'))
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { refetchOnWindowFocus: false } },
@@ -55,6 +58,9 @@ function RefineApp() {
           <Route path="c/:collection/:id" element={<RecordShow />} />
           <Route path="c/:collection/:id/edit" element={<RecordFormPage mode="edit" />} />
           <Route path="check" element={<Problems />} />
+          <Route path="types" element={<Types />} />
+          <Route path="types/-/new" element={<TypeEditor mode="create" />} />
+          <Route path="types/:name" element={<TypeEditor mode="edit" />} />
           <Route path="*" element={<NotFound />} />
         </Route>
       </Routes>

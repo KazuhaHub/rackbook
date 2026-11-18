@@ -4,8 +4,8 @@ import { t } from '@/i18n/zh-CN'
 import { useHistory } from '@/lib/hooks'
 import { relativeTime } from '@/lib/ledger'
 
-export function HistoryList({ collection, limit = 5 }: { collection: string; limit?: number }) {
-  const { data, isPending } = useHistory(collection, limit)
+export function HistoryList({ collection, limit = 5, recordId }: { collection: string; limit?: number; recordId?: string }) {
+  const { data, isPending } = useHistory(collection, limit, recordId)
   if (isPending) return <Skeleton className="h-14 w-full" />
   if (!data?.length) return <p className="text-sm text-muted-foreground">{t.show.historyEmpty}</p>
   return (

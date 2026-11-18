@@ -176,3 +176,24 @@ mode. A refused request changes nothing.
 
 Every other `GET` serves the embedded console (`index.html` for unknown paths,
 so client-side routes work).
+
+## Data types (administrators only)
+
+All answers are 403 for anyone below the admin role. Design: `docs/design-v0.2.md` section 3.
+
+| Request | Answer |
+|---|---|
+| `GET /api/types` | `{types: [{name, title, group, icon, file, path, schemaFile, count, fields, problems}], fieldTypes, formats, dataDir, schemaDir}` |
+| `GET /api/types/{name}` | `{type, incoming}`: the collection as the console edits it (fields with console type and options, key, label, list, facets, multi-field unique rules, read-only extras and same_set rules) and the collections that reference it |
+| `POST /api/types/{name}/plan` | the dry run. Body `{type, migrations}`; a name that does not exist plans a creation, `{delete: true}` plans the removal. Answer: `{clean, changed, subject, files: [{path, status, diff}], invalid, dangling, other, backrefs, migrations, refusals}` |
+| `POST /api/types` | create from `{type}`: one commit with `rackbook.yml`, `schemas/<name>.json` and the empty data file. 201 |
+| `PUT /api/types/{name}` | change from `{type, migrations}`: one commit. 422 `refused` with the plan when it is not clean |
+| `DELETE /api/types/{name}` | remove an empty, unreferenced collection (its data file stays). 422 `refused` otherwise |
+
+Migrations: `{kind: "remove-field", field}` deletes the field from the records that have it;
+`{kind: "fill-default", field, value?}` gives a new required field a value (the field default when `value` is
+omitted) in the records that lack it. The plan lists what is on offer (`migrations`) and what it refused
+(`refusals`: rename, layout, narrowing, shared-schema, field-in-use, not-empty, referenced, ...).
+
+`DELETE /api/c/{collection}/{id}` answers 409 `referenced` with `references: [{collection, id, field}]` when other
+records point at the record; `?clearReferences=true` removes those references in the same commit.

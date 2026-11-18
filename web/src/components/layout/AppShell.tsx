@@ -1,6 +1,6 @@
 import { Suspense, useEffect } from 'react'
 import { Outlet, NavLink, useLocation } from 'react-router'
-import { BookMarked, LayoutDashboard, Lock } from 'lucide-react'
+import { BookMarked, LayoutDashboard, Lock, Shapes } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import {
   Sidebar,
@@ -105,6 +105,20 @@ function AppSidebar() {
           </SidebarGroup>
         ))}
       </SidebarContent>
+      {meta.user?.canAdmin && (
+        <SidebarGroup>
+          <SidebarGroupContent>
+            <SidebarMenu>
+              <SidebarMenuItem>
+                <SidebarMenuButton isActive={pathname === '/types' || pathname.startsWith('/types/')} render={<NavLink to="/types" />}>
+                  <Shapes />
+                  <span>{t.types.nav}</span>
+                </SidebarMenuButton>
+              </SidebarMenuItem>
+            </SidebarMenu>
+          </SidebarGroupContent>
+        </SidebarGroup>
+      )}
       <SidebarFooter className="border-t p-3">
         <div className="flex items-center gap-2 text-xs">
           <span className="min-w-0 flex-1 truncate text-muted-foreground" title={meta.user?.email}>

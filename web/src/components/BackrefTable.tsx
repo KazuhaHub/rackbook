@@ -28,7 +28,10 @@ export function BackrefTable({
   const lookups = useRefLookups(col)
   // Hide the referencing field(s): it is the record the user is already on.
   const hidden = new Set(backrefs.map((b) => b.field))
-  const cols = defaultColumns(col).filter((c) => !hidden.has(c))
+  // columns and title come from the ref rule (backref_columns, backref_title) when it names them
+  const configured = backrefs.find((b) => b.columns?.length)?.columns?.filter((c) => !!col.schema.properties?.[c] && !hidden.has(c))
+  const cols = configured?.length ? configured : defaultColumns(col).filter((c) => !hidden.has(c))
+  const title = backrefs.find((b) => b.title)?.title || col.title
   const prefill = new URLSearchParams()
   // prefill the new record with the reference to this one
   const ref = (col.refs ?? []).find((r) => hidden.has(r.field))
@@ -43,7 +46,7 @@ export function BackrefTable({
       <CardHeader>
         <CardTitle className="flex items-center gap-2">
           <CollectionIcon col={col} className="size-4 text-muted-foreground" />
-          {col.title}
+          {title}
           <Badge variant="secondary">{records.length}</Badge>
         </CardTitle>
         {editable && (

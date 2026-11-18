@@ -7,11 +7,13 @@ export class ApiError extends Error {
   errors: CheckError[]
   current?: LedgerRecord | null
   requestId?: string
+  /** the whole error body: references of a refused delete, the plan of a refused type change */
+  body?: any
   constructor(
     statusCode: number,
     code: string,
     message: string,
-    extra: { errors?: CheckError[]; current?: LedgerRecord | null; requestId?: string } = {},
+    extra: { errors?: CheckError[]; current?: LedgerRecord | null; requestId?: string; body?: any } = {},
   ) {
     super(message)
     this.name = 'ApiError'
@@ -20,6 +22,7 @@ export class ApiError extends Error {
     this.errors = extra.errors ?? []
     this.current = extra.current
     this.requestId = extra.requestId
+    this.body = extra.body
   }
   /** The server is not there (or a proxy in front of it says so). */
   get unreachable() {
@@ -59,6 +62,7 @@ export async function apiFetch<T>(path: string, init: RequestInit = {}): Promise
       errors: body?.errors,
       requestId: body?.request_id ?? body?.requestId ?? res.headers.get('X-Request-Id') ?? undefined,
       current: body?.current,
+      body,
     })
   }
   return body as T
@@ -70,9 +74,11 @@ export function errorMessage(e: unknown): string {
     if (e.code === 'history_rewritten') return t.errors.historyRewritten
     if (e.code === 'config_error') return t.errors.configError
     if (e.unreachable) return t.errors.network
+    if (e.code === 'referenced') return e.message
     if (e.statusCode === 409) {
       return e.current === null ? t.errors.conflictDeleted : t.errors.conflictChanged
     }
+    if (e.code === 'refused') return e.message
     if (e.statusCode === 422) {
       const lines = e.errors.map((x) => x.message).join('；')
       return lines ? `${t.errors.summaryTitle}：${lines}` : t.errors.summaryTitle

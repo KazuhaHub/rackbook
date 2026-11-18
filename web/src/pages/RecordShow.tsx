@@ -22,7 +22,7 @@ import { HistoryList } from '@/components/HistoryList'
 import { t } from '@/i18n/zh-CN'
 import { ApiError, errorMessage } from '@/lib/api'
 import { useRefLookups } from '@/lib/hooks'
-import { canEdit, fieldTitle, idFromPath, recordLabel, schemaProps } from '@/lib/ledger'
+import { canEdit, fieldTitle, idFromPath, recordHref, recordLabel, schemaProps } from '@/lib/ledger'
 import type { Collection, RecordWithBackrefs } from '@/lib/types'
 import { useAfterWrite, useCollection, useMeta } from '@/providers/meta'
 
@@ -42,6 +42,7 @@ function Show({ col, id }: { col: Collection; id: string }) {
   const editable = canEdit(meta)
   const [confirm, setConfirm] = useState(false)
   const [deleteError, setDeleteError] = useState<string | null>(null)
+  const [blockedBy, setBlockedBy] = useState<{ collection: string; id: string; field: string }[]>([])
   const { query, result } = useOne<RecordWithBackrefs>({
     resource: col.name,
     id,
@@ -74,10 +75,10 @@ function Show({ col, id }: { col: Collection; id: string }) {
   const backGroups = new Map<string, typeof col.backrefs>()
   for (const b of col.backrefs ?? []) backGroups.set(b.collection, [...(backGroups.get(b.collection) ?? []), b])
 
-  const doDelete = () => {
+  const doDelete = (clearReferences = false) => {
     setDeleteError(null)
     del.mutate(
-      { resource: col.name, id, values: { hash: rec.hash }, successNotification: false, errorNotification: false },
+      { resource: col.name, id, values: { hash: rec.hash, clearReferences }, successNotification: false, errorNotification: false },
       {
         onSuccess: (res) => {
           setConfirm(false)
@@ -85,7 +86,12 @@ function Show({ col, id }: { col: Collection; id: string }) {
           void afterWrite()
           navigate(base)
         },
-        onError: (e) => setDeleteError(errorMessage(e)),
+        onError: (e) => {
+          const err = e as unknown
+          // still referenced: list who points at it and offer to clear those references in the same commit
+          if (err instanceof ApiError && err.code === 'referenced') setBlockedBy(err.body?.references ?? [])
+          setDeleteError(errorMessage(e))
+        },
       },
     )
   }
@@ -167,10 +173,10 @@ function Show({ col, id }: { col: Collection; id: string }) {
         <div className="space-y-5">
           <Card>
             <CardHeader>
-              <CardTitle>{t.show.history}</CardTitle>
+              <CardTitle>{t.show.historyRecord}</CardTitle>
             </CardHeader>
             <CardContent>
-              <HistoryList collection={col.name} />
+              <HistoryList collection={col.name} recordId={id} />
             </CardContent>
           </Card>
           <div className="rounded-xl border p-4 text-xs text-muted-foreground">
@@ -186,20 +192,53 @@ function Show({ col, id }: { col: Collection; id: string }) {
         </div>
       </div>
 
-      <AlertDialog open={confirm} onOpenChange={setConfirm}>
+      <AlertDialog
+        open={confirm}
+        onOpenChange={(o) => {
+          setConfirm(o)
+          if (!o) {
+            setBlockedBy([])
+            setDeleteError(null)
+          }
+        }}
+      >
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>{t.show.deleteTitle}</AlertDialogTitle>
             <AlertDialogDescription>{t.show.deleteBody(label)}</AlertDialogDescription>
           </AlertDialogHeader>
           {deleteError && (
-            <p className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">{deleteError}</p>
+            <div className="space-y-2 rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
+              <p>{blockedBy.length ? t.refs.deleteBlockedTitle : deleteError}</p>
+              {blockedBy.length > 0 && (
+                <>
+                  <p className="text-xs text-foreground/80">{t.refs.deleteBlockedBody}</p>
+                  <ul className="max-h-40 space-y-1 overflow-y-auto text-xs">
+                    {blockedBy.map((r) => (
+                      <li key={`${r.collection}/${r.id}/${r.field}`}>
+                        <Link to={recordHref(r.collection, r.id)} className="font-mono text-brand hover:underline" onClick={() => setConfirm(false)}>
+                          {byName.get(r.collection)?.title ?? r.collection} · {r.id}
+                        </Link>
+                        <span className="text-muted-foreground"> （{fieldTitle(byName.get(r.collection) ?? col, r.field)}）</span>
+                      </li>
+                    ))}
+                  </ul>
+                  <p className="text-xs text-muted-foreground">{t.refs.clearHint}</p>
+                </>
+              )}
+            </div>
           )}
           <AlertDialogFooter>
             <AlertDialogCancel>{t.show.cancel}</AlertDialogCancel>
-            <Button variant="destructive" disabled={del.mutation.isPending} onClick={doDelete}>
-              {del.mutation.isPending ? t.show.deleting : t.show.deleteConfirm}
-            </Button>
+            {blockedBy.length > 0 ? (
+              <Button variant="destructive" disabled={del.mutation.isPending} onClick={() => doDelete(true)}>
+                {del.mutation.isPending ? t.show.deleting : t.refs.clearAndDelete}
+              </Button>
+            ) : (
+              <Button variant="destructive" disabled={del.mutation.isPending} onClick={() => doDelete()}>
+                {del.mutation.isPending ? t.show.deleting : t.show.deleteConfirm}
+              </Button>
+            )}
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>

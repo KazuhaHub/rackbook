@@ -37,12 +37,13 @@ export function useRefLookups(col: Collection): Record<string, RefLookup> {
   }, [col, stamp])
 }
 
-export function useHistory(collection: string | undefined, limit: number) {
+/** Recent commits; with `id`, the commits of that record (the server falls back to the collection's file history). */
+export function useHistory(collection: string | undefined, limit: number, id?: string) {
   return useQuery({
-    queryKey: ['rb', 'history', collection ?? '', limit],
+    queryKey: ['rb', 'history', collection ?? '', limit, id ?? ''],
     queryFn: async () =>
       (
-        await dataProvider.custom!({ url: '/history', method: 'get', query: { limit, collection } })
+        await dataProvider.custom!({ url: '/history', method: 'get', query: { limit, collection, id } })
       ).data.commits as Commit[],
     staleTime: 30_000,
   })
