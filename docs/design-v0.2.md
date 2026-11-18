@@ -528,7 +528,7 @@ Agreed with the owner on 2026-11-18:
    fixed header.
 10. **Built-in authorization server**, so standalone users without MCPHub can
     add Rackbook directly to Claude, Cursor, VS Code or MCP Inspector. It is
-    proposed for **v0.3.0** (renumbered, see the versioning note below), before the storage work (now v0.4.0).
+    proposed for **v0.4.0** (renumbered twice, see the versioning note below), before the storage work (now v0.5.0).
     **Not started: it waits for the owner's OK on placement and cost.**
     - Spec: the MCP authorization spec — OAuth 2.1 + PKCE S256, RFC 8707
       resource indicators (`aud` = the `/mcp` URL), RFC 8414 metadata, and
@@ -551,11 +551,11 @@ Agreed with the owner on 2026-11-18:
       an external issuer.
 11. **Real-client verification in the demo**: MCP Inspector and Claude Code
     (`claude mcp add --transport http`) against an external issuer in v0.2,
-    and against the built-in authorization server in v0.3.0.
+    and against the built-in authorization server in v0.4.0.
 
-### Decisions, round 5 (2026-11-18): built-in authorization server approved (ships in v0.3.0)
+### Decisions, round 5 (2026-11-18): built-in authorization server approved (ships in v0.4.0)
 
-12. **Approved; ships in v0.3.0.** An MCP client authorizes
+12. **Approved; ships in v0.4.0.** An MCP client authorizes
     **once** and never has to sign in again, including across restarts,
     upgrades and ansible redeploys.
     - **State file: the one exception to "no database".** Authorization-server
@@ -602,23 +602,29 @@ Rackbook uses SemVer (Go modules require SemVer tags). Release plan:
   and cosign signing. No feature changes.
 - **v0.2.2** — security fix: the built-in secret scan on every write (see
   "v0.2.2 security fix" below).
-- **v0.3.0** — the built-in authorization server (decision 12), GitHub App
+- **v0.2.3** — Go 1.27.4 for standard library security fixes.
+- **v0.3.0** — expiry tracking and modules (decision 17): the `expires` and
+  `revoked` schema marks, `/api/expiring`, the `expiry_list` MCP tool, the
+  到期 page, the `modules:` allow list, and the `rackbook-entra` and
+  `rackbook-notify` modules.
+- **v0.4.0** — the built-in authorization server (decision 12), GitHub App
   authentication (decision 14), record documents (decision 15) and the MCP
-  surface renames (decision 16).
-- **v0.4.0** — storage: one record per file (design in
-  `design-v0.4-storage.md`).
+  surface renames (decision 16). Planned for v0.3.0 until decision 17 took
+  that number; nothing in them changed.
+- **v0.5.0** — storage: one record per file (design in
+  `design-v0.4-storage.md`; the file keeps its name).
 - **1.0** — once the storage layout, config format and API are stable.
 
 See README, "Versioning and compatibility".
 
-### Decisions, round 6 (2026-11-18): separate ledger repository, GitHub App credentials (v0.3.0)
+### Decisions, round 6 (2026-11-18): separate ledger repository, GitHub App credentials (v0.4.0)
 
 13. **Rackbook writes only to a dedicated data repository** (for the owner:
     KazuhaHub/ledger), never to an infrastructure repo. In the owner's setup
     the infra repo's `main` is applied as root on every host, so a write
     credential for it would amount to root. Infra may *read* the ledger;
     Rackbook never holds a credential for infra.
-14. **GitHub App authentication (v0.3.0)**, as an alternative to deploy key +
+14. **GitHub App authentication (v0.4.0)**, as an alternative to deploy key +
     PAT. One credential replaces both.
     - An org-owned GitHub App, installed **only** on the data repository, with
       repository permissions `contents: write` and `pull_requests: write`.
@@ -645,7 +651,7 @@ See README, "Versioning and compatibility".
       refresh, a token that must not appear in argv or logs, push over HTTPS to
       a local smart-HTTP test server, and PRs.
 
-### Decision 15 (2026-11-18): record documents (v0.3.0)
+### Decision 15 (2026-11-18): record documents (v0.4.0)
 
 15. **A Markdown document per record**, for runbooks, history and anything
     else that doesn't fit fields. Generic for every collection.
@@ -705,8 +711,49 @@ See README, "Versioning and compatibility".
     - scopes per family, limits, a deprecation policy and golden-file
       contract tests.
 
-    The renames of the v0.2 tools ship in v0.3.0, with deprecated aliases that
-    are removed in v0.4.0.
+    The renames of the v0.2 tools ship in v0.4.0, with deprecated aliases that
+    are removed in v0.5.0.
+
+### Decision 17 (2026-11-18): expiry tracking and modules (v0.3.0)
+
+17. **Credential expiry is tracked in the core; automation lives in modules.**
+    The owner wants automatic and manual entry, room for more automations
+    later, and the Entra collector as a separate program, rewritten in Go. The
+    full design is in [modules.md](modules.md).
+    - **Core, generic and small.** A schema mark
+      `x-rackbook: {expires: true}` names a collection's expiry field
+      (`YYYY-MM-DD`; `待补` = unknown; empty = never), and
+      `x-rackbook: {revoked: true}` a field that retires a record. The core
+      lists what is expired or expiring within N days: `GET /api/expiring`,
+      the MCP tool `expiry_list` (a new family under decision 16's rules, read
+      scope) and the console page 到期. Manual entry is unchanged. The core has
+      no upstream-specific code and sends no mail.
+    - **Modules are separate executables** (`cmd/rackbook-entra`,
+      `cmd/rackbook-notify`, shared client `modules/rbclient`). They use only
+      the public HTTP API with an API token; a test fails if the `rackbook`
+      binary imports module code or a module imports `internal/`. They ship in
+      the same release archives and image, with the same signing and
+      attestations.
+    - **Writing contract.** Records carry `source: <module>`, are upserted
+      idempotently by a stable upstream id, manual records are never
+      overwritten or deleted, and upstream items that vanish are marked
+      revoked, never deleted.
+    - **Allow list `modules:` in rackbook.yml** binds a module name to its
+      token, one collection and the fields it owns. The server enforces the
+      contract for those tokens: only create and update in that collection,
+      `source` must be the module's name, updates only on its own records and
+      only to its own fields, no deletes. `direct_push: true` lets the module's
+      creates and updates skip the per-write PR (decision 5), on the same
+      condition as a token's `write_mode: push` (the creator is an admin).
+      This keeps decision 13: the writes still go only to the data repository
+      through Rackbook's own write path; the module never holds a Git
+      credential.
+    - **Console.** The record page shows the source, and editing a
+      module-maintained record warns which fields the next sync overwrites.
+    - **Why not a plugin API inside the server:** a separate process with a
+      scoped token is the smallest trust boundary. A bug or a compromised
+      upstream credential in a module can at most write wrong metadata into
+      one collection, through validation and the secret scan.
 
 ## v0.2.2 security fix: built-in secret scan
 
