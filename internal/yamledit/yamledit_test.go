@@ -683,3 +683,56 @@ func TestUnicodeLineBreaksStayEscaped(t *testing.T) {
 		}
 	}
 }
+
+// Keys of the mappings in a list field follow the schema's items.properties order,
+// not the alphabet, in flow and block records, on edit and on add.
+func TestNestedMappingKeysFollowItemOrder(t *testing.T) {
+	opts := Opts{
+		Order:     []string{"device", "service", "ports"},
+		ItemOrder: map[string][]string{"ports": {"protocol", "port", "note"}},
+	}
+	ports := []any{
+		map[string]any{"port": "443", "protocol": "TCP"},
+		map[string]any{"note": "quic", "port": "443", "protocol": "UDP", "zzz": "x"},
+	}
+	want := "ports: [{protocol: TCP, port: \"443\"}, {protocol: UDP, port: \"443\", note: quic, zzz: x}]"
+
+	// flow record edited
+	src := "- {device: a, service: s}\n"
+	out, err := Edit([]byte(src), "", 0, map[string]any{"device": "a", "service": "s", "ports": ports}, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.TrimSpace(string(out)); !strings.Contains(got, strings.TrimPrefix(want, "ports: ")) {
+		t.Errorf("flow edit: %s", got)
+	}
+
+	// block record edited
+	src = "- device: a\n  service: s\n"
+	out, err = Edit([]byte(src), "", 0, map[string]any{"device": "a", "service": "s", "ports": ports}, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(out), "  "+want+"\n") {
+		t.Errorf("block edit: %s", out)
+	}
+
+	// a new record
+	out, err = Add([]byte(src), "", map[string]any{"device": "b", "service": "t", "ports": ports}, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(out), "  "+want+"\n") {
+		t.Errorf("add: %s", out)
+	}
+
+	// an unchanged field is copied as it was, whatever its order
+	src = "- device: a\n  ports: [{port: \"1\", protocol: TCP}]\n  service: s\n"
+	out, err = Edit([]byte(src), "", 0, map[string]any{"device": "a", "service": "s2", "ports": []any{map[string]any{"port": "1", "protocol": "TCP"}}}, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(out), "ports: [{port: \"1\", protocol: TCP}]") {
+		t.Errorf("unchanged field rewritten: %s", out)
+	}
+}

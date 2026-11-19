@@ -298,7 +298,7 @@ func Apply(cfg *config.Config, op Op) (*Result, error) {
 	if err != nil {
 		return nil, err
 	}
-	opts := yamledit.Opts{Order: c.Schema.Order()}
+	opts := yamledit.Opts{Order: c.Schema.Order(), ItemOrder: c.Schema.ItemOrders()}
 	if len(c.Key) > 0 {
 		opts.GroupField = c.Key[0]
 	}
@@ -493,7 +493,7 @@ func clearReferences(l *ledger.Ledger, refs []ledger.Reference, sc *secretscan.S
 				return nil, err
 			}
 		}
-		opts := yamledit.Opts{Order: c.Schema.Order()}
+		opts := yamledit.Opts{Order: c.Schema.Order(), ItemOrder: c.Schema.ItemOrders()}
 		if len(c.Key) > 0 {
 			opts.GroupField = c.Key[0]
 		}

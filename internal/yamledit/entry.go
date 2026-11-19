@@ -103,7 +103,7 @@ func renderField(key string, v any, indent int) []string {
 			return out
 		}
 	}
-	lines := blockPair(key, inlineValue(v), indent, 0)
+	lines := blockPair(key, inlineValue(v), indent, 0, nil)
 	lines[0] = pad(indent) + lines[0]
 	return lines
 }
