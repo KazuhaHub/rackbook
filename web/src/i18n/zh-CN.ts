@@ -266,7 +266,9 @@ export const t = {
     search: '搜索…',
     clear: '清除',
     save: '保存',
-    closeToSave: '关闭后保存',
+    confirm: '确定',
+    cancel: '取消',
+    pr: '已提交为拉取请求，合并后生效',
   },
   form: {
     createTitle: (c: string) => `新增${c}`,
@@ -296,6 +298,9 @@ export const t = {
     suggestPlaceholder: '输入或从已有值中选择…',
     literalPicked: '特殊值，不指向某条具体记录',
     invalidEntry: '格式不正确',
+    addRow: '添加一行',
+    removeRow: '删除这一行',
+    pendingEntry: '输入框里还有没添加的内容：按 Enter 或点“添加”，或清空它',
   },
   errors: {
     summaryTitle: '保存失败：校验未通过',

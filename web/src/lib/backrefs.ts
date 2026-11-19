@@ -18,14 +18,15 @@ function values(v: unknown): string[] {
 }
 
 /**
- * A record is general when one of its referencing fields holds an allowed literal
- * (for an array field: contains one) and does not name the page's record itself.
+ * A record is general when none of the referencing fields names the page's record
+ * itself and at least one holds an allowed literal (for an array field: contains one).
+ * With several rules (two fields that reference the same collection), naming the
+ * record in any of them makes it its own.
  */
 export function isGeneric(data: Record<string, unknown>, rules: GenericRule[]): boolean {
-  return rules.some((r) => {
-    const vs = values(data[r.field])
-    return vs.some((v) => r.allow.includes(v)) && !vs.includes(r.parentValue)
-  })
+  const seen = rules.map((r) => ({ r, vs: values(data[r.field]) }))
+  if (seen.some(({ r, vs }) => vs.includes(r.parentValue))) return false
+  return seen.some(({ r, vs }) => vs.some((v) => r.allow.includes(v)))
 }
 
 /** Splits records into the page record's own and the general ones, keeping the order. */
@@ -60,4 +61,11 @@ export function parseTabHash(hash: string): TabKey | undefined {
   } catch {
     return undefined
   }
+}
+
+/** Index of the tab the hash selects; 0 (the first) when the hash is empty, malformed or names a tab that does not exist. */
+export function pickTab(hash: string, tabs: TabKey[]): number {
+  const w = parseTabHash(hash)
+  const i = w ? tabs.findIndex((t) => t.collection === w.collection && t.generic === w.generic) : -1
+  return i < 0 ? 0 : i
 }

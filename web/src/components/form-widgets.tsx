@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react'
-import { X } from 'lucide-react'
+import { Plus, X } from 'lucide-react'
 import type { WidgetProps } from '@rjsf/utils'
 import { Autocomplete, AutocompleteContent, AutocompleteInput, AutocompleteItem, AutocompleteList } from '@/components/ui/autocomplete'
 import { Badge } from '@/components/ui/badge'
@@ -18,10 +18,12 @@ import {
   useComboboxAnchor,
 } from '@/components/ui/combobox'
 import { Input } from '@/components/ui/input'
+import { NativeSelect } from '@/components/ui/native-select'
 import { Switch } from '@/components/ui/switch'
 import { t } from '@/i18n/zh-CN'
 import { enumValues, itemEnum, listEntryError, listHint, type Prop } from '@/lib/fieldKind'
 import { customFormats } from '@/lib/formats'
+import { objectItems } from '@/lib/objectItems'
 import { cn } from '@/lib/utils'
 
 export type RefItem = { value: string; label: string; literal?: boolean }
@@ -50,6 +52,7 @@ export function RefWidget({ id, value, onChange, options, disabled, readonly, ra
   return (
     <div className="space-y-1">
       <Combobox
+        autoHighlight
         items={all}
         value={selected}
         itemToStringLabel={(item: RefItem) => item.label}
@@ -115,6 +118,7 @@ export function RefManyWidget({ id, value, onChange, options, disabled, readonly
       )}
       {!off && (
         <Combobox
+          autoHighlight
           items={remaining}
           value={null}
           itemToStringLabel={(item: RefItem) => item.label}
@@ -144,7 +148,7 @@ export function EnumWidget({ id, value, onChange, schema, disabled, readonly, re
   // a stored value the schema no longer lists stays visible, so it can be seen and changed
   const items = current !== null && !base.includes(current) ? [...base, current] : base
   return (
-    <Combobox items={items} value={current} onValueChange={(v: string | null) => onChange(v ?? undefined)} disabled={disabled || readonly}>
+    <Combobox autoHighlight items={items} value={current} onValueChange={(v: string | null) => onChange(v ?? undefined)} disabled={disabled || readonly}>
       <ComboboxInput id={id} placeholder={t.form.pickOption} showClear={current !== null && !required} aria-invalid={invalid(rawErrors)} className="w-full" />
       <ComboboxContent>
         <ComboboxEmpty>{t.form.noOptionMatch}</ComboboxEmpty>
@@ -169,6 +173,7 @@ export function TagsWidget({ id, value, onChange, schema, disabled, readonly, ra
   return (
     <Combobox
       multiple
+      autoHighlight
       items={items}
       value={current}
       onValueChange={(v: string[]) => {
@@ -214,7 +219,7 @@ export function SuggestWidget({ id, value, onChange, options, disabled, readonly
     return <Input id={id} value={text} onChange={(e) => set(e.target.value)} placeholder={placeholder} disabled={disabled} readOnly={readonly} aria-invalid={invalid(rawErrors)} />
   }
   return (
-    <Autocomplete items={suggestions} value={text} onValueChange={(v: string) => set(v)} disabled={disabled || readonly}>
+    <Autocomplete autoHighlight items={suggestions} value={text} onValueChange={(v: string) => set(v)} disabled={disabled || readonly}>
       <AutocompleteInput id={id} placeholder={placeholder || t.form.suggestPlaceholder} aria-invalid={invalid(rawErrors)} className="w-full" />
       <AutocompleteContent>
         <AutocompleteList>
@@ -250,7 +255,7 @@ export function DateWidget({ id, value, onChange, disabled, readonly, rawErrors 
  * (items.pattern, items.format, port ranges) and only a valid one is added; the
  * format hint shows under the input.
  */
-export function ListWidget({ id, value, onChange, schema, disabled, readonly, rawErrors }: WidgetProps) {
+export function ListWidget({ id, name, value, onChange, schema, disabled, readonly, rawErrors, registry }: WidgetProps) {
   const items = (schema as Prop).items as Prop | undefined
   const description = (schema as Prop).description
   const current: string[] = Array.isArray(value) ? value.map(String) : []
@@ -264,11 +269,17 @@ export function ListWidget({ id, value, onChange, schema, disabled, readonly, ra
   const words = text.split(/[\s,，]+/).filter(Boolean)
   const bad = words.find((w) => check(w) !== undefined)
   const error = bad !== undefined ? check(bad) : undefined
+  // the form refuses to save while text is left in the box (see customValidate in RecordForm)
+  const setPending = (registry.formContext as { setPending?: (f: string, t: string) => void } | undefined)?.setPending
+  const leave = (rest: string) => {
+    setPending?.(name, rest)
+    setText(rest)
+  }
   const add = () => {
     if (!words.length) return
     const good = words.filter((w) => check(w) === undefined && !current.includes(w))
     if (good.length) onChange([...current, ...good.filter((w, i, a) => a.indexOf(w) === i)])
-    setText(bad ?? '')
+    leave(bad ?? '')
   }
 
   return (
@@ -304,7 +315,7 @@ export function ListWidget({ id, value, onChange, schema, disabled, readonly, ra
             ref={input}
             id={id}
             value={text}
-            onChange={(e) => setText(e.target.value)}
+            onChange={(e) => leave(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === 'Enter') {
                 e.preventDefault() // Enter adds the entry, it does not submit the form
@@ -324,6 +335,110 @@ export function ListWidget({ id, value, onChange, schema, disabled, readonly, ra
         </div>
       )}
       {error ? <p className="text-xs font-medium text-destructive">{error}</p> : hint && !off ? <p className="text-xs text-muted-foreground">{hint}</p> : null}
+    </div>
+  )
+}
+
+/**
+ * An array of flat objects as a compact table: one row per item, one column per
+ * item property (an enum is a small select, a pattern or format is checked as it is
+ * typed), with add and remove row. On a narrow screen the cells of a row stack.
+ */
+export function RowsWidget({ id, value, onChange, schema, disabled, readonly, rawErrors }: WidgetProps) {
+  const spec = objectItems(schema as Prop)
+  const rows: Record<string, unknown>[] = Array.isArray(value) ? (value as Record<string, unknown>[]) : []
+  const off = disabled || readonly
+  if (!spec) return null
+  const cols = spec.props.map(([, s]) => (Array.isArray(s.enum) || s.pattern || s.format ? 'minmax(5.5rem,9rem)' : 'minmax(8rem,1fr)')).join(' ')
+  const grid = { '--cols': `${cols} 2rem` } as React.CSSProperties
+  const set = (i: number, name: string, v: unknown) => {
+    const next = rows.map((r, j) => {
+      if (j !== i) return r
+      const copy = { ...r }
+      if (v === undefined || v === '') delete copy[name]
+      else copy[name] = v
+      return copy
+    })
+    onChange(next)
+  }
+  const label = (name: string, s: Prop) => `${(s.title as string) || name}${spec.required.includes(name) ? '*' : ''}`
+
+  return (
+    <div className="space-y-2" aria-invalid={invalid(rawErrors)}>
+      {rows.length > 0 && (
+        <div className="hidden gap-2 text-xs text-muted-foreground sm:grid sm:[grid-template-columns:var(--cols)]" style={grid}>
+          {spec.props.map(([name, s]) => (
+            <span key={name}>{label(name, s)}</span>
+          ))}
+          <span />
+        </div>
+      )}
+      {rows.map((row, i) => {
+        const started = Object.values(row).some((x) => x !== undefined && x !== '')
+        return (
+          <div key={i} className="grid gap-2 rounded-md border p-2 sm:[grid-template-columns:var(--cols)] sm:border-0 sm:p-0" style={grid}>
+            {spec.props.map(([name, s]) => {
+              const raw = row[name]
+              const text = raw === undefined || raw === null ? '' : String(raw)
+              const isEnum = Array.isArray(s.enum)
+              const type = Array.isArray(s.type) ? s.type.find((x) => x !== 'null') : s.type
+              const missing = started && text === '' && spec.required.includes(name)
+              const err = !isEnum && text !== '' && typeof s.type !== 'undefined' && type === 'string' ? listEntryError(s, text, customFormats, s.description) : undefined
+              const cid = `${id}_${i}_${name}`
+              return (
+                <div key={name} className="min-w-0 space-y-1">
+                  <label htmlFor={cid} className="text-xs text-muted-foreground sm:hidden">
+                    {label(name, s)}
+                  </label>
+                  {isEnum ? (
+                    <NativeSelect id={cid} value={text} disabled={off} aria-invalid={missing ? true : undefined} onChange={(e) => set(i, name, e.target.value)}>
+                      <option value="">—</option>
+                      {(s.enum as unknown[]).filter((x) => x !== null).map((x) => (
+                        <option key={String(x)} value={String(x)}>
+                          {String(x)}
+                        </option>
+                      ))}
+                    </NativeSelect>
+                  ) : type === 'boolean' ? (
+                    <Switch id={cid} checked={raw === true} disabled={off} onCheckedChange={(v) => set(i, name, v)} />
+                  ) : (
+                    <Input
+                      id={cid}
+                      value={text}
+                      disabled={disabled}
+                      readOnly={readonly}
+                      placeholder={(s.title as string) || name}
+                      aria-invalid={err || missing ? true : undefined}
+                      className={cn(!s.enum && s.pattern ? 'font-mono text-[0.8125rem]' : undefined)}
+                      title={err}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') e.preventDefault() // never submits the form
+                      }}
+                      onChange={(e) => {
+                        const v = e.target.value
+                        const num = (type === 'integer' || type === 'number') && v.trim() !== '' && Number.isFinite(Number(v))
+                        set(i, name, num ? Number(v) : v)
+                      }}
+                    />
+                  )}
+                  {err && <p className="text-xs font-medium text-destructive">{err}</p>}
+                  {missing && !err && <p className="text-xs font-medium text-destructive">{t.form.required}</p>}
+                </div>
+              )
+            })}
+            {!off && (
+              <Button type="button" variant="ghost" size="icon-sm" aria-label={t.form.removeRow} className="self-end sm:self-start" onClick={() => onChange(rows.filter((_, j) => j !== i).length ? rows.filter((_, j) => j !== i) : undefined)}>
+                <X />
+              </Button>
+            )}
+          </div>
+        )
+      })}
+      {!off && (
+        <Button type="button" variant="outline" size="sm" onClick={() => onChange([...rows, {}])}>
+          <Plus /> {t.form.addRow}
+        </Button>
+      )}
     </div>
   )
 }

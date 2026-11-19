@@ -1,12 +1,12 @@
 import { useCallback, useState } from 'react'
 import { useInvalidate } from '@refinedev/core'
-import { useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { t } from '@/i18n/zh-CN'
 import { ApiError, errorMessage } from '@/lib/api'
 import { fieldTitle, recordLabel } from '@/lib/ledger'
 import type { Collection, LedgerRecord } from '@/lib/types'
 import { dataProvider } from '@/providers/dataProvider'
+import { useAfterWrite } from '@/providers/meta'
 
 type Entry = { baseHash: string; rec: LedgerRecord }
 
@@ -21,7 +21,7 @@ type Entry = { baseHash: string; rec: LedgerRecord }
  */
 export function useInlineEdit(col: Collection, onSaved?: () => void) {
   const invalidate = useInvalidate()
-  const qc = useQueryClient()
+  const afterWrite = useAfterWrite()
   const [overlay, setOverlay] = useState<Map<string, Entry>>(new Map())
   const [saving, setSaving] = useState<Set<string>>(new Set())
 
@@ -49,11 +49,11 @@ export function useInlineEdit(col: Collection, onSaved?: () => void) {
     })
 
   const refresh = useCallback(() => {
-    void qc.invalidateQueries({ queryKey: ['rb', 'records', col.name] })
-    void qc.invalidateQueries({ queryKey: ['rb', 'history'] })
+    // meta (counts), check, expiring, history and the record lists all change with a write
+    void afterWrite()
     void invalidate({ resource: col.name, invalidates: ['list', 'detail'] })
     onSaved?.()
-  }, [qc, invalidate, col.name, onSaved])
+  }, [afterWrite, invalidate, col.name, onSaved])
 
   const save = useCallback(
     async (rec: LedgerRecord, field: string, value: unknown) => {
@@ -61,16 +61,23 @@ export function useInlineEdit(col: Collection, onSaved?: () => void) {
       const data = { ...cur.data }
       if (value === undefined || value === null || (Array.isArray(value) && value.length === 0)) delete data[field]
       else data[field] = value
+      const previous = overlay.get(rec.id) ?? null
       put(rec.id, { baseHash: rec.hash, rec: { ...cur, data } })
       busy(rec.id, true)
       try {
         const res = await dataProvider.update({ resource: col.name, id: rec.id, variables: { data, hash: cur.hash } })
-        const saved = res.data as unknown as LedgerRecord
+        const saved = res.data as unknown as LedgerRecord & { pullRequest?: boolean }
+        if (saved.pullRequest) {
+          // the change waits in a pull request: nothing is written to the ledger yet, so show the old value
+          put(rec.id, previous)
+          toast.info(t.inline.pr)
+          return
+        }
         put(rec.id, { baseHash: rec.hash, rec: { id: rec.id, hash: saved.hash, data: saved.data ?? data } })
         toast.success(t.inline.saved(fieldTitle(col, field), recordLabel(col, { ...cur, data })))
         refresh()
       } catch (e) {
-        put(rec.id, null)
+        put(rec.id, previous)
         if (e instanceof ApiError && e.statusCode === 409) {
           toast.error(t.inline.conflict)
           refresh() // fetch the version somebody else saved
@@ -81,7 +88,7 @@ export function useInlineEdit(col: Collection, onSaved?: () => void) {
         busy(rec.id, false)
       }
     },
-    [col, view, refresh],
+    [col, view, refresh, overlay],
   )
 
   return { view, save, isSaving: (id: string) => saving.has(id) }

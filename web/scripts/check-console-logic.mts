@@ -1,5 +1,5 @@
 import { displayId, idParts } from '../src/lib/recordId.ts'
-import { isGeneric, parseTabHash, splitGeneric, tabHash, type GenericRule } from '../src/lib/backrefs.ts'
+import { isGeneric, parseTabHash, pickTab, splitGeneric, tabHash, type GenericRule } from '../src/lib/backrefs.ts'
 import { filterRows, paginate, parsePageSize } from '../src/lib/tableView.ts'
 import {
   fieldKind,
@@ -11,6 +11,8 @@ import {
   PORT_PATTERN,
 } from '../src/lib/fieldKind.ts'
 import { customFormats } from '../src/lib/formats.ts'
+import { isSecretName } from '../src/lib/secretName.ts'
+import { formatItem, formatPlain, isScalarObject, objectItems } from '../src/lib/objectItems.ts'
 
 let failed = 0
 function eq(name: string, got: unknown, want: unknown) {
@@ -21,8 +23,10 @@ function eq(name: string, got: unknown, want: unknown) {
 }
 
 // ids as people read them
-eq('id plain', displayId('web-1/SSH'), 'web-1 / SSH')
+eq('id plain', displayId('web-1/SSH'), 'web-1 › SSH')
 eq('id slash', displayId('1Panel %2F aaPanel 面板'), '1Panel / aaPanel 面板')
+eq('id slash in a compound key', displayId('a%2Fb/c'), 'a/b › c')
+eq('id separator char', displayId('a›b/c'), 'a\\›b › c')
 eq('id percent', displayId('50%25 of a%2Fb'), '50% of a/b')
 eq('id double escape', displayId('a%252Fb'), 'a%2Fb')
 eq('id lowercase', displayId('a%2fb'), 'a/b')
@@ -77,8 +81,9 @@ eq('page size bad', [parsePageSize(null), parsePageSize(''), parsePageSize('7'),
 const ctx = { isKey: false, isRef: false }
 eq('kind text', fieldKind({ type: 'string' }, ctx), 'suggest')
 eq('kind nullable text', fieldKind({ type: ['string', 'null'] }, ctx), 'suggest')
-eq('kind key', fieldKind({ type: 'string' }, { isKey: true, isRef: false }), 'plain')
-eq('kind key forced', fieldKind({ type: 'string', 'x-rackbook': { suggest: true } }, { isKey: true, isRef: false }), 'suggest')
+eq('kind sole key', fieldKind({ type: 'string' }, { isKey: true, soleKey: true, isRef: false }), 'plain')
+eq('kind compound key part', fieldKind({ type: 'string' }, { isKey: true, soleKey: false, isRef: false }), 'suggest')
+eq('kind key forced', fieldKind({ type: 'string', 'x-rackbook': { suggest: true } }, { isKey: true, soleKey: true, isRef: false }), 'suggest')
 eq('kind ref', fieldKind({ type: 'string' }, { isKey: false, isRef: true }), 'plain')
 eq('kind suggest off', fieldKind({ type: 'string', 'x-rackbook': { suggest: false } }, ctx), 'plain')
 eq('kind format', fieldKind({ type: 'string', format: 'ipv4' }, ctx), 'plain')
@@ -128,6 +133,73 @@ eq('port too big', portEntryError('65536'), '端口不能超过 65535')
 eq('format entry', listEntryError({ type: 'string', format: 'ipv4' }, '10.0.0.1', customFormats), undefined)
 eq('format entry bad', typeof listEntryError({ type: 'string', format: 'ipv4' }, '10.0.0', customFormats), 'string')
 eq('plain entry', listEntryError({ type: 'string' }, 'anything', customFormats), undefined)
+
+// several rules on one collection: naming the record in any of them makes it its own
+const two: GenericRule[] = [
+  { field: 'a', allow: ['all'], parentValue: 'x' },
+  { field: 'b', allow: ['all'], parentValue: 'x' },
+]
+eq('two rules: own via b', isGeneric({ a: 'all', b: 'x' }, two), false)
+eq('two rules: own via a', isGeneric({ a: ['x'], b: 'all' }, two), false)
+eq('two rules: general', isGeneric({ a: 'all', b: 'y' }, two), true)
+eq('two rules: general via b', isGeneric({ a: 'y', b: ['all'] }, two), true)
+eq('two rules: neither', isGeneric({ a: 'y', b: 'z' }, two), false)
+
+// the tab a hash selects
+const tabKeys = [
+  { collection: 'services', generic: false },
+  { collection: 'credentials', generic: false },
+  { collection: 'credentials', generic: true },
+]
+eq('pick tab', pickTab('#credentials+generic', tabKeys), 2)
+eq('pick tab own', pickTab('#credentials', tabKeys), 1)
+eq('pick tab unknown collection', pickTab('#nope', tabKeys), 0)
+eq('pick tab unknown generic', pickTab('#services+generic', tabKeys), 0)
+eq('pick tab empty', pickTab('', tabKeys), 0)
+eq('pick tab malformed', pickTab('#%E0%A4%A', tabKeys), 0)
+
+// secret-named fields never get suggestions, whatever the option says
+for (const n of ['password', 'db_password', 'client_secret', 'api_key', 'apiKey', 'authToken', 'tokens', 'psk', 'private-key', '密码', '访问密钥', 'wpa_passphrase']) {
+  eq('secret name ' + n, isSecretName(n), true)
+  eq('secret name not suggested ' + n, fieldKind({ type: 'string', 'x-rackbook': { suggest: true } }, { isKey: false, isRef: false, name: n }), 'plain')
+}
+for (const n of ['name', 'os', 'service', 'token_expiry_note', 'keyboard', 'passport']) eq('plain name ' + n, isSecretName(n), false)
+eq('public field', fieldKind({ type: 'string', 'x-rackbook': { public: 'uuid', suggest: true } }, { isKey: false, isRef: false, name: 'x' }), 'plain')
+eq('plain name keeps suggest', fieldKind({ type: 'string' }, { isKey: false, isRef: false, name: 'os' }), 'suggest')
+
+// list entries: maxLength, an invalid regex in the schema, a format
+eq('list maxLength ok', listEntryError({ type: 'string', maxLength: 3 }, 'abc', customFormats), undefined)
+eq('list maxLength', listEntryError({ type: 'string', maxLength: 3 }, 'abcd', customFormats), '最多 3 个字符')
+eq('list invalid regex is ignored', listEntryError({ type: 'string', pattern: '([' }, 'x', customFormats), undefined)
+eq('list unknown format is ignored', listEntryError({ type: 'string', format: 'nope' }, 'x', customFormats), undefined)
+
+// arrays of flat objects
+const portsSchema = {
+  type: 'array',
+  items: {
+    type: 'object',
+    required: ['protocol', 'port'],
+    properties: {
+      protocol: { type: 'string', enum: ['TCP', 'UDP'] },
+      port: { type: 'string', pattern: PORT_PATTERN },
+      note: { type: 'string' },
+    },
+  },
+}
+const spec = objectItems(portsSchema)!
+eq('object items found', spec.props.map(([n]) => n), ['protocol', 'port', 'note'])
+eq('object items required', spec.required, ['protocol', 'port'])
+eq('object items kind', fieldKind(portsSchema, { isKey: false, isRef: false }), 'rows')
+eq('object items not inline', inlineKind(portsSchema, { isKey: false, isRef: false }), null)
+eq('format item', formatItem({ protocol: 'TCP', port: '443' }, spec), { text: 'TCP 443', title: undefined })
+eq('format item note', formatItem({ protocol: 'UDP', port: '443', note: 'quic' }, spec), { text: 'UDP 443', title: 'quic' })
+eq('format item only note', formatItem({ note: 'x' }, spec), { text: 'x', title: undefined })
+eq('format item empty', formatItem({}, spec), { text: '', title: undefined })
+eq('format plain', formatPlain({ protocol: 'TCP', port: 443, note: null }), 'TCP 443')
+eq('scalar object', [isScalarObject({ a: 1, b: 'x' }), isScalarObject({ a: { b: 1 } }), isScalarObject([1]), isScalarObject('x')], [true, false, false, false])
+eq('nested object items are not flat', objectItems({ type: 'array', items: { type: 'object', properties: { a: { type: 'object' } } } }), undefined)
+eq('array of strings is not object items', objectItems({ type: 'array', items: { type: 'string' } }), undefined)
+eq('object without properties', objectItems({ type: 'array', items: { type: 'object' } }), undefined)
 
 if (failed) process.exit(1)
 console.log('console logic: ok')

@@ -33,6 +33,7 @@ export function InlineCell({
   label,
   required,
   busy,
+  version,
   onSave,
 }: {
   kind: InlineKind
@@ -41,6 +42,8 @@ export function InlineCell({
   label: string
   required: boolean
   busy: boolean
+  /** the record's hash: a draft made against another version is dropped */
+  version: string
   onSave: (v: unknown) => void
 }) {
   const aria = t.inline.edit(label)
@@ -61,6 +64,7 @@ export function InlineCell({
       aria={aria}
       required={required}
       busy={busy}
+      version={version}
       onSave={onSave}
     />
   )
@@ -73,6 +77,7 @@ function PickCell({
   aria,
   required,
   busy,
+  version,
   onSave,
 }: {
   multiple: boolean
@@ -81,21 +86,27 @@ function PickCell({
   aria: string
   required: boolean
   busy: boolean
+  version: string
   onSave: (v: unknown) => void
 }) {
   const current = multiple ? (Array.isArray(value) ? value.map(String) : []) : typeof value === 'string' ? value : undefined
   const [open, setOpen] = useState(false)
-  const [draft, setDraft] = useState<string[]>([])
+  // the tag draft belongs to the record version it was started from; another version resets it
+  const [draftState, setDraftState] = useState<{ version: string; values: string[] }>({ version, values: [] })
+  const draft = draftState.version === version ? draftState.values : multiple ? (current as string[]) : []
+  const setDraft = (f: (d: string[]) => string[]) => setDraftState({ version, values: f(draft) })
   // a value the schema no longer lists stays selectable, so it can be seen and removed
   const all = [...options, ...(multiple ? (current as string[]) : current ? [current as string] : [])].filter((v, i, a) => a.indexOf(v) === i)
+  const changed = multiple && !(draft.length === (current as string[]).length && draft.every((v) => (current as string[]).includes(v)))
 
+  // closing without 确定 (Escape, a click outside) discards the draft
   const onOpenChange = (o: boolean) => {
-    if (o && multiple) setDraft(current as string[])
-    if (!o && multiple) {
-      const same = draft.length === (current as string[]).length && draft.every((v) => (current as string[]).includes(v))
-      if (!same) onSave(all.filter((v) => draft.includes(v)))
-    }
+    if (o) setDraftState({ version, values: multiple ? (current as string[]) : [] })
     setOpen(o)
+  }
+  const confirm = () => {
+    setOpen(false)
+    if (changed) onSave(all.filter((v) => draft.includes(v)))
   }
   const choose = (v: string) => {
     if (multiple) setDraft((d) => (d.includes(v) ? d.filter((x) => x !== v) : [...d, v]))
@@ -140,7 +151,16 @@ function PickCell({
               </Button>
             </div>
           )}
-          {multiple && <p className="border-t px-2.5 py-1.5 text-xs text-muted-foreground">{t.inline.closeToSave}</p>}
+          {multiple && (
+            <div className="flex justify-end gap-2 border-t p-1.5">
+              <Button variant="ghost" size="sm" onClick={() => setOpen(false)}>
+                {t.inline.cancel}
+              </Button>
+              <Button size="sm" disabled={!changed} onClick={confirm}>
+                {t.inline.confirm}
+              </Button>
+            </div>
+          )}
         </Command>
       </PopoverContent>
     </Popover>

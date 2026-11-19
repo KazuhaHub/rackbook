@@ -387,7 +387,7 @@ function CollectionTable({ col }: { col: Collection }) {
                         return (
                           <td key={c.id} className={cn('px-4 py-2.5 align-top', i === 0 && 'font-medium')}>
                             {i === 0 && !lookups[c.id] ? (
-                              <Link to={href} className={cn('hover:underline', looksMono(str(v)) && 'font-mono text-[0.8125rem]')}>
+                              <Link to={href} title={str(v)} className={cn('line-clamp-2 max-w-[44ch] break-words hover:underline', looksMono(str(v)) && 'font-mono text-[0.8125rem]')}>
                                 {str(v) || t.show.empty}
                               </Link>
                             ) : (

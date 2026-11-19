@@ -14,7 +14,12 @@ export function idParts(id: string): string[] {
   return id.split('/').map(unescapeIdPart)
 }
 
-/** An id for display: the key parts, unescaped, joined with " / ". */
+/**
+ * An id for display: the key parts, unescaped, joined with " › ". A "›" inside a part
+ * is written "\›", so the separator never reads as part of a value.
+ */
 export function displayId(id: string): string {
-  return idParts(id).join(' / ')
+  return idParts(id)
+    .map((p) => p.replace(/›/g, '\\›'))
+    .join(' › ')
 }

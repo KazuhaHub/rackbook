@@ -24,7 +24,7 @@ import { NotFound, PageHeader } from '@/components/common'
 import { HistoryList } from '@/components/HistoryList'
 import { t } from '@/i18n/zh-CN'
 import { ApiError, errorMessage } from '@/lib/api'
-import { parseTabHash, splitGeneric, tabHash, type GenericRule } from '@/lib/backrefs'
+import { pickTab, splitGeneric, tabHash, type GenericRule } from '@/lib/backrefs'
 import { useRefLookups } from '@/lib/hooks'
 import { canEdit, fieldTitle, idFromPath, recordHref, recordLabel, schemaProps, sourceLabel, str } from '@/lib/ledger'
 import { displayId } from '@/lib/recordId'
@@ -108,7 +108,7 @@ function Show({ col, id }: { col: Collection; id: string }) {
     }
     const split = splitGeneric(rec.backrefs?.[name] ?? [], rules)
     const title = brs.find((b) => b.title)?.title || other.title
-    if (split.own.length > 0 || split.generic.length === 0) {
+    if (split.own.length > 0 || split.generic.length === 0 || editable) {
       own.push({ key: tabHash({ collection: name, generic: false }).slice(1), col: other, backrefs: brs, records: split.own, label: title, generic: false })
     }
     if (split.generic.length > 0) {
@@ -116,8 +116,7 @@ function Show({ col, id }: { col: Collection; id: string }) {
     }
   }
   const tabs = [...own, ...general]
-  const wanted = parseTabHash(hash)
-  const active = tabs.find((x) => wanted && x.key === tabHash(wanted).slice(1)) ?? tabs[0]
+  const active = tabs[pickTab(hash, tabs.map((x) => ({ collection: x.col.name, generic: x.generic })))]
 
   const doDelete = (clearReferences = false) => {
     setDeleteError(null)
@@ -180,7 +179,7 @@ function Show({ col, id }: { col: Collection; id: string }) {
                       {fieldTitle(col, field)}
                     </dt>
                     <dd className="min-w-0 text-sm">
-                      <CellValue value={rec.data[field]} lookup={lookups[field]} variant="detail" />
+                      <CellValue value={rec.data[field]} lookup={lookups[field]} variant="detail" schema={schema} />
                     </dd>
                   </div>
                 ))}
@@ -198,40 +197,6 @@ function Show({ col, id }: { col: Collection; id: string }) {
             </CardContent>
           </Card>
 
-          {active && (
-            <Card>
-              <CardContent>
-                <Tabs value={active.key} onValueChange={(v) => navigate({ hash: '#' + String(v) }, { replace: true })}>
-                  <div ref={tabScroller} className="-mx-1 overflow-x-auto px-1 pb-1">
-                    <TabsList className="w-max">
-                      <TabsIndicator />
-                      {tabs.map((x) => (
-                        <TabsTrigger key={x.key} value={x.key}>
-                          {!x.generic && <CollectionIcon col={x.col} className="size-4 text-muted-foreground" />}
-                          {x.label}
-                          <Badge variant="secondary" className="px-1.5 tabular-nums">
-                            {x.records.length}
-                          </Badge>
-                        </TabsTrigger>
-                      ))}
-                    </TabsList>
-                  </div>
-                  <TabsContent value={active.key}>
-                    <BackrefTable
-                      key={active.key}
-                      col={active.col}
-                      backrefs={active.backrefs}
-                      records={active.records}
-                      parent={rec}
-                      editable={editable}
-                      generic={active.generic}
-                      onChanged={() => void query.refetch()}
-                    />
-                  </TabsContent>
-                </Tabs>
-              </CardContent>
-            </Card>
-          )}
         </div>
 
         <div className="space-y-5">
@@ -261,6 +226,41 @@ function Show({ col, id }: { col: Collection; id: string }) {
           </div>
         </div>
       </div>
+
+      {active && (
+        <Card className="mt-5">
+          <CardContent>
+            <Tabs value={active.key} onValueChange={(v) => navigate({ hash: '#' + String(v) }, { replace: true })}>
+              <div ref={tabScroller} className="-mx-1 overflow-x-auto px-1 pb-1">
+                <TabsList className="w-max">
+                  <TabsIndicator />
+                  {tabs.map((x) => (
+                    <TabsTrigger key={x.key} value={x.key}>
+                      {!x.generic && <CollectionIcon col={x.col} className="size-4 text-muted-foreground" />}
+                      {x.label}
+                      <Badge variant="secondary" className="px-1.5 tabular-nums">
+                        {x.records.length}
+                      </Badge>
+                    </TabsTrigger>
+                  ))}
+                </TabsList>
+              </div>
+              <TabsContent value={active.key}>
+                <BackrefTable
+                  key={active.key}
+                  col={active.col}
+                  backrefs={active.backrefs}
+                  records={active.records}
+                  parent={rec}
+                  editable={editable}
+                  generic={active.generic}
+                  onChanged={() => void query.refetch()}
+                />
+              </TabsContent>
+            </Tabs>
+          </CardContent>
+        </Card>
+      )}
 
       <AlertDialog
         open={confirm}

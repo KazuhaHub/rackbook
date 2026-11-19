@@ -36,7 +36,7 @@ export function RecordCell({
       : null
   // a module maintains these fields: the edit form warns about it, a quick edit should not bypass that
   const managed = kind ? moduleFor(meta, col.name, shown.data.source)?.fields.includes(field) : false
-  if (!edit || !kind || !prop || managed) return <CellValue value={value} lookup={lookup} />
+  if (!edit || !kind || !prop || managed) return <CellValue value={value} lookup={lookup} schema={prop} />
   return (
     <InlineCell
       kind={kind}
@@ -44,6 +44,7 @@ export function RecordCell({
       value={value}
       label={fieldTitle(col, field)}
       required={!!col.schema.required?.includes(field)}
+      version={shown.hash}
       busy={edit.isSaving(rec.id)}
       onSave={(v) => void edit.save(rec, field, v)}
     />

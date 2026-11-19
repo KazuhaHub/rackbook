@@ -134,7 +134,7 @@ export function BackrefTable({
                       {cols.map((c, i) => (
                         <td key={c} className="px-3 py-2.5 align-top">
                           {i === 0 && !lookups[c] ? (
-                            <Link to={href} className={cn('font-medium hover:underline', looksMono(str(shown.data[c])) && 'font-mono text-[0.8125rem]')}>
+                            <Link to={href} title={str(shown.data[c])} className={cn('line-clamp-2 max-w-[44ch] font-medium break-words hover:underline', looksMono(str(shown.data[c])) && 'font-mono text-[0.8125rem]')}>
                               {str(shown.data[c]) || t.show.empty}
                             </Link>
                           ) : (

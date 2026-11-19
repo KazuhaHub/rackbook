@@ -1,3 +1,6 @@
+import { objectItems } from './objectItems.ts'
+import { isSecretName } from './secretName.ts'
+
 // How the console treats a schema property in forms and in list cells.
 // Import-free so scripts/check-console-logic.mts can test it.
 
@@ -9,6 +12,7 @@ export type FieldKind =
   | 'date'
   | 'enum' // one of a fixed list of strings
   | 'tags' // several of a fixed list of strings (array, items.enum)
+  | 'rows' // an array of flat objects, edited as a table
   | 'list' // an array of free strings, each checked against items.pattern / items.format
   | 'suggest' // short free text with the values already used offered as a dropdown
   | 'plain'
@@ -50,7 +54,15 @@ export function suggestOption(p: Prop | undefined): boolean | undefined {
   return undefined
 }
 
-export type FieldCtx = { isKey: boolean; isRef: boolean }
+export type FieldCtx = {
+  /** the field is part of the collection's key */
+  isKey: boolean
+  isRef: boolean
+  /** the key is this field alone: suggestions would only invite duplicates (a part of a compound key repeats by design) */
+  soleKey?: boolean
+  /** the field's name, to keep secret-named fields out of suggestions */
+  name?: string
+}
 
 export function fieldKind(p: Prop | undefined, ctx: FieldCtx): FieldKind {
   if (!p || ctx.isRef) return 'plain'
@@ -59,6 +71,7 @@ export function fieldKind(p: Prop | undefined, ctx: FieldCtx): FieldKind {
       return 'boolean'
     case 'array': {
       if (itemEnum(p)) return 'tags'
+      if (objectItems(p)) return 'rows'
       const items = p.items as Prop | undefined
       return items && baseType(items) === 'string' ? 'list' : 'plain'
     }
@@ -66,10 +79,12 @@ export function fieldKind(p: Prop | undefined, ctx: FieldCtx): FieldKind {
       if (stringEnum(p)) return 'enum'
       if (p.format === 'textarea') return 'textarea'
       if (p.format === 'date') return 'date'
+      // never offer what is already stored in a secret-named or public-annotated field, whatever the option says
+      if ((ctx.name && isSecretName(ctx.name)) || (p['x-rackbook'] as Record<string, unknown> | undefined)?.public !== undefined) return 'plain'
       const opt = suggestOption(p)
       if (opt === false) return 'plain'
       if (opt === true) return 'suggest'
-      return !p.format && !p.pattern && !ctx.isKey ? 'suggest' : 'plain'
+      return !p.format && !p.pattern && !ctx.soleKey ? 'suggest' : 'plain'
     }
   }
   return 'plain'

@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useCallback, useMemo, useRef, useState } from 'react'
 import Form, { generateTemplates } from '@rjsf/shadcn'
 import { customizeValidator } from '@rjsf/validator-ajv8'
 import type { ErrorSchema, FieldTemplateProps, RJSFSchema, RJSFValidationError, UiSchema } from '@rjsf/utils'
@@ -9,7 +9,7 @@ import { fieldKind, suggestValues, type Prop } from '@/lib/fieldKind'
 import { pointerToPath, str } from '@/lib/ledger'
 import type { CheckError, Collection } from '@/lib/types'
 import { customFormats, formatHints } from '@/lib/formats'
-import { DateWidget, EnumWidget, ListWidget, RefManyWidget, RefWidget, SuggestWidget, SwitchWidget, TagsWidget, type RefItem } from './form-widgets'
+import { DateWidget, EnumWidget, ListWidget, RefManyWidget, RowsWidget, RefWidget, SuggestWidget, SwitchWidget, TagsWidget, type RefItem } from './form-widgets'
 
 // Draft 2020-12, the same dialect the server validates with.
 const validator = customizeValidator({
@@ -17,15 +17,16 @@ const validator = customizeValidator({
   customFormats,
 })
 
-const widgets = { RefWidget, RefManyWidget, SwitchWidget, EnumWidget, TagsWidget, SuggestWidget, DateWidget, ListWidget }
+const widgets = { RefWidget, RefManyWidget, SwitchWidget, EnumWidget, TagsWidget, SuggestWidget, DateWidget, ListWidget, RowsWidget }
 
 // A field shows its errors once the user has been in it (or tried to save), not while it is untouched.
 // formContext carries plain data (not a function) so the fields re-render when it changes.
-type FormCtx = { touched: string[]; all: boolean }
+// `setPending(field, text)` is how a list field reports the text left in its input box.
+type FormCtx = { touched: string[]; all: boolean; setPending: (field: string, text: string) => void }
 const BaseFieldTemplate = generateTemplates().FieldTemplate!
 function FieldTemplate(props: FieldTemplateProps) {
   const ctx = props.registry.formContext as FormCtx
-  const show = ctx.all || ctx.touched.some((x) => x === props.id || x.startsWith(props.id + '_'))
+  const show = ctx.all || ctx.touched.includes(props.id)
   return <BaseFieldTemplate {...props} rawErrors={show ? props.rawErrors : []} errors={(show ? props.errors : null) as FieldTemplateProps['errors']} />
 }
 const templates = { FieldTemplate }
@@ -129,6 +130,10 @@ export function RecordForm({
   const ownRecords = own?.data
   const [touched, setTouched] = useState<string[]>([])
   const [tried, setTried] = useState(false)
+  const pending = useRef<Record<string, string>>({})
+  const setPending = useCallback((field: string, text: string) => {
+    pending.current[field] = text
+  }, [])
   const touch = (id: string) => id && setTouched((x) => (x.includes(id) ? x : [...x, id]))
 
   const { schema, uiSchema } = useMemo(() => {
@@ -143,7 +148,7 @@ export function RecordForm({
         ui[field] = { 'ui:widget': prop.type === 'array' ? 'RefManyWidget' : 'RefWidget', 'ui:options': { items: refItems[field] } }
         continue
       }
-      switch (fieldKind(prop as Prop, { isKey: !!col.key?.includes(field), isRef: false })) {
+      switch (fieldKind(prop as Prop, { isKey: !!col.key?.includes(field), soleKey: col.key?.length === 1 && col.key[0] === field, isRef: false, name: field })) {
         case 'textarea':
           delete prop.format
           ui[field] = { 'ui:widget': 'textarea', 'ui:options': { rows: 4 } }
@@ -156,6 +161,9 @@ export function RecordForm({
           break
         case 'tags':
           ui[field] = { 'ui:widget': 'TagsWidget' }
+          break
+        case 'rows':
+          ui[field] = { 'ui:widget': 'RowsWidget' }
           break
         case 'list':
           ui[field] = { 'ui:widget': 'ListWidget' }
@@ -175,7 +183,14 @@ export function RecordForm({
   const extraErrors = useMemo(() => toErrorSchema(serverErrors, schema, col.name), [serverErrors, schema, col.name])
 
   return (
-    <div onBlur={(e) => touch((e.target as HTMLElement).id)}>
+    <div
+      onBlur={(e) => touch((e.target as HTMLElement).id)}
+      // keypress, not keydown: the pickers stop keydown from bubbling, and the browser submits the form on the keypress
+      onKeyPressCapture={(e) => {
+        // Enter in a dropdown picks the highlighted option; it must never submit the form
+        if (e.key === 'Enter' && (e.target as HTMLElement).closest('[role="combobox"]')) e.preventDefault()
+      }}
+    >
     <Form
       id={formId}
       schema={schema}
@@ -184,7 +199,14 @@ export function RecordForm({
       validator={validator}
       widgets={widgets}
       templates={templates}
-      formContext={{ touched, all: tried || serverErrors.length > 0 } satisfies FormCtx}
+      formContext={{ touched, all: tried || serverErrors.length > 0, setPending } satisfies FormCtx}
+      customValidate={(_data, errors) => {
+        // text typed into a list field but not added would be lost on save
+        for (const [name, text] of Object.entries(pending.current)) {
+          if (text) (errors as any)[name]?.addError(t.form.pendingEntry)
+        }
+        return errors
+      }}
       liveValidate
       disabled={disabled}
       noHtml5Validate
