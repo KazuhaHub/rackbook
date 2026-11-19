@@ -287,12 +287,42 @@ func (s *Store) verifyRemote(ctx context.Context) (string, error) {
 	return remote, nil
 }
 
+// setLastGood sets the last accepted commit; callers hold mu (or are Open). The
+// tip copy is what history reads use without taking mu.
+func (s *Store) setLastGood(h string) {
+	s.lastGood = h
+	s.tip.Store(&h)
+}
+
+// trackedTip is the commit history reads start from: the last accepted tip of
+// the tracked branch, which is what the store treats as origin/<branch> after
+// its last successful sync (and, while writes are paused for a rewritten
+// history, the last good commit, not the rewritten remote). A commit that only
+// exists at the checkout's HEAD (a pull request commit being opened, or left
+// behind by a crash) is not on it. Before the first sync it falls back to
+// origin/<branch>, and for a repository without a remote to the configured
+// branch itself. ok is false when none of them exists (no commits yet).
+func (s *Store) trackedTip(ctx context.Context) (tip string, ok bool) {
+	if p := s.tip.Load(); p != nil && *p != "" {
+		return *p, true
+	}
+	if s.HasRemote() {
+		if c := s.repo.commitOf(ctx, "origin/"+s.branch); c != "" {
+			return c, true
+		}
+	}
+	if c := s.repo.commitOf(ctx, "refs/heads/"+s.branch); c != "" {
+		return c, true
+	}
+	return "", false
+}
+
 // advance records remote as the last accepted commit. Callers hold mu.
 func (s *Store) advance(ctx context.Context, remote string) {
 	if remote == "" || remote == s.lastGood {
 		return
 	}
-	s.lastGood = remote
+	s.setLastGood(remote)
 	if err := s.repo.writeLastGood(ctx, s.branch, remote); err != nil {
 		s.log.Warn("could not store the last good commit", "err", err)
 	}
@@ -301,7 +331,7 @@ func (s *Store) advance(ctx context.Context, remote string) {
 // initLastGood loads the stored commit, or seeds it from the remote-tracking
 // ref the clone already has (before the first fetch of this process).
 func (s *Store) initLastGood(ctx context.Context) {
-	s.lastGood = s.repo.readLastGood(ctx, s.branch)
+	s.setLastGood(s.repo.readLastGood(ctx, s.branch))
 	if s.lastGood == "" {
 		s.advance(ctx, s.repo.commitOf(ctx, "origin/"+s.branch))
 	}

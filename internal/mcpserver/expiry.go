@@ -40,9 +40,9 @@ func (t *tools) addExpiryTools(s *mcp.Server) {
 	if err != nil {
 		panic(err) // the type is fixed
 	}
-	mcp.AddTool(s, &mcp.Tool{Name: "expiry_list", OutputSchema: schema,
-		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true, OpenWorldHint: new(false)},
-		Description: "List the records that are expired or expire within N days (default 30), from the collections whose schema marks an expiry field (certificates, secrets, tokens, domains, contracts). Records without a date and revoked records are never listed. Each item has collection, id, label, expires (as written), daysLeft (negative = overdue), status (expired, expiring, unknown) and source (the module that maintains the record; empty = entered by hand)."},
+	mcp.AddTool(s, t.mark(&mcp.Tool{Name: "expiry_list", OutputSchema: schema,
+		Annotations: readAnnotations(),
+		Description: "List the records that are expired or expire within N days (default 30), from the collections whose schema marks an expiry field (certificates, secrets, tokens, domains, contracts). Records without a date and revoked records are never listed. Each item has collection, id, label, expires (as written), daysLeft (negative = overdue), status (expired, expiring, unknown) and source (the module that maintains the record; empty = entered by hand)."}),
 		t.expiryList)
 }
 

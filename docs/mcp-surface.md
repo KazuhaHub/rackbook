@@ -228,3 +228,46 @@ Other v0.2 → v0.6.0 changes:
   or JSON in text.
 - Errors move to the shared code set.
 - `tools/list` is filtered by scope and role, with `list_changed`.
+
+## 11. Implementation status in v0.6.0
+
+Built: the `ledger`, `collections`, `records`, `history` and `expiry` families,
+all renames with deprecated aliases, `dry_run` and `idempotency_key`, structured
+errors and results, annotations, cursors and limits, the 1 MiB result cap, the
+resources and prompts of section 3, `ledger_info`, filtering of `tools/list` by
+role and scope, and the golden surface test.
+
+Not built yet:
+
+- `docs_*`, `include=doc` results and `include_docs` hits: they depend on record
+  documents (decision 15). The arguments are accepted and return nothing.
+- `changes_*`: they need a forge API client (list, read and comment on pull
+  requests, CI and review status) and a record of the pull requests Rackbook
+  opened; neither exists. Write results already return the pull request
+  (`change.kind`, `change.id`, `change.url`).
+- `notifications/tools/list_changed` after a role edit, resource subscriptions,
+  `completions` and the per-identity rate limits (`auth.mcp.limits`,
+  `rate_limited`).
+- `change.branch` of a pull request, and the `pull_request_unavailable` check in
+  a dry run (a real write still reports it).
+
+### History reads and limits
+
+- History tools (`history_list`, `history_diff`, `records_get include=history`)
+  read the **tracked branch's accepted tip**: the commit the store last accepted
+  from `origin/<branch>` (while writes are paused for a rewritten history, the
+  last good commit, not the rewritten remote). Before the first sync it falls
+  back to `origin/<branch>`, and a repository without a remote uses the
+  configured branch itself. The checkout's `HEAD` is never used, so a pull
+  request commit that is briefly (or, after a crash, lastingly) at `HEAD` is not
+  listed and `history_diff` answers `not_found` for it, exactly as for a hash
+  that does not exist. `history_diff` takes no write lock.
+- `history_list` scans at most 2000 commits. A page that was fully read is
+  always returned. When the scan stopped at its limit and the page reaches its
+  end, the result has `next_cursor: ""` and `scan_limit_reached: true` (an empty
+  page when the cursor is already beyond it); `scan_limit_reached: false` means
+  the list really ended.
+- `too_large` for a paged tool carries `details.returned` (items in the refused
+  page), `details.cursor` and `details.suggested_limit`, always strictly below
+  `returned`. When one item alone is over 1 MiB there is no `suggested_limit`;
+  `details.resource` names the record's resource instead.

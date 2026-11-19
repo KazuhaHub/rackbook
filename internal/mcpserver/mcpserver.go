@@ -1,6 +1,8 @@
 // Package mcpserver exposes the ledger to AI agents over MCP: read tools
-// always, and create_record, update_record and delete_record over HTTP for
-// callers whose role and credential allow writing (see write.go).
+// always, and records_create, records_update and records_delete over HTTP for
+// callers whose role and credential allow writing (see records_write.go). The
+// tool surface is specified in docs/mcp-surface.md; the v0.2 tool names stay as
+// deprecated aliases until v0.7.0.
 package mcpserver
 
 import (
@@ -11,6 +13,7 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -24,11 +27,12 @@ import (
 type Source func() *ledger.Ledger
 
 const instructions = `Read-only access to an infrastructure ledger kept as YAML in Git.
-Start with list_collections to see what exists. Records are addressed by id (the key fields joined with "/").
-- "What runs on host X?": list_records collection=services where={"device":"X"}; services whose device is "all" apply to every host, so also list_records services where={"device":"all"}. get_record on the device returns all of its addresses and services as backrefs in one call.
-- "Who uses port N?": search query="N" (substring over every field of every collection), or list_records on ports for the port convention.
-- "Is the ledger consistent?": check.
-- "What expires soon?": expiry_list (days, collections, include_unknown); items are sorted most overdue first, daysLeft below 0 means already expired, and include_unknown adds records whose date is still to be filled in.`
+Start with ledger_info (what this server offers and who you are), then collections_list to see what exists. Records are addressed by id (the key fields joined with "/"). Lists are paged: pass next_cursor back as cursor.
+- "What runs on host X?": records_query collection=services where={"device":"X"}; services whose device is "all" apply to every host, so also query where={"device":"all"}. records_get on the device with include=["backrefs"] returns all of its addresses and services in one call.
+- "Who uses port N?": ledger_search query="N" (substring over every field of every collection), or records_query on ports for the port convention.
+- "Is the ledger consistent?": ledger_check.
+- "What expires soon?": expiry_list (days, collections, include_unknown); items are sorted most overdue first, daysLeft below 0 means already expired, and include_unknown adds records whose date is still to be filled in.
+- The v0.2 tool names (list_records, get_record, search, ...) still work but are deprecated; ledger_info lists their replacements.`
 
 // New builds a read-only MCP server.
 func New(src Source, version string) *mcp.Server {
@@ -40,43 +44,59 @@ func NewWithOptions(o Options) *mcp.Server {
 	ins := instructions
 	writes := o.Backend != nil && !o.ReadOnly
 	if writes {
-		ins += writeInstructions
+		ins += writeInstructionsV2
 	}
 	s := mcp.NewServer(&mcp.Implementation{Name: "rackbook", Version: o.Version}, &mcp.ServerOptions{Instructions: ins})
-	t := &tools{src: o.Source, backend: o.Backend, readOnly: o.ReadOnly, log: o.Logger}
+	t := &tools{src: o.Source, backend: o.Backend, readOnly: o.ReadOnly, log: o.Logger, version: o.Version, names: map[string]bool{},
+		idem: &idempotency{entries: map[string]idemEntry{}, now: time.Now}}
 	if t.log == nil {
 		t.log = slog.New(slog.DiscardHandler)
 	}
-	readOnly := &mcp.ToolAnnotations{ReadOnlyHint: true}
+	s.AddReceivingMiddleware(t.filterTools, capResults)
 
-	mcp.AddTool(s, &mcp.Tool{Name: "list_collections", Annotations: readOnly,
-		Description: "List every collection in the ledger with its title, description, key fields, fields (name, title, type, required), reference links to other collections and record count. Call this first to learn the collection names and field names used by the other tools."},
-		t.listCollections)
-	mcp.AddTool(s, &mcp.Tool{Name: "list_records", Annotations: readOnly,
-		Description: "List the records of one collection in file order, optionally filtered by exact field values (where is an object like {\"device\": \"web-1\", \"managed\": true}; all entries must match; values are compared as text). To answer \"what services run on host X\" use collection=services where={\"device\":\"X\"} and remember that rows with device \"all\" apply to every host."},
-		t.listRecords)
-	mcp.AddTool(s, &mcp.Tool{Name: "get_record", Annotations: readOnly,
-		Description: "Get one record by id (the key field values joined with \"/\", with \"/\" and \"%\" inside a value written as %2F and %25) together with backrefs: the records of other collections that reference it. For a device this returns its addresses and its services (including services declared for device \"all\") in a single call."},
-		t.getRecord)
-	mcp.AddTool(s, &mcp.Tool{Name: "search", Annotations: readOnly,
-		Description: "Case-insensitive substring search over every text, number and boolean field of every record (or one collection). Use it for questions where you do not know the collection, e.g. \"who uses port 10511\" (query=10511), \"where is nginx\", \"which host has IP 198.51.100.20\". Each match lists the fields that matched."},
-		t.search)
-	mcp.AddTool(s, &mcp.Tool{Name: "get_schema", Annotations: readOnly,
-		Description: "Get the JSON Schema of one collection's records: field names, types, titles, descriptions and required fields."},
-		t.getSchema)
-	mcp.AddTool(s, &mcp.Tool{Name: "check", Annotations: readOnly,
-		Description: "Validate the whole ledger (YAML syntax, JSON Schema, unique keys, references, set rules) and return ok plus every error with collection, record id, field path and message."},
-		t.check)
-	mcp.AddTool(s, &mcp.Tool{Name: "export_markdown", Annotations: readOnly,
-		Description: "Return the whole ledger as one Markdown document (a table per collection). Large; prefer list_records, get_record or search for targeted questions."},
-		t.exportMarkdown)
-	mcp.AddTool(s, &mcp.Tool{Name: "list_problems", Annotations: readOnly,
-		Description: "List what is wrong with the ledger: validation errors (collection, record id, field path, message) and any store state that pauses writes (history_rewritten, config_error). Check this before writing, and after."},
-		t.listProblems)
+	// The surface of v0.6.0.
+	t.addInfoTool(s)
+	t.addReadTools(s)
 	t.addExpiryTools(s)
 	if o.Backend != nil {
-		mcp.AddTool(s, &mcp.Tool{Name: "record_history", Annotations: readOnly,
-			Description: "List the commits that changed one record (newest first: hash, author, date, subject), falling back to the collection's file history for records edited before per-record history existed."},
+		t.addHistoryTools(s)
+	}
+	if writes {
+		t.addRecordWriteTools(s)
+	}
+	t.addResources(s)
+	t.addPrompts(s)
+
+	// The v0.2 names, kept as deprecated aliases with their old arguments and
+	// result shapes until v0.7.0.
+
+	mcp.AddTool(s, t.legacy(&mcp.Tool{Name: "list_collections",
+		Description: "List every collection in the ledger with its title, description, key fields, fields (name, title, type, required), reference links to other collections and record count. Call this first to learn the collection names and field names used by the other tools."}),
+		t.listCollections)
+	mcp.AddTool(s, t.legacy(&mcp.Tool{Name: "list_records",
+		Description: "List the records of one collection in file order, optionally filtered by exact field values (where is an object like {\"device\": \"web-1\", \"managed\": true}; all entries must match; values are compared as text). To answer \"what services run on host X\" use collection=services where={\"device\":\"X\"} and remember that rows with device \"all\" apply to every host."}),
+		t.listRecords)
+	mcp.AddTool(s, t.legacy(&mcp.Tool{Name: "get_record",
+		Description: "Get one record by id (the key field values joined with \"/\", with \"/\" and \"%\" inside a value written as %2F and %25) together with backrefs: the records of other collections that reference it. For a device this returns its addresses and its services (including services declared for device \"all\") in a single call."}),
+		t.getRecord)
+	mcp.AddTool(s, t.legacy(&mcp.Tool{Name: "search",
+		Description: "Case-insensitive substring search over every text, number and boolean field of every record (or one collection). Use it for questions where you do not know the collection, e.g. \"who uses port 10511\" (query=10511), \"where is nginx\", \"which host has IP 198.51.100.20\". Each match lists the fields that matched."}),
+		t.search)
+	mcp.AddTool(s, t.legacy(&mcp.Tool{Name: "get_schema",
+		Description: "Get the JSON Schema of one collection's records: field names, types, titles, descriptions and required fields."}),
+		t.getSchema)
+	mcp.AddTool(s, t.legacy(&mcp.Tool{Name: "check",
+		Description: "Validate the whole ledger (YAML syntax, JSON Schema, unique keys, references, set rules) and return ok plus every error with collection, record id, field path and message."}),
+		t.check)
+	mcp.AddTool(s, t.legacy(&mcp.Tool{Name: "export_markdown",
+		Description: "Return the whole ledger as one Markdown document (a table per collection). Large; prefer list_records, get_record or search for targeted questions."}),
+		t.exportMarkdown)
+	mcp.AddTool(s, t.legacy(&mcp.Tool{Name: "list_problems",
+		Description: "List what is wrong with the ledger: validation errors (collection, record id, field path, message) and any store state that pauses writes (history_rewritten, config_error). Check this before writing, and after."}),
+		t.listProblems)
+	if o.Backend != nil {
+		mcp.AddTool(s, t.legacy(&mcp.Tool{Name: "record_history",
+			Description: "List the commits that changed one record (newest first: hash, author, date, subject), falling back to the collection's file history for records edited before per-record history existed."}),
 			t.recordHistory)
 	}
 	if writes {
@@ -104,6 +124,11 @@ type tools struct {
 	backend  Backend
 	readOnly bool
 	log      *slog.Logger
+	version  string
+	// names holds the tools registered on this server; deprecated the v0.2 names among them.
+	names      map[string]bool
+	deprecated []deprecatedInfo
+	idem       *idempotency
 }
 
 func (t *tools) collection(name string) (*ledger.Ledger, *ledger.Collection, error) {

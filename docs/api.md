@@ -302,16 +302,44 @@ grant's access token stops working at once.
 
 ## MCP
 
-`POST /mcp` (streamable HTTP) — the read tools of `rackbook mcp` on stdio, plus
-`record_history` and `list_problems`, and (for callers that may write)
-`create_record`, `update_record` and `delete_record`. Auth: the console's mode,
+`POST /mcp` (streamable HTTP) — the tools of `rackbook mcp` on stdio (read
+only), plus `history_list` / `history_diff` and, for callers that may write,
+`records_create`, `records_update` and `records_delete`. The surface (families,
+arguments, result shapes, limits) is specified in `mcp-surface.md`; `ledger_info`
+reports what this server offers. Tools: `ledger_info`, `ledger_search`,
+`ledger_check`, `ledger_export`, `collections_list`, `collections_describe`,
+`records_query`, `records_get`, `records_create`, `records_update`,
+`records_delete`, `history_list`, `history_diff`, `expiry_list`; resources
+`rackbook://info`, `rackbook://collections`, `rackbook://collections/{collection}`,
+`rackbook://records/{collection}/{id}`, `rackbook://export/markdown`,
+`rackbook://llms.txt`; prompts `audit_record`, `prepare_change`,
+`explain_collection`. Auth: the console's mode,
 an OAuth access token of a trusted issuer (`auth.mcp`, README), or an API token.
 `/.well-known/oauth-protected-resource` (RFC 9728, public) describes the
 resource; a missing or invalid token gets `401` with `WWW-Authenticate: Bearer
 resource_metadata="…"` (plus `scope="…"` with the built-in authorization server), a valid token without a role `403` with
-`error="insufficient_scope"`. Write tools fail with the API's error codes in a
-tool error: `{"error","message","status",…}`; a successful write returns
-`{id, hash, data, commit | url, pullRequest}`.
+`error="insufficient_scope"`. Tools fail with the API's error codes in a tool
+error (`isError`) whose `structuredContent` is `{"error","message","details"?}`
+(`details` carries `current`, `errors`, `references` or `findings` as the HTTP
+body does at top level; a referenced record is `conflict` with
+`details.references`). Lists take `cursor` and `limit` and return `next_cursor`
+(`""` on the last page). A write returns `{change: {kind: "commit" |
+"pull_request", id, url?}, record?, cleared?, message}`; with `dry_run: true` it
+returns `{dry_run: {valid, changed, would_be: "direct_push" | "pull_request",
+files: [{path, status, diff}], problems: [{error, message, details?}]}, record?}`
+and writes nothing. `idempotency_key` makes a retry within 24 hours return the
+first result (`replayed: true`).
+
+Deprecated aliases (removed in v0.7.0, same arguments and results as in v0.2):
+`list_collections`, `get_schema`, `list_records`, `get_record`, `search`,
+`check`, `list_problems`, `export_markdown`, `record_history`, `create_record`,
+`update_record` and `delete_record`. Their results keep the v0.2 shapes
+(`{count, records}`, `{matches}`, `{commits}`, and for writes the flat
+`{id, hash, data, commit | url, pullRequest}` with the flat
+`{"error","message","status",…}` errors), and `update_record` / `delete_record`
+take `hash` where the new tools take `expected_hash`. Each description starts
+with `Deprecated: use <new>; removed in v0.7.0`, and `ledger_info.deprecated`
+lists them.
 
 ## Static console
 
@@ -369,8 +397,9 @@ and token names) and refuses it with
 
 status `422`. `path` is the JSON pointer of the field (`in: "key"` is added when
 the secret is a field name, and `path` is then its map). `excerpt` is at most the
-first 4 characters of the match. The MCP write tools return the same body as a
-tool error (`isError`), and the CLI exits 1. `GET /api/check` (and `rackbook
+first 4 characters of the match. The MCP write tools return it as a tool error
+(`isError`; the new `records_*` tools carry `findings` in `details`, the
+deprecated names return the body above), and the CLI exits 1. `GET /api/check` (and `rackbook
 check`) report secrets already in the data as errors with `rule: "secret"`, the
 same redaction and the message `possible secret (<rule>): <excerpt>`. Passkey
 enrolment with a name that is a secret answers the same `422` before the

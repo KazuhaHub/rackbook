@@ -1,0 +1,3048 @@
+{
+  "prompts": [
+    {
+      "arguments": [
+        {
+          "name": "collection",
+          "description": "collection name",
+          "required": true
+        },
+        {
+          "name": "id",
+          "description": "record id",
+          "required": true
+        }
+      ],
+      "description": "Check one record against its references, history and the ledger's validation, and report inconsistencies.",
+      "name": "audit_record"
+    },
+    {
+      "arguments": [
+        {
+          "name": "collection",
+          "description": "collection name",
+          "required": true
+        }
+      ],
+      "description": "Summarise a collection's schema and conventions for a new contributor.",
+      "name": "explain_collection"
+    },
+    {
+      "arguments": [
+        {
+          "name": "goal",
+          "description": "what should change, in plain words",
+          "required": true
+        }
+      ],
+      "description": "Plan a change to the ledger: find the affected records, dry-run each write and propose one pull request.",
+      "name": "prepare_change"
+    }
+  ],
+  "resourceTemplates": [
+    {
+      "description": "What collections_describe returns for one collection: description and JSON Schema.",
+      "mimeType": "application/json",
+      "name": "collection",
+      "uriTemplate": "rackbook://collections/{collection}"
+    },
+    {
+      "description": "One record as records_get returns it. Percent-encode the id (a \"/\" between key parts is %2F).",
+      "mimeType": "application/json",
+      "name": "record",
+      "uriTemplate": "rackbook://records/{collection}/{id}"
+    }
+  ],
+  "resources": [
+    {
+      "description": "What collections_list returns.",
+      "mimeType": "application/json",
+      "name": "collections",
+      "uri": "rackbook://collections"
+    },
+    {
+      "description": "The whole ledger as Markdown, a table per collection. Large: read it deliberately.",
+      "mimeType": "text/markdown",
+      "name": "export-markdown",
+      "uri": "rackbook://export/markdown"
+    },
+    {
+      "description": "What ledger_info returns: server version, families, your role, limits, deprecated tools.",
+      "mimeType": "application/json",
+      "name": "info",
+      "uri": "rackbook://info"
+    },
+    {
+      "description": "llms.txt: a summary of the ledger and its collections.",
+      "mimeType": "text/plain",
+      "name": "llms-txt",
+      "uri": "rackbook://llms.txt"
+    }
+  ],
+  "tools": [
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Deprecated: use ledger_check; removed in v0.7.0. Validate the whole ledger (YAML syntax, JSON Schema, unique keys, references, set rules) and return ok plus every error with collection, record id, field path and message.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "type": "object"
+      },
+      "name": "check",
+      "outputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "errors": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "collection": {
+                  "type": "string"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "message": {
+                  "type": "string"
+                },
+                "path": {
+                  "type": "string"
+                },
+                "rule": {
+                  "type": "string"
+                },
+                "severity": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "collection",
+                "id",
+                "path",
+                "rule",
+                "message"
+              ],
+              "type": "object"
+            },
+            "type": [
+              "null",
+              "array"
+            ]
+          },
+          "ok": {
+            "type": "boolean"
+          },
+          "warnings": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "collection": {
+                  "type": "string"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "message": {
+                  "type": "string"
+                },
+                "path": {
+                  "type": "string"
+                },
+                "rule": {
+                  "type": "string"
+                },
+                "severity": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "collection",
+                "id",
+                "path",
+                "rule",
+                "message"
+              ],
+              "type": "object"
+            },
+            "type": [
+              "null",
+              "array"
+            ]
+          }
+        },
+        "required": [
+          "ok",
+          "errors",
+          "warnings"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Describe one collection: title, description, key fields, label, the JSON Schema of its records, references in and out, facets, notes, record count and whether it supports documents. Read it to build valid records for records_create and records_update.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "collection": {
+            "description": "collection name from collections_list",
+            "type": "string"
+          }
+        },
+        "required": [
+          "collection"
+        ],
+        "type": "object"
+      },
+      "name": "collections_describe",
+      "outputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "documents": {
+            "description": "whether records of this collection can carry documents",
+            "type": "boolean"
+          },
+          "facets": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "field": {
+                  "type": "string"
+                },
+                "match": {
+                  "type": "string"
+                },
+                "values": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": [
+                    "null",
+                    "array"
+                  ]
+                }
+              },
+              "required": [
+                "field",
+                "match",
+                "values"
+              ],
+              "type": "object"
+            },
+            "type": [
+              "null",
+              "array"
+            ]
+          },
+          "fields": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "required": {
+                  "type": "boolean"
+                },
+                "title": {
+                  "type": "string"
+                },
+                "type": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "name"
+              ],
+              "type": "object"
+            },
+            "type": [
+              "null",
+              "array"
+            ]
+          },
+          "group": {
+            "type": "string"
+          },
+          "key": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "null",
+              "array"
+            ]
+          },
+          "label": {
+            "description": "template that renders a record's display name",
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "notes": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "text": {
+                  "type": "string"
+                },
+                "title": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "title",
+                "text"
+              ],
+              "type": "object"
+            },
+            "type": [
+              "null",
+              "array"
+            ]
+          },
+          "records": {
+            "type": "integer"
+          },
+          "referenced_by": {
+            "description": "fields of other collections that point here",
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "collection": {
+                  "type": "string"
+                },
+                "columns": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": [
+                    "null",
+                    "array"
+                  ]
+                },
+                "field": {
+                  "type": "string"
+                },
+                "title": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "collection",
+                "field"
+              ],
+              "type": "object"
+            },
+            "type": [
+              "null",
+              "array"
+            ]
+          },
+          "references": {
+            "description": "fields of this collection that point at other collections",
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "allow": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": [
+                    "null",
+                    "array"
+                  ]
+                },
+                "field": {
+                  "type": "string"
+                },
+                "many": {
+                  "type": "boolean"
+                },
+                "to": {
+                  "type": "string"
+                },
+                "toField": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "field",
+                "to",
+                "toField",
+                "allow",
+                "many"
+              ],
+              "type": "object"
+            },
+            "type": [
+              "null",
+              "array"
+            ]
+          },
+          "schema": {
+            "additionalProperties": true,
+            "description": "the JSON Schema of one record",
+            "type": "object"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "title",
+          "fields",
+          "schema",
+          "references",
+          "referenced_by",
+          "facets",
+          "notes",
+          "records",
+          "documents"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "List every collection in the ledger with its title, description, key fields, fields (name, title, type, required), references to and from other collections and record count. Call this first to learn the collection names and field names used by the other tools.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "type": "object"
+      },
+      "name": "collections_list",
+      "outputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "collections": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "description": {
+                  "type": "string"
+                },
+                "fields": {
+                  "items": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "name": {
+                        "type": "string"
+                      },
+                      "required": {
+                        "type": "boolean"
+                      },
+                      "title": {
+                        "type": "string"
+                      },
+                      "type": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "name"
+                    ],
+                    "type": "object"
+                  },
+                  "type": [
+                    "null",
+                    "array"
+                  ]
+                },
+                "group": {
+                  "type": "string"
+                },
+                "key": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": [
+                    "null",
+                    "array"
+                  ]
+                },
+                "name": {
+                  "type": "string"
+                },
+                "records": {
+                  "type": "integer"
+                },
+                "referenced_by": {
+                  "items": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "collection": {
+                        "type": "string"
+                      },
+                      "columns": {
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": [
+                          "null",
+                          "array"
+                        ]
+                      },
+                      "field": {
+                        "type": "string"
+                      },
+                      "title": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "collection",
+                      "field"
+                    ],
+                    "type": "object"
+                  },
+                  "type": [
+                    "null",
+                    "array"
+                  ]
+                },
+                "references": {
+                  "items": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "allow": {
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": [
+                          "null",
+                          "array"
+                        ]
+                      },
+                      "field": {
+                        "type": "string"
+                      },
+                      "many": {
+                        "type": "boolean"
+                      },
+                      "to": {
+                        "type": "string"
+                      },
+                      "toField": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "field",
+                      "to",
+                      "toField",
+                      "allow",
+                      "many"
+                    ],
+                    "type": "object"
+                  },
+                  "type": [
+                    "null",
+                    "array"
+                  ]
+                },
+                "title": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "name",
+                "title",
+                "fields",
+                "references",
+                "referenced_by",
+                "records"
+              ],
+              "type": "object"
+            },
+            "type": [
+              "null",
+              "array"
+            ]
+          },
+          "description": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "title",
+          "collections"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "Deprecated: use records_create; removed in v0.7.0. Add a record to a collection. data is the whole record (see get_schema for the fields). Validated like the console; the result tells whether it was committed or opened as a pull request (url).",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "collection": {
+            "description": "collection name from list_collections",
+            "type": "string"
+          },
+          "confirm_not_secret": {
+            "description": "set true only after a secret_suspected error, when you have checked the value is not a secret",
+            "type": "boolean"
+          },
+          "data": {
+            "additionalProperties": true,
+            "description": "the full record: every field, as in get_record's data",
+            "type": "object"
+          }
+        },
+        "required": [
+          "collection",
+          "data"
+        ],
+        "type": "object"
+      },
+      "name": "create_record"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "Deprecated: use records_delete; removed in v0.7.0. Delete a record. Needs the hash from get_record. A delete always opens a pull request, even for credentials that may commit directly; it is refused while other records still reference the record.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "collection": {
+            "description": "collection name",
+            "type": "string"
+          },
+          "hash": {
+            "description": "the hash from get_record",
+            "type": "string"
+          },
+          "id": {
+            "description": "record id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "collection",
+          "id",
+          "hash"
+        ],
+        "type": "object"
+      },
+      "name": "delete_record"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "List the records that are expired or expire within N days (default 30), from the collections whose schema marks an expiry field (certificates, secrets, tokens, domains, contracts). Records without a date and revoked records are never listed. Each item has collection, id, label, expires (as written), daysLeft (negative = overdue), status (expired, expiring, unknown) and source (the module that maintains the record; empty = entered by hand).",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "collections": {
+            "description": "limit to these collections (default: every collection with an expires mark)",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "null",
+              "array"
+            ]
+          },
+          "cursor": {
+            "description": "next_cursor of the previous page",
+            "type": "string"
+          },
+          "days": {
+            "description": "window in days (default 30, 0 to 3650); records that expire today or within this many days, plus every expired one",
+            "type": [
+              "null",
+              "integer"
+            ]
+          },
+          "include_unknown": {
+            "description": "also list records whose expiry is not a date (for example 待补), listed last",
+            "type": "boolean"
+          },
+          "limit": {
+            "description": "items per page (default 50, max 500)",
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "name": "expiry_list",
+      "outputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "days": {
+            "type": "integer"
+          },
+          "items": {
+            "description": "most overdue first; unknown dates last",
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "collection": {
+                  "type": "string"
+                },
+                "daysLeft": {
+                  "type": [
+                    "null",
+                    "integer"
+                  ]
+                },
+                "expires": {
+                  "type": "string"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "label": {
+                  "type": "string"
+                },
+                "source": {
+                  "type": "string"
+                },
+                "status": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "collection",
+                "id",
+                "label",
+                "expires",
+                "daysLeft",
+                "status",
+                "source"
+              ],
+              "type": "object"
+            },
+            "type": [
+              "null",
+              "array"
+            ]
+          },
+          "next_cursor": {
+            "description": "pass as cursor for the next page; empty on the last page",
+            "type": "string"
+          },
+          "today": {
+            "description": "today's date in UTC",
+            "type": "string"
+          }
+        },
+        "required": [
+          "today",
+          "days",
+          "items",
+          "next_cursor"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Deprecated: use ledger_export; removed in v0.7.0. Return the whole ledger as one Markdown document (a table per collection). Large; prefer list_records, get_record or search for targeted questions.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "type": "object"
+      },
+      "name": "export_markdown"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Deprecated: use records_get; removed in v0.7.0. Get one record by id (the key field values joined with \"/\", with \"/\" and \"%\" inside a value written as %2F and %25) together with backrefs: the records of other collections that reference it. For a device this returns its addresses and its services (including services declared for device \"all\") in a single call.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "collection": {
+            "description": "collection name",
+            "type": "string"
+          },
+          "id": {
+            "description": "record id: key field values joined with /",
+            "type": "string"
+          }
+        },
+        "required": [
+          "collection",
+          "id"
+        ],
+        "type": "object"
+      },
+      "name": "get_record",
+      "outputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "backrefs": {
+            "additionalProperties": {
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "data": {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  "id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "id",
+                  "data"
+                ],
+                "type": "object"
+              },
+              "type": [
+                "null",
+                "array"
+              ]
+            },
+            "type": "object"
+          },
+          "collection": {
+            "type": "string"
+          },
+          "data": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "hash": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "collection",
+          "id",
+          "hash",
+          "data",
+          "backrefs"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Deprecated: use collections_describe; removed in v0.7.0. Get the JSON Schema of one collection's records: field names, types, titles, descriptions and required fields.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "collection": {
+            "description": "collection name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "collection"
+        ],
+        "type": "object"
+      },
+      "name": "get_schema"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Show what one commit changed, record by record and field by field (before and after), for the commit's ledger files. Take the commit from history_list. Filter with collection and id.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "collection": {
+            "description": "only changes in this collection",
+            "type": "string"
+          },
+          "commit": {
+            "description": "commit hash from history_list",
+            "type": "string"
+          },
+          "id": {
+            "description": "only changes to this record (needs collection)",
+            "type": "string"
+          }
+        },
+        "required": [
+          "commit"
+        ],
+        "type": "object"
+      },
+      "name": "history_diff",
+      "outputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "changes": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "change": {
+                  "description": "added, updated or removed",
+                  "type": "string"
+                },
+                "collection": {
+                  "type": "string"
+                },
+                "fields": {
+                  "items": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "after": true,
+                      "before": true,
+                      "field": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "field"
+                    ],
+                    "type": "object"
+                  },
+                  "type": [
+                    "null",
+                    "array"
+                  ]
+                },
+                "id": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "collection",
+                "id",
+                "change",
+                "fields"
+              ],
+              "type": "object"
+            },
+            "type": [
+              "null",
+              "array"
+            ]
+          },
+          "commit": {
+            "additionalProperties": false,
+            "properties": {
+              "author": {
+                "type": "string"
+              },
+              "date": {
+                "type": "string"
+              },
+              "email": {
+                "type": "string"
+              },
+              "hash": {
+                "type": "string"
+              },
+              "subject": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "hash",
+              "author",
+              "email",
+              "date",
+              "subject"
+            ],
+            "type": "object"
+          },
+          "total": {
+            "description": "how many records the commit changed (after the filters)",
+            "type": "integer"
+          },
+          "truncated": {
+            "description": "true when Total exceeds the 500 changes listed",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "commit",
+          "total",
+          "changes",
+          "truncated"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "List the commits that changed one record (with id) or one collection, newest first: hash, author, date, subject. For a record it falls back to the collection's file history when the record was edited before per-record history existed. Pass next_cursor back as cursor; at most 100 commits per page.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "collection": {
+            "description": "collection name",
+            "type": "string"
+          },
+          "cursor": {
+            "description": "next_cursor of the previous page",
+            "type": "string"
+          },
+          "id": {
+            "description": "record id; omit for the history of the whole collection",
+            "type": "string"
+          },
+          "limit": {
+            "description": "commits per page (default 50, max 100)",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "collection"
+        ],
+        "type": "object"
+      },
+      "name": "history_list",
+      "outputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "collection": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "items": {
+            "description": "newest first",
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "author": {
+                  "type": "string"
+                },
+                "date": {
+                  "type": "string"
+                },
+                "email": {
+                  "type": "string"
+                },
+                "hash": {
+                  "type": "string"
+                },
+                "subject": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "hash",
+                "author",
+                "email",
+                "date",
+                "subject"
+              ],
+              "type": "object"
+            },
+            "type": [
+              "null",
+              "array"
+            ]
+          },
+          "next_cursor": {
+            "type": "string"
+          },
+          "scan_limit_reached": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "collection",
+          "items",
+          "next_cursor",
+          "scan_limit_reached"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Validate the whole ledger (YAML syntax, JSON Schema, unique keys, references, set rules) and report every error and warning with collection, record id, field path, rule and message, plus any store state that pauses writes (history_rewritten, config_error). Filter with collection or rule. Check before writing, and after.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "collection": {
+            "description": "only problems of this collection",
+            "type": "string"
+          },
+          "cursor": {
+            "description": "next_cursor of the previous page",
+            "type": "string"
+          },
+          "limit": {
+            "description": "problems per page (default 50, max 500)",
+            "type": "integer"
+          },
+          "rule": {
+            "description": "only problems of this rule (schema, unique, ref, same_set, config, secret)",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "ledger_check",
+      "outputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "errors": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "collection": {
+                  "type": "string"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "message": {
+                  "type": "string"
+                },
+                "path": {
+                  "type": "string"
+                },
+                "rule": {
+                  "type": "string"
+                },
+                "severity": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "collection",
+                "id",
+                "path",
+                "rule",
+                "message"
+              ],
+              "type": "object"
+            },
+            "type": [
+              "null",
+              "array"
+            ]
+          },
+          "next_cursor": {
+            "type": "string"
+          },
+          "ok": {
+            "description": "no errors and nothing pauses writes",
+            "type": "boolean"
+          },
+          "store": {
+            "description": "store state that pauses writes: history_rewritten, config_error",
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": [
+              "null",
+              "array"
+            ]
+          },
+          "total": {
+            "description": "errors and warnings together, over all pages",
+            "type": "integer"
+          },
+          "warnings": {
+            "description": "heuristic secret findings (confirm tier)",
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "collection": {
+                  "type": "string"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "message": {
+                  "type": "string"
+                },
+                "path": {
+                  "type": "string"
+                },
+                "rule": {
+                  "type": "string"
+                },
+                "severity": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "collection",
+                "id",
+                "path",
+                "rule",
+                "message"
+              ],
+              "type": "object"
+            },
+            "type": [
+              "null",
+              "array"
+            ]
+          }
+        },
+        "required": [
+          "ok",
+          "store",
+          "errors",
+          "warnings",
+          "total",
+          "next_cursor"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Return the ledger (or one collection) as one Markdown document (a table per collection) or as JSON. Limited to 1 MiB; a larger export is refused with too_large and the resource rackbook://export/markdown to read instead. Prefer records_query, records_get or ledger_search for targeted questions.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "collection": {
+            "description": "export only this collection",
+            "type": "string"
+          },
+          "format": {
+            "description": "markdown (default) or json",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "ledger_export",
+      "outputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "bytes": {
+            "type": "integer"
+          },
+          "collection": {
+            "type": "string"
+          },
+          "content": {
+            "type": "string"
+          },
+          "format": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "format",
+          "bytes",
+          "content"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Feature detection: the server version, the MCP revision negotiated, the tool families this server provides with each family's surface version, who you are (role and effective scopes), the limits, and which tools are deprecated with their replacement and removal version. Call it first.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "type": "object"
+      },
+      "name": "ledger_info",
+      "outputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "caller": {
+            "additionalProperties": false,
+            "properties": {
+              "authenticated": {
+                "type": "boolean"
+              },
+              "can_delete": {
+                "type": "boolean"
+              },
+              "can_write": {
+                "type": "boolean"
+              },
+              "id": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "role": {
+                "type": "string"
+              },
+              "scopes": {
+                "items": {
+                  "type": "string"
+                },
+                "type": [
+                  "null",
+                  "array"
+                ]
+              }
+            },
+            "required": [
+              "authenticated",
+              "scopes",
+              "can_write",
+              "can_delete"
+            ],
+            "type": "object"
+          },
+          "deprecated": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "removed_in": {
+                  "type": "string"
+                },
+                "replacement": {
+                  "type": "string"
+                },
+                "tool": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "tool",
+                "replacement",
+                "removed_in"
+              ],
+              "type": "object"
+            },
+            "type": [
+              "null",
+              "array"
+            ]
+          },
+          "families": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "tools": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": [
+                    "null",
+                    "array"
+                  ]
+                },
+                "version": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "name",
+                "version",
+                "tools"
+              ],
+              "type": "object"
+            },
+            "type": [
+              "null",
+              "array"
+            ]
+          },
+          "limits": {
+            "additionalProperties": false,
+            "properties": {
+              "default_limit": {
+                "type": "integer"
+              },
+              "max_history_limit": {
+                "type": "integer"
+              },
+              "max_limit": {
+                "type": "integer"
+              },
+              "max_result_bytes": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "default_limit",
+              "max_limit",
+              "max_history_limit",
+              "max_result_bytes"
+            ],
+            "type": "object"
+          },
+          "protocol_version": {
+            "description": "the MCP revision negotiated for this session",
+            "type": "string"
+          },
+          "server": {
+            "additionalProperties": false,
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "version": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "name",
+              "version"
+            ],
+            "type": "object"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "server",
+          "protocol_version",
+          "families",
+          "caller",
+          "limits",
+          "deprecated"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Case-insensitive substring search over every text, number and boolean field of every record (or of the listed collections), best matches first: an exact field value ranks above a partial one, and a match in a key field above another field. Use it when you do not know the collection, e.g. \"who uses port 10511\", \"which host has IP 198.51.100.20\". Each hit lists the fields that matched. include_docs is accepted for when records carry documents; this server has none yet.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "collections": {
+            "description": "limit to these collections",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "null",
+              "array"
+            ]
+          },
+          "cursor": {
+            "description": "next_cursor of the previous page",
+            "type": "string"
+          },
+          "include_docs": {
+            "description": "also search documents (none exist yet)",
+            "type": "boolean"
+          },
+          "limit": {
+            "description": "hits per page (default 50, max 500)",
+            "type": "integer"
+          },
+          "query": {
+            "description": "text to find (case-insensitive substring)",
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "type": "object"
+      },
+      "name": "ledger_search",
+      "outputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "collection": {
+                  "type": "string"
+                },
+                "data": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "matched_fields": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": [
+                    "null",
+                    "array"
+                  ]
+                },
+                "score": {
+                  "description": "higher is a better match",
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "collection",
+                "id",
+                "score",
+                "matched_fields",
+                "data"
+              ],
+              "type": "object"
+            },
+            "type": [
+              "null",
+              "array"
+            ]
+          },
+          "next_cursor": {
+            "type": "string"
+          },
+          "query": {
+            "type": "string"
+          },
+          "total": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "query",
+          "total",
+          "items",
+          "next_cursor"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Deprecated: use collections_list; removed in v0.7.0. List every collection in the ledger with its title, description, key fields, fields (name, title, type, required), reference links to other collections and record count. Call this first to learn the collection names and field names used by the other tools.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "type": "object"
+      },
+      "name": "list_collections",
+      "outputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "collections": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "description": {
+                  "type": "string"
+                },
+                "fields": {
+                  "items": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "name": {
+                        "type": "string"
+                      },
+                      "required": {
+                        "type": "boolean"
+                      },
+                      "title": {
+                        "type": "string"
+                      },
+                      "type": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "name"
+                    ],
+                    "type": "object"
+                  },
+                  "type": [
+                    "null",
+                    "array"
+                  ]
+                },
+                "group": {
+                  "type": "string"
+                },
+                "key": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": [
+                    "null",
+                    "array"
+                  ]
+                },
+                "name": {
+                  "type": "string"
+                },
+                "records": {
+                  "type": "integer"
+                },
+                "referencedBy": {
+                  "items": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "collection": {
+                        "type": "string"
+                      },
+                      "columns": {
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": [
+                          "null",
+                          "array"
+                        ]
+                      },
+                      "field": {
+                        "type": "string"
+                      },
+                      "title": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "collection",
+                      "field"
+                    ],
+                    "type": "object"
+                  },
+                  "type": [
+                    "null",
+                    "array"
+                  ]
+                },
+                "references": {
+                  "items": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "allow": {
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": [
+                          "null",
+                          "array"
+                        ]
+                      },
+                      "field": {
+                        "type": "string"
+                      },
+                      "many": {
+                        "type": "boolean"
+                      },
+                      "to": {
+                        "type": "string"
+                      },
+                      "toField": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "field",
+                      "to",
+                      "toField",
+                      "allow",
+                      "many"
+                    ],
+                    "type": "object"
+                  },
+                  "type": [
+                    "null",
+                    "array"
+                  ]
+                },
+                "title": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "name",
+                "title",
+                "fields",
+                "records"
+              ],
+              "type": "object"
+            },
+            "type": [
+              "null",
+              "array"
+            ]
+          },
+          "description": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "title",
+          "collections"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Deprecated: use ledger_check; removed in v0.7.0. List what is wrong with the ledger: validation errors (collection, record id, field path, message) and any store state that pauses writes (history_rewritten, config_error). Check this before writing, and after.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "type": "object"
+      },
+      "name": "list_problems",
+      "outputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "errors": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "collection": {
+                  "type": "string"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "message": {
+                  "type": "string"
+                },
+                "path": {
+                  "type": "string"
+                },
+                "rule": {
+                  "type": "string"
+                },
+                "severity": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "collection",
+                "id",
+                "path",
+                "rule",
+                "message"
+              ],
+              "type": "object"
+            },
+            "type": [
+              "null",
+              "array"
+            ]
+          },
+          "ok": {
+            "type": "boolean"
+          },
+          "store": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": [
+              "null",
+              "array"
+            ]
+          },
+          "warnings": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "collection": {
+                  "type": "string"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "message": {
+                  "type": "string"
+                },
+                "path": {
+                  "type": "string"
+                },
+                "rule": {
+                  "type": "string"
+                },
+                "severity": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "collection",
+                "id",
+                "path",
+                "rule",
+                "message"
+              ],
+              "type": "object"
+            },
+            "type": [
+              "null",
+              "array"
+            ]
+          }
+        },
+        "required": [
+          "ok",
+          "store",
+          "errors",
+          "warnings"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Deprecated: use records_query; removed in v0.7.0. List the records of one collection in file order, optionally filtered by exact field values (where is an object like {\"device\": \"web-1\", \"managed\": true}; all entries must match; values are compared as text). To answer \"what services run on host X\" use collection=services where={\"device\":\"X\"} and remember that rows with device \"all\" apply to every host.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "collection": {
+            "description": "collection name from list_collections",
+            "type": "string"
+          },
+          "where": {
+            "additionalProperties": true,
+            "description": "exact-match filter on fields, e.g. {\"device\":\"web-1\"}",
+            "type": "object"
+          }
+        },
+        "required": [
+          "collection"
+        ],
+        "type": "object"
+      },
+      "name": "list_records",
+      "outputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "collection": {
+            "type": "string"
+          },
+          "count": {
+            "type": "integer"
+          },
+          "records": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "data": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "id": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "data"
+              ],
+              "type": "object"
+            },
+            "type": [
+              "null",
+              "array"
+            ]
+          }
+        },
+        "required": [
+          "collection",
+          "count",
+          "records"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Deprecated: use history_list; removed in v0.7.0. List the commits that changed one record (newest first: hash, author, date, subject), falling back to the collection's file history for records edited before per-record history existed.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "collection": {
+            "description": "collection name",
+            "type": "string"
+          },
+          "id": {
+            "description": "record id",
+            "type": "string"
+          },
+          "limit": {
+            "description": "at most this many commits (default 20, max 200)",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "collection",
+          "id"
+        ],
+        "type": "object"
+      },
+      "name": "record_history",
+      "outputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "collection": {
+            "type": "string"
+          },
+          "commits": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "author": {
+                  "type": "string"
+                },
+                "date": {
+                  "type": "string"
+                },
+                "email": {
+                  "type": "string"
+                },
+                "hash": {
+                  "type": "string"
+                },
+                "subject": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "hash",
+                "author",
+                "email",
+                "date",
+                "subject"
+              ],
+              "type": "object"
+            },
+            "type": [
+              "null",
+              "array"
+            ]
+          },
+          "id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "collection",
+          "id",
+          "commits"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "Add a record to a collection. data is the whole record (see collections_describe for the fields). Validated like the console; fails with conflict if the id exists. result.change tells whether it was committed or opened as a pull request (url). dry_run shows the diff without writing.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "collection": {
+            "description": "collection name from collections_list",
+            "type": "string"
+          },
+          "confirm_not_secret": {
+            "description": "set true only after a secret_suspected error, when you have checked the value is not a secret",
+            "type": "boolean"
+          },
+          "data": {
+            "additionalProperties": true,
+            "description": "the full record: every field, as in records_get's data",
+            "type": "object"
+          },
+          "dry_run": {
+            "description": "validate and show the change without writing it",
+            "type": "boolean"
+          },
+          "idempotency_key": {
+            "description": "a repeated call with the same key and arguments within 24 hours returns the first result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "collection",
+          "data"
+        ],
+        "type": "object"
+      },
+      "name": "records_create",
+      "outputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "change": {
+            "additionalProperties": false,
+            "description": "absent when nothing changed or on a dry run",
+            "properties": {
+              "id": {
+                "description": "the short commit hash, or the pull request number",
+                "type": "string"
+              },
+              "kind": {
+                "description": "commit or pull_request",
+                "type": "string"
+              },
+              "url": {
+                "description": "the pull request",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "id"
+            ],
+            "type": [
+              "null",
+              "object"
+            ]
+          },
+          "cleared": {
+            "description": "references removed by a delete with clear_references",
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "collection": {
+                  "type": "string"
+                },
+                "field": {
+                  "type": "string"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "value": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "collection",
+                "id",
+                "field",
+                "value"
+              ],
+              "type": "object"
+            },
+            "type": [
+              "null",
+              "array"
+            ]
+          },
+          "dry_run": {
+            "additionalProperties": false,
+            "properties": {
+              "changed": {
+                "description": "false when the write would change nothing",
+                "type": "boolean"
+              },
+              "files": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "diff": {
+                      "description": "unified diff",
+                      "type": "string"
+                    },
+                    "path": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "description": "added or modified",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "path",
+                    "status",
+                    "diff"
+                  ],
+                  "type": "object"
+                },
+                "type": [
+                  "null",
+                  "array"
+                ]
+              },
+              "problems": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "details": {
+                      "additionalProperties": true,
+                      "type": "object"
+                    },
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ],
+                  "type": "object"
+                },
+                "type": [
+                  "null",
+                  "array"
+                ]
+              },
+              "valid": {
+                "description": "the change passes validation and the secret scan",
+                "type": "boolean"
+              },
+              "would_be": {
+                "description": "direct_push or pull_request",
+                "type": "string"
+              }
+            },
+            "required": [
+              "valid",
+              "changed",
+              "files",
+              "problems"
+            ],
+            "type": [
+              "null",
+              "object"
+            ]
+          },
+          "message": {
+            "type": "string"
+          },
+          "record": {
+            "additionalProperties": false,
+            "description": "the record as written; absent for a delete",
+            "properties": {
+              "data": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "hash": {
+                "type": "string"
+              },
+              "id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "hash",
+              "data"
+            ],
+            "type": [
+              "null",
+              "object"
+            ]
+          },
+          "replayed": {
+            "description": "true when this is the first result of the same idempotency_key",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "message"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "Delete a record. Needs expected_hash from records_get. A delete always opens a pull request, even for credentials that may commit directly. It is refused (conflict, details.references) while other records still reference the record, unless clear_references removes those references in the same change. dry_run shows the diff without writing.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "clear_references": {
+            "description": "also remove the references to this record from the records that hold them, in the same change",
+            "type": "boolean"
+          },
+          "collection": {
+            "description": "collection name",
+            "type": "string"
+          },
+          "dry_run": {
+            "description": "validate and show the change without writing it",
+            "type": "boolean"
+          },
+          "expected_hash": {
+            "description": "the hash from records_get",
+            "type": "string"
+          },
+          "id": {
+            "description": "record id",
+            "type": "string"
+          },
+          "idempotency_key": {
+            "description": "a repeated call with the same key and arguments within 24 hours returns the first result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "collection",
+          "id"
+        ],
+        "type": "object"
+      },
+      "name": "records_delete",
+      "outputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "change": {
+            "additionalProperties": false,
+            "description": "absent when nothing changed or on a dry run",
+            "properties": {
+              "id": {
+                "description": "the short commit hash, or the pull request number",
+                "type": "string"
+              },
+              "kind": {
+                "description": "commit or pull_request",
+                "type": "string"
+              },
+              "url": {
+                "description": "the pull request",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "id"
+            ],
+            "type": [
+              "null",
+              "object"
+            ]
+          },
+          "cleared": {
+            "description": "references removed by a delete with clear_references",
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "collection": {
+                  "type": "string"
+                },
+                "field": {
+                  "type": "string"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "value": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "collection",
+                "id",
+                "field",
+                "value"
+              ],
+              "type": "object"
+            },
+            "type": [
+              "null",
+              "array"
+            ]
+          },
+          "dry_run": {
+            "additionalProperties": false,
+            "properties": {
+              "changed": {
+                "description": "false when the write would change nothing",
+                "type": "boolean"
+              },
+              "files": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "diff": {
+                      "description": "unified diff",
+                      "type": "string"
+                    },
+                    "path": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "description": "added or modified",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "path",
+                    "status",
+                    "diff"
+                  ],
+                  "type": "object"
+                },
+                "type": [
+                  "null",
+                  "array"
+                ]
+              },
+              "problems": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "details": {
+                      "additionalProperties": true,
+                      "type": "object"
+                    },
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ],
+                  "type": "object"
+                },
+                "type": [
+                  "null",
+                  "array"
+                ]
+              },
+              "valid": {
+                "description": "the change passes validation and the secret scan",
+                "type": "boolean"
+              },
+              "would_be": {
+                "description": "direct_push or pull_request",
+                "type": "string"
+              }
+            },
+            "required": [
+              "valid",
+              "changed",
+              "files",
+              "problems"
+            ],
+            "type": [
+              "null",
+              "object"
+            ]
+          },
+          "message": {
+            "type": "string"
+          },
+          "record": {
+            "additionalProperties": false,
+            "description": "the record as written; absent for a delete",
+            "properties": {
+              "data": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "hash": {
+                "type": "string"
+              },
+              "id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "hash",
+              "data"
+            ],
+            "type": [
+              "null",
+              "object"
+            ]
+          },
+          "replayed": {
+            "description": "true when this is the first result of the same idempotency_key",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "message"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Get one record by id (the key field values joined with \"/\", with \"/\" and \"%\" inside a value written as %2F and %25): {id, hash, data}. Use the hash as expected_hash when you update or delete it. include adds backrefs (the records of other collections that reference it; for a device its addresses and services, including services declared for device \"all\") and history (the commits that changed it).",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "collection": {
+            "description": "collection name",
+            "type": "string"
+          },
+          "id": {
+            "description": "record id: key field values joined with /",
+            "type": "string"
+          },
+          "include": {
+            "description": "any of backrefs, doc, history",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "null",
+              "array"
+            ]
+          }
+        },
+        "required": [
+          "collection",
+          "id"
+        ],
+        "type": "object"
+      },
+      "name": "records_get",
+      "outputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "backrefs": {
+            "additionalProperties": {
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "data": {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  "hash": {
+                    "type": "string"
+                  },
+                  "id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "id",
+                  "hash",
+                  "data"
+                ],
+                "type": "object"
+              },
+              "type": [
+                "null",
+                "array"
+              ]
+            },
+            "type": "object"
+          },
+          "collection": {
+            "type": "string"
+          },
+          "data": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "hash": {
+            "type": "string"
+          },
+          "history": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "author": {
+                  "type": "string"
+                },
+                "date": {
+                  "type": "string"
+                },
+                "email": {
+                  "type": "string"
+                },
+                "hash": {
+                  "type": "string"
+                },
+                "subject": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "hash",
+                "author",
+                "email",
+                "date",
+                "subject"
+              ],
+              "type": "object"
+            },
+            "type": [
+              "null",
+              "array"
+            ]
+          },
+          "id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "collection",
+          "id",
+          "hash",
+          "data"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "List the records of one collection (file order unless order_by), filtered by where and search, one page at a time. where maps a field to a value for an exact match (an array field matches when any element equals it), or to {\"contains\": text} or {\"prefix\": text} (case-sensitive, like the console facets); every condition must hold. search is a case-insensitive substring over every field. fields keeps only those fields in each item's data. order_by is a field name, with a leading - for descending. Pass next_cursor back as cursor for the next page. For \"what services run on host X\" use collection=services where={\"device\":\"X\"}, and remember that rows with device \"all\" apply to every host.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "collection": {
+            "description": "collection name from collections_list",
+            "type": "string"
+          },
+          "cursor": {
+            "description": "next_cursor of the previous page",
+            "type": "string"
+          },
+          "fields": {
+            "description": "keep only these fields in data",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "null",
+              "array"
+            ]
+          },
+          "limit": {
+            "description": "items per page (default 50, max 500)",
+            "type": "integer"
+          },
+          "order_by": {
+            "description": "field name; a leading - sorts descending",
+            "type": "string"
+          },
+          "search": {
+            "description": "case-insensitive substring over every field",
+            "type": "string"
+          },
+          "where": {
+            "additionalProperties": true,
+            "description": "field to value (exact match) or to {contains: text} / {prefix: text}; every condition must hold",
+            "type": "object"
+          }
+        },
+        "required": [
+          "collection"
+        ],
+        "type": "object"
+      },
+      "name": "records_query",
+      "outputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "collection": {
+            "type": "string"
+          },
+          "items": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "data": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "hash": {
+                  "type": "string"
+                },
+                "id": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "hash",
+                "data"
+              ],
+              "type": "object"
+            },
+            "type": [
+              "null",
+              "array"
+            ]
+          },
+          "next_cursor": {
+            "description": "pass as cursor for the next page; empty on the last page",
+            "type": "string"
+          },
+          "total": {
+            "description": "how many records match, over all pages",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "collection",
+          "total",
+          "items",
+          "next_cursor"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "Replace a record. Needs expected_hash from records_get; data is the whole new record. Fails with conflict (and the current record in details) if it changed meanwhile, so the same call with the same expected_hash never applies twice. dry_run shows the diff without writing.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "collection": {
+            "description": "collection name",
+            "type": "string"
+          },
+          "confirm_not_secret": {
+            "description": "set true only after a secret_suspected error, when you have checked the value is not a secret",
+            "type": "boolean"
+          },
+          "data": {
+            "additionalProperties": true,
+            "description": "the full new record (not a patch): every field",
+            "type": "object"
+          },
+          "dry_run": {
+            "description": "validate and show the change without writing it",
+            "type": "boolean"
+          },
+          "expected_hash": {
+            "description": "the hash from records_get; the write fails with a conflict if the record changed since",
+            "type": "string"
+          },
+          "id": {
+            "description": "record id from records_query or records_get",
+            "type": "string"
+          },
+          "idempotency_key": {
+            "description": "a repeated call with the same key and arguments within 24 hours returns the first result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "collection",
+          "id",
+          "data"
+        ],
+        "type": "object"
+      },
+      "name": "records_update",
+      "outputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "change": {
+            "additionalProperties": false,
+            "description": "absent when nothing changed or on a dry run",
+            "properties": {
+              "id": {
+                "description": "the short commit hash, or the pull request number",
+                "type": "string"
+              },
+              "kind": {
+                "description": "commit or pull_request",
+                "type": "string"
+              },
+              "url": {
+                "description": "the pull request",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "id"
+            ],
+            "type": [
+              "null",
+              "object"
+            ]
+          },
+          "cleared": {
+            "description": "references removed by a delete with clear_references",
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "collection": {
+                  "type": "string"
+                },
+                "field": {
+                  "type": "string"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "value": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "collection",
+                "id",
+                "field",
+                "value"
+              ],
+              "type": "object"
+            },
+            "type": [
+              "null",
+              "array"
+            ]
+          },
+          "dry_run": {
+            "additionalProperties": false,
+            "properties": {
+              "changed": {
+                "description": "false when the write would change nothing",
+                "type": "boolean"
+              },
+              "files": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "diff": {
+                      "description": "unified diff",
+                      "type": "string"
+                    },
+                    "path": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "description": "added or modified",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "path",
+                    "status",
+                    "diff"
+                  ],
+                  "type": "object"
+                },
+                "type": [
+                  "null",
+                  "array"
+                ]
+              },
+              "problems": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "details": {
+                      "additionalProperties": true,
+                      "type": "object"
+                    },
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ],
+                  "type": "object"
+                },
+                "type": [
+                  "null",
+                  "array"
+                ]
+              },
+              "valid": {
+                "description": "the change passes validation and the secret scan",
+                "type": "boolean"
+              },
+              "would_be": {
+                "description": "direct_push or pull_request",
+                "type": "string"
+              }
+            },
+            "required": [
+              "valid",
+              "changed",
+              "files",
+              "problems"
+            ],
+            "type": [
+              "null",
+              "object"
+            ]
+          },
+          "message": {
+            "type": "string"
+          },
+          "record": {
+            "additionalProperties": false,
+            "description": "the record as written; absent for a delete",
+            "properties": {
+              "data": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "hash": {
+                "type": "string"
+              },
+              "id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "hash",
+              "data"
+            ],
+            "type": [
+              "null",
+              "object"
+            ]
+          },
+          "replayed": {
+            "description": "true when this is the first result of the same idempotency_key",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "message"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Deprecated: use ledger_search; removed in v0.7.0. Case-insensitive substring search over every text, number and boolean field of every record (or one collection). Use it for questions where you do not know the collection, e.g. \"who uses port 10511\" (query=10511), \"where is nginx\", \"which host has IP 198.51.100.20\". Each match lists the fields that matched.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "collection": {
+            "description": "limit to one collection",
+            "type": "string"
+          },
+          "query": {
+            "description": "text to find (case-insensitive substring)",
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "type": "object"
+      },
+      "name": "search",
+      "outputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "count": {
+            "type": "integer"
+          },
+          "matches": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "collection": {
+                  "type": "string"
+                },
+                "data": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "matchedFields": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": [
+                    "null",
+                    "array"
+                  ]
+                }
+              },
+              "required": [
+                "collection",
+                "id",
+                "matchedFields",
+                "data"
+              ],
+              "type": "object"
+            },
+            "type": [
+              "null",
+              "array"
+            ]
+          },
+          "query": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "query",
+          "count",
+          "matches"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "Deprecated: use records_update; removed in v0.7.0. Replace a record. Needs the hash from get_record; data is the whole new record. Fails with a conflict (and the current record) if it changed meanwhile.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "collection": {
+            "description": "collection name",
+            "type": "string"
+          },
+          "confirm_not_secret": {
+            "description": "set true only after a secret_suspected error, when you have checked the value is not a secret",
+            "type": "boolean"
+          },
+          "data": {
+            "additionalProperties": true,
+            "description": "the full new record (not a patch): every field",
+            "type": "object"
+          },
+          "hash": {
+            "description": "the hash from get_record; the write fails with a conflict if the record changed since",
+            "type": "string"
+          },
+          "id": {
+            "description": "record id from list_records or get_record",
+            "type": "string"
+          }
+        },
+        "required": [
+          "collection",
+          "id",
+          "hash",
+          "data"
+        ],
+        "type": "object"
+      },
+      "name": "update_record"
+    }
+  ]
+}

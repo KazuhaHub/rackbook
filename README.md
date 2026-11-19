@@ -389,9 +389,58 @@ rules as before: pull requests by default.
 
 #### What agents may write
 
-MCP offers `create_record`, `update_record` and `delete_record` (same
-validation and conflict rules as the API, `hash` from `get_record`), plus the
-read tools `record_history` and `list_problems`. Writes by an OAuth user or an
+#### MCP tools
+
+Tool names are `<family>_<verb>`; the full surface is specified in
+`docs/mcp-surface.md`. Start with `ledger_info` (server version, families, who
+you are, limits, deprecated tools).
+
+| family | tools |
+|---|---|
+| `ledger` | `ledger_info`, `ledger_search`, `ledger_check`, `ledger_export` |
+| `collections` | `collections_list`, `collections_describe` |
+| `records` | `records_query`, `records_get`, `records_create`, `records_update`, `records_delete` |
+| `history` | `history_list`, `history_diff` |
+| `expiry` | `expiry_list` |
+
+Lists and searches are paged with `cursor` / `next_cursor` (default 50, at most
+500 per page, 100 for history). Tool errors are results with `isError` and
+`{error, message, details?}`, using the HTTP API's codes. The server also offers
+the resources `rackbook://info`, `rackbook://collections`,
+`rackbook://collections/{collection}`, `rackbook://records/{collection}/{id}`
+(percent-encode the id), `rackbook://export/markdown` and `rackbook://llms.txt`,
+and the prompts `audit_record`, `prepare_change` and `explain_collection`.
+
+The v0.2 tool names still work in v0.6.0 as deprecated aliases with their old
+arguments and result shapes, and are removed in **v0.7.0**:
+
+| deprecated | use |
+|---|---|
+| `list_collections` | `collections_list` |
+| `get_schema` | `collections_describe` |
+| `list_records` | `records_query` |
+| `get_record` | `records_get` (`include` replaces the always-on backrefs) |
+| `search` | `ledger_search` |
+| `check`, `list_problems` | `ledger_check` (one tool for both) |
+| `export_markdown` | `ledger_export` |
+| `record_history` | `history_list` |
+| `create_record`, `update_record`, `delete_record` | `records_create`, `records_update` (`hash` is now `expected_hash`), `records_delete` |
+
+Each alias's description starts with `Deprecated: use <new>; removed in v0.7.0`,
+and `ledger_info.deprecated` lists them. `tools/list` shows the write tools only
+to callers whose role and scopes allow them.
+
+#### What agents may write
+
+MCP offers `records_create`, `records_update` and `records_delete` (same
+validation and conflict rules as the API, `expected_hash` from `records_get`).
+Each takes `dry_run: true` (the diff, the validation result and whether it would
+be a direct push or a pull request, writing nothing) and an optional
+`idempotency_key` (a repeat with the same key and arguments within 24 hours
+returns the first result; kept in memory, lost on restart). `records_delete`
+takes `clear_references`. A write returns `{change: {kind: commit|pull_request,
+id, url?}, record?}`; the read tools `history_list` and `history_diff` show what
+changed, and `ledger_check` reports what pauses writes. Writes by an OAuth user or an
 API token are **contributor level**: each one opens its own pull request from
 `rackbook/mcp/<user>/<yyyymmdd-hhmmss>` (needs `RACKBOOK_GITHUB_TOKEN` with
 pull-request permission), and the commit carries `Edited-by: <user>` and
@@ -861,7 +910,8 @@ A change is **breaking** if it is incompatible for any of:
 
 - the `rackbook.yml` format;
 - the HTTP API;
-- MCP tool names or arguments;
+- MCP tool names, arguments or result shapes (a rename keeps the old name as a
+  deprecated alias for one minor release);
 - the on-disk data layout.
 
 Every breaking release ships migration notes in its release notes.
@@ -917,7 +967,10 @@ Rackbook 是一个以 Git 为核心的基础设施台账：设备、内网地址
   服务端口等相关记录（带数量、搜索、分页，适用于所有记录的“通用”条目单独一页）；列表里的枚举、
   布尔、日期、标签单元格可直接修改；新增 / 编辑 / 删除表单按 Schema 校验（可搜索下拉、标签多选、
   已有值提示、端口列表），保存即提交到 Git（作者为编辑者）并推送。
-- `rackbook mcp`：MCP 服务，让 AI 读取台账。
+- `rackbook mcp`：MCP 服务，让 AI 读取台账。工具名统一为 `<族>_<动作>`（`ledger_info`、`collections_list`、
+  `records_query`、`records_get`、`history_list` 等；`serve` 下有写权限的调用方另有 `records_create`、
+  `records_update`、`records_delete`，均支持 `dry_run` 与 `idempotency_key`）。v0.2 的旧工具名（`list_records`、
+  `get_record`、`search`、`create_record` 等）在 v0.6.0 作为已弃用别名继续可用，v0.7.0 移除。
 - `rackbook export`：导出 Markdown、`llms.txt`、JSON。
 
 写入时只替换被修改的那一条记录所在的行，注释、空行和原有格式保持不变，Git diff 一目了然。

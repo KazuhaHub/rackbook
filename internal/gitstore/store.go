@@ -72,6 +72,7 @@ type Store struct {
 	git    bool
 	remote string // origin URL, "" when none
 	branch string
+	tip    atomic.Pointer[string] // copy of lastGood for lock-free history reads
 	log    *slog.Logger
 	http   *http.Client
 	token  string
@@ -387,6 +388,42 @@ func (s *Store) WriteFunc(ctx context.Context, apply ApplyFunc, who *auth.Identi
 	return &WriteResult{Result: res, Commit: commit, PullRequest: pr}, nil
 }
 
+// DryRunFunc runs apply as WriteFunc would, up to and including the change
+// itself, but writes nothing: apply must not write (edit.Op.DryRun). It takes the
+// write lock, makes the same checks a write makes first (a clone that is dirty,
+// diverged or behind a rewritten remote, a config that does not load, a pull
+// request that cannot be opened) and syncs the clone to the remote the same way.
+// pr says the real write would be a pull request.
+func (s *Store) DryRunFunc(ctx context.Context, apply ApplyFunc, opts WriteOptions) (res *edit.Result, pr bool, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.git {
+		if opts.ForcePR {
+			return nil, false, errPRNeedsGit
+		}
+		if err := s.reload(); err != nil {
+			return nil, false, err
+		}
+		res, err = apply(s.cur.Load().Config)
+		return res, false, err
+	}
+	pr = !opts.Direct && (opts.ForcePR || s.cur.Load().Config.Write.Mode == "pr")
+	if pr && s.token == "" {
+		return nil, false, fmt.Errorf("%w: write.mode is pr or this write must be a pull request, but RACKBOOK_GITHUB_TOKEN is not set", ErrPRUnavailable)
+	}
+	if pr && !s.HasRemote() {
+		if opts.ForcePR {
+			return nil, false, errPRNeedsGit
+		}
+		return nil, false, errors.New("write.mode is pr but the repository has no origin remote")
+	}
+	if err := s.syncLocked(ctx); err != nil {
+		return nil, false, err
+	}
+	res, err = apply(s.cur.Load().Config)
+	return res, pr, err
+}
+
 // ErrPRUnavailable is matched by errors.Is when a write must go through a pull
 // request but the server cannot open one (no Git remote, or no GitHub token).
 var ErrPRUnavailable = errors.New("pull requests are unavailable")
@@ -563,11 +600,25 @@ func (s *Store) openPR(ctx context.Context, title, prefix string, author Identit
 // collection's file history when no commit does (records edited before the
 // trailer existed, or by hand).
 func (s *Store) History(ctx context.Context, limit int, collection, id string) ([]Commit, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 20
+	}
+	return s.HistoryUpTo(ctx, limit, collection, id)
+}
+
+// MaxHistoryScan is the most commits HistoryUpTo returns.
+var MaxHistoryScan = 2000
+
+// HistoryUpTo is History for a caller that pages: limit is taken as given, up
+// to MaxHistoryScan, instead of falling back to 20 above 200.
+func (s *Store) HistoryUpTo(ctx context.Context, limit int, collection, id string) ([]Commit, error) {
 	if !s.git {
 		return []Commit{}, nil
 	}
-	if limit <= 0 || limit > 200 {
-		limit = 20
+	limit = max(1, min(limit, MaxHistoryScan))
+	tip, ok := s.trackedTip(ctx)
+	if !ok {
+		return []Commit{}, nil
 	}
 	if id != "" && collection == "" {
 		return nil, errors.New("id needs a collection")
@@ -584,25 +635,26 @@ func (s *Store) History(ctx context.Context, limit int, collection, id string) (
 		want := edit.RecordRef(collection, ledger.SafeID(s.Config(), collection, id))
 		// --fixed-strings makes the prefilter literal whatever grep.patternType
 		// says; it is a substring match, so the exact value is checked below.
-		commits, err := s.gitLog(ctx, limit, want, "--fixed-strings", "--grep=Record: "+want)
+		commits, err := s.gitLog(ctx, tip, limit, want, "--fixed-strings", "--grep=Record: "+want)
 		if err != nil || len(commits) > 0 {
 			return commits, err
 		}
 	}
 	if file != "" {
-		return s.gitLog(ctx, limit, "", "--", file)
+		return s.gitLog(ctx, tip, limit, "", "--", file)
 	}
-	return s.gitLog(ctx, limit, "")
+	return s.gitLog(ctx, tip, limit, "")
 }
 
-// gitLog runs git log with extra selection arguments. With record set, only
+// gitLog runs git log from tip with extra selection arguments. With record set, only
 // commits with exactly that Record trailer are returned (the limit then applies
 // after this check, since the git-side filter is a substring match).
-func (s *Store) gitLog(ctx context.Context, limit int, record string, extra ...string) ([]Commit, error) {
+func (s *Store) gitLog(ctx context.Context, tip string, limit int, record string, extra ...string) ([]Commit, error) {
 	args := []string{"log", "--format=%h%x1f%an%x1f%ae%x1f%aI%x1f%s%x1f%(trailers:key=Record,valueonly,separator=%x1e)"}
 	if record == "" {
 		args = append(args, "-n", fmt.Sprint(limit))
 	}
+	args = append(args, tip)
 	if !slices.Contains(extra, "--") {
 		// Rackbook's own state (passkeys) is not ledger history.
 		extra = append(slices.Clone(extra), "--", ".", ":(exclude)"+config.StateDir)
