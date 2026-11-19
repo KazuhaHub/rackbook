@@ -16,6 +16,7 @@ import { ApiError, errorMessage } from '@/lib/api'
 import { canEdit, fieldTitle, idFromPath, moduleFor, pointerToPath, recordHref, recordLabel, schemaProps, str } from '@/lib/ledger'
 import type { CheckError, Collection, LedgerRecord } from '@/lib/types'
 import { useAfterWrite, useCollection, useMeta } from '@/providers/meta'
+import { displayId } from '@/lib/recordId'
 
 export default function RecordFormPage({ mode }: { mode: 'create' | 'edit' }) {
   const { collection } = useParams()
@@ -259,7 +260,7 @@ function Editor({
                     {!own && (
                       <span className="font-medium">
                         {other?.title ?? e.collection}
-                        {e.id ? ` ${e.id}` : ''}：
+                        {e.id ? ` ${displayId(e.id)}` : ''}：
                       </span>
                     )}
                     {f && <span className="font-medium">{fieldTitle(col, f)}：</span>}
