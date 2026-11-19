@@ -445,6 +445,21 @@ changes.
   Image: distroless-like Alpine base with `git` and `openssh-client`, non-root
   user.
 
+### Held-back dependency upgrades
+
+Dependabot ignores these major versions (`.github/dependabot.yml`). Upgrade
+them later, by hand, when the reason no longer holds:
+
+- `@types/node` stays on the major that matches the Node used in CI and for
+  the web build (22.x), so the types match the runtime.
+- `react-router` stays on 7: `@refinedev/react-router` 2.x requires
+  `react-router ^7`. With 8 installed, refine keeps its own copy of 7 and the
+  console renders nothing ("useLocation() may be used only in the context of a
+  <Router>"). Upgrade when refine supports 8.
+- `@tanstack/react-table` stays on 8: 9 changes the generics and the features
+  API, and `@refinedev/react-table` 6.x requires `^8`. Upgrade together with a
+  refine release that supports 9.
+
 ## 9. Out of scope for v1
 
 Write tools in MCP; history/diff view per record; per-field permissions;

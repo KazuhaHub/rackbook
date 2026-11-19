@@ -32,3 +32,12 @@ updates:
       web:
         patterns: ["*"]
         update-types: [minor, patch]
+    # Major upgrades held back on purpose; see docs/design.md, "Held-back
+    # dependency upgrades".
+    ignore:
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: react-router
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "@tanstack/react-table"
+        update-types: ["version-update:semver-major"]
