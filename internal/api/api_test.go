@@ -329,8 +329,25 @@ func TestConsoleAndSecurityHeaders(t *testing.T) {
 			t.Fatalf("%s: missing security headers", path)
 		}
 	}
-	if resp, _ := http.Get(f.ts.URL + "/assets/missing.js"); resp.StatusCode != 404 {
-		t.Fatalf("missing asset: %d", resp.StatusCode)
+	if resp, _ := http.Get(f.ts.URL + "/assets/missing.js"); resp.StatusCode != 404 || resp.Header.Get("Cache-Control") != "no-store" {
+		t.Fatalf("missing asset: %d %q", resp.StatusCode, resp.Header.Get("Cache-Control"))
+	}
+	// index.html must be revalidated so a new release's chunk names reach open
+	// tabs; hashed assets never change, so they may be cached for good.
+	for path, want := range map[string]string{
+		"/":               "no-cache",
+		"/index.html":     "no-cache",
+		"/c/services/foo": "no-cache",
+		"/assets/app.js":  "public, max-age=31536000, immutable",
+	} {
+		resp, err := http.Get(f.ts.URL + path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if got := resp.Header.Get("Cache-Control"); got != want {
+			t.Fatalf("%s: Cache-Control %q, want %q", path, got, want)
+		}
 	}
 
 	f = newFixture(t, func(o *api.Options) { o.Web = fstest.MapFS{".gitkeep": {}} }, "")

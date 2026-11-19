@@ -736,6 +736,8 @@ func (s *server) static(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if path.Ext(name) != "" && strings.HasPrefix(name, "assets/") {
+			// A chunk from an older build: never let a proxy cache the miss.
+			w.Header().Set("Cache-Control", "no-store")
 			http.NotFound(w, r)
 			return
 		}

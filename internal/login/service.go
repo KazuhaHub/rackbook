@@ -394,6 +394,8 @@ func (s *Service) Reject(w http.ResponseWriter, r *http.Request, err error) {
 		writeJSON(w, http.StatusUnauthorized, body)
 		return
 	}
+	// The redirect depends on the session cookie, so no cache may keep it.
+	w.Header().Set("Cache-Control", "no-store")
 	http.Redirect(w, r, to, http.StatusFound)
 }
 
