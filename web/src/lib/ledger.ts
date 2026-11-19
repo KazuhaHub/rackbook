@@ -1,5 +1,6 @@
 import { t } from '@/i18n/zh-CN'
 import type { Collection, JsonSchema, LedgerRecord, Meta } from './types'
+import { displayId } from './recordId'
 
 export function schemaProps(col: Collection): [string, JsonSchema][] {
   return Object.entries(col.schema.properties ?? {})
@@ -36,7 +37,7 @@ export function recordLabel(col: Collection, rec: LedgerRecord): string {
     if (parts.length) return parts.join(' / ')
   }
   const first = schemaProps(col)[0]?.[0]
-  return (first && str(rec.data[first])) || rec.id
+  return (first && str(rec.data[first])) || displayId(rec.id)
 }
 
 export { idFromPath, recordHref } from './recordUrl'
