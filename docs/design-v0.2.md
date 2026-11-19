@@ -531,7 +531,7 @@ Agreed with the owner on 2026-11-18:
 10. **Built-in authorization server**, so standalone users without MCPHub can
     add Rackbook directly to Claude, Cursor, VS Code or MCP Inspector. It is
     proposed for **v0.6.0** (renumbered four times, see the versioning note below), before the storage work (now v0.7.0).
-    **Not started: it waits for the owner's OK on placement and cost.**
+    **Approved in round 5 (decision 12) and built in v0.6.0.**
     - Spec: the MCP authorization spec — OAuth 2.1 + PKCE S256, RFC 8707
       resource indicators (`aud` = the `/mcp` URL), RFC 8414 metadata, and
       client identification. Use Client ID Metadata Documents where the current
@@ -628,24 +628,32 @@ Rackbook uses SemVer (Go modules require SemVer tags). Release plan:
   module. The settings are typed once in the shared package `modsettings`
   (outside `internal/`, because modules may not import `internal/` and the
   server may not import `modules/`). Details: `modules.md` section 7.
-- **v0.6.0** — the built-in authorization server (decision 12), GitHub App
-  authentication (decision 14), record documents (decision 15) and the MCP
-  surface renames (decision 16). Planned as v0.4.0, then v0.5.0, until console
-  usability and the modules panel took those numbers; nothing in them changed.
+  Merged to `main` as #24; not tagged yet.
+- **v0.6.0** — the built-in authorization server (decisions 12 and 18 to 23)
+  and the MCP surface (decision 16: family-prefixed tools, `dry_run`,
+  `idempotency_key`, history tools, the v0.2 names as deprecated aliases).
+  Planned as v0.4.0, then v0.5.0, until console usability and the modules panel
+  took those numbers; nothing in them changed.
+- **v0.6.1** (proposal) — GitHub App authentication (decision 14) and record
+  documents (decision 15). Both were planned for v0.6.0 but are not in it: the
+  authorization server and the MCP surface were finished and reviewed first,
+  and neither of these two is needed by them. They keep their designs; only the
+  version changes. Proposed as v0.6.1 so they land before the storage work;
+  the owner may instead fold them into v0.7.0.
 - **v0.7.0** — storage: one record per file (design in
   `design-v0.4-storage.md`; the file keeps its name).
 - **1.0** — once the storage layout, config format and API are stable.
 
 See README, "Versioning and compatibility".
 
-### Decisions, round 6 (2026-11-18): separate ledger repository, GitHub App credentials (v0.6.0)
+### Decisions, round 6 (2026-11-18): separate ledger repository, GitHub App credentials (v0.6.1, proposed)
 
 13. **Rackbook writes only to a dedicated data repository** (for the owner:
     KazuhaHub/ledger), never to an infrastructure repo. In the owner's setup
     the infra repo's `main` is applied as root on every host, so a write
     credential for it would amount to root. Infra may *read* the ledger;
     Rackbook never holds a credential for infra.
-14. **GitHub App authentication (v0.6.0)**, as an alternative to deploy key +
+14. **GitHub App authentication (v0.6.1, proposed; planned for v0.6.0)**, as an alternative to deploy key +
     PAT. One credential replaces both.
     - An org-owned GitHub App, installed **only** on the data repository, with
       repository permissions `contents: write` and `pull_requests: write`.
@@ -796,7 +804,7 @@ Details settled while building:
 - Groups for `group:` role entries are stored with the grant (bounded like the
   session cookie) and are not refreshed until the person approves again.
 
-### Decision 15 (2026-11-18): record documents (v0.6.0)
+### Decision 15 (2026-11-18): record documents (v0.6.1, proposed)
 
 15. **A Markdown document per record**, for runbooks, history and anything
     else that doesn't fit fields. Generic for every collection.
