@@ -9,6 +9,7 @@
     "build": "tsc -b && vite build && node scripts/post-build.mjs",
     "typecheck": "tsc -b",
     "check:formats": "node --experimental-strip-types scripts/check-formats.mts",
+    "check:record-urls": "node --experimental-strip-types scripts/check-record-urls.mts",
     "check:stale-chunk": "node --experimental-strip-types scripts/check-stale-chunk.mts",
     "lint": "eslint . && tsc -b",
     "preview": "vite preview"

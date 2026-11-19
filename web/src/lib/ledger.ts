@@ -39,22 +39,7 @@ export function recordLabel(col: Collection, rec: LedgerRecord): string {
   return (first && str(rec.data[first])) || rec.id
 }
 
-/**
- * The record id from the URL. React Router decodes params and re-encodes "/", which
- * corrupts ids that contain %2F or %25, so decode the raw path segment exactly once.
- */
-export function idFromPath(pathname: string): string | undefined {
-  const seg = pathname.split('/')[3]
-  if (seg === undefined || seg === '') return undefined
-  try {
-    return decodeURIComponent(seg)
-  } catch {
-    return seg
-  }
-}
-
-export const recordHref = (collection: string, id: string) =>
-  `/c/${encodeURIComponent(collection)}/${encodeURIComponent(id)}`
+export { idFromPath, recordHref } from './recordUrl'
 
 export function canEdit(meta: Meta): boolean {
   if (meta.readOnly) return false
