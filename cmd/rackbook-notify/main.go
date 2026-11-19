@@ -21,7 +21,10 @@ import (
 var version = "dev"
 
 type notifier struct {
-	cfg       *Config
+	base      *Config // the local config
+	cfg       *Config // base with the console's settings applied; set by cycle
+	now       func() time.Time
+	sent      int // reminders delivered by the last run
 	client    *rbclient.Client
 	statePath string
 	dryRun    bool
@@ -38,10 +41,13 @@ func newNotifier(cfg *Config, dryRun bool, out io.Writer, log *slog.Logger) (*no
 	if err != nil {
 		return nil, err
 	}
-	return &notifier{cfg: cfg, client: client, statePath: resolveStatePath(cfg.StateFile), dryRun: dryRun, out: out, log: log}, nil
+	return &notifier{cfg: cfg, base: cfg, now: time.Now, client: client, statePath: resolveStatePath(cfg.StateFile), dryRun: dryRun, out: out, log: log}, nil
 }
 
 func (n *notifier) run(ctx context.Context) error {
+	if n.cfg.SMTP != nil && len(n.cfg.SMTP.To) == 0 {
+		return errNoRecipients
+	}
 	state, err := loadState(n.statePath)
 	if err != nil {
 		return err
@@ -51,14 +57,17 @@ func (n *notifier) run(ctx context.Context) error {
 		return fmt.Errorf("fetch expiring: %w", err)
 	}
 	due, next := plan(state, res.Items, n.cfg.Thresholds)
-	if len(due) == 0 {
+	next.Recipients = state.Recipients
+	failures, seen := n.failures(ctx, state)
+	next.FailedSeen = seen
+	if len(due) == 0 && len(failures) == 0 {
 		n.log.Info("no reminders due", "listed", len(res.Items))
 		if n.dryRun {
 			return nil
 		}
 		return saveState(n.statePath, next)
 	}
-	digest := buildDigest(n.cfg.Language, n.cfg.Rackbook.URL, due)
+	digest := buildDigestWith(n.cfg.Language, n.cfg.Rackbook.URL, due, failures)
 	text := digest.Subject + "\n\n" + digest.Body
 	if n.dryRun {
 		fmt.Fprintf(n.out, "Subject: %s\n\n%s", digest.Subject, digest.Body)
@@ -76,7 +85,7 @@ func (n *notifier) run(ctx context.Context) error {
 		if err != nil {
 			errs = append(errs, fmt.Errorf("email: %w", err))
 		} else {
-			n.log.Info("email sent", "items", len(due))
+			n.log.Info("email sent", "items", len(due), "failed_modules", len(failures))
 		}
 	}
 	if w := n.cfg.Webhook; w != nil {
@@ -91,12 +100,13 @@ func (n *notifier) run(ctx context.Context) error {
 		if err != nil {
 			errs = append(errs, err)
 		} else {
-			n.log.Info("webhook sent", "items", len(due))
+			n.log.Info("webhook sent", "items", len(due), "failed_modules", len(failures))
 		}
 	}
 	if len(errs) > 0 {
 		return errors.Join(errs...)
 	}
+	n.sent = len(due) + len(failures)
 	return saveState(n.statePath, next)
 }
 
@@ -107,7 +117,8 @@ func realMain(args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	cfgPath := fs.String("config", "/etc/rackbook/notify.yml", "path to the config file")
 	once := fs.Bool("once", false, "run once and exit")
-	dry := fs.Bool("dry-run", false, "print the digest, send nothing and save nothing")
+	dry := fs.Bool("dry-run", false, "print the digest, send nothing and save nothing (ignores the schedule)")
+	force := fs.Bool("force", false, "run now even if no send time has passed or the module is paused in the console")
 	showVersion := fs.Bool("version", false, "print the version and exit")
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -130,27 +141,28 @@ func realMain(args []string, stdout, stderr io.Writer) int {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	err = n.run(ctx)
-	if err != nil {
-		log.Error("run failed", "error", err)
-	}
-	if *once {
-		if err != nil {
-			return 1
-		}
-		return 0
-	}
-	t := time.NewTicker(cfg.Interval)
-	defer t.Stop()
 	for {
+		failed, panel := n.cycle(ctx, options{dry: *dry, force: *force})
+		if ctx.Err() != nil {
+			log.Info("stopping")
+			return 0
+		}
+		if *once {
+			if failed {
+				return 1
+			}
+			return 0
+		}
+		// with settings from the console the send times decide; check every hour
+		wait := cfg.Interval
+		if panel {
+			wait = time.Hour
+		}
 		select {
 		case <-ctx.Done():
 			log.Info("stopping")
 			return 0
-		case <-t.C:
-			if err := n.run(ctx); err != nil && ctx.Err() == nil {
-				log.Error("run failed", "error", err)
-			}
+		case <-time.After(wait):
 		}
 	}
 }
