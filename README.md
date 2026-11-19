@@ -384,7 +384,9 @@ only its SHA-256 (committed as `rackbook(auth): create token <name>` /
   /64. The IP is the connecting address; `CF-Connecting-IP` is believed only
   from proxies listed in `--trusted-proxy` (CIDRs).
 - `rackbook token list` and `rackbook token revoke <name> [--commit|--push]`
-  work on the file directly; "last used" is kept in memory only.
+  work on the file directly. "Last used" is kept in memory, or across restarts
+  in `<state-dir>/token-use.json` when `serve --state-dir` (`RACKBOOK_STATE_DIR`)
+  names a writable directory outside the data repository (e.g. `/data/state`).
 
 ### Rackbook never force-pushes
 

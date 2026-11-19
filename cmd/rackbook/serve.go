@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"os/signal"
 	"strings"
 	"syscall"
@@ -64,6 +65,7 @@ RACKBOOK_GITHUB_TOKEN.`,
 	f.String("accept-remote", "", "accept the remote's rewritten history: the commit hash of the current origin tip, checked first (see docs/design.md, Git)")
 	f.Bool("read-only", false, "refuse all writes")
 	f.Bool("no-git", false, "edit files in place without Git, even inside a repository")
+	f.String("state-dir", "", "directory for runtime state kept across restarts (token last use); outside the data repository; empty = memory only")
 	f.Duration("pull-interval", time.Minute, "how often to fetch and fast-forward from origin (0 disables)")
 	f.String("committer", gitstore.DefaultCommitter.String(), `committer identity of server commits ("Name <email>")`)
 	f.String("base-url", "", "public URL of the console, used in /llms.txt (default: derived from the request)")
@@ -172,6 +174,17 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("--trusted-proxy: %w", perr)
 	}
 	registry := &tokens.Registry{Store: store}
+	if dir, _ := f.GetString("state-dir"); dir != "" {
+		// a file inside the clone would make it dirty and stop every write
+		abs, _ := filepath.Abs(dir)
+		if rel, err := filepath.Rel(cfg.Dir, abs); err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return fmt.Errorf("--state-dir %s is inside the data repository; put it beside the clone", dir)
+		}
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return fmt.Errorf("--state-dir: %w", err)
+		}
+		registry.UsePath = filepath.Join(dir, "token-use.json")
+	}
 	resource := &mcpauth.Resource{Config: store.Config, Auth: authn, Verifier: &oauth.Verifier{}, Tokens: registry, Limiter: &tokens.Limiter{}, TrustedProxies: proxies, Log: logger}
 	authn.SetBearer(resource)
 	meta := resource.MetadataHandler()

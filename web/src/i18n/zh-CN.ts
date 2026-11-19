@@ -631,7 +631,7 @@ export const t = {
     created: '创建时间',
     expiresAt: '过期时间',
     lastUsed: '最近使用',
-    lastUsedHint: '自服务器上次重启以来',
+    lastUsedHint: '设置了 --state-dir 时跨重启保留；否则只记录服务器上次重启以来的使用',
     never: '从未',
     status: { active: '有效', revoked: '已撤销', expired: '已过期' } as Record<string, string>,
     warnings: {

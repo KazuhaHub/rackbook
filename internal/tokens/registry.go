@@ -3,8 +3,12 @@ package tokens
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -18,6 +22,9 @@ type Registry struct {
 	Store *gitstore.Store
 	// Now is the clock; nil = time.Now.
 	Now func() time.Time
+	// UsePath is a JSON file that keeps the last use of each token across
+	// restarts (serve --state-dir). Empty = in memory only.
+	UsePath string
 
 	mu     sync.Mutex
 	raw    []byte
@@ -25,6 +32,8 @@ type Registry struct {
 	perr   error
 	loaded bool
 	used   map[string]time.Time
+	// usedLoaded is set once UsePath has been read.
+	usedLoaded bool
 }
 
 func (r *Registry) now() time.Time {
@@ -61,22 +70,80 @@ func (r *Registry) Lookup(secret string) (*Token, error) {
 	return Match(ts, secret, r.now())
 }
 
-// Touch records a use of the token (in memory only).
+// Touch records a use of the token. With UsePath the file is rewritten when
+// the token's recorded use is a minute old or more, so a busy token does not
+// write on every request.
 func (r *Registry) Touch(name string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.used == nil {
-		r.used = map[string]time.Time{}
+	r.loadUsed()
+	now := r.now()
+	prev, seen := r.used[name]
+	r.used[name] = now
+	if r.UsePath != "" && (!seen || now.Sub(prev) >= time.Minute) {
+		if err := r.saveUsed(); err != nil {
+			slog.Warn("token last-use not saved", "file", r.UsePath, "err", err)
+		}
 	}
-	r.used[name] = r.now()
 }
 
-// LastUsed is when the token was last used since the server started.
+// LastUsed is when the token was last used: since the server started, or
+// across restarts with UsePath.
 func (r *Registry) LastUsed(name string) (time.Time, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.loadUsed()
 	t, ok := r.used[name]
 	return t, ok
+}
+
+// loadUsed reads UsePath once; a missing or unreadable file starts empty.
+func (r *Registry) loadUsed() {
+	if r.used == nil {
+		r.used = map[string]time.Time{}
+	}
+	if r.usedLoaded || r.UsePath == "" {
+		return
+	}
+	r.usedLoaded = true
+	b, err := os.ReadFile(r.UsePath)
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			slog.Warn("token last-use not read", "file", r.UsePath, "err", err)
+		}
+		return
+	}
+	var m map[string]time.Time
+	if err := json.Unmarshal(b, &m); err != nil {
+		slog.Warn("token last-use not read", "file", r.UsePath, "err", err)
+		return
+	}
+	for k, v := range m {
+		if v.After(r.used[k]) {
+			r.used[k] = v
+		}
+	}
+}
+
+// saveUsed writes the map to UsePath through a temporary file and a rename.
+func (r *Registry) saveUsed() error {
+	b, err := json.Marshal(r.used)
+	if err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(r.UsePath), ".token-use-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp.Name())
+	if _, err := tmp.Write(b); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), r.UsePath)
 }
 
 // CreateParams describes a new token.
