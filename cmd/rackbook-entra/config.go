@@ -26,6 +26,10 @@ type Config struct {
 	Entra    EntraConfig    `yaml:"entra"`
 	Interval time.Duration  `yaml:"interval"`
 	Record   RecordConfig   `yaml:"record"`
+
+	// set* remember which fields the file spelled out (finish fills defaults),
+	// so a setting from the console can tell that it overrides a local one.
+	setServicePrincipals, setNamePrefix, setPurpose bool
 }
 
 type RackbookConfig struct {
@@ -128,6 +132,7 @@ func (c *Config) finish() error {
 	if e.GraphURL, err = parseHTTPURL("entra.graph_url", e.GraphURL); err != nil {
 		return err
 	}
+	c.setServicePrincipals = e.ServicePrincipals != nil
 	if e.ServicePrincipals == nil {
 		t := true
 		e.ServicePrincipals = &t
@@ -141,6 +146,7 @@ func (c *Config) finish() error {
 	}
 
 	rc := &c.Record
+	c.setNamePrefix, c.setPurpose = rc.NamePrefix != nil, rc.Purpose != ""
 	if rc.NamePrefix == nil {
 		p := "entra-"
 		rc.NamePrefix = &p

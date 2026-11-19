@@ -327,7 +327,9 @@ func (r result) writes() int { return r.Created + r.Updated + r.Revoked }
 
 // app holds everything one sync needs.
 type app struct {
-	cfg   *Config
+	base *Config // the local config
+	cfg  *Config // base with the console's settings applied; set by cycle
+
 	graph *graphClient
 	rb    *rbclient.Client
 	out   io.Writer

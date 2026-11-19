@@ -25,7 +25,8 @@ func run(args []string) int {
 	fs := flag.NewFlagSet("rackbook-entra", flag.ContinueOnError)
 	cfgPath := fs.String("config", "/etc/rackbook/entra.yml", "path of the config file")
 	once := fs.Bool("once", false, "run one sync and exit")
-	dry := fs.Bool("dry-run", false, "print the planned changes and write nothing")
+	dry := fs.Bool("dry-run", false, "print the planned changes and write nothing (ignores the schedule)")
+	force := fs.Bool("force", false, "sync now even if no sync time has passed or the module is paused in the console")
 	showVersion := fs.Bool("version", false, "print the version and exit")
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -50,16 +51,12 @@ func run(args []string) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	log.Info("starting", "version", version, "once", *once, "dry_run", *dry)
+	log.Info("starting", "version", version, "once", *once, "dry_run", *dry, "force", *force)
 	for {
-		res, err := a.syncOnce(ctx, *dry)
+		failed, panel := a.cycle(ctx, options{dry: *dry, force: *force})
 		if ctx.Err() != nil {
 			log.Info("stopping")
 			return 0
-		}
-		failed := err != nil || res.Failed > 0
-		if err != nil {
-			log.Error("sync failed", "err", err)
 		}
 		if *once {
 			if failed {
@@ -67,11 +64,16 @@ func run(args []string) int {
 			}
 			return 0
 		}
+		// with settings from the console the sync times decide; check every hour
+		wait := cfg.Interval
+		if panel {
+			wait = time.Hour
+		}
 		select {
 		case <-ctx.Done():
 			log.Info("stopping")
 			return 0
-		case <-time.After(cfg.Interval):
+		case <-time.After(wait):
 		}
 	}
 }
@@ -93,6 +95,7 @@ func newApp(cfg *Config, log *slog.Logger) (*app, error) {
 	ts := newTokenSource(cfg.Entra, key, cert, hc)
 	return &app{
 		cfg:   cfg,
+		base:  cfg,
 		graph: newGraphClient(cfg.Entra.GraphURL, ts, hc),
 		rb:    rb,
 		out:   os.Stdout,
