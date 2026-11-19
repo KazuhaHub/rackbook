@@ -27,6 +27,7 @@ import (
 	"github.com/kazuhahub/rackbook/internal/login"
 	"github.com/kazuhahub/rackbook/internal/mcpauth"
 	"github.com/kazuhahub/rackbook/internal/mcpserver"
+	"github.com/kazuhahub/rackbook/internal/modules"
 	"github.com/kazuhahub/rackbook/internal/tokens"
 	"github.com/kazuhahub/rackbook/web"
 )
@@ -65,7 +66,7 @@ RACKBOOK_GITHUB_TOKEN.`,
 	f.String("accept-remote", "", "accept the remote's rewritten history: the commit hash of the current origin tip, checked first (see docs/design.md, Git)")
 	f.Bool("read-only", false, "refuse all writes")
 	f.Bool("no-git", false, "edit files in place without Git, even inside a repository")
-	f.String("state-dir", "", "directory for runtime state kept across restarts (token last use); outside the data repository; empty = memory only")
+	f.String("state-dir", "", "directory for runtime state kept across restarts (token last use, module runs); outside the data repository; empty = memory only")
 	f.Duration("pull-interval", time.Minute, "how often to fetch and fast-forward from origin (0 disables)")
 	f.String("committer", gitstore.DefaultCommitter.String(), `committer identity of server commits ("Name <email>")`)
 	f.String("base-url", "", "public URL of the console, used in /llms.txt (default: derived from the request)")
@@ -174,6 +175,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("--trusted-proxy: %w", perr)
 	}
 	registry := &tokens.Registry{Store: store}
+	modState := &modules.State{}
 	if dir, _ := f.GetString("state-dir"); dir != "" {
 		// a file inside the clone would make it dirty and stop every write
 		abs, _ := filepath.Abs(dir)
@@ -184,6 +186,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 			return fmt.Errorf("--state-dir: %w", err)
 		}
 		registry.UsePath = filepath.Join(dir, "token-use.json")
+		modState.Path = filepath.Join(dir, "modules.json")
 	}
 	resource := &mcpauth.Resource{Config: store.Config, Auth: authn, Verifier: &oauth.Verifier{}, Tokens: registry, Limiter: &tokens.Limiter{}, TrustedProxies: proxies, Log: logger}
 	authn.SetBearer(resource)
@@ -193,7 +196,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		Store: store, Auth: authn, ReadOnly: readOnly, BaseURL: baseURL, Web: dist, Logger: logger, RestrictHost: mode == auth.ModeNone, Login: loginMount,
 		MCP:    mcpauth.Handler(mcpserver.Handler(mcpSrv, mode != auth.ModeNone || baseURL != "" || cfg.Auth.MCP.Enabled())),
 		Public: map[string]http.Handler{mcpauth.MetadataPath: meta, mcpauth.MetadataPathMCP: meta},
-		Tokens: registry,
+		Tokens: registry, Modules: modState,
 	})
 
 	addr, _ := f.GetString("listen")

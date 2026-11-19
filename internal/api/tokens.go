@@ -42,10 +42,12 @@ func (s *server) tokenAdmin(w http.ResponseWriter, r *http.Request, write bool) 
 
 type tokenOut struct {
 	tokens.Token
-	Status      string   `json:"status"` // active, revoked, expired
-	LastUsed    string   `json:"lastUsed,omitempty"`
-	CreatorRole string   `json:"creatorRole"`
-	Warnings    []string `json:"warnings"`
+	Status      string `json:"status"` // active, revoked, expired
+	LastUsed    string `json:"lastUsed,omitempty"`
+	CreatorRole string `json:"creatorRole"`
+	// Module is the module (modules: in rackbook.yml) that uses this token.
+	Module   string   `json:"module,omitempty"`
+	Warnings []string `json:"warnings"`
 }
 
 func (s *server) describe(t tokens.Token) tokenOut {
@@ -59,6 +61,9 @@ func (s *server) describe(t tokens.Token) tokenOut {
 	}
 	if lu, ok := s.o.Tokens.LastUsed(t.Name); ok {
 		out.LastUsed = lu.UTC().Format(time.RFC3339)
+	}
+	if name, _ := s.o.Store.Config().ModuleForToken(t.Name); name != "" {
+		out.Module = name
 	}
 	role := s.o.Auth.RoleForVia(t.CreatedBy, t.SubjectMethod())
 	out.CreatorRole = role.String()

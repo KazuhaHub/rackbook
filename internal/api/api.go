@@ -20,6 +20,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/kazuhahub/rackbook/internal/apierr"
 	"github.com/kazuhahub/rackbook/internal/auth"
@@ -28,6 +29,7 @@ import (
 	"github.com/kazuhahub/rackbook/internal/export"
 	"github.com/kazuhahub/rackbook/internal/gitstore"
 	"github.com/kazuhahub/rackbook/internal/ledger"
+	"github.com/kazuhahub/rackbook/internal/modules"
 	"github.com/kazuhahub/rackbook/internal/roles"
 	"github.com/kazuhahub/rackbook/internal/tokens"
 	"github.com/kazuhahub/rackbook/internal/validate"
@@ -58,6 +60,11 @@ type Options struct {
 	Public map[string]http.Handler
 	// Tokens enables the admin token endpoints (/api/admin/tokens).
 	Tokens *tokens.Registry
+	// Modules keeps the run history and run requests of the modules panel; nil
+	// = in memory only.
+	Modules *modules.State
+	// Now is the clock; nil = time.Now.
+	Now func() time.Time
 }
 
 type server struct {
@@ -79,6 +86,9 @@ func New(o Options) http.Handler {
 		}
 		s.o.Auth = a
 	}
+	if s.o.Modules == nil {
+		s.o.Modules = &modules.State{}
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, "ok\n") })
 	mux.HandleFunc("GET /api/meta", s.meta)
@@ -93,6 +103,7 @@ func New(o Options) http.Handler {
 	mux.HandleFunc("POST /api/admin/accept-remote", s.acceptRemote)
 	s.tokenRoutes(mux)    // tokens.go
 	s.typesRoutes(mux)    // types.go
+	s.modulesRoutes(mux)  // modules.go
 	s.brandingRoutes(mux) // branding.go: public
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "not_found", "no such API endpoint")
@@ -296,6 +307,8 @@ type collectionOut struct {
 
 type moduleOut struct {
 	Name       string   `json:"name"`
+	Type       string   `json:"type,omitempty"`
+	ReadOnly   bool     `json:"readOnly"`
 	Collection string   `json:"collection"`
 	Fields     []string `json:"fields"`
 	DirectPush bool     `json:"directPush"`
@@ -344,7 +357,7 @@ func (s *server) meta(w http.ResponseWriter, r *http.Request) {
 	}
 	mods := make([]moduleOut, 0, len(cfg.Modules))
 	for name, m := range cfg.Modules {
-		mods = append(mods, moduleOut{Name: name, Collection: m.Collection, Fields: strs(m.Fields), DirectPush: m.DirectPush})
+		mods = append(mods, moduleOut{Name: name, Type: m.Type, ReadOnly: m.ReadOnly(), Collection: m.Collection, Fields: strs(m.Fields), DirectPush: m.DirectPush})
 	}
 	sort.Slice(mods, func(i, j int) bool { return mods[i].Name < mods[j].Name })
 	meta := map[string]any{
