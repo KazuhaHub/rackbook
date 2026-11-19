@@ -34,18 +34,18 @@ func TestValidateRedirectCharacters(t *testing.T) {
 		}
 	}
 	bad := []string{
-		"https://аpp.example/cb",        // Cyrillic a
-		"https://app.exаmple/cb",        // Cyrillic a
+		"https://аpp.example/cb",             // Cyrillic a
+		"https://app.exаmple/cb",             // Cyrillic a
 		"https://app.example/cb\u202e",       // right-to-left override
 		"https://app\u200b.example/cb",       // zero-width space
 		"https://app.example\u2066/cb",       // bidi isolate
 		"https://app.example/\u00ad",         // soft hyphen
-		"https://ａpp.example/cb",        // full-width a
-		"https://app.example/cb\x00",    // control
-		"https://app.example/c b",       // space
-		"cursor://аnysphere.cursor/cb",  // look-alike in a private-use scheme host
+		"https://ａpp.example/cb",             // full-width a
+		"https://app.example/cb\x00",         // control
+		"https://app.example/c b",            // space
+		"cursor://аnysphere.cursor/cb",       // look-alike in a private-use scheme host
 		"cursor://anysphere.cursor/\u200bcb", // zero-width in a private-use scheme path
-		"https://app.example/中",         // any non-ASCII
+		"https://app.example/中",              // any non-ASCII
 	}
 	for _, s := range bad {
 		if err := validateRedirect(s); err == nil {

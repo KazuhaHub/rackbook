@@ -13,6 +13,7 @@ import (
 	"net/netip"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -87,6 +88,7 @@ type opts struct {
 	stateDir    string
 	mcpYAML     string // extra lines under auth.mcp (indented 4)
 	trusted     bool   // trust CF-Connecting-IP from the loopback proxy
+	git         bool   // make the ledger a Git repository (writes become commits)
 }
 
 type env struct {
@@ -94,6 +96,7 @@ type env struct {
 	o        opts
 	clock    *clock
 	dir      string // state directory
+	repo     string // the ledger checkout
 	addr     string
 	base     string // issuer
 	resource string
@@ -149,11 +152,21 @@ func newEnv(t *testing.T, o opts) *env {
 	if err := os.WriteFile(cfgPath, b, 0o644); err != nil {
 		t.Fatal(err)
 	}
+	if o.git {
+		for _, args := range [][]string{{"init", "-b", "main"}, {"config", "user.email", "t@example.org"}, {"config", "user.name", "t"}, {"add", "."}, {"commit", "-m", "seed"}} {
+			cmd := exec.Command("git", args...)
+			cmd.Dir = seed
+			if out, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("git %v: %v\n%s", args, err, out)
+			}
+		}
+	}
 	st, err := gitstore.Open(context.Background(), gitstore.Options{ConfigPath: cfgPath, Committer: gitstore.Identity{Name: "Rackbook", Email: "rackbook@example.org"}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	e.store, e.cfg = st, st.Config()
+	e.repo = seed
 	e.start(ln)
 	return e
 }
