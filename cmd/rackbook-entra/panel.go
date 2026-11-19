@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"maps"
 	"reflect"
-	"sort"
 	"strings"
 	"time"
 
@@ -79,15 +78,6 @@ func unionIDs(a, b []string) []string {
 			}
 		}
 	}
-	return out
-}
-
-func lowerSorted(in []string) []string {
-	out := make([]string, len(in))
-	for i, s := range in {
-		out[i] = strings.ToLower(strings.TrimSpace(s))
-	}
-	sort.Strings(out)
 	return out
 }
 
