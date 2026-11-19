@@ -158,3 +158,50 @@ func TestFormatSchemaStyle(t *testing.T) {
 		t.Fatalf("got:\n%s\nwant:\n%s", got, raw)
 	}
 }
+
+// The console renders arrays of enum values (tags) and arrays of pattern-checked
+// strings (port lists) and reads `x-rackbook` options such as suggest. The type
+// editor has no field type for them: they are advanced fields, kept as they are,
+// and an edit of another field leaves them byte for byte.
+func TestArrayFieldsAndConsoleOptionsSurviveATypeEdit(t *testing.T) {
+	raw := []byte(`{
+  "type": "object",
+  "required": ["name"],
+  "properties": {
+    "name": {"type": "string", "title": "名称", "x-rackbook": {"suggest": false}},
+    "exposure": {"type": "array", "title": "开放范围", "uniqueItems": true, "items": {"type": "string", "enum": ["公网", "Tailscale"]}},
+    "ports": {"type": "array", "title": "端口", "items": {"type": "string", "pattern": "^[0-9]{1,5}(-[0-9]{1,5})?$"}}
+  }
+}
+`)
+	col := &config.Collection{Name: "x", File: "f", Schema: "s"}
+	ty, err := ParseType(col, raw, nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	name, exposure, ports := ty.Fields[0], ty.Fields[1], ty.Fields[2]
+	if name.Type != TText || !name.Advanced || len(name.Extras) != 1 || name.Extras[0].Key != "x-rackbook" {
+		t.Errorf("name: %+v", name)
+	}
+	if exposure.Type != TAdvanced || ports.Type != TAdvanced {
+		t.Errorf("array fields should be advanced: %+v %+v", exposure, ports)
+	}
+	nt := *ty
+	nt.Fields = append([]Field(nil), ty.Fields...)
+	nt.Fields[0].Title = "名字"
+	out, err := applySchema(raw, ty, &nt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(out)
+	for _, frag := range []string{
+		`"title": "名字"`,
+		`"x-rackbook": {"suggest": false}`,
+		`"exposure": {"type": "array", "title": "开放范围", "uniqueItems": true, "items": {"type": "string", "enum": ["公网", "Tailscale"]}}`,
+		`"ports": {"type": "array", "title": "端口", "items": {"type": "string", "pattern": "^[0-9]{1,5}(-[0-9]{1,5})?$"}}`,
+	} {
+		if !strings.Contains(s, frag) {
+			t.Errorf("lost %s:\n%s", frag, s)
+		}
+	}
+}

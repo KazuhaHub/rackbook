@@ -13,8 +13,10 @@ files in a Git repository. It gives you:
   cross-collection rules (unique keys, references, "this set equals that
   inventory group"), all declared in config. Run it in CI.
 - **`rackbook serve`** — a web console (search, filter, sort, per-record
-  detail pages with everything that references the record, schema-driven
-  create/edit/delete forms). Every save is a Git commit with the editor's
+  detail pages with everything that references the record in tabs, rows you
+  can open with the keyboard, in-place editing of enum / boolean / date cells,
+  schema-driven create/edit/delete forms with searchable selects, tags and
+  suggestions; see [docs/design.md](docs/design.md) section 6). Every save is a Git commit with the editor's
   identity, pushed to your repository. The server never holds state of its
   own.
 - **`rackbook mcp`** — an MCP server so AI agents can read the ledger
@@ -844,8 +846,10 @@ Rackbook 是一个以 Git 为核心的基础设施台账：设备、内网地址
 
 - `rackbook check`：按 JSON Schema 校验每条记录，并检查配置里声明的跨表规则
   （主键唯一、引用存在、与 inventory 分组一致等），适合放进 CI。
-- `rackbook serve`：中文网页控制台，可搜索、筛选、排序；设备详情页列出它的内网地址和
-  服务端口；新增 / 编辑 / 删除表单按 Schema 校验，保存即提交到 Git（作者为编辑者）并推送。
+- `rackbook serve`：中文网页控制台，可搜索、筛选、排序；设备详情页用标签页列出它的内网地址和
+  服务端口等相关记录（带数量、搜索、分页，适用于所有记录的“通用”条目单独一页）；列表里的枚举、
+  布尔、日期、标签单元格可直接修改；新增 / 编辑 / 删除表单按 Schema 校验（可搜索下拉、标签多选、
+  已有值提示、端口列表），保存即提交到 Git（作者为编辑者）并推送。
 - `rackbook mcp`：MCP 服务，让 AI 读取台账。
 - `rackbook export`：导出 Markdown、`llms.txt`、JSON。
 

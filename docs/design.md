@@ -410,6 +410,90 @@ and services) · create / edit / delete with "who changed it last" from
 The built `dist/` is embedded in the Go binary with `go:embed`; Node is only
 needed at build time.
 
+### 6.1 Console usability (v0.4.0)
+
+Everything below is driven by the collection model (schema, `refs`, `facets`,
+`list`, `backref_columns`); nothing is written for a particular ledger.
+
+**Record page.** The fields card comes first. Below it, each collection that
+references the record is a tab, with its record count in the tab title. The
+selected tab is kept in the URL hash (`#<collection>`, `#<collection>+generic`),
+so a link or a reload opens the same tab. Each tab has a quick search (matches
+across the columns it shows), a rows-per-page choice (10 / 25 / 50 / all, kept in
+`localStorage` per collection) and simple paging. On a narrow screen the tab bar
+and the tables scroll sideways inside their cards, never the page.
+
+**General records.** A referencing record whose field holds a literal that the
+ref rule allows (`allow: [all]`; for an array field such as `used_by: [all]`, an
+array that contains it) applies to every record of the page's collection, not to
+this one. Those records are not mixed with the record's own: they get a separate
+tab, `通用 · <collection title>`, with its own count, after the own tabs. A record
+that names this record explicitly is always its own, even if it also lists the
+literal.
+
+**Rows.** Rows of the list page and of the record page's tables open the record
+when clicked anywhere, and by keyboard: up / down move between rows, Home / End
+jump to the first / last, Enter opens, and the focused row has a visible ring.
+Links and buttons inside a row work as usual, and selecting text does not
+navigate.
+
+**Edit in place.** When the user may edit, a list cell of an enum, boolean or
+date field, or of an array of enum values, edits without leaving the page:
+a toggle for booleans, a searchable picker for enums and tags (tags save when the
+picker closes), a date input for dates. The change shows at once and is saved with
+`PUT` and the record's hash. If the server answers 409 (somebody else changed the
+record) or 422 (a rule refuses it), the old value comes back and a toast says why.
+Only that collection's queries are refreshed. Key fields, reference fields and the
+fields a module maintains are not edited in place; use the form.
+
+**Record ids.** An id escapes `/` inside a key value as `%2F` and `%` as `%25`
+(unchanged in URLs and in the API). Wherever the console shows an id to people
+it shows the unescaped key parts, joined with ` / `.
+
+### 6.2 Form widgets and schema conventions
+
+The form picks a widget from the property:
+
+| property | widget |
+|---|---|
+| `type: string` + `enum` | searchable select |
+| `type: array`, `items: {type: string, enum: [...]}` (`uniqueItems: true`) | tags: chips plus a searchable dropdown |
+| reference field (a `ref` rule; `many` too) | searchable selector over the target's values plus the allowed literals, which are marked 特殊值 |
+| `type: array` of strings, `items.pattern` and/or `items.format` | chip list; each entry is checked as it is typed and only a valid one is added |
+| `format: date` | the browser's date input |
+| `format: textarea` | multi-line text |
+| `type: boolean` | switch |
+| plain short text (see below) | text with a dropdown of values already used |
+
+**Suggest.** A field gets the dropdown of values already used in that field
+across the collection (taken from the records the console has already loaded;
+there is no server endpoint) when it is `type: string` (or `["string", "null"]`),
+has no `enum`, no `format` and no `pattern`, is not a textarea or a reference
+and is not part of the collection's `key`. Choose a suggestion or type a new
+value. The list narrows as you type. A property turns it off or forces it on:
+
+```json
+"os":   {"type": ["string", "null"], "title": "系统", "x-rackbook": {"suggest": false}},
+"kind": {"type": "string", "pattern": "^[a-z-]+$", "x-rackbook": {"suggest": true}}
+```
+
+**Port lists.** An array of strings whose `items.pattern` is
+`^[0-9]{1,5}(-[0-9]{1,5})?$` is a port list: the entry must be a port or a range,
+at most 65535, and a range runs upwards. The hint under the input is the
+property's `description`, else `端口或范围，如 443、20000-20018`. For another
+pattern the hint is `description`, else the pattern itself. Entries that already
+hold invalid data show in red.
+
+**Errors.** A required field is marked `*`. A field shows its error as soon as
+you have left it or changed it, not before; saving shows all of them. The server's
+errors are placed on the field they belong to.
+
+**Type editor.** Tags (array of enum) and port lists are not field types of the
+type editor yet: such properties are read as "高级（在 YAML 中编辑）" fields, kept
+exactly as written, and left byte for byte when another field is edited. So is a
+text property that carries `x-rackbook`. Facets on an array field count and filter
+each element separately (one facet value per tag).
+
 ## 7. Repository layout
 
 ```

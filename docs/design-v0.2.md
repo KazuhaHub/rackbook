@@ -613,12 +613,18 @@ Rackbook uses SemVer (Go modules require SemVer tags). Release plan:
   Windows-only test failures in `rackbook-notify`. Its content, plus the fix
   (and the configurable sign-in button and branding), shipped as **v0.3.1**.
   The tag stays as it is; pushed tags are never moved.
-- **v0.4.0** — the built-in authorization server (decision 12), GitHub App
-  authentication (decision 14), record documents (decision 15) and the MCP
-  surface renames (decision 16). Planned for v0.3.0 until decision 17 took
-  that number; nothing in them changed.
+- **v0.4.0** — console usability: backref sections as URL-hash tabs with
+  search and paging, general (`allow` literal) records in their own tab,
+  clickable and keyboard-navigable rows, in-place editing of enum / boolean /
+  date / tag cells, searchable selects, tags, suggestions and port lists in the
+  forms, readable record ids (design: `design.md` section 6.1 and 6.2).
 - **v0.5.0** — storage: one record per file (design in
   `design-v0.4-storage.md`; the file keeps its name).
+- **Not yet numbered** — the built-in authorization server (decision 12),
+  GitHub App authentication (decision 14), record documents (decision 15) and
+  the MCP surface renames (decision 16). They were planned for v0.4.0, which
+  console usability has taken; nothing in them changed. Where the decisions
+  below and `mcp-surface.md` say "v0.4.0" for these, read "not yet numbered".
 - **1.0** — once the storage layout, config format and API are stable.
 
 See README, "Versioning and compatibility".

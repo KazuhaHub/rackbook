@@ -239,7 +239,7 @@ export const t = {
     perPage: '每页',
     pageAll: '全部',
     pageRange: (from: number, to: number, matching: number, total: number) =>
-      (matching === total ? '' : `匹配 ${matching} / 共 ${total} 条，`) + (matching ? `显示 ${from}–${to}` : '无结果'),
+      (matching === total ? '' : `匹配 ${matching} / 共 ${total} 条，`) + (matching ? `显示 ${from}–${to}${matching === total ? ` / 共 ${total} 条` : ''}` : '无结果'),
     prevPage: '上一页',
     nextPage: '下一页',
     noMatch: '没有匹配的记录',
