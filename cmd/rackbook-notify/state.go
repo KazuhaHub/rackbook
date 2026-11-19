@@ -23,6 +23,12 @@ type Entry struct {
 type State struct {
 	Version int              `json:"version"`
 	Items   map[string]Entry `json:"items"`
+	// Recipients are the addresses the last mail went to; a change is announced
+	// once to the old and the new addresses (recipients.go).
+	Recipients []string `json:"recipients,omitempty"`
+	// FailedSeen holds, per module, the finish time of the failed run that a
+	// digest already reported, so one failure is reported once.
+	FailedSeen map[string]string `json:"failed_seen,omitempty"`
 }
 
 func newState() *State { return &State{Version: stateVersion, Items: map[string]Entry{}} }

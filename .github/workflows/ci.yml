@@ -86,6 +86,7 @@ jobs:
       - run: npm run check:record-urls
       - run: npm run check:console-logic
       - run: npm run check:stale-chunk
+      - run: npm run check:modules
       - run: npm run build
 
   govulncheck:

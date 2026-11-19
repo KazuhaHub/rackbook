@@ -1,5 +1,6 @@
 import { useState } from 'react'
-import { Copy, KeyRound, Plus, ShieldAlert, Trash2 } from 'lucide-react'
+import { Link } from 'react-router'
+import { Copy, KeyRound, Plus, Puzzle, ShieldAlert, Trash2 } from 'lucide-react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import {
@@ -256,6 +257,11 @@ export default function Tokens() {
                     <div className="font-mono text-xs text-muted-foreground">{k.prefix}…</div>
                     <div className="mt-1 flex flex-wrap gap-1">
                       <Badge variant={k.status === 'active' ? 'secondary' : 'outline'}>{t.tokens.status[k.status]}</Badge>
+                      {k.module && (
+                        <Badge variant="outline" title={t.tokens.moduleHint(k.module)} render={<Link to={`/modules/${encodeURIComponent(k.module)}`} />}>
+                          <Puzzle /> {t.tokens.module}：{k.module}
+                        </Badge>
+                      )}
                     </div>
                     {k.warnings.map((w) => (
                       <p key={w} className="mt-1 flex max-w-xs items-start gap-1 text-xs text-amber-700 dark:text-amber-400">

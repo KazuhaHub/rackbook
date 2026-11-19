@@ -550,11 +550,22 @@ tokens, domains, contracts). Design and module contract: [docs/modules.md](docs/
 # rackbook.yml
 modules:
   entra:
+    type: entra
     token: entra-sync
     collection: credentials
     fields: [kind, self_signed, purpose, expires, not_before, kid, ids, revoked]
     direct_push: true
 ```
+
+- Administrators manage the modules in the console (**模块**): last run and
+  failures, pause, "run now", and the settings that are safe to edit in a
+  browser (send and sync times, thresholds, recipients, excluded apps, record
+  naming). Each save is one Git commit that changes `modules.<name>.settings`
+  in `rackbook.yml`. The modules ask the server for their settings and report
+  every run, so start them **every hour** (a systemd timer with
+  `OnCalendar=hourly`); they act only when a configured time has passed. Run
+  history is kept in `--state-dir`. See [docs/modules.md](docs/modules.md),
+  section 7.
 
 ## Branding and the sign-in button
 
@@ -891,4 +902,7 @@ Rackbook 永远不会 force push，也不会改写或删除远端分支和标签
 它们只通过公开 API 和 API 令牌工作。`rackbook.yml` 的 `modules:` 是白名单：列出的令牌只能在指定集合里
 新建记录并更新自己的记录，每条记录必须带 `source: <模块名>`，只能改 `fields` 里列出的字段，且不能删除；
 服务器在每次写入时强制检查。`direct_push: true` 让模块的新增和更新直接提交到分支而不是每次开一个 PR
-（同样要求令牌创建者仍是管理员）。详见 [docs/modules.md](docs/modules.md)。
+（同样要求令牌创建者仍是管理员）。管理员在控制台“模块”页查看每个模块的运行情况和失败、暂停、立即运行，
+并修改发送/同步时间、阈值、收件人、排除的应用等设置；每次保存是一次 Git 提交，写入 `rackbook.yml` 的
+`modules.<名称>.settings`。模块每小时由定时器启动一次，向服务器取设置，到点才运行，所以定时器要改成
+`OnCalendar=hourly`。运行记录保存在 `--state-dir`。详见 [docs/modules.md](docs/modules.md) 第 7 节。

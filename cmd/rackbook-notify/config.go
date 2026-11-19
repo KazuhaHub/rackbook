@@ -33,11 +33,17 @@ type Config struct {
 	Interval    time.Duration  `yaml:"interval"`
 	SMTP        *SMTPConfig    `yaml:"smtp"`
 	Webhook     *WebhookConfig `yaml:"webhook"`
+
+	// set* remember which fields the file spelled out (normalize fills
+	// defaults), so a setting from the console can tell it overrides a local one.
+	setThresholds, setLanguage, setCollections bool
 }
 
 type RackbookConfig struct {
 	URL       string `yaml:"url"`
 	TokenFile string `yaml:"token_file"`
+	// Module is this module's name in rackbook.yml (modules:); default notify.
+	Module string `yaml:"module"`
 }
 
 type SMTPConfig struct {
@@ -87,6 +93,10 @@ func (c *Config) normalize(dryRun bool) error {
 	if strings.TrimSpace(c.Rackbook.TokenFile) == "" {
 		return errors.New("config: rackbook.token_file is required")
 	}
+	if c.Rackbook.Module == "" {
+		c.Rackbook.Module = "notify"
+	}
+	c.setThresholds, c.setLanguage, c.setCollections = len(c.Thresholds) > 0, c.Language != "", len(c.Collections) > 0
 	if len(c.Thresholds) == 0 {
 		c.Thresholds = append([]int(nil), defaultThresholds...)
 	}
@@ -156,8 +166,8 @@ func (s *SMTPConfig) normalize() error {
 	if s.Helo != "" && !heloRe.MatchString(s.Helo) {
 		return fmt.Errorf("config: smtp.helo %q must be a host name such as notify.example.org", s.Helo)
 	}
-	if s.From == "" || len(s.To) == 0 {
-		return errors.New("config: smtp.from and smtp.to are required")
+	if s.From == "" {
+		return errors.New("config: smtp.from is required")
 	}
 	if _, err := parseAddress(s.From); err != nil {
 		return fmt.Errorf("config: smtp.from: %w", err)

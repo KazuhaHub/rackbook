@@ -618,10 +618,16 @@ Rackbook uses SemVer (Go modules require SemVer tags). Release plan:
   clickable and keyboard-navigable rows, in-place editing of enum / boolean /
   date / tag cells, searchable selects, tags, suggestions and port lists in the
   forms, readable record ids (design: `design.md` section 6.1 and 6.2).
-- **v0.5.0** — modules panel: an admin page that lists the modules, shows
-  their runs (reported by each module, kept in the state directory) and edits
-  their settings in `rackbook.yml` (a Git commit per change); modules pull
-  their settings and check hourly.
+- **v0.5.0** — modules panel: an admin page (模块) that lists the modules,
+  shows their runs (reported by each module with its own token, last 30 kept
+  in `<state-dir>/modules.json`), pauses them, asks for a run now, and edits
+  their settings under `modules.<name>.settings` in `rackbook.yml` (a Git
+  commit per change, with a version check). Modules read their settings at
+  start and are run every hour by a timer; they act only when a configured
+  time has passed or a run was requested. Rackbook still never connects to a
+  module. The settings are typed once in the shared package `modsettings`
+  (outside `internal/`, because modules may not import `internal/` and the
+  server may not import `modules/`). Details: `modules.md` section 7.
 - **v0.6.0** — the built-in authorization server (decision 12), GitHub App
   authentication (decision 14), record documents (decision 15) and the MCP
   surface renames (decision 16). Planned as v0.4.0, then v0.5.0, until console

@@ -32,6 +32,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kazuhahub/rackbook/modsettings"
 	"github.com/kazuhahub/rackbook/modules/rbclient"
 )
 
@@ -227,6 +228,10 @@ type fakeRackbook struct {
 	query string
 	auth  string
 	fail  bool
+	// the modules panel: nil remote = a server without it (404)
+	remote *modsettings.Remote
+	status []modsettings.ModuleStatus
+	runs   []modsettings.Run
 }
 
 func (f *fakeRackbook) set(items ...rbclient.Item) {
@@ -239,7 +244,20 @@ func (f *fakeRackbook) server(t *testing.T) *httptest.Server {
 	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		defer f.mu.Unlock()
-		if r.URL.Path != "/api/expiring" {
+		switch {
+		case r.URL.Path == "/api/modules/notify/settings" && f.remote != nil:
+			json.NewEncoder(w).Encode(f.remote)
+			return
+		case r.URL.Path == "/api/modules/notify/runs" && r.Method == "POST" && f.remote != nil:
+			var run modsettings.Run
+			json.NewDecoder(r.Body).Decode(&run)
+			f.runs = append(f.runs, run)
+			w.WriteHeader(201)
+			return
+		case r.URL.Path == "/api/modules/status" && f.status != nil:
+			json.NewEncoder(w).Encode(map[string]any{"modules": f.status})
+			return
+		case r.URL.Path != "/api/expiring":
 			http.NotFound(w, r)
 			return
 		}
@@ -271,7 +289,7 @@ func newEnv(t *testing.T) *env {
 	os.WriteFile(tok, []byte("rbk_test\n"), 0o600)
 	e.stat = filepath.Join(e.dir, "state.json")
 	e.cfg = &Config{
-		Rackbook:   RackbookConfig{URL: srv.URL, TokenFile: tok},
+		Rackbook:   RackbookConfig{URL: srv.URL, TokenFile: tok, Module: "notify"},
 		Thresholds: std, StateFile: e.stat, Language: "en", Interval: time.Hour,
 	}
 	return e
@@ -438,6 +456,7 @@ type fakeSMTP struct {
 	auth      string
 	from      string
 	rcpts     []string
+	reject    map[string]bool // addresses answered with 550
 	data      string
 }
 
@@ -516,13 +535,22 @@ func (f *fakeSMTP) serve(c net.Conn) {
 		case strings.HasPrefix(cmd, "MAIL FROM:"):
 			f.mu.Lock()
 			f.from = line[len("MAIL FROM:"):]
+			f.rcpts = nil
 			f.mu.Unlock()
 			say("250 ok")
 		case strings.HasPrefix(cmd, "RCPT TO:"):
 			f.mu.Lock()
-			f.rcpts = append(f.rcpts, line[len("RCPT TO:"):])
+			addr := line[len("RCPT TO:"):]
+			bad := f.reject[strings.Trim(addr, "<>")]
+			if !bad {
+				f.rcpts = append(f.rcpts, addr)
+			}
 			f.mu.Unlock()
-			say("250 ok")
+			if bad {
+				say("550 no such mailbox")
+			} else {
+				say("250 ok")
+			}
 		case cmd == "DATA":
 			say("354 go")
 			var b strings.Builder

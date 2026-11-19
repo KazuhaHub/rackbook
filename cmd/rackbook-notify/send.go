@@ -74,69 +74,92 @@ func buildMessage(from *mail.Address, to []*mail.Address, subject, body string, 
 }
 
 func sendMail(ctx context.Context, cfg *SMTPConfig, password, subject, body string) error {
+	_, err := deliver(ctx, cfg, password, subject, body, false)
+	return err
+}
+
+// sendMailBestEffort is for a message that matters to every address on its own
+// (the recipients-changed notice): a recipient the server rejects (a deleted
+// mailbox, say) is skipped and returned, and the others still get the mail. It
+// fails only when no address was accepted.
+func sendMailBestEffort(ctx context.Context, cfg *SMTPConfig, password, subject, body string) (rejected []error, err error) {
+	return deliver(ctx, cfg, password, subject, body, true)
+}
+
+func deliver(ctx context.Context, cfg *SMTPConfig, password, subject, body string, bestEffort bool) (rejected []error, err error) {
 	from, err := parseAddress(cfg.From)
 	if err != nil {
-		return err
+		return rejected, err
 	}
 	var to []*mail.Address
 	for _, t := range cfg.To {
 		a, err := parseAddress(t)
 		if err != nil {
-			return err
+			return rejected, err
 		}
 		to = append(to, a)
 	}
 	msg, err := buildMessage(from, to, subject, body, time.Now())
 	if err != nil {
-		return err
+		return rejected, err
 	}
 
 	addr := net.JoinHostPort(cfg.Host, strconv.Itoa(cfg.Port))
 	d := net.Dialer{Timeout: 30 * time.Second}
 	conn, err := d.DialContext(ctx, "tcp", addr)
 	if err != nil {
-		return fmt.Errorf("smtp connect: %w", err)
+		return rejected, fmt.Errorf("smtp connect: %w", err)
 	}
 	_ = conn.SetDeadline(time.Now().Add(smtpTimeout))
 	c, err := smtp.NewClient(conn, cfg.Host)
 	if err != nil {
 		_ = conn.Close()
-		return fmt.Errorf("smtp greeting: %w", err)
+		return rejected, fmt.Errorf("smtp greeting: %w", err)
 	}
 	defer c.Close()
 	if err := c.Hello(heloName(cfg)); err != nil {
-		return fmt.Errorf("smtp EHLO: %w", err)
+		return rejected, fmt.Errorf("smtp EHLO: %w", err)
 	}
 	if ok, _ := c.Extension("STARTTLS"); !ok {
-		return errors.New("smtp server does not offer STARTTLS; refusing to send")
+		return rejected, errors.New("smtp server does not offer STARTTLS; refusing to send")
 	}
 	if err := c.StartTLS(&tls.Config{ServerName: cfg.Host, MinVersion: tls.VersionTLS12, RootCAs: smtpRootCAs}); err != nil {
-		return fmt.Errorf("smtp STARTTLS: %w", err)
+		return rejected, fmt.Errorf("smtp STARTTLS: %w", err)
 	}
 	if cfg.Username != "" {
 		if err := c.Auth(smtp.PlainAuth("", cfg.Username, password, cfg.Host)); err != nil {
-			return fmt.Errorf("smtp auth: %w", err)
+			return rejected, fmt.Errorf("smtp auth: %w", err)
 		}
 	}
 	if err := c.Mail(from.Address); err != nil {
-		return fmt.Errorf("smtp MAIL: %w", err)
+		return rejected, fmt.Errorf("smtp MAIL: %w", err)
 	}
+	accepted := 0
 	for _, a := range to {
 		if err := c.Rcpt(a.Address); err != nil {
-			return fmt.Errorf("smtp RCPT %s: %w", a.Address, err)
+			e := fmt.Errorf("smtp RCPT %s: %w", a.Address, err)
+			if !bestEffort {
+				return rejected, e
+			}
+			rejected = append(rejected, e)
+			continue
 		}
+		accepted++
+	}
+	if accepted == 0 {
+		return rejected, errors.New("smtp: no recipient was accepted")
 	}
 	w, err := c.Data()
 	if err != nil {
-		return fmt.Errorf("smtp DATA: %w", err)
+		return rejected, fmt.Errorf("smtp DATA: %w", err)
 	}
 	if _, err := w.Write(msg); err != nil {
-		return fmt.Errorf("smtp DATA: %w", err)
+		return rejected, fmt.Errorf("smtp DATA: %w", err)
 	}
 	if err := w.Close(); err != nil {
-		return fmt.Errorf("smtp DATA: %w", err)
+		return rejected, fmt.Errorf("smtp DATA: %w", err)
 	}
-	return c.Quit()
+	return rejected, c.Quit()
 }
 
 func validateWebhookURL(raw string) (*url.URL, error) {

@@ -27,6 +27,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kazuhahub/rackbook/modsettings"
 	"github.com/kazuhahub/rackbook/modules/rbclient"
 )
 
@@ -242,6 +243,9 @@ type fakeRB struct {
 	writes   int
 	denyAll  bool
 	conflict bool
+	// the modules panel: nil remote = a server without it (404)
+	remote *modsettings.Remote
+	runs   []modsettings.Run
 }
 
 var allowedFields = map[string]bool{"kind": true, "self_signed": true, "purpose": true, "expires": true, "not_before": true, "kid": true, "ids": true, "revoked": true, "source": true}
@@ -292,6 +296,13 @@ func (f *fakeRB) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	const prefix = "/api/c/credentials"
 	switch {
+	case r.Method == http.MethodGet && r.URL.Path == "/api/modules/entra/settings" && f.remote != nil:
+		json.NewEncoder(w).Encode(f.remote)
+	case r.Method == http.MethodPost && r.URL.Path == "/api/modules/entra/runs" && f.remote != nil:
+		var run modsettings.Run
+		json.NewDecoder(r.Body).Decode(&run)
+		f.runs = append(f.runs, run)
+		w.WriteHeader(201)
 	case r.Method == http.MethodGet && r.URL.Path == prefix:
 		names := make([]string, 0, len(f.records))
 		for n := range f.records {
@@ -461,7 +472,7 @@ func newEnv(t *testing.T) *env {
 	ts := newTokenSource(cfg.Entra, key, cert, hc)
 	g := newGraphClient(cfg.Entra.GraphURL, ts, hc)
 	g.sleep = func(_ context.Context, d time.Duration) error { e.sleeps = append(e.sleeps, d); return nil }
-	e.a = &app{cfg: cfg, graph: g, rb: rb, out: e.out, now: func() time.Time { return testNow },
+	e.a = &app{cfg: cfg, base: cfg, graph: g, rb: rb, out: e.out, now: func() time.Time { return testNow },
 		log: slog.New(slog.NewTextHandler(testWriter{t}, nil))}
 	return e
 }
