@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"reflect"
 	"slices"
 	"strconv"
 	"sync"
@@ -107,8 +108,38 @@ func addTool[In, Out any](t *tools, s *mcp.Server, tool *mcp.Tool, h func(contex
 	if err != nil {
 		panic(fmt.Errorf("%s: %w", tool.Name, err)) // the types are fixed
 	}
+	spellOutAny(schema)
 	tool.OutputSchema = schema
 	mcp.AddTool(s, t.mark(tool), h)
+}
+
+// spellOutAny replaces every empty property schema (a Go `any` field, which marshals as
+// the bare boolean `true`) with an anyOf over the JSON types. The set of
+// accepted values is the same; the difference is that clients which require a
+// schema object (OpenAI strict function schemas, Gemini function declarations)
+// no longer reject the tool.
+func spellOutAny(s *jsonschema.Schema) {
+	if s == nil {
+		return
+	}
+	for _, p := range s.Properties {
+		if reflect.DeepEqual(*p, jsonschema.Schema{}) {
+			*p = anyValue()
+		} else {
+			spellOutAny(p)
+		}
+	}
+	spellOutAny(s.Items)
+	for _, b := range s.AnyOf {
+		spellOutAny(b)
+	}
+}
+
+func anyValue() jsonschema.Schema {
+	return jsonschema.Schema{AnyOf: []*jsonschema.Schema{
+		{Type: "string"}, {Type: "number"}, {Type: "boolean"},
+		{Type: "object"}, {Type: "array"},
+	}}
 }
 
 // apiError is a tool error: a result with isError and the structured body

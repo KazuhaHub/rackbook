@@ -937,8 +937,44 @@
                   "items": {
                     "additionalProperties": false,
                     "properties": {
-                      "after": true,
-                      "before": true,
+                      "after": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "number"
+                          },
+                          {
+                            "type": "boolean"
+                          },
+                          {
+                            "type": "object"
+                          },
+                          {
+                            "type": "array"
+                          }
+                        ]
+                      },
+                      "before": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "number"
+                          },
+                          {
+                            "type": "boolean"
+                          },
+                          {
+                            "type": "object"
+                          },
+                          {
+                            "type": "array"
+                          }
+                        ]
+                      },
                       "field": {
                         "type": "string"
                       }
