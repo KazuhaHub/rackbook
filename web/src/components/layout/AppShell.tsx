@@ -1,6 +1,6 @@
 import { Suspense, useEffect } from 'react'
 import { Outlet, NavLink, useLocation } from 'react-router'
-import { CalendarClock, KeyRound, LayoutDashboard, Shapes } from 'lucide-react'
+import { CalendarClock, KeyRound, LayoutDashboard, Puzzle, Shapes } from 'lucide-react'
 import {
   Sidebar,
   SidebarContent,
@@ -22,6 +22,8 @@ import { t } from '@/i18n/zh-CN'
 import { BrandMark } from '@/components/BrandMark'
 import { CollectionIcon } from '@/components/CollectionIcon'
 import { hasExpiry } from '@/lib/ledger'
+import { failedCount } from '@/lib/modules'
+import { useModules } from '@/lib/modulesApi'
 import { useMeta } from '@/providers/meta'
 import { PageFallback } from '@/components/common'
 import { ErrorBoundary } from '@/components/ErrorBoundary'
@@ -42,6 +44,9 @@ function AppSidebar() {
   const { meta } = useMeta()
   const { pathname } = useLocation()
   const productName = meta.branding?.name || t.appName
+  // a red count beside 模块 when a module's last run failed (administrators only)
+  const modulesQ = useModules(!!meta.user?.canAdmin && (meta.modules?.length ?? 0) > 0, 60_000)
+  const failedModules = failedCount(modulesQ.data?.modules ?? [])
 
   // group collections, keeping config order (ungrouped first-seen position)
   const groups: { name: string; items: typeof meta.collections }[] = []
@@ -121,6 +126,17 @@ function AppSidebar() {
                     <Shapes />
                     <span>{t.types.nav}</span>
                   </SidebarMenuButton>
+                </SidebarMenuItem>
+                <SidebarMenuItem>
+                  <SidebarMenuButton isActive={pathname === '/modules' || pathname.startsWith('/modules/')} render={<NavLink to="/modules" />}>
+                    <Puzzle />
+                    <span>{t.nav.modules}</span>
+                  </SidebarMenuButton>
+                  {failedModules > 0 && (
+                    <SidebarMenuBadge className="bg-destructive text-white" title={t.modules.failedBanner(failedModules)}>
+                      {failedModules}
+                    </SidebarMenuBadge>
+                  )}
                 </SidebarMenuItem>
                 <SidebarMenuItem>
                   <SidebarMenuButton isActive={pathname === '/admin/tokens'} render={<NavLink to="/admin/tokens" />}>

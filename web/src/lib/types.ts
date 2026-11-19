@@ -61,6 +61,10 @@ export type MetaAlert =
 /** A module allowed to write one collection (rackbook.yml `modules:`, without token names). */
 export type ModuleInfo = {
   name: string
+  /** entra or notify; absent for a module without settings in the console */
+  type?: string
+  /** the module may not write records (no collection) */
+  readOnly?: boolean
   collection: string
   fields: string[]
   directPush: boolean
@@ -110,6 +114,8 @@ export type ApiToken = {
   status: 'active' | 'revoked' | 'expired'
   lastUsed?: string
   creatorRole: string
+  /** the module (rackbook.yml modules:) that uses this token */
+  module?: string
   warnings: string[]
 }
 export type CreatedToken = {

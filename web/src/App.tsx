@@ -25,6 +25,9 @@ const Account = lazy(retryImport(() => import('@/pages/Account')))
 const Users = lazy(retryImport(() => import('@/pages/Users')))
 const Login = lazy(retryImport(() => import('@/pages/Login')))
 const Tokens = lazy(retryImport(() => import('@/pages/Tokens')))
+// modules panel (admin)
+const Modules = lazy(retryImport(() => import('@/pages/Modules')))
+const ModuleDetail = lazy(retryImport(() => import('@/pages/ModuleDetail')))
 // data types (admin)
 const Types = lazy(retryImport(() => import('@/pages/Types')))
 const TypeEditor = lazy(retryImport(() => import('@/pages/TypeEditor')))
@@ -69,6 +72,8 @@ function RefineApp() {
           <Route path="account" element={<Account />} />
           <Route path="admin/users" element={<Users />} />
           <Route path="admin/tokens" element={<Tokens />} />
+          <Route path="modules" element={<Modules />} />
+          <Route path="modules/:name" element={<ModuleDetail />} />
           <Route path="types" element={<Types />} />
           <Route path="types/-/new" element={<TypeEditor mode="create" />} />
           <Route path="types/:name" element={<TypeEditor mode="edit" />} />

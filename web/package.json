@@ -12,6 +12,7 @@
     "check:record-urls": "node --experimental-strip-types scripts/check-record-urls.mts",
     "check:console-logic": "node --experimental-strip-types scripts/check-console-logic.mts",
     "check:stale-chunk": "node --experimental-strip-types scripts/check-stale-chunk.mts",
+    "check:modules": "node --experimental-strip-types scripts/check-modules.mts",
     "lint": "eslint . && tsc -b",
     "preview": "vite preview"
   },
