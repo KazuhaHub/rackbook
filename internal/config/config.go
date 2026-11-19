@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
+	"time"
 
 	"go.yaml.in/yaml/v3"
 
@@ -317,6 +318,81 @@ type AuthMCP struct {
 	// tracked branch. Everything else an MCPHub user or token does through
 	// MCP becomes a pull request; deletes always do.
 	DirectPush []DirectPush `yaml:"direct_push"`
+	// BuiltinIssuer turns on Rackbook's own OAuth authorization server, so MCP
+	// clients can connect without an external issuer (docs/oauth-server.md).
+	BuiltinIssuer BuiltinIssuer `yaml:"builtin_issuer"`
+}
+
+// BuiltinIssuerAlias names the built-in authorization server in the
+// Edited-via trailer and in direct_push entries (oauth:rackbook:<user>). No
+// trusted issuer may use it.
+const BuiltinIssuerAlias = "rackbook"
+
+// Defaults of the built-in authorization server.
+const (
+	DefaultGrantIdleExpiry   = 90 * 24 * time.Hour
+	DefaultRefreshReuseGrace = 60 * time.Second
+	maxRefreshReuseGrace     = 5 * time.Minute
+)
+
+// BuiltinIssuer is auth.mcp.builtin_issuer. It needs auth.mcp.resource and, on
+// the command line, --state-dir and --base-url.
+type BuiltinIssuer struct {
+	Enabled bool `yaml:"enabled"`
+	// SigningKeyFile is a PEM file with the ES256 (P-256) private key that signs
+	// access tokens. Without it the key comes from RACKBOOK_OAUTH_SIGNING_KEY,
+	// then from a systemd credential named oauth-signing-key, and otherwise it is
+	// generated on first start at <state-dir>/oauth-signing-key.pem.
+	SigningKeyFile string `yaml:"signing_key_file"`
+	// IdleExpiry ends a grant that has not been refreshed for this long
+	// (default 90d, measured from the last refresh; there is no absolute limit).
+	IdleExpiry Duration `yaml:"idle_expiry"`
+	// DynamicRegistration serves RFC 7591 registration (default true).
+	DynamicRegistration *bool `yaml:"dynamic_registration"`
+	// RefreshReuseGrace is how long the previous refresh token still works after
+	// a rotation (default 60s), for a response that never arrived.
+	RefreshReuseGrace Duration `yaml:"refresh_reuse_grace"`
+	// AllowedClients restricts Client ID Metadata Document clients to these
+	// client_id URLs (default: any https client_id). When it is set, only these
+	// clients may authorize and dynamic registration is off.
+	AllowedClients []string `yaml:"allowed_clients"`
+}
+
+// IdleExpiryOrDefault is IdleExpiry or 90 days.
+func (b BuiltinIssuer) IdleExpiryOrDefault() time.Duration {
+	if b.IdleExpiry > 0 {
+		return time.Duration(b.IdleExpiry)
+	}
+	return DefaultGrantIdleExpiry
+}
+
+// RefreshReuseGraceOrDefault is RefreshReuseGrace or 60 seconds.
+func (b BuiltinIssuer) RefreshReuseGraceOrDefault() time.Duration {
+	if b.RefreshReuseGrace > 0 {
+		return time.Duration(b.RefreshReuseGrace)
+	}
+	return DefaultRefreshReuseGrace
+}
+
+// Registration reports whether dynamic client registration is on.
+func (b BuiltinIssuer) Registration() bool {
+	return b.DynamicRegistration == nil || *b.DynamicRegistration
+}
+
+func (b BuiltinIssuer) validate() error {
+	if b.IdleExpiry < 0 || b.RefreshReuseGrace < 0 {
+		return errors.New("auth.mcp.builtin_issuer: durations must be positive")
+	}
+	if time.Duration(b.RefreshReuseGrace) > maxRefreshReuseGrace {
+		return fmt.Errorf("auth.mcp.builtin_issuer.refresh_reuse_grace must not exceed %s", maxRefreshReuseGrace)
+	}
+	for i, c := range b.AllowedClients {
+		u, err := url.Parse(c)
+		if err != nil || u.Scheme != "https" || u.Host == "" || u.Path == "" || u.Path == "/" || u.User != nil || u.Fragment != "" {
+			return fmt.Errorf("auth.mcp.builtin_issuer.allowed_clients[%d]: %q must be an https client_id URL with a path", i, c)
+		}
+	}
+	return nil
 }
 
 // Issuer kinds.
@@ -447,8 +523,8 @@ func (m AuthMCP) Audience(t TrustedIssuer) string {
 	return m.Resource
 }
 
-// Enabled reports whether /mcp accepts MCPHub tokens.
-func (m AuthMCP) Enabled() bool { return len(m.TrustedIssuers) > 0 }
+// Enabled reports whether /mcp accepts OAuth access tokens (trusted issuers or the built-in server).
+func (m AuthMCP) Enabled() bool { return len(m.TrustedIssuers) > 0 || m.BuiltinIssuer.Enabled }
 
 // ValidURL checks an issuer, resource or JWKS URL: absolute, https (http only
 // for localhost, 127.0.0.1 and [::1]), no credentials, query or fragment.
@@ -485,6 +561,12 @@ func (m AuthMCP) validate() error {
 	if len(m.TrustedIssuers) > 0 && m.Resource == "" {
 		return errors.New("auth.mcp.resource is required with trusted_issuers (the public URL of /mcp)")
 	}
+	if m.BuiltinIssuer.Enabled && m.Resource == "" {
+		return errors.New("auth.mcp.resource is required with builtin_issuer (the public URL of /mcp)")
+	}
+	if err := m.BuiltinIssuer.validate(); err != nil {
+		return err
+	}
 	seen := map[string]bool{}
 	aliases := map[string]bool{}
 	introspecting, prefixes := 0, map[string]bool{}
@@ -513,6 +595,9 @@ func (m AuthMCP) validate() error {
 		}
 		if aliases[name] {
 			return fmt.Errorf("%s.alias %q is used twice", at, name)
+		}
+		if m.BuiltinIssuer.Enabled && name == BuiltinIssuerAlias {
+			return fmt.Errorf("%s.alias %q is reserved for the built-in authorization server", at, name)
 		}
 		aliases[name] = true
 		for _, a := range t.Algorithms {

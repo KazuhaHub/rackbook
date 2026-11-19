@@ -5,6 +5,10 @@ import (
 	"strings"
 )
 
+// UnifiedDiff renders a unified diff of two texts for a file called name; it is
+// "" when they are equal.
+func UnifiedDiff(name, a, b string) string { return unifiedDiff(name, a, b) }
+
 // unifiedDiff renders a unified diff (3 lines of context) between two texts.
 // Files are small, so a plain longest-common-subsequence over the lines that
 // differ is enough.

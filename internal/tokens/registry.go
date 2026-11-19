@@ -8,12 +8,12 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/kazuhahub/rackbook/internal/auth"
+	"github.com/kazuhahub/rackbook/internal/fsutil"
 	"github.com/kazuhahub/rackbook/internal/gitstore"
 )
 
@@ -125,25 +125,13 @@ func (r *Registry) loadUsed() {
 	}
 }
 
-// saveUsed writes the map to UsePath through a temporary file and a rename.
+// saveUsed writes the map to UsePath atomically.
 func (r *Registry) saveUsed() error {
 	b, err := json.Marshal(r.used)
 	if err != nil {
 		return err
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(r.UsePath), ".token-use-*")
-	if err != nil {
-		return err
-	}
-	defer os.Remove(tmp.Name())
-	if _, err := tmp.Write(b); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	return os.Rename(tmp.Name(), r.UsePath)
+	return fsutil.WriteFileAtomic(r.UsePath, b, 0o600)
 }
 
 // CreateParams describes a new token.

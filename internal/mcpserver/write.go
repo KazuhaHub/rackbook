@@ -27,6 +27,9 @@ import (
 type Backend interface {
 	WriteFunc(ctx context.Context, apply gitstore.ApplyFunc, who *auth.Identity, opts gitstore.WriteOptions) (*gitstore.WriteResult, error)
 	History(ctx context.Context, limit int, collection, id string) ([]gitstore.Commit, error)
+	HistoryUpTo(ctx context.Context, limit int, collection, id string) ([]gitstore.Commit, error)
+	CommitChanges(ctx context.Context, rev string) (*gitstore.CommitDetail, error)
+	DryRunFunc(ctx context.Context, apply gitstore.ApplyFunc, opts gitstore.WriteOptions) (*edit.Result, bool, error)
 	Config() *config.Config
 	Alert() *gitstore.Alert
 	ConfigProblem() string
@@ -36,15 +39,12 @@ type Backend interface {
 type Options struct {
 	Source  Source
 	Version string
-	// Backend enables record_history and, unless ReadOnly, the write tools.
+	// Backend enables the history tools and, unless ReadOnly, the write tools.
 	// Leave it nil for a read-only server (stdio).
 	Backend  Backend
 	ReadOnly bool
 	Logger   *slog.Logger
 }
-
-const writeInstructions = `
-Writes (create_record, update_record, delete_record) are validated exactly like the console's. Depending on who you are they either commit directly or open a pull request: the result says which (pullRequest true, url = the PR). Deletes always open a pull request. update_record and delete_record need the "hash" from get_record; a conflict error carries the current record, so re-read and retry. If the ledger reports history_rewritten, config_error or repo_dirty, writes are paused: report it, do not retry.`
 
 type writeIn struct {
 	Collection string         `json:"collection" jsonschema:"collection name from list_collections"`
@@ -76,22 +76,26 @@ type writeOut struct {
 	Message     string         `json:"message"`
 }
 
+func legacyWrite(destructive, idempotent bool) *mcp.ToolAnnotations {
+	return &mcp.ToolAnnotations{DestructiveHint: &destructive, IdempotentHint: idempotent, OpenWorldHint: new(false)}
+}
+
 func (t *tools) addWriteTools(s *mcp.Server) {
-	mcp.AddTool(s, &mcp.Tool{Name: "create_record",
-		Description: "Add a record to a collection. data is the whole record (see get_schema for the fields). Validated like the console; the result tells whether it was committed or opened as a pull request (url)."},
+	mcp.AddTool(s, t.legacy(&mcp.Tool{Name: "create_record", Annotations: legacyWrite(false, false),
+		Description: "Add a record to a collection. data is the whole record (see get_schema for the fields). Validated like the console; the result tells whether it was committed or opened as a pull request (url)."}),
 		func(ctx context.Context, req *mcp.CallToolRequest, in writeIn) (*mcp.CallToolResult, any, error) {
 			return t.write(ctx, req, auth.ActCreate, roles.Write, in.Collection, edit.Op{Kind: edit.Add, Collection: in.Collection, Data: intify(in.Data), ConfirmNotSecret: in.Confirm})
 		})
-	mcp.AddTool(s, &mcp.Tool{Name: "update_record",
-		Description: "Replace a record. Needs the hash from get_record; data is the whole new record. Fails with a conflict (and the current record) if it changed meanwhile."},
+	mcp.AddTool(s, t.legacy(&mcp.Tool{Name: "update_record", Annotations: legacyWrite(false, true),
+		Description: "Replace a record. Needs the hash from get_record; data is the whole new record. Fails with a conflict (and the current record) if it changed meanwhile."}),
 		func(ctx context.Context, req *mcp.CallToolRequest, in updateIn) (*mcp.CallToolResult, any, error) {
 			if in.Hash == "" {
 				return errText(http.StatusBadRequest, "bad_request", "hash is required: call get_record first", nil), nil, nil
 			}
 			return t.write(ctx, req, auth.ActUpdate, roles.Write, in.Collection, edit.Op{Kind: edit.Edit, Collection: in.Collection, ID: in.ID, Hash: in.Hash, Data: intify(in.Data), ConfirmNotSecret: in.Confirm})
 		})
-	mcp.AddTool(s, &mcp.Tool{Name: "delete_record",
-		Description: "Delete a record. Needs the hash from get_record. A delete always opens a pull request, even for credentials that may commit directly; it is refused while other records still reference the record."},
+	mcp.AddTool(s, t.legacy(&mcp.Tool{Name: "delete_record", Annotations: legacyWrite(true, false),
+		Description: "Delete a record. Needs the hash from get_record. A delete always opens a pull request, even for credentials that may commit directly; it is refused while other records still reference the record."}),
 		func(ctx context.Context, req *mcp.CallToolRequest, in deleteIn) (*mcp.CallToolResult, any, error) {
 			if in.Hash == "" {
 				return errText(http.StatusBadRequest, "bad_request", "hash is required: call get_record first", nil), nil, nil
@@ -100,7 +104,7 @@ func (t *tools) addWriteTools(s *mcp.Server) {
 		})
 }
 
-func identityOf(req *mcp.CallToolRequest) *auth.Identity {
+func identityOf(req mcp.Request) *auth.Identity {
 	if x := req.GetExtra(); x != nil {
 		return mcpauth.IdentityFrom(x.TokenInfo)
 	}
@@ -117,34 +121,64 @@ func errText(status int, code, msg string, extra map[string]any) *mcp.CallToolRe
 	return &mcp.CallToolResult{IsError: true, Content: []mcp.Content{&mcp.TextContent{Text: string(b)}}}
 }
 
-func (t *tools) write(ctx context.Context, req *mcp.CallToolRequest, action string, need roles.Action, collection string, op edit.Op) (*mcp.CallToolResult, any, error) {
+// gateError is a refused write: the status and code of the error body.
+type gateError struct {
+	status int
+	code   string
+	msg    string
+}
+
+// gate checks that the caller may perform action on collection, exactly as
+// every write tool must before it touches anything: the server accepts writes,
+// the session is authenticated, the role and the credential's scopes allow
+// it, and the token's own collection narrowing permits it.
+func (t *tools) gate(req *mcp.CallToolRequest, action string, need roles.Action, collection string) (*auth.Identity, *gateError) {
 	if t.readOnly {
-		return errText(http.StatusForbidden, "read_only", "the ledger is read-only", nil), nil, nil
+		return nil, &gateError{http.StatusForbidden, "read_only", "the ledger is read-only"}
 	}
 	id := identityOf(req)
 	if id == nil {
-		return errText(http.StatusForbidden, "forbidden", "writes need an authenticated HTTP session", nil), nil, nil
+		return nil, &gateError{http.StatusForbidden, "forbidden", "writes need an authenticated HTTP session"}
 	}
 	if !id.Can(need) {
 		if id.Role.Allows(need) { // the role would allow it: the credential's scope does not
-			return errText(http.StatusForbidden, "insufficient_scope", fmt.Sprintf("this credential's scopes do not allow writing (needs %q)", t.backend.Config().Auth.MCP.Scopes.WriteScope()), nil), nil, nil
+			return nil, &gateError{http.StatusForbidden, "insufficient_scope", fmt.Sprintf("this credential's scopes do not allow writing (needs %q)", t.backend.Config().Auth.MCP.Scopes.WriteScope())}
 		}
-		return errText(http.StatusForbidden, "forbidden", fmt.Sprintf("your role (%s) may not do this", id.EffectiveRole()), nil), nil, nil
+		return nil, &gateError{http.StatusForbidden, "forbidden", fmt.Sprintf("your role (%s) may not do this", id.EffectiveRole())}
 	}
 	if !id.Permits(action, collection) {
-		return errText(http.StatusForbidden, "forbidden", fmt.Sprintf("this token may not %s records in %s", action, collection), nil), nil, nil
+		return nil, &gateError{http.StatusForbidden, "forbidden", fmt.Sprintf("this token may not %s records in %s", action, collection)}
 	}
+	return id, nil
+}
+
+// confirmFor records who confirmed "this is not a secret". A confirmation is
+// only taken from someone who may give it; otherwise the write is refused as
+// secret_suspected like any other.
+func (t *tools) confirmFor(id *auth.Identity, op edit.Op) edit.Op {
 	if op.ConfirmNotSecret {
-		// A confirmation is only taken from someone who may give it; otherwise the
-		// write is refused as secret_suspected like any other.
-		if gitstore.MayConfirm(id, t.backend.Config(), op.Kind, collection) {
+		if gitstore.MayConfirm(id, t.backend.Config(), op.Kind, op.Collection) {
 			op.ConfirmedBy = id.IDOrEmpty()
 		} else {
 			op.ConfirmNotSecret = false
 		}
 	}
-	opts := gitstore.WriteOptionsFor(id, t.backend.Config(), op.Kind, collection)
-	res, err := t.backend.WriteFunc(ctx, gitstore.ApplyOpAs(id, op), id, opts)
+	return op
+}
+
+// commit sends op through the store's one write path.
+func (t *tools) commit(ctx context.Context, id *auth.Identity, op edit.Op) (*gitstore.WriteResult, error) {
+	op = t.confirmFor(id, op)
+	opts := gitstore.WriteOptionsFor(id, t.backend.Config(), op.Kind, op.Collection)
+	return t.backend.WriteFunc(ctx, gitstore.ApplyOpAs(id, op), id, opts)
+}
+
+func (t *tools) write(ctx context.Context, req *mcp.CallToolRequest, action string, need roles.Action, collection string, op edit.Op) (*mcp.CallToolResult, any, error) {
+	id, g := t.gate(req, action, need, collection)
+	if g != nil {
+		return errText(g.status, g.code, g.msg, nil), nil, nil
+	}
+	res, err := t.commit(ctx, id, op)
 	if err != nil {
 		info := apierr.Classify(err)
 		if info.Status == http.StatusInternalServerError {
@@ -240,21 +274,7 @@ type problemsOut struct {
 func (t *tools) listProblems(_ context.Context, _ *mcp.CallToolRequest, _ noArgs) (*mcp.CallToolResult, problemsOut, error) {
 	issues := validate.Run(t.src())
 	issues, warnings := validate.Split(issues)
-	out := problemsOut{Store: []map[string]any{}, Errors: issues, Warnings: warnings}
-	if t.backend != nil {
-		if a := t.backend.Alert(); a != nil {
-			m := map[string]any{"kind": a.Kind, "writesPaused": true}
-			if a.Message != "" {
-				m["message"] = a.Message
-			}
-			if a.Remote != "" {
-				m["lastGood"], m["remote"] = a.LastGood, a.Remote
-			}
-			out.Store = append(out.Store, m)
-		} else if p := t.backend.ConfigProblem(); p != "" {
-			out.Store = append(out.Store, map[string]any{"kind": gitstore.AlertConfigError, "message": p, "writesPaused": true})
-		}
-	}
+	out := problemsOut{Store: t.storeProblems(), Errors: issues, Warnings: warnings}
 	out.OK = len(issues) == 0 && len(out.Store) == 0
 	return nil, out, nil
 }

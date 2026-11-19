@@ -186,3 +186,52 @@ func TestSubjectIsSanitizedAndMultilineKeysRejected(t *testing.T) {
 		t.Fatalf("%v", err)
 	}
 }
+
+func TestApplyDryRunChecksEverythingAndWritesNothing(t *testing.T) {
+	dir, apply := setup(t)
+	before := read(t, dir, "docs/ledger/services.yml")
+	id := "web-hostco-ashburn-va-us-dc/SSH"
+	edited := map[string]any{"device": "web-hostco-ashburn-va-us-dc", "service": "SSH", "port": "TCP 22", "exposure": "公网 + Tailscale", "notes": "仅密钥"}
+	h := hashOf(t, dir, "services", id)
+	tests := []struct {
+		name string
+		op   edit.Op
+		err  any // a pointer of the error type the real write would return, nil for success
+	}{
+		{"edit", edit.Op{Kind: edit.Edit, Collection: "services", ID: id, Hash: h, Data: edited}, nil},
+		{"add", edit.Op{Kind: edit.Add, Collection: "services", Data: map[string]any{"device": "web-hostco-ashburn-va-us-dc", "service": "nginx", "port": "TCP 80"}}, nil},
+		{"stale hash", edit.Op{Kind: edit.Edit, Collection: "services", ID: id, Hash: "deadbeef", Data: edited}, new(*edit.ConflictError)},
+		{"invalid", edit.Op{Kind: edit.Add, Collection: "services", Data: map[string]any{"service": "x"}}, new(*edit.InvalidError)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dry := tt.op
+			dry.DryRun = true
+			res, err := apply(dry)
+			if read(t, dir, "docs/ledger/services.yml") != before {
+				t.Fatal("a dry run must not write")
+			}
+			if tt.err != nil {
+				if err == nil || !errors.As(err, tt.err) {
+					t.Fatalf("%T %v", err, err)
+				}
+				return
+			}
+			if err != nil || !res.Changed() || res.Hash == "" {
+				t.Fatalf("%v %+v", err, res)
+			}
+			f := res.Files[0]
+			if string(res.Before[f]) != before || string(res.After[f]) == before {
+				t.Fatalf("before and after of %s", f)
+			}
+			// The same op for real writes exactly what the dry run showed.
+			real, err := apply(tt.op)
+			if err != nil || real.Hash != res.Hash || read(t, dir, "docs/ledger/services.yml") != string(res.After[f]) {
+				t.Fatalf("%v", err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, "docs/ledger/services.yml"), []byte(before), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}

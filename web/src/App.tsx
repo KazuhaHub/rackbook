@@ -25,6 +25,9 @@ const Account = lazy(retryImport(() => import('@/pages/Account')))
 const Users = lazy(retryImport(() => import('@/pages/Users')))
 const Login = lazy(retryImport(() => import('@/pages/Login')))
 const Tokens = lazy(retryImport(() => import('@/pages/Tokens')))
+const AdminGrants = lazy(retryImport(() => import('@/pages/AdminGrants')))
+// the page the built-in authorization server sends the person to
+const Consent = lazy(retryImport(() => import('@/pages/Consent')))
 // modules panel (admin)
 const Modules = lazy(retryImport(() => import('@/pages/Modules')))
 const ModuleDetail = lazy(retryImport(() => import('@/pages/ModuleDetail')))
@@ -60,6 +63,16 @@ function RefineApp() {
     >
       <Routes>
         <Route
+          path="oauth/consent"
+          element={
+            <ErrorBoundary>
+              <Suspense fallback={<div className="p-8"><PageFallback /></div>}>
+                <Consent />
+              </Suspense>
+            </ErrorBoundary>
+          }
+        />
+        <Route
           element={<AppShell />}
         >
           <Route index element={<Dashboard />} />
@@ -72,6 +85,7 @@ function RefineApp() {
           <Route path="account" element={<Account />} />
           <Route path="admin/users" element={<Users />} />
           <Route path="admin/tokens" element={<Tokens />} />
+          <Route path="admin/grants" element={<AdminGrants />} />
           <Route path="modules" element={<Modules />} />
           <Route path="modules/:name" element={<ModuleDetail />} />
           <Route path="types" element={<Types />} />

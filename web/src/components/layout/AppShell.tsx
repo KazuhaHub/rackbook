@@ -1,6 +1,6 @@
 import { Suspense, useEffect } from 'react'
 import { Outlet, NavLink, useLocation } from 'react-router'
-import { CalendarClock, KeyRound, LayoutDashboard, Puzzle, Shapes } from 'lucide-react'
+import { CalendarClock, KeyRound, LayoutDashboard, PlugZap, Puzzle, Shapes } from 'lucide-react'
 import {
   Sidebar,
   SidebarContent,
@@ -144,6 +144,14 @@ function AppSidebar() {
                     <span>{t.nav.tokens}</span>
                   </SidebarMenuButton>
                 </SidebarMenuItem>
+                {meta.oauthServer && (
+                  <SidebarMenuItem>
+                    <SidebarMenuButton isActive={pathname === '/admin/grants'} render={<NavLink to="/admin/grants" />}>
+                      <PlugZap />
+                      <span>{t.nav.grants}</span>
+                    </SidebarMenuButton>
+                  </SidebarMenuItem>
+                )}
               </SidebarMenu>
             </SidebarGroupContent>
           </SidebarGroup>

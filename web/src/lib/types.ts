@@ -79,6 +79,8 @@ export type Meta = {
   branding?: { name: string; logo: boolean }
   collections: Collection[]
   modules?: ModuleInfo[]
+  /** the built-in OAuth authorization server is on: grants can be listed and revoked */
+  oauthServer?: boolean
 }
 
 export type LedgerRecord = {

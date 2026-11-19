@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kazuhahub/rackbook/internal/auth"
 	"github.com/kazuhahub/rackbook/internal/edit"
@@ -501,5 +502,83 @@ func TestFailedCommitInASubdirectoryKeepsFiles(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(dir, f)); err != nil {
 			t.Errorf("%s was deleted: %v", f, err)
 		}
+	}
+}
+
+// The history reads start from the tracked branch's accepted tip, not from the
+// checkout's HEAD: a commit left at HEAD (a pull request commit that a crash or
+// a failed reset did not remove) is neither listed nor diffable.
+func TestHistoryReadsStartFromTheTrackedTipNotHEAD(t *testing.T) {
+	e := newEnv(t)
+	s := open(t, e.server, nil)
+	ctx := context.Background()
+	stray := filepath.Join(e.server, "docs/ledger/todo.yml")
+	b, _ := os.ReadFile(stray)
+	if err := os.WriteFile(stray, append(b, []byte("- {item: stray, scope: x, status: 待办}\n")...), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sh(t, e.server, "commit", "-q", "-am", "stray pr commit")
+	head := sh(t, e.server, "rev-parse", "HEAD")
+	for _, args := range [][2]string{{"", ""}, {"todo", ""}, {"todo", "stray"}} {
+		h, err := s.HistoryUpTo(ctx, 10, args[0], args[1])
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, c := range h {
+			if strings.HasPrefix(head, c.Hash) {
+				t.Errorf("%v lists the commit at HEAD that is not on the tracked branch", args)
+			}
+		}
+	}
+	for _, rev := range []string{head, head[:8]} {
+		if _, err := s.CommitChanges(ctx, rev); !errors.Is(err, ErrNoCommit) {
+			t.Errorf("%s: %v", rev, err)
+		}
+	}
+	// The accepted tip itself is fine.
+	if d, err := s.CommitChanges(ctx, sh(t, e.bare, "rev-parse", "main")); err != nil || len(d.Files) == 0 {
+		t.Fatalf("%v", err)
+	}
+}
+
+// Without a remote the configured branch is the tracked branch.
+func TestHistoryReadsInARepositoryWithoutRemote(t *testing.T) {
+	dir := localRepo(t)
+	s := open(t, dir, nil)
+	ctx := context.Background()
+	h, err := s.HistoryUpTo(ctx, 10, "todo", "")
+	if err != nil || len(h) != 1 {
+		t.Fatalf("%v %+v", err, h)
+	}
+	if _, err := s.Write(ctx, sshEdit(t, s, "TCP 22"), editor); err != nil {
+		t.Fatal(err)
+	}
+	tip := sh(t, dir, "rev-parse", "HEAD")
+	d, err := s.CommitChanges(ctx, tip)
+	if err != nil || len(d.Files) != 1 || d.Files[0].Path != "docs/ledger/services.yml" {
+		t.Fatalf("%v %+v", err, d)
+	}
+}
+
+// CommitChanges reads refs and objects only: it never waits for the write lock,
+// which a push or a GitHub call can hold for a long time.
+func TestCommitChangesDoesNotWaitForTheWriteLock(t *testing.T) {
+	e := newEnv(t)
+	s := open(t, e.server, nil)
+	rev := sh(t, e.server, "rev-parse", "HEAD")
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	done := make(chan error, 1)
+	go func() {
+		_, err := s.CommitChanges(context.Background(), rev)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("CommitChanges is waiting for the write lock")
 	}
 }

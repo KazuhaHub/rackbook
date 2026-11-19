@@ -56,6 +56,9 @@ type Op struct {
 	ConfirmedBy      string
 	// Module, when set, applies the write rules of a module token (ModuleRule).
 	Module *ModuleRule
+	// DryRun runs every check but writes nothing: Result.Before and Result.After
+	// hold the files the change would rewrite.
+	DryRun bool
 }
 
 // ModuleRule is what a module's write may do (docs/modules.md, section 2.3):
@@ -137,6 +140,9 @@ type Result struct {
 	RecordText  string
 	// Cleared lists the references removed by a delete with ClearReferences.
 	Cleared []ledger.Reference
+	// Before and After are the old and new contents of the files a dry run would
+	// write (config-relative paths); nil otherwise.
+	Before, After map[string][]byte
 }
 
 // Changed reports whether any file was written.
@@ -417,8 +423,14 @@ func Apply(cfg *config.Config, op Op) (*Result, error) {
 	if bad := validate.Introduced(validate.Run(base), validate.Run(after)); len(bad) > 0 {
 		return nil, &InvalidError{Issues: bad}
 	}
+	if op.DryRun {
+		res.Before, res.After = map[string][]byte{}, map[string][]byte{}
+	}
 	for f, b := range overlay {
-		if err := writeFile(filepath.Join(cfg.Dir, filepath.FromSlash(f)), b); err != nil {
+		if op.DryRun {
+			old, _ := base.ReadFile(f)
+			res.Before[f], res.After[f] = old, b
+		} else if err := writeFile(filepath.Join(cfg.Dir, filepath.FromSlash(f)), b); err != nil {
 			return nil, err
 		}
 		res.Files = append(res.Files, f)

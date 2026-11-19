@@ -272,6 +272,28 @@ With a session:
   server started plus users with passkeys; `role` is the effective role, `none` if
   they have none) and `DELETE /api/admin/passkeys/{id}`.
 
+## Built-in authorization server
+
+Only with `auth.mcp.builtin_issuer.enabled` (docs/oauth-server.md). `GET /api/meta`
+then carries `"oauthServer": true`. Public (no session; the first four answer
+cross-origin requests):
+
+- `GET /.well-known/oauth-authorization-server` — RFC 8414 metadata.
+- `GET /oauth/jwks` — the public signing key.
+- `POST /oauth/register` — RFC 7591 registration, JSON body `{redirect_uris, client_name?, token_endpoint_auth_method?: "none", grant_types?, response_types?}` → `201` (`200` for a repeated registration) `{client_id, client_name, redirect_uris, …}`; `400 invalid_redirect_uri | invalid_client_metadata`, `429` (per client address) or `503` (every stored registration in use), `404` when `dynamic_registration` is off or `allowed_clients` is set.
+- `POST /oauth/token` — form body. `grant_type=authorization_code` (`code`, `client_id`, `redirect_uri`, `code_verifier`, optional `resource`) or `grant_type=refresh_token` (`refresh_token`, `client_id`, optional narrower `scope`) → `{access_token, token_type: "Bearer", expires_in: 600, refresh_token, scope}`; errors are RFC 6749 `{error, error_description}` (`invalid_grant`, `invalid_target`, `invalid_scope`, `unsupported_grant_type`, `invalid_client`). Responses are `no-store`.
+
+With a session:
+
+- `GET /oauth/authorize?response_type=code&client_id&redirect_uri&code_challenge&code_challenge_method=S256&resource&scope&state` — checks the request. A client or redirect URI that cannot be trusted gets an HTML error page; other errors redirect to the client with `error`, `state` and `iss`; a good request redirects to `/oauth/consent?req=<id>`.
+- `GET /api/oauth/consent?req=<id>` → `{clientName, clientId, redirectUri, redirectHost, scopes, canWrite, user}` (`404` if the request expired or belongs to someone else).
+- `POST /api/oauth/consent` `{"req", "approve": true|false}` → `{"redirect": "<client redirect URI with code, state and iss, or error=access_denied>"}`. Same-origin only; the request is decided once.
+- `GET /api/account/grants` → `{"grants": [{id, clientId, clientName, scopes, canWrite, created, lastUsed}]}` and `DELETE /api/account/grants/{id}` (own grants; `404` otherwise).
+- Admin: `GET /api/admin/grants` (adds `user`, `userName`) and `DELETE /api/admin/grants/{id}`.
+
+Grant endpoints refuse API tokens and OAuth access tokens (`403`). A revoked
+grant's access token stops working at once.
+
 ## Exports
 
 - `GET /export.md` — Markdown (`text/markdown; charset=utf-8`)
@@ -280,16 +302,44 @@ With a session:
 
 ## MCP
 
-`POST /mcp` (streamable HTTP) — the read tools of `rackbook mcp` on stdio, plus
-`record_history` and `list_problems`, and (for callers that may write)
-`create_record`, `update_record` and `delete_record`. Auth: the console's mode,
+`POST /mcp` (streamable HTTP) — the tools of `rackbook mcp` on stdio (read
+only), plus `history_list` / `history_diff` and, for callers that may write,
+`records_create`, `records_update` and `records_delete`. The surface (families,
+arguments, result shapes, limits) is specified in `mcp-surface.md`; `ledger_info`
+reports what this server offers. Tools: `ledger_info`, `ledger_search`,
+`ledger_check`, `ledger_export`, `collections_list`, `collections_describe`,
+`records_query`, `records_get`, `records_create`, `records_update`,
+`records_delete`, `history_list`, `history_diff`, `expiry_list`; resources
+`rackbook://info`, `rackbook://collections`, `rackbook://collections/{collection}`,
+`rackbook://records/{collection}/{id}`, `rackbook://export/markdown`,
+`rackbook://llms.txt`; prompts `audit_record`, `prepare_change`,
+`explain_collection`. Auth: the console's mode,
 an OAuth access token of a trusted issuer (`auth.mcp`, README), or an API token.
 `/.well-known/oauth-protected-resource` (RFC 9728, public) describes the
 resource; a missing or invalid token gets `401` with `WWW-Authenticate: Bearer
-resource_metadata="…"`, a valid token without a role `403` with
-`error="insufficient_scope"`. Write tools fail with the API's error codes in a
-tool error: `{"error","message","status",…}`; a successful write returns
-`{id, hash, data, commit | url, pullRequest}`.
+resource_metadata="…"` (plus `scope="…"` with the built-in authorization server), a valid token without a role `403` with
+`error="insufficient_scope"`. Tools fail with the API's error codes in a tool
+error (`isError`) whose `structuredContent` is `{"error","message","details"?}`
+(`details` carries `current`, `errors`, `references` or `findings` as the HTTP
+body does at top level; a referenced record is `conflict` with
+`details.references`). Lists take `cursor` and `limit` and return `next_cursor`
+(`""` on the last page). A write returns `{change: {kind: "commit" |
+"pull_request", id, url?}, record?, cleared?, message}`; with `dry_run: true` it
+returns `{dry_run: {valid, changed, would_be: "direct_push" | "pull_request",
+files: [{path, status, diff}], problems: [{error, message, details?}]}, record?}`
+and writes nothing. `idempotency_key` makes a retry within 24 hours return the
+first result (`replayed: true`).
+
+Deprecated aliases (removed in v0.7.0, same arguments and results as in v0.2):
+`list_collections`, `get_schema`, `list_records`, `get_record`, `search`,
+`check`, `list_problems`, `export_markdown`, `record_history`, `create_record`,
+`update_record` and `delete_record`. Their results keep the v0.2 shapes
+(`{count, records}`, `{matches}`, `{commits}`, and for writes the flat
+`{id, hash, data, commit | url, pullRequest}` with the flat
+`{"error","message","status",…}` errors), and `update_record` / `delete_record`
+take `hash` where the new tools take `expected_hash`. Each description starts
+with `Deprecated: use <new>; removed in v0.7.0`, and `ledger_info.deprecated`
+lists them.
 
 ## Static console
 
@@ -347,8 +397,9 @@ and token names) and refuses it with
 
 status `422`. `path` is the JSON pointer of the field (`in: "key"` is added when
 the secret is a field name, and `path` is then its map). `excerpt` is at most the
-first 4 characters of the match. The MCP write tools return the same body as a
-tool error (`isError`), and the CLI exits 1. `GET /api/check` (and `rackbook
+first 4 characters of the match. The MCP write tools return it as a tool error
+(`isError`; the new `records_*` tools carry `findings` in `details`, the
+deprecated names return the body above), and the CLI exits 1. `GET /api/check` (and `rackbook
 check`) report secrets already in the data as errors with `rule: "secret"`, the
 same redaction and the message `possible secret (<rule>): <excerpt>`. Passkey
 enrolment with a name that is a secret answers the same `422` before the

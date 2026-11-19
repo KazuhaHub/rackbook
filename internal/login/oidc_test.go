@@ -350,6 +350,22 @@ func TestOpenRedirectThroughTheFlow(t *testing.T) {
 	}
 }
 
+// An OAuth authorization request that reaches the console signed out goes to
+// the login page and, after login, back to the same request: the return value is
+// a plain same-origin path with its query.
+func TestLoginReturnsToAuthorizeRequest(t *testing.T) {
+	e := newEnv(t, options{})
+	target := "/oauth/authorize?client_id=https%3A%2F%2Fclient.example%2Fc.json&redirect_uri=http%3A%2F%2Flocalhost%3A7777%2Fcb&state=a%2Fb"
+	b := e.browser()
+	r := b.get(target)
+	if r.StatusCode != 302 || r.Loc() != "/auth/login?return="+url.QueryEscape(target) {
+		t.Fatalf("signed out: %d %q", r.StatusCode, r.Loc())
+	}
+	if r := b.login("admin", target); r.StatusCode != 303 || r.Loc() != target {
+		t.Fatalf("after login: %d %q", r.StatusCode, r.Loc())
+	}
+}
+
 func TestSessionExpiry(t *testing.T) {
 	e := newEnv(t, options{})
 	b := e.browser()
