@@ -279,7 +279,8 @@ confirms "not a secret".
   and the certificate entry over the password entry.
 - **Excluded apps** (`exclude_app_ids`, matched on the application id or the
   service principal object id) are skipped, for platform-managed apps whose
-  credentials the tenant cannot rotate. Their existing records are left as they
+  credentials the tenant cannot rotate. The list is the union of `entra.yml`'s
+  and the console's (7.7). Their existing records are left as they
   are: not updated, not revoked.
 - **A rotated credential is retired.** An expired credential is treated as
   gone (marked revoked) when the same owner has a newer, unexpired credential
@@ -481,6 +482,10 @@ What the console edits, and what it does not:
 | `rackbook-entra` | `sync_at` and `timezone`, `service_principals`, `exclude_app_ids`, `name_prefix`, `purpose`, `defaults` | tenant id, client id and the certificate; `type_labels` and the per-type fields |
 | the token | | its scope, collection, `fields` and `direct_push` (the `modules:` entry and the 令牌 page) |
 
+An empty `name_prefix` box means "use the default" (`entra-`), except that a
+prefix that is explicitly empty (no prefix) stays so when you save other
+settings.
+
 Secrets never go through the console: certificates, the SMTP password and the
 webhook URL stay in files on the module's host (`$CREDENTIALS_DIRECTORY`).
 
@@ -493,7 +498,9 @@ The timer starts the module every hour (section 5). Each time it:
 2. if the module is **paused**, it reports a `skipped` run and exits;
 3. otherwise it runs if a "run now" request is waiting, or if a daily time
    (`send_at` / `sync_at`, in the module's time zone) has passed since its last
-   *successful* run. A module that never ran is due at once. A run that failed
+   *successful* run, counted from when that run **started** (a run that starts
+   just before a daily time and ends after it does not use up that time's
+   successor). A module that never ran is due at once. A run that failed
    does not count, so it is tried again at the next hourly check;
 4. after a run it reports the result (`POST /api/modules/<name>/runs`).
 
@@ -510,6 +517,15 @@ Each run is reported with its start and end time, a result (`ok`, `failed` or
 `skipped`), counts (`created`, `updated`, `revoked` for entra; `sent` for
 notify), a short error text and, when it answers one, the id of the "run now"
 request.
+
+The times are checked against the server's clock. A run whose `finished` is
+ahead of the server (a module host with a fast clock) is accepted and its times
+are stored exactly as reported (the module compares its own clock with its own
+times, so they stay consistent), and the server logs it when the difference is
+more than 10 minutes; only more than 24 hours ahead is refused. Otherwise one
+fast clock would block every report. The times the console shows (last run,
+last success, next run, "due") are the ones the module host reported, compared
+with the server's clock, so module hosts should run NTP.
 
 The server keeps the **last 30 runs per module** in `<state-dir>/modules.json`,
 the same `--state-dir` that keeps `token-use.json` (written to a temporary file
@@ -529,6 +545,11 @@ sees it at its next hourly check, runs, and reports the run with that id, which
 clears the request. Asking again while one waits does not queue a second.
 A paused module cannot be asked; resume it first. It takes up to an hour,
 because nothing connects to the module; the page says "waiting".
+
+The settings form keeps what you typed. Saving sends the version the edit
+started from, not the latest one the page refreshed to in the background (every
+30 s). If the settings are saved elsewhere meanwhile, the page keeps your edits
+and says so; saving then gets `409` and offers to load the latest settings.
 
 ### 7.5 Changes that ask first
 
@@ -552,12 +573,25 @@ gives the exact list. The server also refuses an unconfirmed risky change
 
 ### 7.6 Recipients, and failures in the digest
 
-When the recipients change, `rackbook-notify` sends one notice
-("收件人已变更" / "Recipients changed") to **both the old and the new
-addresses**, so a wrong or malicious change is seen by the people it removed.
-It remembers the last recipients in its own local state file (`recipients`),
-and does this at the next hourly check, whether or not a digest is due. The
-first time it only remembers them.
+When a successful fetch of the settings shows a recipient list that differs
+from the one the module remembers (in its local state file, `recipients`), it
+remembers the new list at once and sends **one** notice ("收件人已变更" /
+"Recipients changed") to the old and the new addresses together, so a wrong or
+malicious change is seen by the people it removed. Each address is tried on its
+own: one the mail server rejects (a deleted mailbox, say, answered with 550) is
+logged and skipped, and the others still get the notice. There is no retry; if
+no address accepted it, the failure shows in the module's log. This happens at
+the next hourly check, whether or not a digest is due. The first time the module
+only remembers the list.
+
+The module compares only with recipients it got while it could reach the
+console. If the settings cannot be fetched (console down, network, older
+server), it does **not** announce anything and does not treat the local
+`smtp.to` as a change. The run still goes ahead with the local config, as
+section 7.7 says, but the digest goes to the **last recipients the module
+received** (kept in the same state file), not to a possibly older list in the
+local file; with none remembered, it uses `smtp.to`. When the console is
+reachable again, only a real difference to the remembered list is announced.
 
 For the failed-run lines the notify module reads `GET /api/modules/status` with
 its own token. Only a module of `type: notify` and administrators may read it.
@@ -571,7 +605,13 @@ To move a setting into the console, set it there and delete it from the local
 file:
 
 - a field **set in the console wins**; if the local file also has it with a
-  different value, the module logs a warning that names the field;
+  different value, the module logs a warning that names the field. The one
+  exception is `exclude_app_ids`: the console list and `entra.yml`'s list are
+  **added together** (union, ignoring case), so a console edit can only exclude
+  more apps and never un-freezes an app the local file excludes. The impact
+  preview (7.5) therefore looks at the console list only; it cannot see the
+  local file, and an app that is already excluded locally is listed as frozen
+  although nothing changes for it;
 - a field the console leaves empty keeps its local value, and then the default;
 - `smtp.to` is optional locally once the console has recipients.
 
@@ -582,4 +622,5 @@ without `collection` and `fields`) to the `modules:` block.
 
 See [api.md](api.md#modules-panel). Admin calls need a signed-in administrator;
 a token reaches only its own module's `settings` and `runs` (and `status` for a
-notify module).
+notify module). Any other caller gets `403` for a module name that is not its
+own, whether or not the module exists.

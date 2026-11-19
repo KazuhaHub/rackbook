@@ -1,7 +1,9 @@
 import {
   addedExcludes,
+  changedElsewhere,
   changedKeys,
   cleanSettings,
+  editBase,
   countParts,
   defaultsToText,
   failedCount,
@@ -10,6 +12,9 @@ import {
   isEmail,
   isRiskyChange,
   isTime,
+  nextPrefix,
+  pinAfterLoadLatest,
+  pinAfterSave,
   parseDefaults,
   parseThresholds,
   sameSettings,
@@ -86,6 +91,31 @@ eq('failed count', failedCount([{ status: 'failed' }, { status: 'ok' }, { status
 const c = { created: 2, updated: 1, revoked: 0, sent: 5 }
 eq('entra counts', countParts(c, 'entra'), [{ key: 'created', n: 2 }, { key: 'updated', n: 1 }, { key: 'revoked', n: 0 }])
 eq('notify counts', countParts(c, 'notify'), [{ key: 'sent', n: 5 }])
+
+// editing: the save carries the version the edit started from, not the latest refetch
+const v1 = { version: 'v1', settings: { sync_at: ['03:00'] } }
+const v2 = { version: 'v2', settings: { sync_at: ['05:00'] } }
+eq('no edits: follow the latest', editBase(null, v2), v2)
+eq('edits: keep the version they started from', editBase(v1, v2).version, 'v1')
+eq('edits: keep the settings they started from', editBase(v1, v2).settings, v1.settings)
+eq('no edits, nothing to warn about', changedElsewhere(null, v2), false)
+eq('edits and the same version', changedElsewhere(v1, v1), false)
+eq('edits and a newer version', changedElsewhere(v1, v2), true)
+
+// what a save does to the pin: only an applied change lets the form follow the server
+eq('save applied: pin dropped', pinAfterSave(v1, { changed: true }), null)
+eq('save as a pull request: edits and base kept', pinAfterSave(v1, { changed: true, pullRequest: true }), v1)
+eq('save, nothing changed: edits and base kept', pinAfterSave(v1, { changed: false }), v1)
+eq('load latest while the refetch is running: pin kept', pinAfterLoadLatest(v1, false), v1)
+eq('load latest after the refetch returned: pin dropped', pinAfterLoadLatest(v1, true), null)
+
+// name_prefix: an explicit empty string survives a save
+eq('prefix typed', nextPrefix(' ent- ', undefined), 'ent-')
+eq('prefix empty, was unset', nextPrefix('', undefined), undefined)
+eq('prefix empty, was explicitly empty', nextPrefix('', ''), '')
+eq('prefix empty, was a value', nextPrefix('  ', 'ent-'), undefined)
+eq('explicit empty prefix is kept by cleanSettings', cleanSettings({ name_prefix: nextPrefix('', '') }), { name_prefix: '' })
+eq('explicit empty prefix is not a change', sameSettings({ name_prefix: nextPrefix('', '') }, { name_prefix: '' }), true)
 
 if (failed) {
   console.error(`${failed} check(s) failed`)

@@ -18,7 +18,9 @@ import (
 // withPanel returns a copy of the local config with the settings an
 // administrator set in the console. A setting from the console wins over the
 // same field in the local file (and a warning says so, so the local line can
-// be deleted); a field the console leaves unset keeps its local value.
+// be deleted); a field the console leaves unset keeps its local value. The one
+// exception is exclude_app_ids: the two lists are added together (union), so
+// the console can only exclude more apps.
 func (c *Config) withPanel(s *modsettings.Entra, log *slog.Logger) *Config {
 	eff := *c
 	eff.Entra.ExcludeAppIDs = append([]string(nil), c.Entra.ExcludeAppIDs...)
@@ -32,10 +34,9 @@ func (c *Config) withPanel(s *modsettings.Entra, log *slog.Logger) *Config {
 		}
 	}
 	if len(s.ExcludeAppIDs) > 0 {
-		if len(c.Entra.ExcludeAppIDs) > 0 {
-			warn("entra.exclude_app_ids", lowerSorted(c.Entra.ExcludeAppIDs), lowerSorted(s.ExcludeAppIDs))
-		}
-		eff.Entra.ExcludeAppIDs = s.ExcludeAppIDs
+		// the two lists add up: the console can only exclude more apps, so a
+		// console edit never un-freezes an app the local file excludes
+		eff.Entra.ExcludeAppIDs = unionIDs(c.Entra.ExcludeAppIDs, s.ExcludeAppIDs)
 	}
 	if s.ServicePrincipals != nil {
 		if c.setServicePrincipals {
@@ -64,6 +65,21 @@ func (c *Config) withPanel(s *modsettings.Entra, log *slog.Logger) *Config {
 		eff.Record.Defaults = maps.Clone(s.Defaults)
 	}
 	return &eff
+}
+
+// unionIDs joins two id lists, ignoring case and keeping the first spelling.
+func unionIDs(a, b []string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, l := range [][]string{a, b} {
+		for _, s := range l {
+			if k := strings.ToLower(strings.TrimSpace(s)); k != "" && !seen[k] {
+				seen[k] = true
+				out = append(out, s)
+			}
+		}
+	}
+	return out
 }
 
 func lowerSorted(in []string) []string {

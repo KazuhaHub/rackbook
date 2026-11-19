@@ -81,6 +81,30 @@ func TestChangedKeys(t *testing.T) {
 	}
 }
 
+func TestRunFromAFastClockIsStoredAsReported(t *testing.T) {
+	now := time.Now()
+	start := now.Add(3 * time.Hour)
+	r := Run{Started: start, Finished: start.Add(time.Minute), Status: StatusOK}
+	want := r
+	if err := r.Validate(now); err != nil {
+		t.Fatalf("a fast module clock must not block reports: %v", err)
+	}
+	if !r.Started.Equal(want.Started) || !r.Finished.Equal(want.Finished) {
+		t.Fatalf("times must not be rewritten: %+v", r)
+	}
+	// a clock a few minutes fast: the slot the module just ran stays done for it
+	slot := time.Date(2026, 11, 18, 8, 0, 0, 0, time.UTC)
+	modStart := slot.Add(time.Minute)
+	fast := Run{Started: modStart, Finished: modStart.Add(5 * time.Second), Status: StatusOK}
+	if err := fast.Validate(fast.Finished.Add(-3 * time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	d := Decide(Input{Now: time.Date(2026, 11, 18, 9, 2, 0, 0, time.UTC), Times: []string{"08:00"}, Timezone: "UTC", LastOK: fast.Started})
+	if d.Run {
+		t.Fatalf("ran twice for one slot: %+v", d)
+	}
+}
+
 func TestRunValidation(t *testing.T) {
 	now := time.Now()
 	ok := Run{Started: now.Add(-time.Minute), Finished: now, Status: StatusOK, Counts: Counts{Created: 2}}
@@ -90,7 +114,7 @@ func TestRunValidation(t *testing.T) {
 	for name, mut := range map[string]func(*Run){
 		"status":   func(r *Run) { r.Status = "done" },
 		"order":    func(r *Run) { r.Finished = r.Started.Add(-time.Second) },
-		"future":   func(r *Run) { r.Finished = now.Add(time.Hour) },
+		"future":   func(r *Run) { r.Finished = now.Add(25 * time.Hour) },
 		"negative": func(r *Run) { r.Counts.Sent = -1 },
 		"zero":     func(r *Run) { r.Started = time.Time{} },
 	} {

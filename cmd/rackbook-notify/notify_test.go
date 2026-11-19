@@ -456,6 +456,7 @@ type fakeSMTP struct {
 	auth      string
 	from      string
 	rcpts     []string
+	reject    map[string]bool // addresses answered with 550
 	data      string
 }
 
@@ -539,9 +540,17 @@ func (f *fakeSMTP) serve(c net.Conn) {
 			say("250 ok")
 		case strings.HasPrefix(cmd, "RCPT TO:"):
 			f.mu.Lock()
-			f.rcpts = append(f.rcpts, line[len("RCPT TO:"):])
+			addr := line[len("RCPT TO:"):]
+			bad := f.reject[strings.Trim(addr, "<>")]
+			if !bad {
+				f.rcpts = append(f.rcpts, addr)
+			}
 			f.mu.Unlock()
-			say("250 ok")
+			if bad {
+				say("550 no such mailbox")
+			} else {
+				say("250 ok")
+			}
 		case cmd == "DATA":
 			say("354 go")
 			var b strings.Builder

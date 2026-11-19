@@ -14,6 +14,10 @@ const (
 	// EffectFrozen: the sync no longer touches the record. An excluded app's
 	// credentials are skipped, not retired (cmd/rackbook-entra, liveCredentials:
 	// they count as "protected"), so the record keeps its last values.
+	//
+	// The server cannot see the module's local entra.yml, whose list is added
+	// to the console's, so an app already excluded there is still reported as
+	// frozen; the console words this as "unless already excluded locally".
 	EffectFrozen = "frozen"
 	// EffectMaybeRevoked: with service principals off, the sync no longer reads
 	// them, and a record whose credential is found nowhere else is marked

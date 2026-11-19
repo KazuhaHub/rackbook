@@ -140,6 +140,43 @@ export const addedExcludes = (was: ModuleSettings, next: ModuleSettings): string
 export const isRiskyChange = (was: ModuleSettings, next: ModuleSettings) =>
   addedExcludes(was, next).length > 0 || (spOn(was) && !spOn(next))
 
+// ---- editing a module's settings ----------------------------------------------------
+
+/** The version and settings an edit started from. */
+export type EditBase = { version: string; settings: ModuleSettings }
+
+/**
+ * What the form is based on: the version it was loaded from while the user has
+ * unsaved edits (`pin`), else the latest the server reported. Saving sends this
+ * version, so a change made elsewhere meanwhile is refused (409), not overwritten.
+ */
+export const editBase = (pin: EditBase | null, latest: EditBase): EditBase => pin ?? latest
+
+/** The settings changed on the server while the user has unsaved edits. */
+export const changedElsewhere = (pin: EditBase | null, latest: EditBase): boolean => pin !== null && pin.version !== latest.version
+
+/**
+ * The pin after a save. Only a save that really changed the settings in place
+ * lets the form follow the server again (the page then reloads, which resets
+ * the form); a pull request is not applied yet and "nothing changed" leaves
+ * the form as it was, so in both cases the edits and their base stay.
+ */
+export const pinAfterSave = (pin: EditBase | null, r: { changed: boolean; pullRequest?: boolean }): EditBase | null =>
+  r.changed && !r.pullRequest ? null : pin
+
+/** The pin after "load latest settings": dropped only once the refetch has returned. */
+export const pinAfterLoadLatest = (pin: EditBase | null, refetched: boolean): EditBase | null => (refetched ? null : pin)
+
+/**
+ * The name prefix to save. An empty box keeps an explicit empty prefix ("no
+ * prefix") that was already set, and otherwise means "use the default".
+ */
+export function nextPrefix(text: string, was: unknown): string | undefined {
+  const v = text.trim()
+  if (v !== '') return v
+  return was === '' ? '' : undefined
+}
+
 // ---- how a module looks ------------------------------------------------------------
 
 export type Tone = 'ok' | 'failed' | 'paused' | 'skipped' | 'never' | 'due'

@@ -99,7 +99,7 @@ func TestConsoleSettingsWinOverTheLocalConfigAndSayWhy(t *testing.T) {
 			t.Errorf("%s: %v", n, r)
 		}
 	}
-	for _, f := range []string{"entra.exclude_app_ids", "record.defaults"} {
+	for _, f := range []string{"record.defaults"} {
 		if !strings.Contains(logs, "overrides the local config") || !strings.Contains(logs, f) {
 			t.Errorf("no warning for %s in:\n%s", f, logs)
 		}
@@ -112,6 +112,21 @@ func TestConsoleSettingsWinOverTheLocalConfigAndSayWhy(t *testing.T) {
 	e2.panel(map[string]any{"exclude_app_ids": []any{strings.ToLower(appB)}}, time.Time{}, "")
 	if _, _, logs := e2.cycle(options{}); strings.Contains(logs, "overrides the local config") {
 		t.Errorf("a warning for an equal value:\n%s", logs)
+	}
+}
+
+func TestConsoleExcludeListAddsToTheLocalOne(t *testing.T) {
+	e := newEnv(t) // the local config excludes appB
+	e.panel(map[string]any{"exclude_app_ids": []any{appA}}, time.Time{}, "")
+	_, _, logs := e.cycle(options{})
+	if strings.Contains(logs, "entra.exclude_app_ids") {
+		t.Errorf("the lists add up; nothing is overridden:\n%s", logs)
+	}
+	base := newEnv(t)
+	base.panel(map[string]any{"exclude_app_ids": []any{appA, appB}}, time.Time{}, "")
+	base.cycle(options{})
+	if len(e.rb.records) != len(base.rb.records) {
+		t.Fatalf("appB must stay excluded: %d records, want %d", len(e.rb.records), len(base.rb.records))
 	}
 }
 

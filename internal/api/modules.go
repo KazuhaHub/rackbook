@@ -224,12 +224,14 @@ func (s *server) modulesList(w http.ResponseWriter, r *http.Request) {
 // "run now" request waits, and when it last succeeded. An administrator may
 // read it too.
 func (s *server) moduleSettings(w http.ResponseWriter, r *http.Request) {
-	name, m, ok := s.module(w, r)
-	if !ok {
+	// authorize before looking the module up, so the answer does not tell a
+	// caller which module names exist
+	if own, _ := s.callerModule(r); own != r.PathValue("name") && !s.isAdmin(r) {
+		writeError(w, http.StatusForbidden, "forbidden", "a module may read only its own settings")
 		return
 	}
-	if own, _ := s.callerModule(r); own != name && !s.isAdmin(r) {
-		writeError(w, http.StatusForbidden, "forbidden", "a module may read only its own settings")
+	name, m, ok := s.module(w, r)
+	if !ok {
 		return
 	}
 	cur, ver := modules.Current(m)
@@ -359,12 +361,12 @@ func (s *server) moduleRunRequest(w http.ResponseWriter, r *http.Request) {
 
 // moduleRuns takes a run report. Only the module's own token may send it.
 func (s *server) moduleRuns(w http.ResponseWriter, r *http.Request) {
-	name, _, ok := s.module(w, r)
-	if !ok {
+	if own, _ := s.callerModule(r); own == "" || own != r.PathValue("name") {
+		writeError(w, http.StatusForbidden, "forbidden", "only the module's own token may report its runs")
 		return
 	}
-	if own, _ := s.callerModule(r); own != name {
-		writeError(w, http.StatusForbidden, "forbidden", "only the module's own token may report its runs")
+	name, _, ok := s.module(w, r)
+	if !ok {
 		return
 	}
 	var run modsettings.Run
@@ -376,6 +378,9 @@ func (s *server) moduleRuns(w http.ResponseWriter, r *http.Request) {
 	if err := run.Validate(s.now()); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
+	}
+	if skew := run.Finished.Sub(s.now()); skew > modsettings.SkewWorthLogging {
+		s.log.Warn("module clock is ahead of the server's; run stored as reported", "module", name, "ahead", skew.Round(time.Second).String())
 	}
 	if err := s.o.Modules.AddRun(name, run); err != nil {
 		s.internal(w, err)

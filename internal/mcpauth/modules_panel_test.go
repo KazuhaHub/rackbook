@@ -3,6 +3,7 @@ package mcpauth_test
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 const panelYAML = `modules:
@@ -58,8 +59,11 @@ func TestModuleTokensReadOnlyTheirOwnSettings(t *testing.T) {
 	if code, _, _ := h.do("GET", "/api/modules/notify/settings", p.other, nil); code != 403 {
 		t.Fatalf("a token that is no module: %d", code)
 	}
-	if code, _, _ := h.do("GET", "/api/modules/ghost/settings", p.notify, nil); code != 404 {
-		t.Fatalf("unknown module: %d", code)
+	if code, _, _ := h.do("GET", "/api/modules/ghost/settings", p.notify, nil); code != 403 {
+		t.Fatalf("unknown module for a module token: %d", code)
+	}
+	if code, _, _ := h.do("GET", "/api/modules/ghost/settings", "", nil); code != 404 {
+		t.Fatalf("unknown module for an admin: %d", code)
 	}
 	// the admin endpoints are for people, whatever the token
 	for _, c := range [][2]string{{"GET", "/api/modules"}, {"PUT", "/api/modules/notify/settings"}, {"POST", "/api/modules/notify/preview"}, {"POST", "/api/modules/notify/run-request"}} {
@@ -72,6 +76,42 @@ func TestModuleTokensReadOnlyTheirOwnSettings(t *testing.T) {
 				t.Fatalf("%s %s with a token: %d", c[0], c[1], code)
 			}
 		}
+	}
+}
+
+func TestUnauthorizedCallersCannotProbeModuleNames(t *testing.T) {
+	p := newPanel(t)
+	h := p.h
+	for _, tok := range []string{p.bot, p.other} {
+		real, _, _ := h.do("GET", "/api/modules/notify/settings", tok, nil)
+		ghost, _, _ := h.do("GET", "/api/modules/ghost/settings", tok, nil)
+		if real != 403 || ghost != 403 {
+			t.Fatalf("settings: existing %d, unknown %d; both must be 403", real, ghost)
+		}
+		real, _, _ = h.do("POST", "/api/modules/notify/runs", tok, runBody("ok"))
+		ghost, _, _ = h.do("POST", "/api/modules/ghost/runs", tok, runBody("ok"))
+		if real != 403 || ghost != 403 {
+			t.Fatalf("runs: existing %d, unknown %d; both must be 403", real, ghost)
+		}
+	}
+}
+
+func TestRunFromAFastClockIsAccepted(t *testing.T) {
+	p := newPanel(t)
+	body := runBody("ok")
+	body["started"], body["finished"] = "2099-01-01T00:00:00Z", "2099-01-01T00:00:01Z"
+	if code, _, _ := p.h.do("POST", "/api/modules/bot/runs", p.bot, body); code != 400 {
+		t.Fatalf("far future: %d", code)
+	}
+	now := time.Now().UTC()
+	body["started"], body["finished"] = now.Add(2*time.Hour).Format(time.RFC3339), now.Add(2*time.Hour+time.Second).Format(time.RFC3339)
+	if code, _, _ := p.h.do("POST", "/api/modules/bot/runs", p.bot, body); code != 201 {
+		t.Fatalf("a clock two hours fast: %d", code)
+	}
+	_, list, _ := p.h.do("GET", "/api/modules", "", nil)
+	last := list["modules"].([]any)[0].(map[string]any)["lastRun"].(map[string]any)
+	if last["started"] != body["started"] {
+		t.Fatalf("stored %v, reported %v", last["started"], body["started"])
 	}
 }
 

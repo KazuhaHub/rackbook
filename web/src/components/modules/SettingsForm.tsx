@@ -1,4 +1,4 @@
-import { useMemo, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -14,6 +14,7 @@ import {
   isAppId,
   isEmail,
   isTime,
+  nextPrefix,
   parseDefaults,
   parseThresholds,
   sameSettings,
@@ -91,7 +92,7 @@ function toSettings(type: string, d: Draft, base: ModuleSettings): ModuleSetting
     out.sync_at = d.times
     out.service_principals = d.servicePrincipals ? (base.service_principals === true ? true : undefined) : false
     out.exclude_app_ids = d.exclude.map((x) => x.toLowerCase())
-    out.name_prefix = d.prefix.trim() === '' ? undefined : d.prefix.trim()
+    out.name_prefix = nextPrefix(d.prefix, base.name_prefix)
     out.purpose = d.purpose.trim()
     out.defaults = parseDefaults(d.defaults).value
   }
@@ -121,12 +122,15 @@ export function SettingsForm({
   saving,
   readOnly,
   onSave,
+  onDirtyChange,
 }: {
   module: ModuleView
   saving: boolean
   /** the server refuses writes */
   readOnly: boolean
   onSave: (settings: ModuleSettings) => void
+  /** called when unsaved edits appear or go away */
+  onDirtyChange?: (dirty: boolean) => void
 }) {
   const { meta } = useMeta()
   const [draft, setDraft] = useState<Draft>(() => toDraft(m.type, m.settings))
@@ -134,6 +138,9 @@ export function SettingsForm({
   const errors = useMemo(() => check(m.type, draft), [m.type, draft])
   const next = useMemo(() => (Object.keys(errors).length ? undefined : toSettings(m.type, draft, m.settings)), [errors, draft, m.type, m.settings])
   const dirty = next ? !sameSettings(next, m.settings) : true
+  useEffect(() => {
+    onDirtyChange?.(dirty)
+  }, [dirty, onDirtyChange])
   const notify = m.type === 'notify'
   const defaultTimes = notify ? '08:00' : '03:00'
   const collections = meta.collections.filter((c) => c.expiryField)

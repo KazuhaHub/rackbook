@@ -57,6 +57,15 @@ func (r *Run) Clean() {
 	r.RunRequest = strings.TrimSpace(r.RunRequest)
 }
 
+// MaxClockSkew is how far ahead of the server a reported run may be before it
+// is refused as nonsense. Times within it are stored exactly as reported: the
+// module compares its own clock with its own reported times, so they must stay
+// consistent with each other.
+const MaxClockSkew = 24 * time.Hour
+
+// SkewWorthLogging is the clock difference above which the server logs it.
+const SkewWorthLogging = 10 * time.Minute
+
 // Validate checks a reported run against the server's clock.
 func (r *Run) Validate(now time.Time) error {
 	switch r.Status {
@@ -70,8 +79,8 @@ func (r *Run) Validate(now time.Time) error {
 	if r.Finished.Before(r.Started) {
 		return errors.New("finished is before started")
 	}
-	if r.Finished.After(now.Add(10 * time.Minute)) {
-		return errors.New("finished is in the future")
+	if r.Finished.After(now.Add(MaxClockSkew)) {
+		return errors.New("finished is more than 24 hours in the future")
 	}
 	for _, n := range []int{r.Counts.Created, r.Counts.Updated, r.Counts.Revoked, r.Counts.Sent} {
 		if n < 0 || n > 1_000_000_000 {
@@ -95,7 +104,7 @@ type Remote struct {
 	Version  string         `json:"version"`
 	// RunRequest is the id of a waiting "run now" request, or "".
 	RunRequest string `json:"runRequest"`
-	// LastOK is when the module last finished a successful run (zero = never).
+	// LastOK is when the module last started a successful run (zero = never).
 	LastOK  time.Time `json:"lastOk"`
 	LastRun *Run      `json:"lastRun"`
 	Now     time.Time `json:"now"`

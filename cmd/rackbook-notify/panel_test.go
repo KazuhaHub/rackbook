@@ -264,3 +264,65 @@ func TestStatePreservesPanelFieldsAcrossARun(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestFailedSettingsFetchDoesNotAnnounceOrUseTheLocalList(t *testing.T) {
+	e, f := smtpEnv(t)
+	e.cfg.SMTP.To = []string{"local@example.org"}
+	e.rb.set(item("c", "a", "2026-11-20", 2))
+	e.panel(map[string]any{"recipients": []any{"console@example.org"}}, time.Time{}, "")
+	e.cycle(t, options{})
+	// the console becomes unreachable (404 from the fake); the local list differs
+	e.rb.mu.Lock()
+	e.rb.remote = nil
+	e.rb.mu.Unlock()
+	f.mu.Lock()
+	f.data = ""
+	f.mu.Unlock()
+	e.rb.set(item("c", "b", "2026-11-20", 2))
+	e.cycle(t, options{})
+	rc, body := f.last()
+	if strings.Contains(body, "收件人已变更") || strings.Contains(body, "Recipients changed") {
+		t.Fatalf("a failed fetch must not announce a change:\n%s", body)
+	}
+	if len(rc) != 1 || rc[0] != "<console@example.org>" {
+		t.Fatalf("the digest must go to the last recipients from the console, got %v", rc)
+	}
+	if st, _ := loadState(e.stat); len(st.Recipients) != 1 || st.Recipients[0] != "console@example.org" {
+		t.Fatalf("state %+v", st)
+	}
+}
+
+func TestChangeNoticeIsBestEffortAndNotRetried(t *testing.T) {
+	e, f := smtpEnv(t)
+	e.rb.set()
+	e.panel(map[string]any{"recipients": []any{"gone@example.org", "a@example.org"}}, time.Time{}, "")
+	e.cycle(t, options{})
+	// one old address no longer exists; the change must still reach the others
+	f.mu.Lock()
+	f.reject = map[string]bool{"gone@example.org": true}
+	f.mu.Unlock()
+	e.panel(map[string]any{"recipients": []any{"b@example.org"}}, panelNow.Add(-time.Minute), "")
+	_, _, logs := e.cycle(t, options{})
+	rc, body := f.last()
+	if len(rc) != 2 || rc[0] != "<a@example.org>" || rc[1] != "<b@example.org>" || !strings.Contains(body, "收件人已变更") {
+		t.Fatalf("notice went to %v\n%s", rc, body)
+	}
+	if !strings.Contains(logs, "gone@example.org") {
+		t.Errorf("the refused address is not logged:\n%s", logs)
+	}
+	// the new list is remembered at once; nothing else is carried over, so no retry
+	st, _ := loadState(e.stat)
+	if len(st.Recipients) != 1 || st.Recipients[0] != "b@example.org" {
+		t.Fatalf("state %+v", st)
+	}
+	if b, _ := os.ReadFile(e.stat); strings.Contains(string(b), "notice") {
+		t.Fatalf("state must hold no notice bookkeeping:\n%s", b)
+	}
+	f.mu.Lock()
+	f.data = ""
+	f.mu.Unlock()
+	e.cycle(t, options{})
+	if _, body := f.last(); body != "" {
+		t.Fatalf("the notice was sent again:\n%s", body)
+	}
+}

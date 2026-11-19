@@ -19,7 +19,7 @@ type Input struct {
 	Now      time.Time
 	Times    []string
 	Timezone string
-	// LastOK is when the module last finished a run that succeeded (the zero
+	// LastOK is when the module last started a run that succeeded (the zero
 	// time when it never has). Failed and skipped runs do not count, so a run
 	// that failed is tried again at the next check.
 	LastOK time.Time

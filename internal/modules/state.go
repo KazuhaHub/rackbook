@@ -155,12 +155,14 @@ func (s *State) LastRun(name string) *modsettings.Run {
 	return nil
 }
 
-// LastOK is when the module last finished a successful run (zero = never).
+// LastOK is when the module last started a successful run (zero = never). It
+// is the start, not the end, so a run that spans a daily slot does not use up
+// the slot after it.
 func (s *State) LastOK(name string) time.Time {
 	var t time.Time
 	for _, r := range s.Runs(name) {
-		if r.Status == modsettings.StatusOK && r.Finished.After(t) {
-			t = r.Finished
+		if r.Status == modsettings.StatusOK && r.Started.After(t) {
+			t = r.Started
 		}
 	}
 	return t

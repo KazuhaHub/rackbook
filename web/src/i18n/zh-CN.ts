@@ -766,6 +766,9 @@ export const t = {
       conflictTitle: '设置已被别人修改',
       conflictBody: '你打开之后，这个模块的设置又被保存过。载入最新设置后再改一次。',
       conflictLoad: '载入最新设置',
+      finishEditing: '请先保存或放弃设置的修改',
+      changedElsewhereTitle: '设置已在别处被修改',
+      changedElsewhereBody: '你开始编辑之后，这个模块的设置被别人保存过。你的修改已保留；现在保存会被拒绝，可以先载入最新设置再改。',
       times: '运行时间',
       timesNotify: '发送时间',
       timesEntra: '同步时间',
@@ -809,7 +812,7 @@ export const t = {
     impact: {
       title: '这次修改会影响已有记录',
       titleNone: '确认这次修改？',
-      bodyFrozen: '这些应用被排除后，同步不再更新它们的记录（记录保持现状，不会被吊销）：',
+      bodyFrozen: '这些应用被排除后，同步不再更新它们的记录（记录保持现状，不会被吊销）。如果这些应用已在模块本地的 entra.yml 中排除，则不会有变化：',
       bodyRevoke: '关闭服务主体后，下次同步可能把这些记录标记为已吊销。账本里看不出记录来自应用还是服务主体，所以这里列出所有仍有效的记录；准确结果用 rackbook-entra --dry-run 查看。',
       none: '现有记录不受影响。',
       frozen: '不再更新',

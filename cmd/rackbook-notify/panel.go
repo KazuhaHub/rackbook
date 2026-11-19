@@ -92,6 +92,7 @@ func (n *notifier) cycle(ctx context.Context, o options) (failed, panel bool) {
 	n.cfg = n.base
 	if chk.Err != nil {
 		n.log.Warn("settings from the Rackbook console are not available; using the local config", "err", chk.Err)
+		n.useRememberedRecipients()
 	} else {
 		n.cfg = n.base.withPanel(chk.Settings.(*modsettings.Notify), n.log)
 	}
@@ -108,9 +109,11 @@ func (n *notifier) cycle(ctx context.Context, o options) (failed, panel bool) {
 		n.report(ctx, modsettings.Run{Started: now, Finished: now, Status: modsettings.StatusSkipped, Error: "paused"})
 		return false, true
 	}
-	if !o.dry {
+	// Only settings that really came from the console can change the
+	// recipients; a failed fetch must not look like a change.
+	if !o.dry && chk.Panel() {
 		if err := n.announceRecipients(ctx); err != nil && ctx.Err() == nil {
-			n.log.Warn("could not announce the change of recipients; will try again at the next check", "err", err)
+			n.log.Warn("could not announce the change of recipients; the new list is in use and the notice is not retried", "err", err)
 		}
 	}
 	if !d.Run {
@@ -168,9 +171,30 @@ func (n *notifier) failures(ctx context.Context, st *State) (fresh []modsettings
 	return fresh, seen
 }
 
+// useRememberedRecipients is the fallback when the console cannot be reached:
+// the digest goes to the recipients the module last got while it could (not to
+// a possibly older list in the local file). Without any, the local list stays.
+func (n *notifier) useRememberedRecipients() {
+	s := n.cfg.SMTP
+	if s == nil {
+		return
+	}
+	st, err := loadState(n.statePath)
+	if err != nil || len(st.Recipients) == 0 {
+		return
+	}
+	smtp := *s
+	smtp.To = append([]string(nil), st.Recipients...)
+	cfg := *n.cfg
+	cfg.SMTP = &smtp
+	n.cfg = &cfg
+}
+
 // announceRecipients sends one notice to the old and the new addresses when
-// the recipients differ from the ones the last notice or digest knew. The
-// first time it only remembers them.
+// a successful settings fetch shows recipients that differ from the remembered
+// ones. The new list is remembered first and the notice is not retried: each
+// address is tried on its own, a rejected one is logged and the others still
+// get the mail. The first time it only remembers the list.
 func (n *notifier) announceRecipients(ctx context.Context) error {
 	s := n.cfg.SMTP
 	if s == nil || len(s.To) == 0 {
@@ -180,14 +204,17 @@ func (n *notifier) announceRecipients(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	switch {
-	case len(st.Recipients) == 0: // the first time: only remember them
-		st.Recipients = append([]string(nil), s.To...)
-		return saveState(n.statePath, st)
-	case sameAddresses(st.Recipients, s.To):
+	old := st.Recipients
+	if len(old) > 0 && sameAddresses(old, s.To) {
 		return nil
 	}
-	old := st.Recipients
+	st.Recipients = append([]string(nil), s.To...)
+	if err := saveState(n.statePath, st); err != nil {
+		return err
+	}
+	if len(old) == 0 { // the first time: only remember them
+		return nil
+	}
 	subject, body := recipientsNotice(n.cfg.Language, n.cfg.Rackbook.URL, old, s.To)
 	var pw string
 	if s.Username != "" {
@@ -197,12 +224,15 @@ func (n *notifier) announceRecipients(ctx context.Context) error {
 	}
 	notice := *s
 	notice.To = union(old, s.To)
-	if err := sendMail(ctx, &notice, pw, subject, body); err != nil {
+	rejected, err := sendMailBestEffort(ctx, &notice, pw, subject, body)
+	for _, e := range rejected {
+		n.log.Warn("recipients changed: the notice was refused for an address", "err", e)
+	}
+	if err != nil {
 		return fmt.Errorf("email: %w", err)
 	}
-	n.log.Info("recipients changed, notice sent", "old", len(old), "new", len(s.To))
-	st.Recipients = append([]string(nil), s.To...)
-	return saveState(n.statePath, st)
+	n.log.Info("recipients changed, notice sent", "old", len(old), "new", len(s.To), "refused", len(rejected))
+	return nil
 }
 
 func union(a, b []string) []string {

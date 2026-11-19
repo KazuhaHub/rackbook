@@ -70,11 +70,25 @@ func TestStateCollapsesRepeatedSkipsAndTracksLastOK(t *testing.T) {
 		t.Fatalf("skipped runs must collapse: %d runs", n)
 	}
 	_ = s.AddRun("m", run(t0.Add(7*time.Hour), modsettings.StatusFailed))
-	if ok := s.LastOK("m"); !ok.Equal(t0) {
+	if ok := s.LastOK("m"); !ok.Equal(t0.Add(-time.Second)) {
 		t.Fatalf("a failed or skipped run is not a success: %v", ok)
 	}
 	if last := s.LastRun("m"); last.Status != modsettings.StatusFailed {
 		t.Fatalf("%+v", last)
+	}
+}
+
+func TestLastOKIsTheStartOfTheRun(t *testing.T) {
+	s := &State{}
+	start := time.Date(2026, 11, 18, 7, 59, 0, 0, time.UTC)
+	_ = s.AddRun("m", modsettings.Run{Started: start, Finished: start.Add(5 * time.Minute), Status: modsettings.StatusOK})
+	if got := s.LastOK("m"); !got.Equal(start) {
+		t.Fatalf("LastOK %v, want the start %v", got, start)
+	}
+	// the run began before the 08:00 slot and ended after it: the slot is still due
+	d := modsettings.Decide(modsettings.Input{Now: start.Add(10 * time.Minute), Times: []string{"08:00"}, LastOK: s.LastOK("m")})
+	if !d.Run {
+		t.Fatalf("the run started before the slot, so the slot is still due: %+v", d)
 	}
 }
 
