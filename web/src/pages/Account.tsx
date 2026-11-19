@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { Fingerprint, KeyRound, LogOut, Plus, ShieldCheck, Trash2 } from 'lucide-react'
+import { Fingerprint, KeyRound, LogOut, PlugZap, Plus, ShieldCheck, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
 import {
   AlertDialog,
@@ -16,6 +16,7 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Skeleton } from '@/components/ui/skeleton'
+import { GrantsList } from '@/components/GrantsList'
 import { PageHeader } from '@/components/common'
 import { roleLabel } from '@/components/layout/UserMenu'
 import { t } from '@/i18n/zh-CN'
@@ -117,6 +118,20 @@ export default function Account() {
           </dl>
         </CardContent>
       </Card>
+
+      {meta.oauthServer && (
+        <Card className="mb-6">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <PlugZap className="size-4" /> {t.oauth.grants.title}
+            </CardTitle>
+            <CardDescription>{t.oauth.grants.hint}</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <GrantsList scope="account" />
+          </CardContent>
+        </Card>
+      )}
 
       {session && (
         <Card>

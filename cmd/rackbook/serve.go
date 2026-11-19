@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -23,11 +24,13 @@ import (
 	"github.com/kazuhahub/rackbook/internal/auth/oauth"
 	"github.com/kazuhahub/rackbook/internal/clientip"
 	"github.com/kazuhahub/rackbook/internal/config"
+	"github.com/kazuhahub/rackbook/internal/fsutil"
 	"github.com/kazuhahub/rackbook/internal/gitstore"
 	"github.com/kazuhahub/rackbook/internal/login"
 	"github.com/kazuhahub/rackbook/internal/mcpauth"
 	"github.com/kazuhahub/rackbook/internal/mcpserver"
 	"github.com/kazuhahub/rackbook/internal/modules"
+	"github.com/kazuhahub/rackbook/internal/oauthserver"
 	"github.com/kazuhahub/rackbook/internal/tokens"
 	"github.com/kazuhahub/rackbook/web"
 )
@@ -66,7 +69,7 @@ RACKBOOK_GITHUB_TOKEN.`,
 	f.String("accept-remote", "", "accept the remote's rewritten history: the commit hash of the current origin tip, checked first (see docs/design.md, Git)")
 	f.Bool("read-only", false, "refuse all writes")
 	f.Bool("no-git", false, "edit files in place without Git, even inside a repository")
-	f.String("state-dir", "", "directory for runtime state kept across restarts (token last use, module runs); outside the data repository; empty = memory only")
+	f.String("state-dir", "", "directory for runtime state kept across restarts (token last use, module runs, OAuth grants and signing key); outside the data repository; one server holds a lock on it; empty = memory only")
 	f.Duration("pull-interval", time.Minute, "how often to fetch and fast-forward from origin (0 disables)")
 	f.String("committer", gitstore.DefaultCommitter.String(), `committer identity of server commits ("Name <email>")`)
 	f.String("base-url", "", "public URL of the console, used in /llms.txt (default: derived from the request)")
@@ -176,7 +179,12 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	}
 	registry := &tokens.Registry{Store: store}
 	modState := &modules.State{}
-	if dir, _ := f.GetString("state-dir"); dir != "" {
+	stateDir, _ := f.GetString("state-dir")
+	builtin := cfg.Auth.MCP.BuiltinIssuer.Enabled
+	if builtin && (stateDir == "" || baseURL == "") {
+		return errors.New("auth.mcp.builtin_issuer needs --state-dir (it keeps the grants and the signing key there) and --base-url (the public URL, which is the issuer of its tokens)")
+	}
+	if dir := stateDir; dir != "" {
 		// a file inside the clone would make it dirty and stop every write
 		abs, _ := filepath.Abs(dir)
 		if rel, err := filepath.Rel(cfg.Dir, abs); err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
@@ -185,10 +193,32 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return fmt.Errorf("--state-dir: %w", err)
 		}
+		if err := secureStateDir(dir, builtin, logger); err != nil {
+			return err
+		}
+		// One server at a time owns the state directory: the grant file and the
+		// others are read once and rewritten whole.
+		unlock, err := fsutil.Lock(filepath.Join(dir, "rackbook.lock"))
+		if err != nil {
+			if errors.Is(err, fsutil.ErrLocked) {
+				return fmt.Errorf("another rackbook serve is already using --state-dir %s (%w)", dir, err)
+			}
+			return fmt.Errorf("--state-dir: %w", err)
+		}
+		defer unlock()
 		registry.UsePath = filepath.Join(dir, "token-use.json")
 		modState.Path = filepath.Join(dir, "modules.json")
 	}
 	resource := &mcpauth.Resource{Config: store.Config, Auth: authn, Verifier: &oauth.Verifier{}, Tokens: registry, Limiter: &tokens.Limiter{}, TrustedProxies: proxies, Log: logger}
+	var oauthSrv api.OAuthServer
+	if builtin {
+		srv, err := oauthserver.New(oauthserver.Options{Issuer: baseURL, Resource: cfg.Auth.MCP.Resource, StateDir: stateDir,
+			Config: store.Config, Auth: authn, Log: logger, TrustedProxies: proxies})
+		if err != nil {
+			return err
+		}
+		resource.Builtin, oauthSrv = srv, srv
+	}
 	authn.SetBearer(resource)
 	meta := resource.MetadataHandler()
 	mcpSrv := mcpserver.NewWithOptions(mcpserver.Options{Source: store.Ledger, Version: version, Backend: store, ReadOnly: readOnly, Logger: logger})
@@ -196,7 +226,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		Store: store, Auth: authn, ReadOnly: readOnly, BaseURL: baseURL, Web: dist, Logger: logger, RestrictHost: mode == auth.ModeNone, Login: loginMount,
 		MCP:    mcpauth.Handler(mcpserver.Handler(mcpSrv, mode != auth.ModeNone || baseURL != "" || cfg.Auth.MCP.Enabled())),
 		Public: map[string]http.Handler{mcpauth.MetadataPath: meta, mcpauth.MetadataPathMCP: meta},
-		Tokens: registry, Modules: modState,
+		Tokens: registry, Modules: modState, OAuth: oauthSrv,
 	})
 
 	addr, _ := f.GetString("listen")
@@ -240,6 +270,32 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	if err := srv.Shutdown(shutdown); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
+	return nil
+}
+
+// secureStateDir makes an existing state directory private (0700): it holds
+// the grants and the signing key. MkdirAll gives a new one that mode but leaves
+// an old one as it was. A directory whose mode cannot be changed is refused when
+// the built-in authorization server uses it (strict), else only reported.
+func secureStateDir(dir string, strict bool, logger *slog.Logger) error {
+	if runtime.GOOS == "windows" {
+		return nil // no Unix modes; the profile's ACLs apply
+	}
+	st, err := os.Stat(dir)
+	if err != nil {
+		return fmt.Errorf("--state-dir: %w", err)
+	}
+	if st.Mode().Perm() == 0o700 {
+		return nil
+	}
+	if err := os.Chmod(dir, 0o700); err != nil {
+		if strict {
+			return fmt.Errorf("--state-dir %s has mode %v and could not be changed to 0700 (it holds the OAuth signing key and grants): %w", dir, st.Mode().Perm(), err)
+		}
+		logger.Warn("the state directory is not private and its mode could not be changed", "dir", dir, "mode", st.Mode().Perm().String(), "err", err)
+		return nil
+	}
+	logger.Warn("the state directory mode was changed to 0700", "dir", dir, "was", st.Mode().Perm().String())
 	return nil
 }
 

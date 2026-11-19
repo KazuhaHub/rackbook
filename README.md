@@ -214,9 +214,10 @@ current config on every request, so a change pulled from Git applies at once.
 ### Any OAuth provider: MCP and MCPHub
 
 `/mcp` is an OAuth 2.0 **protected resource** (RFC 9728). Users sign in to an
-authorization server you already run; Rackbook never sees a password and has no
-authorization server of its own. It verifies the access tokens the server
-issues, offline, and applies the same `auth.roles` as the console. Tokens are
+authorization server you already run (or to Rackbook's own, see
+[below](#built-in-authorization-server-no-external-issuer)); Rackbook never sees a
+password. It verifies the access tokens the server issues, offline, and applies
+the same `auth.roles` as the console. Tokens are
 accepted **only on `/mcp`** (never as a console login, never on `/api`).
 
 ```yaml
@@ -330,6 +331,61 @@ claude mcp add --transport http rackbook https://ledger.example.com/mcp
 npx @modelcontextprotocol/inspector
 #   Transport: Streamable HTTP, URL: https://ledger.example.com/mcp, then "Open Auth Settings"
 ```
+
+#### Built-in authorization server (no external issuer)
+
+If you have no MCPHub, Entra or Keycloak, Rackbook can be the authorization
+server itself. People approve each MCP client once in the console; the client
+then keeps working across restarts, until the grant is revoked, the person loses
+their role, or it goes 90 days unused. It works with the same `auth.roles` as
+the console. How it works, with a plain-language paragraph per mechanism (PKCE,
+resource binding, client metadata documents, registration, refresh rotation, the
+state file and lock, the signing key): [docs/oauth-server.md](docs/oauth-server.md).
+
+```yaml
+# rackbook.yml
+auth:
+  mcp:
+    resource: https://ledger.example.com/mcp
+    builtin_issuer: {enabled: true}      # defaults: idle_expiry 90d, refresh_reuse_grace 60s,
+                                         # dynamic_registration true, allowed_clients []
+```
+
+```sh
+rackbook serve --state-dir /var/lib/rackbook --base-url https://ledger.example.com ...
+```
+
+`--state-dir` keeps `oauth-grants.json` and the generated signing key
+(`oauth-signing-key.pem`, replace it and restart to rotate); `--base-url` is the
+issuer. Both are required, and one server at a time may use a state directory
+(a lock). Behind Cloudflare Access, bypass `/mcp`,
+`/.well-known/oauth-protected-resource*`, `/.well-known/oauth-authorization-server`,
+`/oauth/token`, `/oauth/register` and `/oauth/jwks`, and keep the rest behind the
+login. Connect a client by giving it the `/mcp` URL; it finds the rest itself
+and opens the console's consent page in the browser:
+
+```sh
+# Claude Code
+claude mcp add --transport http rackbook https://ledger.example.com/mcp
+# then /mcp inside Claude Code and choose "Authenticate"
+
+# MCP Inspector
+npx @modelcontextprotocol/inspector
+#   Transport: Streamable HTTP, URL: https://ledger.example.com/mcp, then "Open Auth Settings"
+```
+
+```jsonc
+// VS Code: .vscode/mcp.json (or "MCP: Add Server" > HTTP)
+{ "servers": { "rackbook": { "type": "http", "url": "https://ledger.example.com/mcp" } } }
+
+// Cursor: ~/.cursor/mcp.json (or the project's .cursor/mcp.json)
+{ "mcpServers": { "rackbook": { "url": "https://ledger.example.com/mcp" } } }
+```
+
+VS Code and Cursor ask you to sign in when the server starts. The grants are
+listed on **My account** (yours) and on the **Authorized clients** admin page
+(everyone's), each with a revoke button. Writes through MCP follow the same
+rules as before: pull requests by default.
 
 #### What agents may write
 
@@ -881,6 +937,14 @@ Authentik、Google 等）。在 IdP 注册应用，重定向地址为 `<base-url
 （不能由用户自行修改），否则改用 `identity: subject`。服务器用带写权限的 deploy key 克隆数据仓库，
 前面放反向代理或 Cloudflare 终结 TLS，并用 `--trusted-proxy` 指明代理地址；compose 示例见上文 “Deployment”。
 `/mcp` 与 `/.well-known/oauth-protected-resource*` 使用各自的 Bearer 令牌，不需要在前面加登录。
+
+没有 MCPHub、Entra、Keycloak 时，Rackbook 可以自己当授权服务器（`auth.mcp.builtin_issuer`，v0.6.0）：
+符合 MCP 授权规范（OAuth 2.1，PKCE S256，`resource` 绑定，客户端元数据文档或动态注册，刷新令牌每次轮换）。
+用户在控制台里对每个 MCP 客户端授权一次，之后客户端一直可用（包括 Rackbook 重启后），直到被撤销、用户失去角色，
+或 90 天没有使用。必须同时给 `--state-dir`（保存授权记录 `oauth-grants.json` 和自动生成的签名密钥，
+同一目录只能有一个服务器在用）和 `--base-url`（令牌的签发者）。每个机制的大白话说明见
+[docs/oauth-server.md](docs/oauth-server.md)；Claude Code、MCP Inspector、VS Code、Cursor 的连接方法见上文
+“Built-in authorization server”。授权记录在“我的账户”和管理员的“已授权客户端”页，可随时撤销，立即生效。
 
 可选：Cloudflare Access（`auth.mode: cloudflare-access`，见上文 “Alternative: Cloudflare Access”），
 Rackbook 校验 `Cf-Access-Jwt-Assertion` 并用其中的邮箱作为提交作者；此时才需要为 `/mcp` 配置 Access 的 Bypass 策略。

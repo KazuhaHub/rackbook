@@ -13,7 +13,6 @@ import (
 	"io/fs"
 	"log/slog"
 	"os"
-	"path/filepath"
 	"sync"
 	"time"
 
@@ -101,7 +100,7 @@ func (s *State) mod(name string) *moduleState {
 	return m
 }
 
-// save writes the file through a temporary file and a rename.
+// save writes the file atomically.
 func (s *State) save() error {
 	if s.Path == "" {
 		return nil
@@ -110,27 +109,7 @@ func (s *State) save() error {
 	if err != nil {
 		return err
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(s.Path), ".modules-*")
-	if err != nil {
-		return err
-	}
-	defer os.Remove(tmp.Name())
-	if err := tmp.Chmod(0o600); err != nil {
-		tmp.Close()
-		return err
-	}
-	if _, err := tmp.Write(append(b, '\n')); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Sync(); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	return fsutil.Rename(tmp.Name(), s.Path)
+	return fsutil.WriteFileAtomic(s.Path, append(b, '\n'), 0o600)
 }
 
 // Runs returns the kept runs of a module, newest first.

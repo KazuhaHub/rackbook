@@ -60,6 +60,10 @@ type Options struct {
 	Public map[string]http.Handler
 	// Tokens enables the admin token endpoints (/api/admin/tokens).
 	Tokens *tokens.Registry
+	// OAuth is the built-in authorization server (nil = off). Its public
+	// endpoints (metadata, token, registration, JWKS) are served without sign-in
+	// and may be called cross-origin; the rest is mounted behind the sign-in.
+	OAuth OAuthServer
 	// Modules keeps the run history and run requests of the modules panel; nil
 	// = in memory only.
 	Modules *modules.State
@@ -67,9 +71,17 @@ type Options struct {
 	Now func() time.Time
 }
 
+// OAuthServer is the built-in authorization server (internal/oauthserver).
+type OAuthServer interface {
+	Public() map[string]http.Handler
+	Mount(mux *http.ServeMux)
+}
+
 type server struct {
 	o   Options
 	log *slog.Logger
+	// public are the exact paths served without authentication.
+	public map[string]http.Handler
 }
 
 // New returns the full handler: API, exports, MCP and console.
@@ -105,6 +117,17 @@ func New(o Options) http.Handler {
 	s.typesRoutes(mux)    // types.go
 	s.modulesRoutes(mux)  // modules.go
 	s.brandingRoutes(mux) // branding.go: public
+	public := map[string]http.Handler{}
+	for p, h := range o.Public {
+		public[p] = h
+	}
+	if o.OAuth != nil {
+		o.OAuth.Mount(mux)
+		for p, h := range o.OAuth.Public() {
+			public[p] = h
+		}
+	}
+	s.public = public
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "not_found", "no such API endpoint")
 	})
@@ -130,7 +153,7 @@ func New(o Options) http.Handler {
 			return
 		}
 		if p, canonical := auth.CanonicalPath(r); canonical {
-			if ph, ok := s.o.Public[p]; ok {
+			if ph, ok := s.public[p]; ok {
 				ph.ServeHTTP(w, r)
 				return
 			}
@@ -150,7 +173,10 @@ func (s *server) guard(next http.Handler) http.Handler {
 		switch r.Method {
 		case http.MethodGet, http.MethodHead, http.MethodOptions:
 		default:
-			if !s.sameOrigin(r) {
+			// The OAuth token and registration endpoints are called by clients on
+			// other origins by design (browser-based MCP clients); they take no
+			// cookies, only the parameters of the request.
+			if _, open := s.public[r.URL.Path]; !open && !s.sameOrigin(r) {
 				writeError(w, http.StatusForbidden, "cross_site", "cross-site requests are not allowed")
 				return
 			}
@@ -363,6 +389,9 @@ func (s *server) meta(w http.ResponseWriter, r *http.Request) {
 	meta := map[string]any{
 		"title": cfg.Title, "description": cfg.Description,
 		"readOnly": s.o.ReadOnly, "writeMode": cfg.Write.Mode, "user": user, "collections": cols, "modules": mods,
+	}
+	if s.o.OAuth != nil {
+		meta["oauthServer"] = true // the console shows the authorized-clients lists
 	}
 	meta["branding"] = map[string]any{"name": cfg.Branding.Name, "logo": cfg.BrandLogo() != nil}
 	if a := s.o.Store.Alert(); a != nil {

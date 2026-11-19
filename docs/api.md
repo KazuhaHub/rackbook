@@ -272,6 +272,28 @@ With a session:
   server started plus users with passkeys; `role` is the effective role, `none` if
   they have none) and `DELETE /api/admin/passkeys/{id}`.
 
+## Built-in authorization server
+
+Only with `auth.mcp.builtin_issuer.enabled` (docs/oauth-server.md). `GET /api/meta`
+then carries `"oauthServer": true`. Public (no session; the first four answer
+cross-origin requests):
+
+- `GET /.well-known/oauth-authorization-server` — RFC 8414 metadata.
+- `GET /oauth/jwks` — the public signing key.
+- `POST /oauth/register` — RFC 7591 registration, JSON body `{redirect_uris, client_name?, token_endpoint_auth_method?: "none", grant_types?, response_types?}` → `201` (`200` for a repeated registration) `{client_id, client_name, redirect_uris, …}`; `400 invalid_redirect_uri | invalid_client_metadata`, `429` (per client address) or `503` (every stored registration in use), `404` when `dynamic_registration` is off or `allowed_clients` is set.
+- `POST /oauth/token` — form body. `grant_type=authorization_code` (`code`, `client_id`, `redirect_uri`, `code_verifier`, optional `resource`) or `grant_type=refresh_token` (`refresh_token`, `client_id`, optional narrower `scope`) → `{access_token, token_type: "Bearer", expires_in: 600, refresh_token, scope}`; errors are RFC 6749 `{error, error_description}` (`invalid_grant`, `invalid_target`, `invalid_scope`, `unsupported_grant_type`, `invalid_client`). Responses are `no-store`.
+
+With a session:
+
+- `GET /oauth/authorize?response_type=code&client_id&redirect_uri&code_challenge&code_challenge_method=S256&resource&scope&state` — checks the request. A client or redirect URI that cannot be trusted gets an HTML error page; other errors redirect to the client with `error`, `state` and `iss`; a good request redirects to `/oauth/consent?req=<id>`.
+- `GET /api/oauth/consent?req=<id>` → `{clientName, clientId, redirectUri, redirectHost, scopes, canWrite, user}` (`404` if the request expired or belongs to someone else).
+- `POST /api/oauth/consent` `{"req", "approve": true|false}` → `{"redirect": "<client redirect URI with code, state and iss, or error=access_denied>"}`. Same-origin only; the request is decided once.
+- `GET /api/account/grants` → `{"grants": [{id, clientId, clientName, scopes, canWrite, created, lastUsed}]}` and `DELETE /api/account/grants/{id}` (own grants; `404` otherwise).
+- Admin: `GET /api/admin/grants` (adds `user`, `userName`) and `DELETE /api/admin/grants/{id}`.
+
+Grant endpoints refuse API tokens and OAuth access tokens (`403`). A revoked
+grant's access token stops working at once.
+
 ## Exports
 
 - `GET /export.md` — Markdown (`text/markdown; charset=utf-8`)
@@ -286,7 +308,7 @@ With a session:
 an OAuth access token of a trusted issuer (`auth.mcp`, README), or an API token.
 `/.well-known/oauth-protected-resource` (RFC 9728, public) describes the
 resource; a missing or invalid token gets `401` with `WWW-Authenticate: Bearer
-resource_metadata="…"`, a valid token without a role `403` with
+resource_metadata="…"` (plus `scope="…"` with the built-in authorization server), a valid token without a role `403` with
 `error="insufficient_scope"`. Write tools fail with the API's error codes in a
 tool error: `{"error","message","status",…}`; a successful write returns
 `{id, hash, data, commit | url, pullRequest}`.

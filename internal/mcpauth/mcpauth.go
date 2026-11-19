@@ -21,6 +21,7 @@ import (
 	"github.com/kazuhahub/rackbook/internal/auth/oauth"
 	"github.com/kazuhahub/rackbook/internal/clientip"
 	"github.com/kazuhahub/rackbook/internal/config"
+	"github.com/kazuhahub/rackbook/internal/oauthserver"
 	"github.com/kazuhahub/rackbook/internal/roles"
 	"github.com/kazuhahub/rackbook/internal/tokens"
 )
@@ -40,8 +41,12 @@ type Resource struct {
 	Config   func() *config.Config
 	Auth     *auth.Authenticator
 	Verifier *oauth.Verifier
-	Tokens   *tokens.Registry // nil = no API tokens
-	Limiter  *tokens.Limiter
+	// Builtin is Rackbook's own authorization server (auth.mcp.builtin_issuer);
+	// nil = none. Its tokens are checked in-process, never by fetching its
+	// metadata over HTTP, so it is not a trusted_issuers entry.
+	Builtin *oauthserver.Server
+	Tokens  *tokens.Registry // nil = no API tokens
+	Limiter *tokens.Limiter
 	// TrustedProxies are the --trusted-proxy prefixes: CF-Connecting-IP is
 	// believed only from them.
 	TrustedProxies []netip.Prefix
@@ -49,6 +54,29 @@ type Resource struct {
 }
 
 func (r *Resource) mcp() config.AuthMCP { return r.Config().Auth.MCP }
+
+// builtin returns the built-in authorization server when it is on.
+func (r *Resource) builtin() *oauthserver.Server {
+	if r.Builtin != nil && r.mcp().BuiltinIssuer.Enabled {
+		return r.Builtin
+	}
+	return nil
+}
+
+// scopeChallenge is the scope parameter of a challenge: what the built-in
+// server can grant, so a client asks for it.
+func (r *Resource) scopeChallenge() string {
+	if r.builtin() == nil {
+		return ""
+	}
+	var scopes []string
+	for _, s := range []string{r.mcp().Scopes.ReadScope(), r.mcp().Scopes.WriteScope()} {
+		if s != "" {
+			scopes = append(scopes, s)
+		}
+	}
+	return strings.Join(scopes, " ")
+}
 
 func (r *Resource) log() *slog.Logger {
 	if r.Log != nil {
@@ -88,7 +116,11 @@ func (r *Resource) Challenge(req *http.Request) string {
 	if !IsMCPPath(req.URL.Path) || !r.mcp().Enabled() {
 		return ""
 	}
-	return fmt.Sprintf(`Bearer resource_metadata=%q`, r.metadataURL())
+	ch := fmt.Sprintf(`Bearer resource_metadata=%q`, r.metadataURL())
+	if sc := r.scopeChallenge(); sc != "" {
+		ch += fmt.Sprintf(`, scope=%q`, sc)
+	}
+	return ch
 }
 
 func (r *Resource) invalidToken(req *http.Request, reason string) *auth.RequestError {
@@ -123,6 +155,9 @@ func (r *Resource) AuthenticateBearer(req *http.Request) (*auth.Identity, error)
 
 // accessToken verifies an access token of a trusted issuer.
 func (r *Resource) accessToken(req *http.Request, raw string) (*auth.Identity, error) {
+	if b := r.builtin(); b != nil && b.IsOwn(raw) {
+		return r.builtinToken(req, b, raw)
+	}
 	m := r.mcp()
 	// Opaque tokens cost an introspection call per guess, so failures are
 	// rate-limited per client like rbk_ tokens.
@@ -158,13 +193,18 @@ func (r *Resource) accessToken(req *http.Request, raw string) (*auth.Identity, e
 	// The e-mail is only what the issuer vouches for; a username that looks like
 	// an address is not one (match_email uses Email and nothing else).
 	id.Email = c.VerifiedEmail
+	id.Narrow = narrowByScopes(m, c.Scopes)
+	return r.Auth.Evaluate(id), nil
+}
+
+// narrowByScopes makes a scope only narrow the role, never widen it.
+func narrowByScopes(m config.AuthMCP, scopes []string) func(roles.Role) roles.Role {
 	readScope, writeScope := m.Scopes.ReadScope(), m.Scopes.WriteScope()
 	have := map[string]bool{}
-	for _, s := range c.Scopes {
+	for _, s := range scopes {
 		have[s] = true
 	}
-	// A scope only narrows the role, never widens it.
-	id.Narrow = func(role roles.Role) roles.Role {
+	return func(role roles.Role) roles.Role {
 		if readScope != "" && !have[readScope] {
 			return roles.None
 		}
@@ -173,7 +213,29 @@ func (r *Resource) accessToken(req *http.Request, raw string) (*auth.Identity, e
 		}
 		return role
 	}
-	return r.Auth.Evaluate(id), nil
+}
+
+// builtinToken verifies an access token of the built-in authorization server
+// in-process, then evaluates the role of the person who approved the grant, as
+// it is now. A person who no longer has a role gets 401: the grant is useless
+// and the client has to authorize again (a refresh also ends it).
+func (r *Resource) builtinToken(req *http.Request, b *oauthserver.Server, raw string) (*auth.Identity, error) {
+	c, err := b.VerifyAccess(raw)
+	if err != nil {
+		r.log().Info("mcp access token refused", "reason", err.Error(), "issuer", "built-in")
+		return nil, r.invalidToken(req, err.Error())
+	}
+	id := &auth.Identity{ID: roles.FoldASCII(c.Subject.ID), Name: c.Subject.Name, Email: c.Subject.Email, Method: auth.MethodOAuth,
+		Client: c.ClientName, Issuer: config.BuiltinIssuerAlias, Scopes: c.Scopes, ScopeLimited: true, Via: "mcp", Groups: c.Subject.Groups}
+	id.Narrow = narrowByScopes(r.mcp(), c.Scopes)
+	// The role comes from the person's own login identity (their sign-in method
+	// decides which role entries match), not from the OAuth method.
+	r.Auth.EvaluateSubject(id, roles.Subject{ID: id.ID, Email: c.Subject.Email, Method: c.Subject.Method, Groups: c.Subject.Groups})
+	if id.Role == roles.None {
+		r.log().Info("mcp access token refused", "reason", "no role", "user", id.ID, "issuer", "built-in")
+		return nil, r.invalidToken(req, "no role")
+	}
+	return id, nil
 }
 
 // token authenticates a Rackbook API token.
@@ -231,6 +293,9 @@ func (r *Resource) MetadataHandler() http.Handler {
 			return
 		}
 		var issuers, scopes []string
+		if b := r.builtin(); b != nil {
+			issuers = append(issuers, b.Issuer())
+		}
 		for _, t := range m.TrustedIssuers {
 			issuers = append(issuers, t.Issuer)
 		}

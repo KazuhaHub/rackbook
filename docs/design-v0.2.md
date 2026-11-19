@@ -575,7 +575,7 @@ Agreed with the owner on 2026-11-18:
     - **Refresh tokens** are opaque random values (not JWTs) and are checked
       against the stored hashes.
       - They rotate on every use. Reusing an already-rotated token revokes the
-        whole grant and is logged.
+        whole grant and is logged (after a 60 s grace window, decision 19).
       - Expiry is sliding only: a grant unused for 90 days (configurable) is
         revoked. There is **no absolute lifetime**.
       - Access tokens are ES256 JWTs that last 10 minutes.
@@ -587,9 +587,9 @@ Agreed with the owner on 2026-11-18:
         closed;
       - it goes 90 days unused.
     - **Signing key** comes from a file, an environment variable or systemd
-      `LoadCredential`, never Git. JWKS publishes the current and previous key
-      so access tokens stay valid during a rotation. Rotating the key **does
-      not** invalidate refresh tokens, because they are not signed.
+      `LoadCredential`, never Git. Rotating the key **does not** invalidate
+      refresh tokens, because they are not signed. (Round 7 changed one point:
+      JWKS publishes the current key only, see decision 20.)
     - **Reviews and demo.** Two adversarial review rounds. The demo shows MCP
       Inspector and Claude Code against the built-in server and against an
       external issuer, and **restarts the server to show the client keeps
@@ -671,6 +671,130 @@ See README, "Versioning and compatibility".
     - Tests: a fake GitHub API issues installation tokens. They cover expiry and
       refresh, a token that must not appear in argv or logs, push over HTTPS to
       a local smart-HTTP test server, and PRs.
+
+### Decisions, round 7 (2026-11-18): built-in authorization server details (v0.6.0)
+
+These settle the details of decision 12 and override it where they differ
+(the signing key's previous key, below). Plain-language explanations of every
+mechanism are in `oauth-server.md`.
+
+18. **Dynamic client registration (RFC 7591) stays, minimal, on by default**
+    (`dynamic_registration: true`). It is turned off once every target client
+    uses Client ID Metadata Documents. Public clients only; redirect addresses
+    are restricted; the number of stored registrations is capped and unused ones
+    are pruned.
+19. **Refresh-token reuse grace of 60 seconds** (`refresh_reuse_grace`). RFC 9700
+    allows it, and it is the same idea as Auth0's reuse interval and Okta's grace
+    period. Model (replaced after review, to keep it simple): per grant exactly
+    one live refresh hash plus the last 8 retired hashes with their retirement
+    time. A live token is replaced: validation first (client, `resource`, scope,
+    role, `allowed_clients`; any refusal leaves the grant untouched), then the new
+    access and refresh tokens are made, the state is fsynced, and the full
+    response is remembered **in memory only** for 60 s under the retired token's
+    hash. A retired token inside the grace gets exactly that remembered response
+    (same tokens, no state change; concurrent requests are serialised so the
+    second gets the first's answer). Inside the grace without a remembered
+    response (after a restart) it is `invalid_grant`, the grant stays. Past the
+    grace it revokes the grant and logs a warning with no token material. An
+    unknown hash is `invalid_grant` and changes nothing. Comparisons are
+    constant-time; the cache is small, never logged or persisted, and cleared on
+    revoke. The grace cannot tell a retry from a thief who replays inside the
+    window; that is accepted and documented.
+20. **Signing key.** Generated on first start at
+    `<state-dir>/oauth-signing-key.pem` (0600), overridable by a file
+    (`signing_key_file`), by the environment variable
+    `RACKBOOK_OAUTH_SIGNING_KEY` or by a systemd `LoadCredential`
+    (`oauth-signing-key`). **The JWKS holds the current key only**; no previous
+    key is published, because tokens are verified in-process and never by
+    anyone else. After the key is replaced, clients simply refresh, since
+    refresh tokens are not signed. Rotation is: replace the file, restart.
+21. **Client identification.** Any https `client_id` is accepted by default
+    (a Client ID Metadata Document, fetched with limits, never to a private
+    address). An optional `allowed_clients` list in `rackbook.yml` restricts it.
+    The consent page always shows the host the result is sent to.
+22. **Consent on every authorization.** The consent page is shown each time;
+    there is no remembered-consent state.
+23. **Private-use redirect schemes are accepted** (owner, 2026-11-18), per
+    RFC 8252 section 7.1: a registration or a client metadata document may list
+    a redirect such as `cursor://...` besides `https://` and loopback `http://`.
+    Exact matching, the ASCII-only host rule and the consent page's display of
+    the host apply to them like to any redirect.
+
+Details settled while building:
+
+- Spec: MCP authorization revision 2026-07-28 with RFC 9728, RFC 8414 (metadata
+  includes `code_challenge_methods_supported: [S256]`,
+  `client_id_metadata_document_supported: true` and
+  `authorization_response_iss_parameter_supported: true`), PKCE S256 only,
+  RFC 8707 `resource` required and equal to `auth.mcp.resource`, RFC 9207 `iss`
+  in the authorization response, refresh rotation for public clients. Grants:
+  `authorization_code` and `refresh_token` only.
+- Where it lives: package `internal/oauthserver`; `GET /oauth/authorize`,
+  `POST /oauth/token`, `POST /oauth/register`, `GET /oauth/jwks`,
+  `GET /.well-known/oauth-authorization-server`, the console page
+  `/oauth/consent` and the console API `/api/oauth/consent`. CORS is open only
+  on the metadata, token, registration and JWKS endpoints.
+- Sign-in: the authorization endpoint needs a console session; the login page's
+  existing `return` parameter (path-only, a single leading `/`, no `//` or `\`,
+  at most 2048 characters, never an `/auth` path) brings the person back to the
+  request. Consent is approved with `POST /api/oauth/consent` behind the
+  existing same-origin and JSON checks; the request id is secret, bound to the
+  person and used once.
+- Memory only: authorization codes (60 s, single use; a replayed code revokes the
+  grant it made), pending consent requests (10 min) and fetched client documents.
+- State: `<state-dir>/oauth-grants.json`, version 1: `clients`, and
+  `grants{gid}` with subject (id, email, name, login method, bounded groups),
+  client id and name, scopes, resource, created, `last_used` (written on
+  refresh only), `refresh_hash` and `retired` (the last 8 replaced hashes with their time). Refresh tokens are
+  `<gid>.<random>` and only their SHA-256 is stored. `fsutil.WriteFileAtomic`
+  (temporary file, fsync, rename, directory fsync) writes it, and now also the
+  token last-use and module state files. `serve` holds a lock on
+  `<state-dir>/rackbook.lock` (flock; LockFileEx on Windows) while it runs. The
+  new hash is on disk before the token response is sent. The built-in server
+  requires `--state-dir` and `--base-url`.
+- Tokens: access = ES256 JWT, `typ: at+jwt`, 10 minutes, `iss` = the Rackbook
+  base URL, `aud` = the `/mcp` URL, `sub`, `client_id`, `scope`, `gid`, `jti`.
+  Refresh = opaque and rotated on every use. A grant ends after
+  `idle_expiry` (90 days) without a refresh, counted from the last refresh, with
+  no absolute lifetime.
+- `/mcp` integration: the built-in issuer is not a `trusted_issuers` entry (no
+  fetch of its own metadata). Tokens whose `iss` is Rackbook's own go to an
+  in-process verifier with the same checks as other issuers (ES256 only,
+  `at+jwt`, `aud`, `exp`/`nbf` with 60 s of skew) plus a lookup of the grant, so a
+  revocation is immediate. The role is evaluated for the stored subject with the
+  login method it used, as API tokens do for their creator; no role fails
+  closed (401). A refresh re-evaluates it and ends the grant if there is none.
+  The protected-resource metadata lists the built-in issuer and challenges carry
+  `scope=`. Commits carry `Edited-via: mcp (rackbook, client <client name>)`
+  and are pull requests unless `auth.mcp.direct_push` lists the user
+  (`oauth:rackbook:<user>`) or role. The scopes are the existing
+  `auth.mcp.scopes` pair. There is no RFC 7009 revocation endpoint in v1.
+- Grants are listed and revoked on the account page (`GET`/`DELETE
+  /api/account/grants`) and, for administrators, on a page of their own
+  (`/api/admin/grants`).
+- Redirect addresses: exact string match. A registration or a metadata document
+  may list `https://` URLs, `http://` on `localhost`, `127.0.0.1` and `[::1]`,
+  and a private-use scheme such as `cursor://` (a scheme is refused if it is
+  `javascript`, `data`, `file` and similar), as the owner accepted in decision
+  23. Desktop clients such as Cursor cannot use anything else.
+- Review fixes (round 3: a percent-encoded host is checked decoded and any `%`
+  in a host is refused; refresh validation runs before anything is saved;
+  `allowed_clients` is checked at refresh and ends the grant; the registration
+  limit is charged inside the same critical section as its check):
+  `revoke` returns the write error (the API answers 500, a code
+  replay fails the token request); an existing state directory is chmod-ed to
+  0700 (the built-in server refuses to start if it cannot); redirect URIs and
+  client_ids are plain ASCII (punycode allowed) with no control, bidi or
+  zero-width characters, and the consent page warns about `xn--` labels; the DCR
+  limit is per client address (the shared client-IP detection), dedupe runs first
+  and is free, and a full cap evicts the oldest never-used registration; fetch
+  errors are generic on the page and detailed in the log; the CIMD address check
+  allows only global unicast addresses outside the special-use prefixes;
+  `allowed_clients` set means only those clients authorize and registration is
+  off; the consent page shows the role limited by the scopes; an unknown scope is
+  `invalid_scope`.
+- Groups for `group:` role entries are stored with the grant (bounded like the
+  session cookie) and are not refreshed until the person approves again.
 
 ### Decision 15 (2026-11-18): record documents (v0.6.0)
 
