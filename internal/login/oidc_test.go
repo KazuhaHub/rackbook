@@ -28,8 +28,8 @@ func TestOIDCLoginSuccess(t *testing.T) {
 		t.Fatalf("api without a session: %d %s", r.StatusCode, r.Body)
 	}
 	r = b.get("/c/devices?x=1")
-	if r.StatusCode != 302 || r.Loc() != "/auth/login?return=%2Fc%2Fdevices%3Fx%3D1" {
-		t.Fatalf("console without a session: %d %q", r.StatusCode, r.Loc())
+	if r.StatusCode != 302 || r.Loc() != "/auth/login?return=%2Fc%2Fdevices%3Fx%3D1" || r.Header.Get("Cache-Control") != "no-store" {
+		t.Fatalf("console without a session: %d %q %q", r.StatusCode, r.Loc(), r.Header.Get("Cache-Control"))
 	}
 	// The login page and assets are public.
 	if r = b.get("/auth/login"); r.StatusCode != 200 || !strings.Contains(r.Body, "console") {

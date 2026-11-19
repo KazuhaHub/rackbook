@@ -8,24 +8,26 @@ import { Toaster } from '@/components/ui/sonner'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { NotFound, PageFallback, Unreachable } from '@/components/common'
 import { AppShell } from '@/components/layout/AppShell'
+import { ErrorBoundary } from '@/components/ErrorBoundary'
 import { t } from '@/i18n/zh-CN'
 import { dataProvider } from '@/providers/dataProvider'
 import { MetaProvider, useMeta } from '@/providers/meta'
+import { retryImport } from '@/lib/staleChunk'
 
 // Route-level code splitting: the table and form stacks are the heavy parts.
-const Dashboard = lazy(() => import('@/pages/Dashboard'))
-const CollectionList = lazy(() => import('@/pages/CollectionList'))
-const RecordShow = lazy(() => import('@/pages/RecordShow'))
-const RecordFormPage = lazy(() => import('@/pages/RecordFormPage'))
-const Problems = lazy(() => import('@/pages/Problems'))
-const Expiring = lazy(() => import('@/pages/Expiring'))
-const Account = lazy(() => import('@/pages/Account'))
-const Users = lazy(() => import('@/pages/Users'))
-const Login = lazy(() => import('@/pages/Login'))
-const Tokens = lazy(() => import('@/pages/Tokens'))
+const Dashboard = lazy(retryImport(() => import('@/pages/Dashboard')))
+const CollectionList = lazy(retryImport(() => import('@/pages/CollectionList')))
+const RecordShow = lazy(retryImport(() => import('@/pages/RecordShow')))
+const RecordFormPage = lazy(retryImport(() => import('@/pages/RecordFormPage')))
+const Problems = lazy(retryImport(() => import('@/pages/Problems')))
+const Expiring = lazy(retryImport(() => import('@/pages/Expiring')))
+const Account = lazy(retryImport(() => import('@/pages/Account')))
+const Users = lazy(retryImport(() => import('@/pages/Users')))
+const Login = lazy(retryImport(() => import('@/pages/Login')))
+const Tokens = lazy(retryImport(() => import('@/pages/Tokens')))
 // data types (admin)
-const Types = lazy(() => import('@/pages/Types'))
-const TypeEditor = lazy(() => import('@/pages/TypeEditor'))
+const Types = lazy(retryImport(() => import('@/pages/Types')))
+const TypeEditor = lazy(retryImport(() => import('@/pages/TypeEditor')))
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { refetchOnWindowFocus: false } },
@@ -97,9 +99,11 @@ export default function App() {
               <Route
                 path="/auth/login"
                 element={
-                  <Suspense fallback={<div className="p-8"><PageFallback /></div>}>
-                    <Login />
-                  </Suspense>
+                  <ErrorBoundary>
+                    <Suspense fallback={<div className="p-8"><PageFallback /></div>}>
+                      <Login />
+                    </Suspense>
+                  </ErrorBoundary>
                 }
               />
               <Route

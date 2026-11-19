@@ -83,6 +83,7 @@ jobs:
       - run: npm run lint
       - run: npm run typecheck
       - run: npm run check:formats
+      - run: npm run check:stale-chunk
       - run: npm run build
 
   govulncheck:
