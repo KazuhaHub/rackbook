@@ -43,3 +43,25 @@ func TestBoundary(t *testing.T) {
 		}
 	}
 }
+
+// modsettings is the one package both sides share, so it must stay free of
+// Rackbook's other packages.
+func TestSharedSettingsAreSelfContained(t *testing.T) {
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("SKIPPED: the go command is not on PATH")
+	}
+	for _, p := range deps(t, mod+"/modsettings") {
+		if p != mod+"/modsettings" {
+			t.Errorf("modsettings imports %s", p)
+		}
+	}
+	for _, m := range []string{"cmd/rackbook", "cmd/rackbook-entra", "cmd/rackbook-notify"} {
+		found := false
+		for _, p := range deps(t, mod+"/"+m) {
+			found = found || p == mod+"/modsettings"
+		}
+		if !found {
+			t.Errorf("%s does not use modsettings", m)
+		}
+	}
+}

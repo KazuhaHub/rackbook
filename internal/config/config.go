@@ -15,6 +15,7 @@ import (
 
 	"github.com/kazuhahub/rackbook/internal/roles"
 	"github.com/kazuhahub/rackbook/internal/secretscan"
+	"github.com/kazuhahub/rackbook/modsettings"
 )
 
 // FileName is the default config file name.
@@ -62,12 +63,29 @@ func (c *Config) SecretScanner() *secretscan.Scanner {
 
 // Module is one entry of the modules block: a token that may only create and
 // update records of one collection, tagged with the module's name as source.
+// A module that only reads (rackbook-notify) has neither collection nor
+// fields. Settings are the values an administrator edits in the console.
 type Module struct {
-	Token      string   `yaml:"token"`
-	Collection string   `yaml:"collection"`
-	Fields     []string `yaml:"fields"`
-	DirectPush bool     `yaml:"direct_push"`
+	// Type says which settings the module has: entra or notify. Load fills it
+	// in for a module named like a type; any other module without one has no
+	// settings.
+	Type       string         `yaml:"type"`
+	Token      string         `yaml:"token"`
+	Collection string         `yaml:"collection"`
+	Fields     []string       `yaml:"fields"`
+	DirectPush bool           `yaml:"direct_push"`
+	Settings   map[string]any `yaml:"settings"`
+
+	name     string
+	settings modsettings.Settings
 }
+
+// ReadOnly reports a module that may not write records (no collection).
+func (m *Module) ReadOnly() bool { return m.Collection == "" }
+
+// ParsedSettings returns the settings as checked at load, or nil for a module
+// without a type. The result is shared; do not change it.
+func (m *Module) ParsedSettings() modsettings.Settings { return m.settings }
 
 // ModuleForToken returns the module that uses the named API token, if any.
 func (c *Config) ModuleForToken(token string) (string, *Module) {
@@ -91,22 +109,64 @@ func (c *Config) checkModules() error {
 		if m == nil || m.Token == "" {
 			return fmt.Errorf("modules.%s.token is required", name)
 		}
+		m.name = name
 		if other, dup := tokens[m.Token]; dup {
 			return fmt.Errorf("modules.%s.token %q is also used by modules.%s", name, m.Token, other)
 		}
 		tokens[m.Token] = name
-		if c.Collection(m.Collection) == nil {
-			return fmt.Errorf("modules.%s.collection %q is not a known collection", name, m.Collection)
+		if err := c.checkModuleWrites(name, m); err != nil {
+			return err
 		}
-		if len(m.Fields) == 0 {
-			return fmt.Errorf("modules.%s.fields must list the fields the module may write", name)
-		}
-		for _, f := range m.Fields {
-			if f == "source" {
-				return fmt.Errorf("modules.%s.fields must not list source: it is always the module's name", name)
-			}
+		if err := c.checkModuleSettings(name, m); err != nil {
+			return err
 		}
 	}
+	return nil
+}
+
+// checkModuleWrites checks collection and fields: both or neither.
+func (c *Config) checkModuleWrites(name string, m *Module) error {
+	if m.Collection == "" && len(m.Fields) == 0 {
+		return nil // a module that only reads
+	}
+	if m.Collection == "" {
+		return fmt.Errorf("modules.%s.fields needs modules.%s.collection (give both, or neither for a module that only reads)", name, name)
+	}
+	if c.Collection(m.Collection) == nil {
+		return fmt.Errorf("modules.%s.collection %q is not a known collection", name, m.Collection)
+	}
+	if len(m.Fields) == 0 {
+		return fmt.Errorf("modules.%s.fields must list the fields the module may write (modules.%s.collection is set)", name, name)
+	}
+	for _, f := range m.Fields {
+		if f == "source" {
+			return fmt.Errorf("modules.%s.fields must not list source: it is always the module's name", name)
+		}
+	}
+	return nil
+}
+
+func (c *Config) checkModuleSettings(name string, m *Module) error {
+	if m.Type == "" && (name == modsettings.TypeEntra || name == modsettings.TypeNotify) {
+		m.Type = name // an entry written before types existed
+	}
+	if m.Type == "" {
+		if len(m.Settings) > 0 {
+			return fmt.Errorf("modules.%s.settings needs modules.%s.type (%s)", name, name, strings.Join(modsettings.Types(), " or "))
+		}
+		return nil
+	}
+	if _, err := modsettings.New(m.Type); err != nil {
+		return fmt.Errorf("modules.%s.type: %v", name, err)
+	}
+	if m.Type == modsettings.TypeEntra && m.ReadOnly() {
+		return fmt.Errorf("modules.%s: an entra module writes records, so it needs collection and fields", name)
+	}
+	s, err := modsettings.DecodeAndValidate(m.Type, m.Settings, func(col string) bool { return c.Collection(col) != nil })
+	if err != nil {
+		return fmt.Errorf("modules.%s.settings: %v", name, err)
+	}
+	m.settings = s
 	return nil
 }
 
