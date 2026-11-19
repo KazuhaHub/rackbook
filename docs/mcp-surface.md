@@ -1,6 +1,6 @@
 # MCP surface (decision 16)
 
-Status: accepted direction, to be implemented in v0.6.0 (the `expiry` family
+Status: implemented in v0.6.0 (the `expiry` family
 already ships in v0.3.0). Tool names, their
 arguments and their result shapes are part of Rackbook's SemVer promise (README,
 "Versioning and compatibility"), so this document fixes the shape before 1.0.
