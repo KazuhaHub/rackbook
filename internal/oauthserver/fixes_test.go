@@ -91,7 +91,7 @@ func TestDCRCapRefusesWhenAllInUse(t *testing.T) {
 
 func TestDCRRefusesLookalikeRedirects(t *testing.T) {
 	e := newEnv(t, opts{})
-	for _, u := range []string{"https://аpp.example/cb", "https://app.example/cb‮", "https://app​.example/cb", "cursor://аnysphere.cursor/cb"} {
+	for _, u := range []string{"https://аpp.example/cb", "https://app.example/cb\u202e", "https://app\u200b.example/cb", "cursor://аnysphere.cursor/cb"} {
 		if r := e.postJSON("", "/oauth/register", map[string]any{"redirect_uris": []string{u}}); r.StatusCode != 400 || r.str("error") != "invalid_redirect_uri" {
 			t.Errorf("%q: %d %s", u, r.StatusCode, r.body)
 		}
@@ -115,7 +115,7 @@ func TestCIMDLookalikeClientIDsAndFetchErrors(t *testing.T) {
 	doc := newCIMD(t, goodDoc(testRedirect))
 	e := newEnv(t, opts{cimdClient: doc.Client()})
 	_, ch := pkce()
-	for _, id := range []string{"https://аpp.example/c.json", "https://app.example/c‮.json"} {
+	for _, id := range []string{"https://аpp.example/c.json", "https://app.example/c\u202e.json"} {
 		if r := e.startAuth(boss, e.params(id, testRedirect, ch)); r.StatusCode != 400 {
 			t.Errorf("%q: %d", id, r.StatusCode)
 		}

@@ -36,15 +36,15 @@ func TestValidateRedirectCharacters(t *testing.T) {
 	bad := []string{
 		"https://аpp.example/cb",        // Cyrillic a
 		"https://app.exаmple/cb",        // Cyrillic a
-		"https://app.example/cb‮",       // right-to-left override
-		"https://app​.example/cb",       // zero-width space
-		"https://app.example⁦/cb",       // bidi isolate
-		"https://app.example/­",         // soft hyphen
+		"https://app.example/cb\u202e",       // right-to-left override
+		"https://app\u200b.example/cb",       // zero-width space
+		"https://app.example\u2066/cb",       // bidi isolate
+		"https://app.example/\u00ad",         // soft hyphen
 		"https://ａpp.example/cb",        // full-width a
 		"https://app.example/cb\x00",    // control
 		"https://app.example/c b",       // space
 		"cursor://аnysphere.cursor/cb",  // look-alike in a private-use scheme host
-		"cursor://anysphere.cursor/​cb", // zero-width in a private-use scheme path
+		"cursor://anysphere.cursor/\u200bcb", // zero-width in a private-use scheme path
 		"https://app.example/中",         // any non-ASCII
 	}
 	for _, s := range bad {
@@ -52,7 +52,7 @@ func TestValidateRedirectCharacters(t *testing.T) {
 			t.Errorf("%q should be refused", s)
 		}
 	}
-	for _, id := range []string{"https://аpp.example/c.json", "https://app.example/c‮.json", "https://app​.example/c.json"} {
+	for _, id := range []string{"https://аpp.example/c.json", "https://app.example/c\u202e.json", "https://app\u200b.example/c.json"} {
 		if _, err := validCIMDURL(id); err == nil {
 			t.Errorf("client_id %q should be refused", id)
 		}
@@ -60,7 +60,7 @@ func TestValidateRedirectCharacters(t *testing.T) {
 }
 
 func TestCleanNameDropsFormatCharacters(t *testing.T) {
-	if got := cleanName("Safe‮Evil​Name", "x"); got != "SafeEvilName" {
+	if got := cleanName("Safe\u202eEvil\u200bName", "x"); got != "SafeEvilName" {
 		t.Fatalf("%q", got)
 	}
 }
