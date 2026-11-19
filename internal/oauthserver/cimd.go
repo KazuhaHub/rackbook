@@ -346,9 +346,7 @@ func validateRedirect(s string) error {
 			return fmt.Errorf("redirect_uri %q has no host", s)
 		}
 	case "http":
-		switch u.Hostname() {
-		case "localhost", "127.0.0.1", "::1":
-		default:
+		if !isLoopbackHost(u.Hostname()) {
 			return fmt.Errorf("redirect_uri %q: http is only allowed for localhost", s)
 		}
 	default:

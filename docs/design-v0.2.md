@@ -780,7 +780,9 @@ Details settled while building:
 - Grants are listed and revoked on the account page (`GET`/`DELETE
   /api/account/grants`) and, for administrators, on a page of their own
   (`/api/admin/grants`).
-- Redirect addresses: exact string match. A registration or a metadata document
+- Redirect addresses: exact string match, except that an `http` loopback
+  redirect may use any port (RFC 8252 section 7.3; found with Claude Code, whose
+  metadata document registers `http://localhost/callback`). A registration or a metadata document
   may list `https://` URLs, `http://` on `localhost`, `127.0.0.1` and `[::1]`,
   and a private-use scheme such as `cursor://` (a scheme is refused if it is
   `javascript`, `data`, `file` and similar), as the owner accepted in decision

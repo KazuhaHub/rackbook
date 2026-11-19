@@ -203,9 +203,21 @@ other origins (browser-based clients need that); none of them takes cookies.
 There is no token revocation endpoint (RFC 7009) in this version: revoke
 grants in the console.
 
+## Redirect addresses
+
+The address a client asks Rackbook to send the sign-in result to must be one
+it registered, character for character, with one exception. A desktop app
+such as Claude Code receives the result on its own computer
+(`http://localhost:<port>/callback`), and the port is picked by the system at
+the moment of sign-in, so the app can only register the address without a
+port. For `http` addresses on `localhost`, `127.0.0.1` or `[::1]`, Rackbook
+therefore accepts any port (1 to 65535), whether or not the registered address
+names one, as RFC 8252 (section 7.3) requires; scheme, host, path and query
+must still match exactly. This is safe because such an address
+can only reach a program on the user's own machine.
+
 ## Limits of this version
 
 - Public clients only; no client secrets, no other grant types.
-- Redirect addresses must match exactly; there is no loopback port wildcard.
 - The groups of a grant are not refreshed (see above).
 - Not covered: RFC 7009 revocation, token exchange, DPoP.

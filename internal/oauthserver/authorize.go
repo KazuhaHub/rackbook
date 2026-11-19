@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -146,7 +147,7 @@ func (s *Server) authorize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	redirectURI := q.Get("redirect_uri")
-	if redirectURI == "" || !contains(client.RedirectURIs, redirectURI) { // exact match, no normalisation
+	if redirectURI == "" || !redirectAllowed(client.RedirectURIs, redirectURI) {
 		s.log.Info("oauth authorize: redirect_uri not registered", "client", clientID, "redirect_uri", redirectURI)
 		errorPage(w, http.StatusBadRequest, "The redirect_uri is not one the client has registered.")
 		return
@@ -351,4 +352,53 @@ func redirectHostname(s string) string {
 func (s *Server) canWrite(sub Subject, scopes []string) bool {
 	ws := s.o.Config().Auth.MCP.Scopes.WriteScope()
 	return (ws == "" || contains(scopes, ws)) && s.role(sub).Allows(roles.Write)
+}
+
+// redirectAllowed reports whether redirectURI is one of the client's
+// registered redirect URIs. The match is exact, with one exception from
+// RFC 8252 section 7.3: for an http loopback redirect (localhost, 127.0.0.1
+// or [::1]) the port may differ, because a native app such as Claude Code
+// listens on a port the system picks at sign-in time. This holds whether or
+// not the registered URI names a port. Scheme, host, path and query must
+// still match exactly, and the requested URI must itself pass the same checks
+// as a registered one, with a port of 1 to 65535 when it names one.
+func redirectAllowed(registered []string, redirectURI string) bool {
+	if contains(registered, redirectURI) {
+		return true
+	}
+	if validateRedirect(redirectURI) != nil {
+		return false
+	}
+	got, err := url.Parse(redirectURI)
+	if err != nil || got.Scheme != "http" || !isLoopbackHost(got.Hostname()) || !validPort(got) {
+		return false
+	}
+	for _, r := range registered {
+		want, err := url.Parse(r)
+		if err != nil || want.Scheme != "http" || !isLoopbackHost(want.Hostname()) {
+			continue
+		}
+		if want.Hostname() == got.Hostname() && want.RawPath == got.RawPath && want.Path == got.Path &&
+			want.RawQuery == got.RawQuery {
+			return true
+		}
+	}
+	return false
+}
+
+// validPort accepts no port at all, or a decimal port from 1 to 65535 written
+// without leading zeros.
+func validPort(u *url.URL) bool {
+	p := u.Port()
+	if p == "" {
+		return !strings.HasSuffix(u.Host, ":")
+	}
+	n, err := strconv.Atoi(p)
+	return err == nil && n >= 1 && n <= 65535 && strconv.Itoa(n) == p
+}
+
+// isLoopbackHost is the one list of hosts an http redirect may use, shared by
+// registration and authorization.
+func isLoopbackHost(h string) bool {
+	return h == "localhost" || h == "127.0.0.1" || h == "::1"
 }
