@@ -327,10 +327,11 @@ func entropyOK(tok string) bool {
 	if strings.Contains(tok, "://") {
 		return false
 	}
-	// hyphenated or dotted names are made of short words, not of a key
+	// Paths, host names and key=value pairs are made of short words, not of a
+	// key: any character other than a letter or digit ends a word.
 	longest, run := 0, 0
 	for i := 0; i < len(tok); i++ {
-		if c := tok[i]; c == '-' || c == '_' || c == '.' {
+		if c := tok[i]; !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9') {
 			run = 0
 		} else if run++; run > longest {
 			longest = run
