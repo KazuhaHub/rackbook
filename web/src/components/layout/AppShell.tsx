@@ -133,7 +133,7 @@ function AppSidebar() {
                     <span>{t.nav.modules}</span>
                   </SidebarMenuButton>
                   {failedModules > 0 && (
-                    <SidebarMenuBadge className="bg-destructive text-white" title={t.modules.failedBanner(failedModules)}>
+                    <SidebarMenuBadge className="bg-destructive text-white!" title={t.modules.failedBanner(failedModules)}>
                       {failedModules}
                     </SidebarMenuBadge>
                   )}
