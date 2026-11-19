@@ -921,8 +921,8 @@ Release plan (details in `docs/design-v0.2.md`, "Versioning"):
 - **v0.5.0**: the modules panel. Merged to `main`, not tagged yet.
 - **v0.6.0**: the built-in authorization server (`docs/oauth-server.md`) and
   the MCP surface (`docs/mcp-surface.md`).
-- **v0.6.1** (proposal): GitHub App authentication and record documents. Both
-  were planned for v0.6.0 and move to a later version.
+- **v0.6.1**: GitHub App authentication and record documents. Both were
+  planned for v0.6.0 and moved here (owner, 2026-11-18).
 - **v0.7.0**: one record per file storage; the deprecated MCP tool names are
   removed.
 
