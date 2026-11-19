@@ -265,3 +265,11 @@ func TestServeAcceptRemoteCannotBeReadOnly(t *testing.T) {
 		t.Fatalf("%v %s", err, out)
 	}
 }
+
+func TestServeRefusesStateDirInsideRepo(t *testing.T) {
+	dir := testutil.CopyExample(t)
+	_, err := run(t, "serve", "--listen", "127.0.0.1:0", "--config", filepath.Join(dir, "rackbook.yml"), "--no-git", "--state-dir", filepath.Join(dir, "state"))
+	if err == nil || !strings.Contains(err.Error(), "inside the data repository") {
+		t.Fatalf("%v", err)
+	}
+}

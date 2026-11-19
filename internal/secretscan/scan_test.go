@@ -852,12 +852,16 @@ func TestDistinctivePrefixesMatchWithoutALeadingBoundary(t *testing.T) {
 }
 
 func TestHighEntropyTokensAreConfirmTier(t *testing.T) {
-	for _, v := range []string{"login with q7Zx!pL2vN9mTk4Rb8Wc3Yd", "A8f$k2Lq9ZxPw3Vn7TbM5cRd", "key is vT4#nK8qLp2ZxW7mR9bY5cDa"} {
+	for _, v := range []string{"login with q7Zx!pL2vN9mTk4Rb8Wc3Yd", "A8f$k2Lq9ZxPw3Vn7TbM5cRd", "key is vT4#nK8qLp2ZxW7mR9bY5cDa", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"} {
 		if tier, ids := tierOf(t, v); tier != TierConfirm || !has(ids, RuleEntropy) {
 			t.Errorf("%q: %q %v", v, tier, ids)
 		}
 	}
-	for _, v := range []string{"the quick brown fox jumps over the lazy dog every single day", "https://grafana.example.com/d/AbCdEf12GhIjKl34/overview?orgId=1", "0123456789abcdef0123456789abcdef", "aaaaaaaaaaaaaaaaaaaaaaaaaaaa1A", "Nginx-Reverse-Proxy-Cluster-2", "/var/lib/docker/overlay2/volumes", "ssh://git@github.com/org/repo.git"} {
+	for _, v := range []string{"the quick brown fox jumps over the lazy dog every single day", "https://grafana.example.com/d/AbCdEf12GhIjKl34/overview?orgId=1", "0123456789abcdef0123456789abcdef", "aaaaaaaaaaaaaaaaaaaaaaaaaaaa1A", "Nginx-Reverse-Proxy-Cluster-2", "/var/lib/docker/overlay2/volumes", "ssh://git@github.com/org/repo.git",
+		// paths, host:path, file#key and key=value made of short words
+		"/opt/registry-mirror/README.md", "production:/www/server/panel/vhost/cert/kirara-agent.us-sj1.web.example.com/",
+		"secrets/4c6g-racknerd-sanjose-ca-us-vps.sops.yaml#cloudflare_dns_token", "Mac:~/.config/sops/age/keys.txt",
+		"HostName=dynamic.pqs.cwh.tw.vps.example.org", "4c6g:/etc/ssh/ssh_host_ed25519_key"} {
 		if _, ids := tierOf(t, v); has(ids, RuleEntropy) {
 			t.Errorf("%q must not fire", v)
 		}

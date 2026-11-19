@@ -2,6 +2,8 @@ package tokens
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -101,5 +103,32 @@ func TestSubjectMethodIsTheCreatorsRecordedMethod(t *testing.T) {
 		if got := (Token{CreatedVia: via}).SubjectMethod(); got != want {
 			t.Errorf("%q: %q, want %q", via, got, want)
 		}
+	}
+}
+
+func TestLastUseSurvivesRestartWithUsePath(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "token-use.json")
+	now := time.Date(2026, 11, 19, 8, 0, 0, 0, time.UTC)
+	r := &Registry{UsePath: path, Now: func() time.Time { return now }}
+	r.Touch("entra-sync")
+	// a second use within the minute does not rewrite the file
+	now = now.Add(30 * time.Second)
+	r.Touch("entra-sync")
+	if b, _ := os.ReadFile(path); !strings.Contains(string(b), "08:00:00Z") {
+		t.Fatalf("file: %s", b)
+	}
+	// a new Registry (a restart) reads the file
+	r2 := &Registry{UsePath: path}
+	if got, ok := r2.LastUsed("entra-sync"); !ok || !got.Equal(time.Date(2026, 11, 19, 8, 0, 0, 0, time.UTC)) {
+		t.Fatalf("%v %v", got, ok)
+	}
+	if _, ok := r2.LastUsed("notify"); ok {
+		t.Fatal("unknown token has a last use")
+	}
+	// without UsePath nothing is written and nothing survives
+	r3 := &Registry{}
+	r3.Touch("x")
+	if _, ok := (&Registry{}).LastUsed("x"); ok {
+		t.Fatal("memory-only registry shared state")
 	}
 }

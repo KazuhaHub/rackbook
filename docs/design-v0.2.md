@@ -29,7 +29,8 @@ memory.
 | API tokens | `.rackbook/tokens.yml` | name, prefix, SHA-256 of the secret, scope, created by/at, expiry, revoked; committed on create/revoke. The hash of a 32-byte random token reveals nothing usable. |
 | pending OIDC logins, passkey ceremony challenges | memory (bounded, 10 min / 5 min TTL) | a restart only makes someone mid-login click again; a replayed state fails because it is gone |
 | session signing key | `RACKBOOK_SESSION_KEY` env (or `--session-key-file`) | refused at startup if missing when a login mode is on |
-| token "last used", failed-login counters | memory | reset on restart |
+| token "last used" | memory, or `--state-dir`/token-use.json | reset on restart without a state dir |
+| failed-login counters | memory | reset on restart |
 | audit (logins, failures, logouts) | structured server log (stdout → docker / journald) | data, type, passkey and token changes are already Git commits |
 
 - `.rackbook/` files are ordinary YAML read with the same loader, validated by
@@ -277,7 +278,8 @@ schema). Opening one shows:
   - Tokens can never manage data types, tokens or users.
 - Accepted as `Authorization: Bearer rbk_…`, only on `/api/*`, `/mcp`,
   `/export.*` and `/llms*`; never as a console login.
-- `last used` is kept in memory (since the last restart). Expired or revoked
+- `last used` is kept in memory (since the last restart), or in
+  `<state-dir>/token-use.json` with `serve --state-dir` (written at most once a minute per token). Expired or revoked
   tokens get 401, and failures are rate-limited per client IP (`CF-Connecting-IP` when it
   comes from a trusted proxy, else the remote address).
 - When a token's creator is no longer an admin, the token keeps working until
