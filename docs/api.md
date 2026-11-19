@@ -212,11 +212,11 @@ mode. A refused request changes nothing.
 Admin only, and never with a token (`403 forbidden`); `404` unless token support
 is on (it is in `rackbook serve`).
 
-- `GET /api/admin/tokens` → `{"tokens": [{name, prefix, scope, collections?, actions?, writeMode?, createdBy, created, expires?, revoked?, status: active|revoked|expired, lastUsed?, creatorRole, warnings: [creator_no_role|limited_by_creator|push_needs_admin]}], "mcpUrl"}`.
+- `GET /api/admin/tokens` → `{"tokens": [{name, prefix, scope, collections?, actions?, writeMode?, createdBy, created, expires?, revoked?, status: active|revoked|expired, lastUsed?, creatorRole, module?, warnings: [creator_no_role|limited_by_creator|push_needs_admin]}], "mcpUrl"}`; `module` names the module (rackbook.yml `modules:`) that uses the token.
 - `POST /api/admin/tokens` `{"name", "scope": "read"|"write", "collections": [], "actions": ["create","update","delete"], "writeMode": ""|"pr"|"push", "expiresDays": 0}` → `201 {"token", "secret", "snippet", "claudeCode", "commit", "pullRequest"}`. The secret is shown only here. `400` for invalid input, `409 exists` for a taken name.
 - `DELETE /api/admin/tokens/{name}` → `200 {"ok", "commit"}`; `404` for an unknown name.
 
-Bearer tokens are accepted on `/mcp`, `/api/c/…`, `/api/meta`, `/api/check`, `/api/history`, `/api/expiring`, `/export.*` and `/llms*` (`403 forbidden` on any other path); `401
+Bearer tokens are accepted on `/mcp`, `/api/c/…`, `/api/meta`, `/api/check`, `/api/history`, `/api/expiring`, `/api/modules/…` (only the calls of the modules panel below), `/export.*` and `/llms*` (`403 forbidden` on any other path); `401
 invalid_token` (expired, revoked or unknown) and `429 rate_limited` with
 `Retry-After` after repeated failures from one address.
 
@@ -295,6 +295,23 @@ tool error: `{"error","message","status",…}`; a successful write returns
 
 Every other `GET` serves the embedded console (`index.html` for unknown paths,
 so client-side routes work).
+
+## Modules panel
+
+Design and the rules behind it: [modules.md](modules.md) section 7. Admin calls
+need a signed-in administrator and are never answered to a token (`403
+forbidden`). A module uses its own token for the three calls marked *module*.
+`/api/meta` lists the modules too (`modules: [{name, type?, readOnly, collection, fields, directPush}]`, no token names).
+
+| Request | Who | Answer |
+|---|---|---|
+| `GET /api/modules` | admin | `{modules: [...], now, writeMode, historyKept}`. Each module: `{name, type, token, tokenStatus: active\|revoked\|expired\|missing, readOnly, collection?, fields, directPush, settings, version, paused, status: ok\|failed\|skipped\|never, lastRun, lastOk, runs, runRequest, schedule: {times, timezone, default}, nextRun, due, keys}`. `settings` holds only the values that are set; `runs` is the last 30, newest first; `nextRun` is the next daily time (null when paused); `due` says it would run at its next hourly check |
+| `GET /api/modules/{name}/settings` | module, admin | `{name, type, settings, version, runRequest, lastOk, lastRun, now}`. A module token gets `403` for any other module's name; `404` for an unknown one |
+| `PUT /api/modules/{name}/settings` | admin | body `{version, settings, confirm_impact?}` (the complete new settings; keys left out are removed; `version` is required). One Git commit: `{name, changed, commit, pullRequest, settings, version}`; nothing is written when nothing changed (`changed: false`). `409 conflict` with `current: {settings, version}` when the settings changed since; `422 refused` (the reason in `message`) for an unknown key or a value that is not valid; `422 confirm_required` with `impact` for a risky change that is not confirmed; `422 no_settings` for a module without a `type`; secret detections as for records; `403 read_only` in `--read-only` mode |
+| `POST /api/modules/{name}/preview` | admin | body `{settings}` → `{records: [{id, label, expires, effect: frozen\|maybe_revoked}], risky}`: what the change would do to the module's records; writes nothing |
+| `POST /api/modules/{name}/run-request` | admin | stores one pending "run now" request → `{runRequest: {id, requested, by}}`. Asking again returns the same one. `409 paused` while the module is paused |
+| `POST /api/modules/{name}/runs` | module | body `{started, finished, status: ok\|failed\|skipped, counts: {created, updated, revoked, sent}, error?, run_request?}` (RFC 3339 times, `finished` not in the future) → `201 {ok: true}`. Only the module's own token (`403` otherwise, an administrator included); `400` for an invalid body. `error` is cut to 300 characters on one line. A run that carries the pending request's id clears it; consecutive `skipped` runs replace each other. The server keeps the last 30 runs per module in `<state-dir>/modules.json` |
+| `GET /api/modules/status` | admin, notify module | `{modules: [{name, type, paused, lastRun}]}`: the last run of every module, for rackbook-notify's digest. `403` for any other token |
 
 ## Data types (administrators only)
 

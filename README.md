@@ -550,11 +550,22 @@ tokens, domains, contracts). Design and module contract: [docs/modules.md](docs/
 # rackbook.yml
 modules:
   entra:
+    type: entra
     token: entra-sync
     collection: credentials
     fields: [kind, self_signed, purpose, expires, not_before, kid, ids, revoked]
     direct_push: true
 ```
+
+- Administrators manage the modules in the console (**模块**): last run and
+  failures, pause, "run now", and the settings that are safe to edit in a
+  browser (send and sync times, thresholds, recipients, excluded apps, record
+  naming). Each save is one Git commit that changes `modules.<name>.settings`
+  in `rackbook.yml`. The modules ask the server for their settings and report
+  every run, so start them **every hour** (a systemd timer with
+  `OnCalendar=hourly`); they act only when a configured time has passed. Run
+  history is kept in `--state-dir`. See [docs/modules.md](docs/modules.md),
+  section 7.
 
 ## Branding and the sign-in button
 
