@@ -9,6 +9,7 @@ import { t } from '@/i18n/zh-CN'
 import { errorMessage } from '@/lib/api'
 import { fieldTitle, pointerToPath, recordHref } from '@/lib/ledger'
 import { useCheck, useMeta } from '@/providers/meta'
+import { displayId } from '@/lib/recordId'
 
 export default function Problems() {
   const { byName } = useMeta()
@@ -62,7 +63,7 @@ export default function Problems() {
                     <td className="px-4 py-2.5">
                       {col && e.id ? (
                         <Link to={recordHref(col.name, e.id)} className="font-mono text-[0.8125rem] text-sky-700 underline decoration-sky-700/30 underline-offset-4 dark:text-sky-300">
-                          {e.id}
+                          {displayId(e.id)}
                         </Link>
                       ) : (
                         <span className="text-muted-foreground">—</span>

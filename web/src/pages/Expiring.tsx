@@ -11,6 +11,7 @@ import { hasExpiry, recordHref, sourceLabel } from '@/lib/ledger'
 import type { ExpiringItem } from '@/lib/types'
 import { cn } from '@/lib/utils'
 import { useMeta } from '@/providers/meta'
+import { displayId } from '@/lib/recordId'
 
 const WINDOWS = [30, 60, 90, 365]
 
@@ -84,7 +85,7 @@ function Section({
                         to={recordHref(it.collection, it.id)}
                         className="font-mono text-[0.8125rem] text-sky-700 underline decoration-sky-700/30 underline-offset-4 dark:text-sky-300"
                       >
-                        {it.label || it.id}
+                        {it.label || displayId(it.id)}
                       </Link>
                     </td>
                     <td className="px-4 py-2.5 whitespace-nowrap tabular-nums">{it.expires || '—'}</td>
