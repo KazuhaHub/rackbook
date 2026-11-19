@@ -530,7 +530,7 @@ Agreed with the owner on 2026-11-18:
    fixed header.
 10. **Built-in authorization server**, so standalone users without MCPHub can
     add Rackbook directly to Claude, Cursor, VS Code or MCP Inspector. It is
-    proposed for **v0.4.0** (renumbered twice, see the versioning note below), before the storage work (now v0.5.0).
+    proposed for **v0.6.0** (renumbered four times, see the versioning note below), before the storage work (now v0.7.0).
     **Not started: it waits for the owner's OK on placement and cost.**
     - Spec: the MCP authorization spec — OAuth 2.1 + PKCE S256, RFC 8707
       resource indicators (`aud` = the `/mcp` URL), RFC 8414 metadata, and
@@ -553,11 +553,11 @@ Agreed with the owner on 2026-11-18:
       an external issuer.
 11. **Real-client verification in the demo**: MCP Inspector and Claude Code
     (`claude mcp add --transport http`) against an external issuer in v0.2,
-    and against the built-in authorization server in v0.4.0.
+    and against the built-in authorization server in v0.6.0.
 
-### Decisions, round 5 (2026-11-18): built-in authorization server approved (ships in v0.4.0)
+### Decisions, round 5 (2026-11-18): built-in authorization server approved (ships in v0.6.0)
 
-12. **Approved; ships in v0.4.0.** An MCP client authorizes
+12. **Approved; ships in v0.6.0.** An MCP client authorizes
     **once** and never has to sign in again, including across restarts,
     upgrades and ansible redeploys.
     - **State file: the one exception to "no database".** Authorization-server
@@ -613,24 +613,33 @@ Rackbook uses SemVer (Go modules require SemVer tags). Release plan:
   Windows-only test failures in `rackbook-notify`. Its content, plus the fix
   (and the configurable sign-in button and branding), shipped as **v0.3.1**.
   The tag stays as it is; pushed tags are never moved.
-- **v0.4.0** — the built-in authorization server (decision 12), GitHub App
+- **v0.4.0** — console usability: backref sections as URL-hash tabs with
+  search and paging, general (`allow` literal) records in their own tab,
+  clickable and keyboard-navigable rows, in-place editing of enum / boolean /
+  date / tag cells, searchable selects, tags, suggestions and port lists in the
+  forms, readable record ids (design: `design.md` section 6.1 and 6.2).
+- **v0.5.0** — modules panel: an admin page that lists the modules, shows
+  their runs (reported by each module, kept in the state directory) and edits
+  their settings in `rackbook.yml` (a Git commit per change); modules pull
+  their settings and check hourly.
+- **v0.6.0** — the built-in authorization server (decision 12), GitHub App
   authentication (decision 14), record documents (decision 15) and the MCP
-  surface renames (decision 16). Planned for v0.3.0 until decision 17 took
-  that number; nothing in them changed.
-- **v0.5.0** — storage: one record per file (design in
+  surface renames (decision 16). Planned as v0.4.0, then v0.5.0, until console
+  usability and the modules panel took those numbers; nothing in them changed.
+- **v0.7.0** — storage: one record per file (design in
   `design-v0.4-storage.md`; the file keeps its name).
 - **1.0** — once the storage layout, config format and API are stable.
 
 See README, "Versioning and compatibility".
 
-### Decisions, round 6 (2026-11-18): separate ledger repository, GitHub App credentials (v0.4.0)
+### Decisions, round 6 (2026-11-18): separate ledger repository, GitHub App credentials (v0.6.0)
 
 13. **Rackbook writes only to a dedicated data repository** (for the owner:
     KazuhaHub/ledger), never to an infrastructure repo. In the owner's setup
     the infra repo's `main` is applied as root on every host, so a write
     credential for it would amount to root. Infra may *read* the ledger;
     Rackbook never holds a credential for infra.
-14. **GitHub App authentication (v0.4.0)**, as an alternative to deploy key +
+14. **GitHub App authentication (v0.6.0)**, as an alternative to deploy key +
     PAT. One credential replaces both.
     - An org-owned GitHub App, installed **only** on the data repository, with
       repository permissions `contents: write` and `pull_requests: write`.
@@ -657,7 +666,7 @@ See README, "Versioning and compatibility".
       refresh, a token that must not appear in argv or logs, push over HTTPS to
       a local smart-HTTP test server, and PRs.
 
-### Decision 15 (2026-11-18): record documents (v0.4.0)
+### Decision 15 (2026-11-18): record documents (v0.6.0)
 
 15. **A Markdown document per record**, for runbooks, history and anything
     else that doesn't fit fields. Generic for every collection.
@@ -717,8 +726,8 @@ See README, "Versioning and compatibility".
     - scopes per family, limits, a deprecation policy and golden-file
       contract tests.
 
-    The renames of the v0.2 tools ship in v0.4.0, with deprecated aliases that
-    are removed in v0.5.0.
+    The renames of the v0.2 tools ship in v0.6.0, with deprecated aliases that
+    are removed in v0.7.0.
 
 ### Decision 17 (2026-11-18): expiry tracking and modules (v0.3.0)
 

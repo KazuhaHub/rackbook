@@ -143,7 +143,11 @@ func scalar(s string, flow bool, hint yaml.Style) string {
 }
 
 // inline renders any value on one line (flow context for collections).
-func inline(v any, hint yaml.Style) string {
+func inline(v any, hint yaml.Style) string { return inlineOrd(v, hint, nil) }
+
+// inlineOrd is inline with the key order of the mappings directly in v (or in
+// the list v): the listed keys first, the rest sorted.
+func inlineOrd(v any, hint yaml.Style, ord []string) string {
 	switch x := v.(type) {
 	case nil:
 		return "null"
@@ -164,15 +168,11 @@ func inline(v any, hint yaml.Style) string {
 	case []any:
 		parts := make([]string, len(x))
 		for i, e := range x {
-			parts[i] = inline(e, 0)
+			parts[i] = inlineOrd(e, 0, ord)
 		}
 		return "[" + strings.Join(parts, ", ") + "]"
 	case map[string]any:
-		keys := make([]string, 0, len(x))
-		for k := range x {
-			keys = append(keys, k)
-		}
-		sort.Strings(keys)
+		keys := orderedKeys(x, ord)
 		parts := make([]string, len(keys))
 		for i, k := range keys {
 			parts[i] = keyScalar(k, true) + ": " + inline(x[k], 0)
@@ -211,7 +211,7 @@ func orderedKeys(data map[string]any, order []string) []string {
 }
 
 // flowRecord renders `{k: v, ...}`. old maps keys to the value nodes being replaced.
-func flowRecord(data map[string]any, keys []string, old map[string]*yaml.Node) string {
+func flowRecord(data map[string]any, keys []string, old map[string]*yaml.Node, itemOrder map[string][]string) string {
 	if len(keys) == 0 {
 		return "{}"
 	}
@@ -221,29 +221,29 @@ func flowRecord(data map[string]any, keys []string, old map[string]*yaml.Node) s
 		if n := old[k]; n != nil && n.Kind == yaml.ScalarNode {
 			hint = n.Style
 		}
-		parts[i] = keyScalar(k, true) + ": " + inline(data[k], hint)
+		parts[i] = keyScalar(k, true) + ": " + inlineOrd(data[k], hint, itemOrder[k])
 	}
 	return "{" + strings.Join(parts, ", ") + "}"
 }
 
 // blockPair renders `key: value` lines (without leading indentation on the
 // first line; continuation lines are indented by indent spaces).
-func blockPair(k string, v any, indent int, hint yaml.Style) []string {
+func blockPair(k string, v any, indent int, hint yaml.Style, ord []string) []string {
 	key := keyScalar(k, false) + ":"
 	if s, ok := v.(string); ok && strings.Contains(s, "\n") {
 		if lines, ok := literalBlock(s, indent+2); ok {
 			return append([]string{key + " " + lines[0]}, lines[1:]...)
 		}
 	}
-	return []string{key + " " + inlineBlock(v, hint)}
+	return []string{key + " " + inlineBlock(v, hint, ord)}
 }
 
 // inlineBlock is inline() for a value that sits in a block mapping (commas are fine).
-func inlineBlock(v any, hint yaml.Style) string {
+func inlineBlock(v any, hint yaml.Style, ord []string) string {
 	if s, ok := v.(string); ok {
 		return scalar(s, false, hint)
 	}
-	return inline(v, hint)
+	return inlineOrd(v, hint, ord)
 }
 
 // literalBlock renders a multi-line string as a `|` block scalar.

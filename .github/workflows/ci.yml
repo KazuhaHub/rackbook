@@ -84,6 +84,7 @@ jobs:
       - run: npm run typecheck
       - run: npm run check:formats
       - run: npm run check:record-urls
+      - run: npm run check:console-logic
       - run: npm run check:stale-chunk
       - run: npm run build
 

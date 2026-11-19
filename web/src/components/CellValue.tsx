@@ -4,6 +4,7 @@ import { Badge } from '@/components/ui/badge'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { t } from '@/i18n/zh-CN'
 import { looksMono, recordHref, str } from '@/lib/ledger'
+import { formatItem, formatPlain, objectItems, type Prop } from '@/lib/objectItems'
 import type { RefLookup } from '@/lib/hooks'
 import { cn } from '@/lib/utils'
 
@@ -20,7 +21,7 @@ export function BoolBadge({ value }: { value: boolean }) {
 function Text({ value, expandable, className }: { value: string; expandable: boolean; className?: string }) {
   const [open, setOpen] = useState(false)
   const mono = looksMono(value)
-  const long = expandable && (value.length > 36 || value.includes('\n'))
+  const long = expandable && (value.length > 40 || value.includes('\n'))
   const cls = cn(mono && 'font-mono text-[0.8125rem]', className)
   if (!long) return <span className={cls}>{value}</span>
   return (
@@ -34,8 +35,8 @@ function Text({ value, expandable, className }: { value: string; expandable: boo
               setOpen((o) => !o)
             }}
             className={cn(
-              'block max-w-[34ch] cursor-pointer text-left',
-              open ? 'whitespace-pre-wrap break-words' : 'truncate',
+              'block max-w-[40ch] cursor-pointer text-left break-words',
+              open ? 'whitespace-pre-wrap' : 'line-clamp-2',
               cls,
             )}
             aria-expanded={open}
@@ -57,14 +58,45 @@ export function CellValue({
   value,
   lookup,
   variant = 'cell',
+  schema,
 }: {
   value: unknown
   lookup?: RefLookup
+  /** the property's schema, to format arrays of objects */
+  schema?: Prop
   variant?: 'cell' | 'detail'
 }) {
   if (value === undefined || value === null || value === '') return <span className="text-muted-foreground/60">—</span>
   if (typeof value === 'boolean') return <BoolBadge value={value} />
   if (Array.isArray(value)) {
+    // items that are flat objects ({protocol, port}): one badge each, "TCP 443", a note as tooltip
+    if (!lookup && value.length && value.every((v) => v && typeof v === 'object' && !Array.isArray(v))) {
+      const spec = schema ? objectItems(schema) : undefined
+      return (
+        <span className="inline-flex flex-wrap gap-1">
+          {value.map((v, i) => {
+            const f = spec ? formatItem(v, spec) : { text: formatPlain(v), title: undefined }
+            return (
+              <Badge key={i} variant="secondary" className="font-mono font-normal" title={f.title}>
+                {f.text}
+              </Badge>
+            )
+          })}
+        </span>
+      )
+    }
+    // a list of plain values (tags) reads best as small badges
+    if (!lookup && value.every((v) => typeof v === 'string' || typeof v === 'number')) {
+      return (
+        <span className="inline-flex flex-wrap gap-1">
+          {value.map((v, i) => (
+            <Badge key={i} variant="secondary" className="font-normal">
+              {String(v)}
+            </Badge>
+          ))}
+        </span>
+      )
+    }
     return (
       <span className="inline-flex flex-wrap gap-1">
         {value.map((v, i) => (

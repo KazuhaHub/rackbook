@@ -28,6 +28,7 @@ import { hasExpiry, recordHref, relativeTime } from '@/lib/ledger'
 import type { CheckError, Commit } from '@/lib/types'
 import { cn } from '@/lib/utils'
 import { useCheck, useMeta } from '@/providers/meta'
+import { displayId } from '@/lib/recordId'
 
 const stagger = (i: number) => ({ '--i': i }) as CSSProperties
 
@@ -256,7 +257,7 @@ export default function Dashboard() {
                       >
                         <span className="block text-sm leading-snug break-words">{e.message}</span>
                         <span className="mt-0.5 block truncate text-xs text-muted-foreground">
-                          {[byName.get(e.collection ?? '')?.title ?? e.collection, e.id].filter(Boolean).join(' · ') || '—'}
+                          {[byName.get(e.collection ?? '')?.title ?? e.collection, e.id && displayId(e.id)].filter(Boolean).join(' · ') || '—'}
                         </span>
                       </Link>
                     </li>

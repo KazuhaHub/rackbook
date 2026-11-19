@@ -21,6 +21,9 @@ type Prop struct {
 	Title       string
 	Description string
 	Type        string // first non-null type, "" if unspecified
+	// ItemOrder is the order of the properties of the objects this property
+	// holds (an object, or the items of an array), empty for other types.
+	ItemOrder []string
 }
 
 // Label is the display name of a property: its title, else its name.
@@ -75,14 +78,18 @@ func ParseSchema(raw []byte) (Schema, error) {
 			return Schema{}, err
 		}
 		var p struct {
-			Title       string `json:"title"`
-			Description string `json:"description"`
-			Type        any    `json:"type"`
+			Title       string          `json:"title"`
+			Description string          `json:"description"`
+			Type        any             `json:"type"`
+			Properties  json.RawMessage `json:"properties"`
+			Items       struct {
+				Properties json.RawMessage `json:"properties"`
+			} `json:"items"`
 		}
 		if err := dec.Decode(&p); err != nil && err != io.EOF {
 			return Schema{}, err
 		}
-		s.Props = append(s.Props, Prop{Name: kt.(string), Title: p.Title, Description: p.Description, Type: firstType(p.Type)})
+		s.Props = append(s.Props, Prop{Name: kt.(string), Title: p.Title, Description: p.Description, Type: firstType(p.Type), ItemOrder: objectKeys(first(p.Items.Properties, p.Properties))})
 	}
 	return s, nil
 }
@@ -99,4 +106,49 @@ func firstType(v any) string {
 		}
 	}
 	return ""
+}
+
+func first(a, b json.RawMessage) json.RawMessage {
+	if len(a) > 0 {
+		return a
+	}
+	return b
+}
+
+// objectKeys lists the keys of a JSON object in document order.
+func objectKeys(raw json.RawMessage) []string {
+	if len(raw) == 0 {
+		return nil
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	if t, err := dec.Token(); err != nil || t != json.Delim('{') {
+		return nil
+	}
+	var keys []string
+	for dec.More() {
+		kt, err := dec.Token()
+		if err != nil {
+			return keys
+		}
+		keys = append(keys, kt.(string))
+		var skip json.RawMessage
+		if err := dec.Decode(&skip); err != nil {
+			return keys
+		}
+	}
+	return keys
+}
+
+// ItemOrders maps a property name to the order of the keys of the objects it holds.
+func (s Schema) ItemOrders() map[string][]string {
+	var out map[string][]string
+	for _, p := range s.Props {
+		if len(p.ItemOrder) > 0 {
+			if out == nil {
+				out = map[string][]string{}
+			}
+			out[p.Name] = p.ItemOrder
+		}
+	}
+	return out
 }

@@ -1,5 +1,7 @@
 import { t } from '@/i18n/zh-CN'
 import type { Collection, JsonSchema, LedgerRecord, Meta } from './types'
+import { displayId } from './recordId'
+import { formatPlain, isScalarObject } from './objectItems'
 
 export function schemaProps(col: Collection): [string, JsonSchema][] {
   return Object.entries(col.schema.properties ?? {})
@@ -25,6 +27,8 @@ export function allColumns(col: Collection, records: LedgerRecord[] = []): strin
 export function str(v: unknown): string {
   if (v === null || v === undefined) return ''
   if (Array.isArray(v)) return v.map(str).join(', ')
+  // a flat object (an item of {protocol, port}) reads as its values: "TCP 443"
+  if (isScalarObject(v)) return formatPlain(v)
   if (typeof v === 'object') return JSON.stringify(v)
   return String(v)
 }
@@ -36,7 +40,7 @@ export function recordLabel(col: Collection, rec: LedgerRecord): string {
     if (parts.length) return parts.join(' / ')
   }
   const first = schemaProps(col)[0]?.[0]
-  return (first && str(rec.data[first])) || rec.id
+  return (first && str(rec.data[first])) || displayId(rec.id)
 }
 
 export { idFromPath, recordHref } from './recordUrl'

@@ -15,6 +15,10 @@ type Opts struct {
 	// Order lists field names in the order new fields are written
 	// (normally the schema's property order).
 	Order []string
+	// ItemOrder gives, per field, the order of the keys of the mapping the field
+	// holds or of the mappings in its list (the schema's items.properties order).
+	// Keys it does not list follow, sorted.
+	ItemOrder map[string][]string
 	// GroupField is the first key field (e.g. "device"). Add inserts after
 	// the last record with the same value; Delete drops a group's leading
 	// "# ---" comment when the last record of the group goes.
@@ -66,7 +70,7 @@ func Add(src []byte, path string, data map[string]any, o Opts) ([]byte, error) {
 	switch {
 	case !list.Exists && path == "" && doc.Root == nil:
 		// Empty (or comment-only) file: start a block list at the end.
-		text := blockRecord("- ", 2, data, o.Order)
+		text := blockRecord("- ", 2, data, o)
 		out = splice(src, len(src), len(src), ensureNL(src, text))
 	case !list.Exists:
 		return nil, fmt.Errorf("%w: cannot add to %s (missing or empty); add the first record by hand", ErrUnsupported, displayPath(path))
@@ -90,9 +94,9 @@ func Add(src []byte, path string, data map[string]any, o Opts) ([]byte, error) {
 		}
 		var text string
 		if flowStyle(list.Items, model) {
-			text = model.Prefix + flowRecord(data, orderedKeys(data, o.Order), nil) + "\n"
+			text = model.Prefix + flowRecord(data, orderedKeys(data, o.Order), nil, o.ItemOrder) + "\n"
 		} else {
-			text = blockRecord(model.Prefix, model.KeyCol, data, o.Order)
+			text = blockRecord(model.Prefix, model.KeyCol, data, o)
 		}
 		out = splice(src, model.End, model.End, ensureNL(src[:model.End], text))
 		at = modelIdx + 1
@@ -269,7 +273,7 @@ func oldValues(m *yaml.Node) map[string]*yaml.Node {
 func editFlow(doc *Doc, item Item, data map[string]any, o Opts) string {
 	old := oldValues(item.Node)
 	keys := mergedKeys(item.Node, data, o.Order)
-	text := item.Prefix + flowRecord(data, keys, old)
+	text := item.Prefix + flowRecord(data, keys, old, o.ItemOrder)
 	last := doc.line(item.EndLine - 1)
 	if c := trailingComment(last); c != "" {
 		text += c
@@ -359,7 +363,7 @@ func editBlock(doc *Doc, item Item, data map[string]any, o Opts) string {
 			if existed && p.val.Kind == yaml.ScalarNode {
 				hint = p.val.Style
 			}
-			lines = blockPair(k, data[k], item.KeyCol, hint)
+			lines = blockPair(k, data[k], item.KeyCol, hint, o.ItemOrder[k])
 			if len(lines) == 1 {
 				lines[0] += p.eol
 			}
@@ -389,14 +393,14 @@ func isOwnLine(l string, col int) bool {
 }
 
 // blockRecord renders a new block record with the given "- " prefix.
-func blockRecord(prefix string, keyCol int, data map[string]any, order []string) string {
-	keys := orderedKeys(data, order)
+func blockRecord(prefix string, keyCol int, data map[string]any, o Opts) string {
+	keys := orderedKeys(data, o.Order)
 	if len(keys) == 0 {
 		return prefix + "{}\n"
 	}
 	var b strings.Builder
 	for i, k := range keys {
-		for j, l := range blockPair(k, data[k], keyCol, 0) {
+		for j, l := range blockPair(k, data[k], keyCol, 0, o.ItemOrder[k]) {
 			switch {
 			case j == 0 && i == 0:
 				b.WriteString(prefix)

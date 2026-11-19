@@ -1,5 +1,5 @@
 import { useMemo, type CSSProperties } from 'react'
-import { Link, useNavigate, useParams, useSearchParams } from 'react-router'
+import { Link, useParams, useSearchParams } from 'react-router'
 import { useTable } from '@refinedev/react-table'
 import {
   type ColumnDef,
@@ -25,12 +25,14 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { Input } from '@/components/ui/input'
 import { Skeleton } from '@/components/ui/skeleton'
-import { CellValue } from '@/components/CellValue'
+import { RecordCell } from '@/components/RecordCell'
 import { EmptyState, NotFound, PageHeader } from '@/components/common'
 import { FacetFilter, type FacetOption } from '@/components/FacetFilter'
 import { NotesPanel } from '@/components/NotesPanel'
 import { t } from '@/i18n/zh-CN'
 import { errorMessage } from '@/lib/api'
+import { useInlineEdit } from '@/hooks/use-inline-edit'
+import { rowClass, useRowNav } from '@/hooks/use-row-nav'
 import { useFirstRender, useRefLookups } from '@/lib/hooks'
 import { CollectionIcon } from '@/components/CollectionIcon'
 import { canEdit, defaultColumns, fieldTitle, looksMono, recordHref, schemaProps, str } from '@/lib/ledger'
@@ -133,9 +135,10 @@ export default function CollectionList() {
 
 function CollectionTable({ col }: { col: Collection }) {
   const { meta } = useMeta()
-  const navigate = useNavigate()
   const lookups = useRefLookups(col)
   const editable = canEdit(meta)
+  const edit = useInlineEdit(col)
+  const rowNav = useRowNav()
 
   const fields = useMemo(() => {
     const f = schemaProps(col).map(([k]) => k)
@@ -376,25 +379,19 @@ function CollectionTable({ col }: { col: Collection }) {
                     <tr
                       key={rec.id}
                       style={animate ? ({ '--i': ri } as CSSProperties) : undefined}
-                      className={cn(
-                        'cursor-pointer border-b transition-colors duration-150 last:border-0 even:bg-muted/25 hover:bg-brand/[0.07]',
-                        animate && 'rb-row-in',
-                      )}
-                      onClick={(e) => {
-                        if ((e.target as HTMLElement).closest('a,button')) return
-                        navigate(href)
-                      }}
+                      className={cn(rowClass, animate && 'rb-row-in')}
+                      {...rowNav(href, ri === 0)}
                     >
                       {visibleCols.map((c, i) => {
-                        const v = rec.data[c.id]
+                        const v = edit.view(rec).data[c.id]
                         return (
                           <td key={c.id} className={cn('px-4 py-2.5 align-top', i === 0 && 'font-medium')}>
                             {i === 0 && !lookups[c.id] ? (
-                              <Link to={href} className={cn('hover:underline', looksMono(str(v)) && 'font-mono text-[0.8125rem]')}>
+                              <Link to={href} title={str(v)} className={cn('line-clamp-2 max-w-[44ch] break-words hover:underline', looksMono(str(v)) && 'font-mono text-[0.8125rem]')}>
                                 {str(v) || t.show.empty}
                               </Link>
                             ) : (
-                              <CellValue value={v} lookup={lookups[c.id]} />
+                              <RecordCell col={col} rec={rec} field={c.id} lookup={lookups[c.id]} edit={editable ? edit : undefined} />
                             )}
                           </td>
                         )
