@@ -245,6 +245,47 @@ func TestIDsWithSlashAndPercent(t *testing.T) {
 	if code != 200 || g["data"].(map[string]any)["item"] != "50% of a/b" {
 		t.Fatalf("%d %v", code, g)
 	}
+
+	// The console's whole path for a key with "/", spaces and Chinese: the id
+	// escapes "/" as %2F, and the URL escapes the id once more (%252F), exactly
+	// as encodeURIComponent does in the web console.
+	const item = "1Panel / aaPanel 面板"
+	code, r, _ = f.do(t, "POST", "/api/c/ports", map[string]any{"data": map[string]any{"service": item, "port": "TCP 10510"}}, nil)
+	id, _ := r["id"].(string)
+	if code != 201 || id != "1Panel %2F aaPanel 面板" {
+		t.Fatalf("create: %d %v", code, r)
+	}
+	seg := url.PathEscape(id)
+	if !strings.Contains(seg, "%252F") || !strings.Contains(seg, "%20") {
+		t.Fatalf("segment %q", seg)
+	}
+	for _, p := range []string{"/c/ports/" + seg, "/c/ports/" + seg + "/edit"} {
+		if resp, err := http.Get(f.ts.URL + p); err != nil || resp.StatusCode != 200 {
+			t.Fatalf("console page %s: %v %v", p, err, resp)
+		}
+	}
+	code, g, _ = f.do(t, "GET", "/api/c/ports/"+seg, nil, nil)
+	if code != 200 || g["id"] != id || g["data"].(map[string]any)["service"] != item {
+		t.Fatalf("get: %d %v", code, g)
+	}
+	code, r, _ = f.do(t, "PUT", "/api/c/ports/"+seg, map[string]any{"data": map[string]any{"service": item, "port": "TCP 10520"}, "hash": g["hash"]}, nil)
+	if code != 200 || r["id"] != id {
+		t.Fatalf("update: %d %v", code, r)
+	}
+	// Renaming the key moves the record to a new id.
+	renamed := "1Panel / 宝塔 面板"
+	code, r, _ = f.do(t, "PUT", "/api/c/ports/"+seg, map[string]any{"data": map[string]any{"service": renamed, "port": "TCP 10520"}, "hash": r["hash"]}, nil)
+	if code != 200 || r["id"] != "1Panel %2F 宝塔 面板" {
+		t.Fatalf("rename: %d %v", code, r)
+	}
+	if code, _, _ = f.do(t, "GET", "/api/c/ports/"+seg, nil, nil); code != 404 {
+		t.Fatalf("old id after rename: %d", code)
+	}
+	nseg := url.PathEscape(r["id"].(string))
+	code, r, _ = f.do(t, "DELETE", "/api/c/ports/"+nseg+"?hash="+url.QueryEscape(r["hash"].(string)), nil, nil)
+	if code != 200 {
+		t.Fatalf("delete: %d %v", code, r)
+	}
 }
 
 func TestReadOnlyAndEditors(t *testing.T) {
