@@ -17,6 +17,7 @@ import { canEdit, fieldTitle, idFromPath, moduleFor, pointerToPath, recordHref, 
 import type { CheckError, Collection, LedgerRecord } from '@/lib/types'
 import { useAfterWrite, useCollection, useMeta } from '@/providers/meta'
 import { displayId } from '@/lib/recordId'
+import { collectionDescription, collectionTitle, collectionTitleOf } from '@/lib/labels'
 
 export default function RecordFormPage({ mode }: { mode: 'create' | 'edit' }) {
   const { collection } = useParams()
@@ -28,7 +29,7 @@ export default function RecordFormPage({ mode }: { mode: 'create' | 'edit' }) {
   if (!canEdit(meta)) {
     return (
       <div>
-        <PageHeader title={col.title} />
+        <PageHeader title={collectionTitle(col)} />
         <Alert>
           <Lock />
           <AlertTitle>{t.user.readOnly}</AlertTitle>
@@ -186,7 +187,7 @@ function Editor({
     }
   }
 
-  const title = mode === 'create' ? t.form.createTitle(col.title) : t.form.editTitle(initial ? recordLabel(col, initial) : col.title)
+  const title = mode === 'create' ? t.form.createTitle(collectionTitle(col)) : t.form.editTitle(initial ? recordLabel(col, initial) : collectionTitle(col))
 
   return (
     <div className="mx-auto max-w-3xl">
@@ -194,13 +195,13 @@ function Editor({
         eyebrow={
           <span className="flex items-center gap-1">
             <Link to={base} className="hover:text-foreground hover:underline">
-              {col.title}
+              {collectionTitle(col)}
             </Link>
             <ChevronRight className="size-3" />
           </span>
         }
         title={title}
-        description={col.description}
+        description={collectionDescription(col)}
       />
 
       {managedBy && (
@@ -259,7 +260,7 @@ function Editor({
                   <li key={i}>
                     {!own && (
                       <span className="font-medium">
-                        {other?.title ?? e.collection}
+                        {collectionTitleOf(other, e.collection ?? '')}
                         {e.id ? ` ${displayId(e.id)}` : ''}{t.common.colon}
                       </span>
                     )}

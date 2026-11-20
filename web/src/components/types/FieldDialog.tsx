@@ -11,9 +11,15 @@ import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
 import { t } from '@/i18n'
 import { ENUM_COLORS, enumColorClass, enumColorLabel } from '@/lib/enumColors'
-import { fieldTypes, type FieldDef, type FieldType, type TypeDef } from '@/lib/typedef'
+import { fieldTypes, withLabel, type EnumItem, type FieldDef, type FieldType, type TypeDef } from '@/lib/typedef'
 import { useMeta } from '@/providers/meta'
 import { TagInput } from './TagInput'
+import { OtherLanguages } from './OtherLanguages'
+import { EnumIcon } from '@/components/EnumIcon'
+import { useIconNames } from '@/lib/iconTable'
+import { LOCALE_NAMES } from '@/i18n'
+import { useDefaultLocale, useOtherLocales } from '@/lib/defaultLocale'
+import { collectionTitle } from '@/lib/labels'
 
 const NAME_RE = /^[A-Za-z_][A-Za-z0-9_-]{0,63}$/
 
@@ -41,6 +47,7 @@ function reshape(f: FieldDef, type: FieldType, draft: TypeDef): FieldDef {
     name: f.name,
     title: f.title,
     description: f.description,
+    i18n: f.i18n,
     type,
     required: f.required,
     unique: f.unique,
@@ -53,7 +60,7 @@ function reshape(f: FieldDef, type: FieldType, draft: TypeDef): FieldDef {
     base.unique = f.unique
   } else if (type === 'bool') {
     base.default = typeof f.default === 'boolean' ? f.default : undefined
-  } else if (['text', 'textarea', 'integer', 'number', 'ip', 'ipv4', 'ipv6', 'cidr', 'hostname', 'url', 'date', 'port', 'port-spec'].includes(type)) {
+  } else if (['text', 'textarea', 'integer', 'number', 'ip', 'ipv4', 'ipv6', 'cidr', 'hostname', 'country', 'subdivision', 'url', 'date', 'port', 'port-spec'].includes(type)) {
     base.default = f.default
   }
   void draft
@@ -87,12 +94,18 @@ export function FieldDialog({
   const [fl, setFl] = useState<FieldFlags>(flags)
   const set = (patch: Partial<FieldDef>) => setF((x) => ({ ...x, ...patch }))
   const advanced = f.type === 'advanced'
+  const iconNames = useIconNames(f.type === 'enum')
+  const withIcon = f.type === 'enum' ? (f.enum ?? []).filter((e) => e.icon) : []
+  const badIcon = iconNames.status === 'ready' ? withIcon.find((e) => !iconNames.known(e.icon!)) : undefined
+  const iconsUnchecked = iconNames.status === 'failed' && withIcon.length > 0
+  // the name table is still loading: hold Save until the names can be checked
+  const iconsPending = iconNames.status !== 'ready' && iconNames.status !== 'failed' && withIcon.length > 0
 
   const taken = draft.fields.some((x) => x.name === f.name && x.name !== initial?.name)
   const nameErr = !locked && f.name !== '' && !NAME_RE.test(f.name) ? t.types.dialog.nameBad : taken ? t.types.dialog.nameTaken : ''
 
   const targets = useMemo(() => {
-    const out = meta.collections.filter((c) => c.name !== draft.name).map((c) => ({ name: c.name, title: c.title, fields: Object.keys(c.schema.properties ?? {}), key: c.key ?? [] }))
+    const out = meta.collections.filter((c) => c.name !== draft.name).map((c) => ({ name: c.name, title: collectionTitle(c), fields: Object.keys(c.schema.properties ?? {}), key: c.key ?? [] }))
     if (draft.name) out.unshift({ name: draft.name, title: draft.title || draft.name, fields: draft.fields.map((x) => x.name).filter(Boolean), key: draft.key })
     return out
   }, [meta.collections, draft])
@@ -103,6 +116,9 @@ export function FieldDialog({
   if (!f.name) problem = t.types.dialog.name
   else if (nameErr) problem = nameErr
   else if (f.type === 'enum' && (!f.enum?.length || f.enum.some((e) => !e.value) || new Set(f.enum.map((e) => e.value)).size !== f.enum.length)) problem = t.types.dialog.enumEmpty
+  else if (iconsUnchecked) problem = t.types.dialog.iconCheckFailed
+  else if (iconsPending) problem = t.common.loading
+  else if (badIcon) problem = `${t.types.dialog.iconUnknown}${t.common.colon}${badIcon.icon}`
   else if (f.type === 'ref' && (!f.ref?.to || !f.ref.toField)) problem = t.types.dialog.refTarget
 
   const setRef = (patch: Partial<NonNullable<FieldDef['ref']>>) => set({ ref: { ...(f.ref ?? { to: '', toField: '' }), ...patch } })
@@ -127,7 +143,7 @@ export function FieldDialog({
           <option value="">{t.types.dialog.noDefault}</option>
           {(f.enum ?? []).filter((x) => x.value).map((x) => (
             <option key={x.value} value={x.value}>
-              {x.value}
+              {x.label ? `${x.label}${t.common.paren(x.value)}` : x.value}
             </option>
           ))}
         </NativeSelect>
@@ -178,6 +194,15 @@ export function FieldDialog({
           </Row>
         </div>
 
+        <OtherLanguages
+          value={f.i18n}
+          onChange={(i18n) => set({ i18n })}
+          fields={[
+            { key: 'title', label: t.types.dialog.title },
+            { key: 'description', label: t.types.dialog.description },
+          ]}
+        />
+
         {(f.advanced || advanced) && (
           <div className="rounded-lg border border-dashed bg-muted/30 p-3 text-xs text-muted-foreground">
             <p className="font-medium text-foreground">{t.types.fields.advanced}</p>
@@ -225,30 +250,26 @@ export function FieldDialog({
         {f.type === 'enum' && (
           <Row label={t.types.dialog.enumValues}>
             <div className="space-y-2">
-              {(f.enum ?? []).map((it, i) => (
-                <div key={i} className="flex items-center gap-2">
-                  <Input
-                    value={it.value}
-                    placeholder={t.types.dialog.enumValue}
-                    onChange={(e) => set({ enum: f.enum!.map((x, j) => (j === i ? { ...x, value: e.target.value } : x)) })}
-                  />
-                  <NativeSelect
-                    className={`w-32 ${it.color ? enumColorClass[it.color] : ''}`}
-                    value={it.color ?? ''}
-                    aria-label={t.types.dialog.enumColor}
-                    onChange={(e) => set({ enum: f.enum!.map((x, j) => (j === i ? { ...x, color: e.target.value || undefined } : x)) })}
-                  >
-                    <option value="">{t.types.dialog.colors.none}</option>
-                    {ENUM_COLORS.map((c) => (
-                      <option key={c} value={c}>
-                        {enumColorLabel(c)}
-                      </option>
-                    ))}
-                  </NativeSelect>
-                  <Button type="button" variant="ghost" size="icon-sm" aria-label={t.types.fields.remove} onClick={() => set({ enum: f.enum!.filter((_, j) => j !== i) })}>
-                    <Trash2 />
+              {iconsUnchecked && (
+                <p role="alert" className="flex items-center gap-2 text-xs text-destructive">
+                  {t.types.dialog.iconCheckFailed}
+                  <Button type="button" variant="outline" size="xs" onClick={iconNames.retry}>
+                    {t.types.dialog.iconRetry}
                   </Button>
-                </div>
+                </p>
+              )}
+              <datalist id={ICON_LIST}>
+                {ICON_SUGGESTIONS.map((n) => (
+                  <option key={n} value={n} />
+                ))}
+              </datalist>
+              {(f.enum ?? []).map((it, i) => (
+                <EnumRow
+                  key={i}
+                  item={it}
+                  onChange={(next) => set({ enum: f.enum!.map((x, j) => (j === i ? next : x)) })}
+                  onRemove={() => set({ enum: f.enum!.filter((_, j) => j !== i) })}
+                />
               ))}
               <Button type="button" variant="outline" size="sm" onClick={() => set({ enum: [...(f.enum ?? []), { value: '' }] })}>
                 <Plus /> {t.types.dialog.enumAdd}
@@ -348,5 +369,78 @@ export function FieldDialog({
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  )
+}
+
+/** A few icons that suit enum values; any lucide name is accepted. */
+const ICON_LIST = 'enum-icon-suggestions'
+const ICON_SUGGESTIONS = [
+  'circle-check', 'circle-x', 'circle-dot', 'circle-dashed', 'circle-question-mark', 'circle-alert', 'clock', 'pause', 'play', 'ban', 'lock', 'lock-open',
+  'eye', 'eye-off', 'globe', 'house', 'cloud', 'server', 'network', 'waypoints', 'pin', 'refresh-cw', 'star', 'flag', 'shield-check', 'wrench', 'lightbulb',
+]
+
+/** One code of an enum: the code, its label in the default language, colour, icon and the labels of the other languages. */
+function EnumRow({ item, onChange, onRemove }: { item: EnumItem; onChange: (next: EnumItem) => void; onRemove: () => void }) {
+  const def = useDefaultLocale()
+  const others = useOtherLocales()
+  const names = useIconNames(!!item.icon)
+  const unknown = !!item.icon && names.status === 'ready' && !names.known(item.icon)
+  return (
+    <div className="space-y-1.5 rounded-lg border p-2">
+      <div className="flex items-center gap-2">
+        <Input value={item.value} placeholder={t.types.dialog.enumValue} aria-label={t.types.dialog.enumValue} className="w-40 font-mono" onChange={(e) => onChange({ ...item, value: e.target.value })} />
+        <Input
+          value={item.label ?? ''}
+          lang={def}
+          placeholder={t.types.dialog.enumLabelDefault(LOCALE_NAMES[def])}
+          aria-label={t.types.dialog.enumLabelDefault(LOCALE_NAMES[def])}
+          onChange={(e) => onChange({ ...item, label: e.target.value || undefined })}
+        />
+        <NativeSelect
+          className={`w-28 shrink-0 ${item.color ? enumColorClass[item.color] : ''}`}
+          value={item.color ?? ''}
+          aria-label={t.types.dialog.enumColor}
+          onChange={(e) => onChange({ ...item, color: e.target.value || undefined })}
+        >
+          <option value="">{t.types.dialog.colors.none}</option>
+          {ENUM_COLORS.map((c) => (
+            <option key={c} value={c}>
+              {enumColorLabel(c)}
+            </option>
+          ))}
+        </NativeSelect>
+        <Button type="button" variant="ghost" size="icon-sm" aria-label={t.types.fields.remove} onClick={onRemove}>
+          <Trash2 />
+        </Button>
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="flex w-56 items-center gap-1.5">
+          <span className="flex size-8 shrink-0 items-center justify-center rounded-md border bg-muted/40">
+            <EnumIcon name={item.icon} className="size-4" />
+          </span>
+          <Input
+            value={item.icon ?? ''}
+            list={ICON_LIST}
+            placeholder={t.types.dialog.iconPlaceholder}
+            aria-label={t.types.dialog.enumIcon}
+            aria-invalid={unknown || undefined}
+            title={unknown ? `${t.types.dialog.iconUnknown}${t.common.colon}${item.icon}` : t.types.dialog.iconHint}
+            className="font-mono text-xs"
+            onChange={(e) => onChange({ ...item, icon: e.target.value.trim() || undefined })}
+          />
+        </div>
+        {others.map((loc) => (
+          <Input
+            key={loc}
+            lang={loc}
+            value={item.labels?.[loc] ?? ''}
+            placeholder={t.types.dialog.enumLabelDefault(LOCALE_NAMES[loc])}
+            aria-label={t.types.dialog.enumLabelDefault(LOCALE_NAMES[loc])}
+            className="min-w-40 flex-1"
+            onChange={(e) => onChange({ ...item, labels: withLabel(item.labels, loc, e.target.value) })}
+          />
+        ))}
+      </div>
+    </div>
   )
 }

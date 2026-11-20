@@ -4,6 +4,7 @@ import { Button } from '@/components/ui/button'
 import { EmptyState } from '@/components/common'
 import { t } from '@/i18n'
 import { fieldTypeLabel, type TypeDef } from '@/lib/typedef'
+import { fieldTitleText } from '@/lib/typedef'
 
 const dot = <span className="text-primary">●</span>
 
@@ -63,7 +64,7 @@ export function FieldsTab({
                       {draft.key.includes(f.name) && <KeyRound className="size-3 text-muted-foreground" aria-label={t.types.fields.inKey} />}
                     </button>
                   </td>
-                  <td className="px-3 py-2">{f.title || <span className="text-muted-foreground">—</span>}</td>
+                  <td className="px-3 py-2">{fieldTitleText(f) || <span className="text-muted-foreground">—</span>}</td>
                   <td className="px-3 py-2">
                     <span className="flex flex-wrap items-center gap-1.5">
                       <Badge variant="secondary">{fieldTypeLabel(f.type)}</Badge>

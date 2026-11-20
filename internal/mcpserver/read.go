@@ -14,7 +14,9 @@ import (
 	"github.com/kazuhahub/rackbook/internal/config"
 	"github.com/kazuhahub/rackbook/internal/export"
 	"github.com/kazuhahub/rackbook/internal/gitstore"
+	"github.com/kazuhahub/rackbook/internal/labels"
 	"github.com/kazuhahub/rackbook/internal/ledger"
+	"github.com/kazuhahub/rackbook/internal/locale"
 	"github.com/kazuhahub/rackbook/internal/validate"
 )
 
@@ -131,12 +133,96 @@ func (t *tools) describe(name string) (describeOut, *mcp.CallToolResult) {
 	if err := json.Unmarshal(c.SchemaRaw, &out.Schema); err != nil {
 		return describeOut{}, apiError("config_error", fmt.Sprintf("the schema of %s is not valid JSON", c.Name), nil)
 	}
+	describeFields(out.Fields, out.Schema)
 	for _, n := range l.Notes {
 		if n.Collection == c.Name {
 			out.Notes = append(out.Notes, noteInfo{Title: n.Title, Text: n.Text})
 		}
 	}
 	return out, nil
+}
+
+// describeFields adds what a client needs to read the stored codes: the field
+// titles in every language the schema translates, and for each enum-like field
+// (an array of them, or a property of a row object) its codes with their labels
+// per language. Fields named in rows get their values under the row's field.
+func describeFields(fields []fieldInfo, schema map[string]any) {
+	props, _ := schema["properties"].(map[string]any)
+	for i := range fields {
+		prop, _ := props[fields[i].Name].(map[string]any)
+		if prop == nil {
+			continue
+		}
+		if t := fieldTitles(prop); t != nil {
+			fields[i].Titles = t
+		}
+		target := prop
+		items, _ := prop["items"].(map[string]any)
+		if items != nil {
+			target = items
+		}
+		if vs := valuesOf(target); vs != nil {
+			fields[i].Values = vs
+		}
+		// row objects: the enum-like properties inside items.properties
+		if rowProps, ok := items["properties"].(map[string]any); ok {
+			names := make([]string, 0, len(rowProps))
+			for n := range rowProps {
+				names = append(names, n)
+			}
+			sort.Strings(names)
+			for _, n := range names {
+				rp, _ := rowProps[n].(map[string]any)
+				if rp == nil {
+					continue
+				}
+				row := rowField{Name: n, Titles: fieldTitles(rp)}
+				if s, ok := rp["title"].(string); ok {
+					row.Title = s
+				}
+				row.Values = valuesOf(rp)
+				if row.Values == nil && row.Titles == nil {
+					continue
+				}
+				fields[i].Row = append(fields[i].Row, row)
+			}
+		}
+	}
+}
+
+func fieldTitles(prop map[string]any) map[string]string {
+	if len(labels.Translations(prop)) == 0 {
+		return nil
+	}
+	out := map[string]string{}
+	for _, loc := range locale.Supported {
+		if s := labels.Text(prop, loc, "title"); s != "" {
+			out[loc] = s
+		}
+	}
+	return out
+}
+
+func valuesOf(prop map[string]any) []valueInfo {
+	en, ok := labels.Parse(prop)
+	if !ok {
+		return nil
+	}
+	var out []valueInfo
+	for _, it := range en.Items {
+		v := valueInfo{Code: it.Code, Labels: map[string]string{}}
+		differs := false
+		for _, loc := range locale.Supported {
+			l := en.Label(loc, it.Code)
+			v.Labels[loc] = l
+			differs = differs || l != it.Code
+		}
+		if !differs {
+			v.Labels = nil
+		}
+		out = append(out, v)
+	}
+	return out
 }
 
 func (t *tools) addReadTools(s *mcp.Server) {
@@ -146,7 +232,7 @@ func (t *tools) addReadTools(s *mcp.Server) {
 			return nil, t.collectionsListOut(), nil
 		})
 	addTool[describeIn, describeOut](t, s, &mcp.Tool{Name: "collections_describe", Annotations: readAnnotations(),
-		Description: "Describe one collection: title, description, key fields, label, the JSON Schema of its records, references in and out, facets, notes, record count and whether it supports documents. Read it to build valid records for records_create and records_update."},
+		Description: "Describe one collection: title, description, key fields, label, the JSON Schema of its records, references in and out, facets, notes, record count and whether it supports documents. For enum-like fields, fields[].values lists the allowed codes with their labels per language: records hold the codes, never the labels. Read it to build valid records for records_create and records_update."},
 		func(_ context.Context, _ *mcp.CallToolRequest, in describeIn) (*mcp.CallToolResult, any, error) {
 			out, errRes := t.describe(in.Collection)
 			if errRes != nil {

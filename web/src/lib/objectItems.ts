@@ -27,7 +27,7 @@ export function objectItems(p: Prop | undefined): { props: [string, Prop][]; req
 
 /** An optional free-text property (no enum, pattern or format): a note, not part of the item's identity. */
 function isNote(s: Prop, name: string, required: string[]): boolean {
-  return baseType(s) === 'string' && !required.includes(name) && !s.enum && !s.pattern && !s.format
+  return baseType(s) === 'string' && !required.includes(name) && !s.enum && !s.oneOf && !s.pattern && !s.format
 }
 
 function scalar(v: unknown): string {
@@ -35,13 +35,19 @@ function scalar(v: unknown): string {
 }
 
 /** One item as text: its values in property order, notes left out ("TCP 443"), and the notes as a tooltip. */
-export function formatItem(item: unknown, spec: { props: [string, Prop][]; required: string[] }): { text: string; title?: string } {
+export function formatItem(
+  item: unknown,
+  spec: { props: [string, Prop][]; required: string[] },
+  /** how a value of a property reads (an enum code as its label); default: as stored */
+  show: (s: Prop, v: string) => string = (_s, v) => v,
+): { text: string; title?: string } {
   const rec = (item && typeof item === 'object' ? item : {}) as Record<string, unknown>
   const main: string[] = []
   const notes: string[] = []
   for (const [name, s] of spec.props) {
-    const v = scalar(rec[name])
-    if (v === '') continue
+    const raw = scalar(rec[name])
+    if (raw === '') continue
+    const v = show(s, raw)
     ;(isNote(s, name, spec.required) ? notes : main).push(v)
   }
   // an item that is only a note still shows

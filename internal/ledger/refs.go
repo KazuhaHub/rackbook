@@ -18,6 +18,8 @@ type BackRef struct {
 	// Title and Columns come from backref_title / backref_columns of the rule.
 	Title   string   `json:"title,omitempty"`
 	Columns []string `json:"columns,omitempty"`
+	// I18n is the title in the other languages: {"en-US": {"title": "..."}}.
+	I18n map[string]map[string]string `json:"i18n,omitempty"`
 }
 
 // Refs lists the ref rules whose source is the collection.
@@ -50,7 +52,7 @@ func (l *Ledger) BackRefs(collection string) []BackRef {
 		fc, ff, _ := config.SplitRef(r.Ref.From)
 		tc, _, _ := config.SplitRef(r.Ref.To)
 		if tc == collection {
-			out = append(out, BackRef{Collection: fc, Field: ff, Title: r.Ref.BackrefTitle, Columns: r.Ref.BackrefColumns})
+			out = append(out, BackRef{Collection: fc, Field: ff, Title: r.Ref.BackrefTitle, Columns: r.Ref.BackrefColumns, I18n: r.Ref.I18n.Renamed("backref_title", "title")})
 		}
 	}
 	return out

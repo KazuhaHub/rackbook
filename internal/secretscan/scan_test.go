@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"math/rand"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -1102,5 +1103,88 @@ func TestJWKPublicKeyNumbersDoNotTripTokenPatterns(t *testing.T) {
 		if !found {
 			t.Errorf("%s must be blocked", name)
 		}
+	}
+}
+
+func TestSchemaTranslationsAndEnumFormsAreScanned(t *testing.T) {
+	schema := `{"type":"object","x-rackbook-i18n":{"en-US":{"title":"Ledger ` + ghp + `"}},"properties":{
+	  "a":{"type":"string","title":"A","x-rackbook-i18n":{"en-US":{"title":"token: abcdefgh12345","description":"` + aws + `","enum":{"x":"` + slack + `"}}},
+	       "oneOf":[{"const":"x","title":"fine"},{"const":"` + openai + `","title":"` + google + `"}],
+	       "x-rackbook-enum-icons":{"x":"` + stripe + `"}}}}`
+	var got []string
+	for _, f := range Default().ScanSchema("c", []byte(schema)) {
+		got = append(got, f.Path+" "+f.Rule)
+	}
+	sort.Strings(got)
+	want := []string{
+		"/schema/properties/a/oneOf/1/const openai-api-key",
+		"/schema/properties/a/oneOf/1/title google-api-key",
+		"/schema/properties/a/x-rackbook-enum-icons/x stripe-live-key",
+		"/schema/properties/a/x-rackbook-i18n/en-US/description aws-access-key-id",
+		"/schema/properties/a/x-rackbook-i18n/en-US/enum/x slack-token",
+		"/schema/properties/a/x-rackbook-i18n/en-US/title secret-assignment",
+		"/schema/x-rackbook-i18n/en-US/title github-token",
+	}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("got\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+}
+
+// Locale tags are keys of x-rackbook-i18n, not data. The enum labels are walked
+// as data, as an enum always was: a confirm-tier secret under a made-up code key
+// is reported, and so is a secret used as a code.
+func TestSchemaTranslationKeys(t *testing.T) {
+	// plain codes and labels, and locale tags that look odd: nothing
+	ok := `{"properties":{"a":{"oneOf":[{"const":"static","title":"静态"}],
+	  "x-rackbook-i18n":{"password":{"title":"Kind"},"api_key":{"enum":{"static":"Static"}},"en-US":{"title":"Kind","enum":{"static":"Static","title":"Title","default":"D"}}},
+	  "x-rackbook-enum-icons":{"static":"key"}}}}`
+	if fs := Default().ScanSchema("c", []byte(ok)); len(fs) != 0 {
+		t.Fatalf("%+v", fs)
+	}
+	// ordinary labels under real codes named like secrets: nothing, in any language
+	labelsOK := `{"properties":{"k":{"type":"string",
+	  "oneOf":[{"const":"password","title":"密码登录"},{"const":"api_key"},{"const":"token"},{"const":"secret"}],
+	  "x-rackbook-i18n":{"en-US":{"enum":{"password":"Password login","api_key":"API key","token":"Access token (rotated monthly)","secret":"Client secret"}},
+	                     "zh-TW":{"enum":{"password":"密碼登入","secret":"用戶端密鑰"}}}},
+	  "legacy":{"type":"string","enum":["password","token"],"x-rackbook-i18n":{"en-US":{"enum":{"password":"Password login","token":"Access token"}}}}}}`
+	if fs := Default().ScanSchema("c", []byte(labelsOK)); len(fs) != 0 {
+		t.Fatalf("labels of real codes must not be reported: %+v", fs)
+	}
+	// a label of a real code is still scanned as text
+	fs0 := Default().ScanSchema("c", []byte(`{"properties":{"k":{"type":"string","enum":["a"],"x-rackbook-i18n":{"en-US":{"enum":{"a":"`+ghp+`"}}}}}}`))
+	if len(fs0) != 1 || fs0[0].Rule != RuleGitHubToken {
+		t.Fatalf("%+v", fs0)
+	}
+	// a secret under a fake code key is found, as before translations existed
+	bad := `{"properties":{"a":{"type":"string","x-rackbook-i18n":{"en-US":{"enum":{"password":"hunter2hunter2"}}}}}}`
+	fs := Default().ScanSchema("c", []byte(bad))
+	if len(fs) != 1 || fs[0].Path != "/schema/properties/a/x-rackbook-i18n/en-US/enum/password" {
+		t.Fatalf("%+v", fs)
+	}
+	// a secret used as a code
+	fs = Default().ScanSchema("c", []byte(`{"x-rackbook-i18n":{"en-US":{"enum":{"`+ghp+`":"label"}}}}`))
+	if len(fs) == 0 {
+		t.Fatal("a secret as a code must be reported")
+	}
+	// title and description under a language are plain text
+	if fs := Default().ScanSchema("c", []byte(`{"x-rackbook-i18n":{"en-US":{"description":"password: hunter2hunter2"}}}`)); len(fs) != 1 {
+		t.Fatalf("%+v", fs)
+	}
+}
+
+func TestRackbookYmlTranslationsAreScanned(t *testing.T) {
+	src := "title: t\ni18n:\n  en-US: {title: \"Ledger " + ghp + "\"}\ncollections:\n  a:\n    title: x\n    i18n:\n      en-US: {title: " + aws + "}\nnotes:\n  - title: n\n    i18n: {zh-TW: {title: \"" + openai + "\"}}\n"
+	var got []string
+	for _, f := range Default().ScanYAML("rackbook.yml", []byte(src)) {
+		got = append(got, f.Path)
+	}
+	sort.Strings(got)
+	want := "/collections/a/i18n/en-US/title,/i18n/en-US/title,/notes/0/i18n/zh-TW/title"
+	if strings.Join(got, ",") != want {
+		t.Fatalf("got %v", got)
+	}
+	clean := "i18n:\n  en-US: {title: Ledger}\n  zh-TW: {title: 台帳}\n"
+	if fs := Default().ScanYAML("rackbook.yml", []byte(clean)); len(fs) != 0 {
+		t.Fatalf("%+v", fs)
 	}
 }

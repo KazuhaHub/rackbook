@@ -1,6 +1,6 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from './api'
-import type { Migration, Plan, TypeDef, TypeList, TypeWrite } from './typedef'
+import type { I18n, Migration, Plan, TypeDef, TypeList, TypeWrite } from './typedef'
 
 const seg = (s: string) => encodeURIComponent(s)
 
@@ -13,7 +13,7 @@ export function useTypeList(enabled = true) {
   })
 }
 
-export type TypeDetail = { type: TypeDef; incoming: { collection: string; field: string; title?: string }[] }
+export type TypeDetail = { type: TypeDef; incoming: { collection: string; field: string; title?: string; i18n?: I18n<'title'> }[] }
 
 export function useTypeDetail(name: string | undefined) {
   return useQuery({

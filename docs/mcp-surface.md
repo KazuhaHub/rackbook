@@ -52,7 +52,13 @@ arguments and their result shapes are part of Rackbook's SemVer promise (README,
 
 - `collections_describe(collection)`: title, description, key fields, label,
   JSON Schema, references in and out, facets, notes, record count, document
-  support. This replaces `get_schema`.
+  support. This replaces `get_schema`. Records hold stable codes. For an
+  enum-like field (or an array of them) `fields[].values` lists each code with its
+  labels per language, `{"code": "static", "labels": {"zh-CN": "静态", "en-US": "Static",
+  "zh-TW": "靜態"}}` (no `labels` when the code is its own label), and `fields[].titles`
+  gives the field title per language when the schema translates it. For an array of
+  row objects, `fields[].row` lists the properties that have `values` or `titles`. Write the code, not
+  the label.
 - `records_query(collection, where?, search?, fields?, order_by?, cursor?, limit?)`:
   - `where` holds exact-match conditions per field, plus `contains` and
     `prefix` operators matching the console facets;

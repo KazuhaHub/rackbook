@@ -1,5 +1,5 @@
-# 待办。status: 待办 / 待决定 / 推迟 / 部分完成 / 可选 / 完成
-- {item: 评估关闭路由器 WAN 上的 Web 后台, scope: gw, status: 待决定}
-- {item: NAS 纳入配置仓库，纳入后 managed 改为 true, scope: nas, status: 待办}
-- {item: 统一代理入站端口, scope: web + standby, status: 推迟}
-- {item: 所有服务器 SSH 改到 10511, scope: 所有服务器, status: 完成（2026-11-01）}
+# 待办。status 取值：todo / undecided / deferred / partial / optional / done
+- {item: 评估关闭路由器 WAN 上的 Web 后台, scope: gw, status: undecided}
+- {item: NAS 纳入配置仓库，纳入后 managed 改为 true, scope: nas, status: todo}
+- {item: 统一代理入站端口, scope: web + standby, status: deferred}
+- {item: 所有服务器 SSH 改到 10511, scope: 所有服务器, status: done, note: 2026-11-01 完成}

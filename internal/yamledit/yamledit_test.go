@@ -116,7 +116,7 @@ func TestSpans(t *testing.T) {
 }
 
 func TestNoopEditIsByteIdentical(t *testing.T) {
-	files, _ := filepath.Glob("../../examples/homelab/docs/ledger/*.yml")
+	files, _ := filepath.Glob("../testutil/testdata/homelab-legacy/docs/ledger/*.yml")
 	if len(files) == 0 {
 		t.Fatal("no example files")
 	}

@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "设备",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["name"],
+  "properties": {
+    "name": {"type": "string", "title": "名称", "x-rackbook-i18n": {"en-US": {"title": "Name"}}},
+    "ipv4_type": {
+      "type": "string",
+      "title": "IPv4 类型",
+      "oneOf": [
+        {"const": "static", "title": "静态"},
+        {"const": "dynamic", "title": "动态"},
+        {"const": "nat", "title": "NAT"}
+      ],
+      "x-rackbook-i18n": {
+        "en-US": {"title": "IPv4 type", "enum": {"static": "Static", "dynamic": "Dynamic", "nat": "NAT"}},
+        "zh-TW": {"title": "IPv4 類型", "enum": {"static": "靜態", "dynamic": "動態"}}
+      },
+      "x-rackbook-enum-icons": {"static": "pin", "dynamic": "refresh-cw"},
+      "x-rackbook-enum-colors": {"static": "green"},
+      "x-rackbook-type": "enum"
+    },
+    "status": {"type": "string", "enum": ["up", "down"], "x-rackbook-type": "enum"},
+    "tags": {"type": "array", "items": {"type": "string", "oneOf": [{"const": "core", "title": "核心"}, {"const": "edge", "title": "边缘"}], "x-rackbook-i18n": {"en-US": {"enum": {"core": "Core", "edge": "Edge"}}}}},
+    "ports": {"type": "array", "items": {"type": "object", "additionalProperties": false, "properties": {
+      "proto": {"type": "string", "oneOf": [{"const": "tcp", "title": "TCP"}, {"const": "udp", "title": "UDP"}], "x-rackbook-i18n": {"zh-TW": {"enum": {"tcp": "傳輸控制"}}}},
+      "port": {"type": "integer"}
+    }}},
+    "country": {"type": "string", "format": "country", "x-rackbook-type": "country"},
+    "owner": {"type": "string"}
+  }
+}

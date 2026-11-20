@@ -9,11 +9,21 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import { Ajv2020 } from 'ajv/dist/2020.js'
 import { parse } from 'yaml'
 import type { Plugin } from 'vite'
+import { isCountryCode } from '../src/lib/countries.ts'
 
 type Data = Record<string, any>
 type Rec = { id: string; hash: string; data: Data }
 type CheckErr = { collection: string; id: string; path: string; rule: string; message: string }
-type RefRule = { collection: string; field: string; to: string; toField: string; allow: string[]; many: boolean }
+type RefRule = {
+  collection: string
+  field: string
+  to: string
+  toField: string
+  allow: string[]
+  many: boolean
+  title?: string
+  i18n?: Record<string, Record<string, string>>
+}
 type Coll = {
   name: string
   cfg: any
@@ -34,14 +44,56 @@ const canon = (v: any): any =>
             .map((k) => [k, canon(v[k])]),
         )
       : v
+/** A backref carries its title only: the rule's backref_title of each language, as `title`. */
+const backrefI18n = (i18n: Record<string, Record<string, string>> | undefined) =>
+  Object.fromEntries(Object.entries(i18n ?? {}).filter(([, v]) => v.backref_title).map(([loc, v]) => [loc, { title: v.backref_title }]))
 const hashOf = (d: Data) => createHash('sha256').update(JSON.stringify(canon(d))).digest('hex').slice(0, 16)
 const dig = (o: any, p: string) => (p ? p.split('.').reduce((a, k) => a?.[k], o) : o)
+
+// rackbook.yml i18n blocks hold the default language next to the locale tags; the API sends only the tags.
+const localeTags = ['zh-CN', 'zh-TW', 'en-US']
+const tagsOnly = (i18n: any): Record<string, Record<string, string>> | undefined => {
+  const out = Object.fromEntries(Object.entries<any>(i18n ?? {}).filter(([k, v]) => localeTags.includes(k) && v && typeof v === 'object'))
+  return Object.keys(out).length ? out : undefined
+}
+/** Only some keys of each locale entry (a backref carries its title only). */
+const pickKeys = (i18n: Record<string, Record<string, string>> | undefined, ...keys: string[]) => {
+  if (!i18n) return undefined
+  const out = Object.fromEntries(
+    Object.entries(i18n)
+      .map(([loc, v]) => [loc, Object.fromEntries(keys.filter((k) => v[k] !== undefined).map((k) => [k, v[k]]))] as const)
+      .filter(([, v]) => Object.keys(v).length),
+  )
+  return Object.keys(out).length ? out : undefined
+}
+
+// "static" -> `"静态" is not allowed; use code "static"` and one issue for a value of no enum code,
+// the way the server words it (the noisy oneOf sub-errors are dropped).
+function enumIssue(e: any): string | undefined {
+  const codes: string[] | undefined =
+    e.keyword === 'enum'
+      ? e.params.allowedValues.filter((x: unknown) => typeof x === 'string')
+      : e.keyword === 'oneOf' && Array.isArray(e.schema) && e.schema.every((x: any) => typeof x?.const === 'string')
+        ? e.schema.map((x: any) => x.const)
+        : undefined
+  if (!codes || typeof e.data !== 'string') return undefined
+  const names = (code: string) => {
+    const out = [code, ...(Array.isArray(e.parentSchema?.oneOf) ? e.parentSchema.oneOf.filter((x: any) => x.const === code).map((x: any) => x.title) : [])]
+    for (const v of Object.values<any>(e.parentSchema?.['x-rackbook-i18n'] ?? {})) out.push(v?.enum?.[code])
+    return out.filter(Boolean) as string[]
+  }
+  const hit = codes.find((c) => names(c).some((n) => n === e.data || n.toLowerCase() === e.data.toLowerCase()))
+  return hit ? `"${e.data}" is not allowed; use code "${hit}"` : `"${e.data}" is not one of: ${codes.join(', ')}`
+}
 
 export function mockApi(root: string): Plugin {
   const readOnly = process.env.MOCK_READONLY === '1'
   const cfg = parse(readFileSync(path.join(root, 'rackbook.yml'), 'utf8'))
-  const ajv = new Ajv2020({ strict: false, allErrors: true })
+  const ajv = new Ajv2020({ strict: false, allErrors: true, verbose: true })
   ajv.addFormat('textarea', true)
+  // the two Rackbook formats the example uses (src/lib/formats.ts has the same rules)
+  ajv.addFormat('country', (v: string) => v === 'tbd' || isCountryCode(v))
+  ajv.addFormat('subdivision', (v: string) => v === 'tbd' || (/^[A-Z]{2}-[A-Z0-9]{1,3}$/.test(v) && isCountryCode(v.slice(0, 2))))
 
   const docs = new Map<string, any>()
   const load = (file: string) => {
@@ -65,24 +117,44 @@ export function mockApi(root: string): Plugin {
     required: ['name', 'kind', 'expires'],
     additionalProperties: false,
     properties: {
-      name: { type: 'string', title: '名称' },
-      kind: { type: 'string', title: '类型', enum: ['证书', '密钥', '应用凭据'] },
-      purpose: { type: 'string', title: '用途' },
-      expires: { type: 'string', title: '到期日' },
-      revoked: { type: 'string', title: '吊销日' },
-      source: { type: 'string', title: '来源' },
+      name: { type: 'string', title: '名称', 'x-rackbook-i18n': { 'en-US': { title: 'Name' }, 'zh-TW': { title: '名稱' } } },
+      kind: {
+        type: 'string',
+        title: '类型',
+        oneOf: [
+          { const: 'certificate', title: '证书' },
+          { const: 'key', title: '密钥' },
+          { const: 'app-credential', title: '应用凭据' },
+        ],
+        'x-rackbook-enum-icons': { certificate: 'shield-check', key: 'key-round', 'app-credential': 'puzzle' },
+        'x-rackbook-i18n': {
+          'en-US': { title: 'Kind', enum: { certificate: 'Certificate', key: 'Key', 'app-credential': 'App credential' } },
+          'zh-TW': { title: '類型', enum: { certificate: '憑證', key: '金鑰', 'app-credential': '應用憑證' } },
+        },
+      },
+      purpose: { type: 'string', title: '用途', 'x-rackbook-i18n': { 'en-US': { title: 'Purpose' }, 'zh-TW': { title: '用途' } } },
+      expires: { type: 'string', title: '到期日', 'x-rackbook-i18n': { 'en-US': { title: 'Expires' }, 'zh-TW': { title: '到期日' } } },
+      revoked: { type: 'string', title: '吊销日', 'x-rackbook-i18n': { 'en-US': { title: 'Revoked' }, 'zh-TW': { title: '吊銷日' } } },
+      source: { type: 'string', title: '来源', 'x-rackbook-i18n': { 'en-US': { title: 'Source' }, 'zh-TW': { title: '來源' } } },
     },
   }
-  const credCfg = { title: '凭据', group: '安全', key: ['name'], label: 'name', list: ['name', 'kind', 'purpose', 'expires', 'source'] }
+  const credCfg = {
+    title: '凭据',
+    group: '安全',
+    i18n: { 'en-US': { title: 'Credentials', group: 'Security' }, 'zh-TW': { title: '憑證', group: '安全' } },
+    key: ['name'],
+    label: 'name',
+    list: ['name', 'kind', 'purpose', 'expires', 'source'],
+  }
   const credRows: Data[] = [
-    { name: 'tls-www', kind: '证书', purpose: '官网 HTTPS', expires: dayOffset(-8) },
-    { name: 'tls-grafana', kind: '证书', purpose: '监控面板', expires: dayOffset(0) },
-    { name: 'entra-rackbook-1a2b3c4d', kind: '应用凭据', purpose: 'Entra 应用 rackbook', expires: dayOffset(13), source: 'entra' },
-    { name: 'entra-rackbook-9f8e7d6c', kind: '应用凭据', purpose: 'Entra 应用 rackbook', expires: dayOffset(-2), source: 'entra' },
-    { name: 'backup-signing-key', kind: '密钥', purpose: '备份签名', expires: dayOffset(75) },
-    { name: 'vpn-ca', kind: '证书', purpose: 'VPN 根证书', expires: dayOffset(300) },
-    { name: 'legacy-api-key', kind: '密钥', purpose: '旧接口', expires: '待补' },
-    { name: 'old-cert', kind: '证书', purpose: '已吊销', expires: dayOffset(-30), revoked: dayOffset(-40) },
+    { name: 'tls-www', kind: 'certificate', purpose: '官网 HTTPS', expires: dayOffset(-8) },
+    { name: 'tls-grafana', kind: 'certificate', purpose: '监控面板', expires: dayOffset(0) },
+    { name: 'entra-rackbook-1a2b3c4d', kind: 'app-credential', purpose: 'Entra 应用 rackbook', expires: dayOffset(13), source: 'entra' },
+    { name: 'entra-rackbook-9f8e7d6c', kind: 'app-credential', purpose: 'Entra 应用 rackbook', expires: dayOffset(-2), source: 'entra' },
+    { name: 'backup-signing-key', kind: 'key', purpose: '备份签名', expires: dayOffset(75) },
+    { name: 'vpn-ca', kind: 'certificate', purpose: 'VPN 根证书', expires: dayOffset(300) },
+    { name: 'legacy-api-key', kind: 'key', purpose: '旧接口', expires: 'tbd' },
+    { name: 'old-cert', kind: 'certificate', purpose: '已吊销', expires: dayOffset(-30), revoked: dayOffset(-40) },
   ]
   colls.set('credentials', {
     name: 'credentials',
@@ -110,7 +182,16 @@ export function mockApi(root: string): Plugin {
     .map((r: any) => {
       const [fc, ff] = r.ref.from.split('.')
       const [tc, tf] = r.ref.to.split('.')
-      return { collection: fc, field: ff, to: tc, toField: tf, allow: r.ref.allow ?? [], many: !!r.ref.many }
+      return {
+        collection: fc,
+        field: ff,
+        to: tc,
+        toField: tf,
+        allow: r.ref.allow ?? [],
+        many: !!r.ref.many,
+        title: r.ref.backref_title,
+        i18n: tagsOnly(r.ref.i18n),
+      }
     })
 
   const idOf = (c: Coll, d: Data, index: number) =>
@@ -129,14 +210,15 @@ export function mockApi(root: string): Plugin {
       const seen = new Set<string>()
       records(c).forEach((r) => {
         if (!c.validateFn(r.data)) {
-          for (const e of c.validateFn.errors ?? []) {
+          // a oneOf enum reports one issue per const; keep a single enum-level message instead
+          for (const e of (c.validateFn.errors ?? []).filter((x: any) => !/\/oneOf\/\d+\//.test(x.schemaPath))) {
             const p =
               e.keyword === 'additionalProperties'
                 ? `${e.instancePath}/${e.params.additionalProperty}`
                 : e.keyword === 'required'
                   ? `${e.instancePath}/${e.params.missingProperty}`
                   : e.instancePath
-            errs.push({ collection: c.name, id: r.id, path: p, rule: 'schema', message: e.message ?? 'invalid' })
+            errs.push({ collection: c.name, id: r.id, path: p, rule: 'schema', message: enumIssue(e) ?? e.message ?? 'invalid' })
           }
         }
         if (c.cfg.key?.length) {
@@ -175,7 +257,7 @@ export function mockApi(root: string): Plugin {
   const history: { hash: string; author: string; email: string; date: string; subject: string; collection: string }[] = [
     ['devices', 'edit web-hostco-ashburn-va-us-dc', 3],
     ['services', 'add web-hostco-ashburn-va-us-dc/网络台账（Rackbook）', 26],
-    ['addresses', 'edit gw-example-springfield-or-us-home/Tailscale', 50],
+    ['addresses', 'edit gw-example-springfield-or-us-home/tailscale', 50],
     ['todo', 'edit 所有服务器 SSH 改到 10511', 24 * 6 * 60],
     ['sites', 'add 下一个站点', 24 * 20 * 60],
   ].map(([collection, what, minsAgo], i) => ({
@@ -218,9 +300,10 @@ export function mockApi(root: string): Plugin {
   function meta(req: IncomingMessage) {
     return {
       locale: matchLocale(req.headers['accept-language']),
-      defaultLocale: 'zh-CN',
+      defaultLocale: cfg.i18n?.default ?? 'zh-CN',
       title: cfg.title,
       description: cfg.description ?? '',
+      ...(tagsOnly(cfg.i18n) ? { i18n: pickKeys(tagsOnly(cfg.i18n), 'title', 'description') } : {}),
       readOnly,
       writeMode: cfg.write?.mode ?? 'push',
       user: { ...user, ...(userLocale ? { locale: userLocale } : {}) },
@@ -233,16 +316,19 @@ export function mockApi(root: string): Plugin {
         title: c.cfg.title ?? c.name,
         description: c.cfg.description ?? '',
         group: c.cfg.group ?? '',
+        ...(tagsOnly(c.cfg.i18n) ? { i18n: pickKeys(tagsOnly(c.cfg.i18n), 'title', 'description', 'group') } : {}),
         key: c.cfg.key ?? [],
         label: c.cfg.label ?? '',
         list: c.cfg.list ?? [],
         facets: (c.cfg.facets ?? []).map(normFacet),
         schema: c.schema,
         refs: refRules.filter((r) => r.collection === c.name).map((r) => ({ field: r.field, to: r.to, toField: r.toField, allow: r.allow, many: r.many })),
-        backrefs: refRules.filter((r) => r.to === c.name).map((r) => ({ collection: r.collection, field: r.field })),
+        backrefs: refRules
+          .filter((r) => r.to === c.name)
+          .map((r) => ({ collection: r.collection, field: r.field, ...(r.title ? { title: r.title } : {}), ...(pickKeys(r.i18n, 'backref_title') ? { i18n: backrefI18n(r.i18n) } : {}) })),
         notes: (cfg.notes ?? [])
           .filter((n: any) => n.collection === c.name)
-          .map((n: any) => ({ title: n.title, text: String(dig(load(n.file), n.path) ?? '').trim() })),
+          .map((n: any) => ({ title: n.title, ...(tagsOnly(n.i18n) ? { i18n: pickKeys(tagsOnly(n.i18n), 'title') } : {}), text: String(dig(load(n.file), n.path) ?? '').trim() })),
         count: c.rows.length,
       })),
     }
@@ -285,7 +371,7 @@ export function mockApi(root: string): Plugin {
       return true
     }
     if (p === '/auth/config') {
-      return send(res, 200, { oidc: true, provider: 'microsoft', passkeys: true, locale: matchLocale(req.headers['accept-language']), defaultLocale: 'zh-CN' }), true
+      return send(res, 200, { oidc: true, provider: 'microsoft', passkeys: true, locale: matchLocale(req.headers['accept-language']), defaultLocale: cfg.i18n?.default ?? 'zh-CN' }), true
     }
     if (p === '/auth/logout') return send(res, 200, { login: '/auth/login?error=logged_out' }), true
     if (!p.startsWith('/api/')) return false

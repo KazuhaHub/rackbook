@@ -22,6 +22,7 @@ import { t } from '@/i18n'
 import { BrandMark } from '@/components/BrandMark'
 import { CollectionIcon } from '@/components/CollectionIcon'
 import { hasExpiry } from '@/lib/ledger'
+import { collectionGroup, collectionTitle, ledgerTitle } from '@/lib/labels'
 import { failedCount } from '@/lib/modules'
 import { useModules } from '@/lib/modulesApi'
 import { useMeta } from '@/providers/meta'
@@ -49,12 +50,18 @@ function AppSidebar() {
   const failedModules = failedCount(modulesQ.data?.modules ?? [])
 
   // group collections, keeping config order (ungrouped first-seen position)
-  const groups: { name: string; items: typeof meta.collections }[] = []
+  // grouped by the standard group name, so a collection without a translation stays with its siblings;
+  // the group shows the translated name when any member has one
+  const groups: { key: string; name: string; items: typeof meta.collections }[] = []
   for (const c of meta.collections) {
-    const name = c.group || t.nav.collections
-    let g = groups.find((x) => x.name === name)
-    if (!g) groups.push((g = { name, items: [] }))
+    const key = c.group || ''
+    let g = groups.find((x) => x.key === key)
+    if (!g) groups.push((g = { key, name: '', items: [] }))
     g.items.push(c)
+  }
+  for (const g of groups) {
+    // the ungrouped bucket keeps its own name: a translation without a standard group names no group
+    g.name = g.key ? g.items.map((c) => collectionGroup(c) ?? '').find((n) => n && n !== g.key) || g.key : t.nav.collections
   }
 
   return (
@@ -64,7 +71,7 @@ function AppSidebar() {
           <BrandMark logo={meta.branding?.logo} name={productName} className="size-8 rounded-lg" />
           <span className="min-w-0">
             <span className="block truncate text-sm leading-tight font-semibold">
-              {meta.title || t.ledgerFallbackTitle}
+              {ledgerTitle(meta) || t.ledgerFallbackTitle}
             </span>
             <span className="block text-xs text-muted-foreground">{productName}</span>
           </span>
@@ -93,7 +100,7 @@ function AppSidebar() {
           </SidebarGroupContent>
         </SidebarGroup>
         {groups.map((g) => (
-          <SidebarGroup key={g.name}>
+          <SidebarGroup key={g.key}>
             <SidebarGroupLabel className="tracking-wide">{g.name}</SidebarGroupLabel>
             <SidebarGroupContent>
               <SidebarMenu>
@@ -106,7 +113,7 @@ function AppSidebar() {
                         render={<NavLink to={base} />}
                       >
                         <CollectionIcon col={c} />
-                        <span className="truncate">{c.title}</span>
+                        <span className="truncate">{collectionTitle(c)}</span>
                       </SidebarMenuButton>
                       <SidebarMenuBadge>{c.count}</SidebarMenuBadge>
                     </SidebarMenuItem>

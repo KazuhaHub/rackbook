@@ -78,6 +78,8 @@ type Note struct {
 	Title      string `json:"title"`
 	Text       string `json:"text"`
 	Collection string `json:"-"`
+	// I18n is the title in the other languages (the API sends it; exports do not).
+	I18n config.Texts `json:"-"`
 }
 
 // Collection is a loaded collection.
@@ -148,7 +150,7 @@ func Load(cfg *config.Config, overlay map[string][]byte) *Ledger {
 			l.Issues = append(l.Issues, Issue{Collection: n.Collection, Rule: RuleConfig, Message: fmt.Sprintf("note %q: %s has no text at %s", n.Title, n.File, n.Path)})
 			continue
 		}
-		l.Notes = append(l.Notes, Note{Title: n.Title, Text: node.Value, Collection: n.Collection})
+		l.Notes = append(l.Notes, Note{Title: n.Title, Text: node.Value, Collection: n.Collection, I18n: n.I18n})
 	}
 	return l
 }

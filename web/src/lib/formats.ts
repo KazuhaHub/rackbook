@@ -1,6 +1,7 @@
 // The string formats the console validates itself. They mirror
 // internal/validate/formats.go rule for rule, so the form and the server agree.
 import { t } from '../i18n/index.ts'
+import { isCountryCode } from './countries.ts'
 
 const IPV4 = /^(?:0|[1-9][0-9]{0,2})(?:\.(?:0|[1-9][0-9]{0,2})){3}$/
 
@@ -73,6 +74,16 @@ export function isHostname(s: string): boolean {
 const URI = /^[A-Za-z][A-Za-z0-9+.-]*:[^\t\n\f\r \x00-\x1f\x7f]+$/
 export const isURI = (s: string) => URI.test(s)
 
+/** An assigned ISO 3166-1 alpha-2 code in upper case, or the placeholder `tbd`. */
+export const isCountry = (s: string) => s === 'tbd' || isCountryCode(s)
+
+/** ISO 3166-2 shape XX-YYY (XX an assigned country code, YYY one to three upper-case letters or digits), or `tbd`. */
+export function isSubdivision(s: string): boolean {
+  if (s === 'tbd') return true
+  const m = /^([A-Z]{2})-[A-Z0-9]{1,3}$/.exec(s)
+  return !!m && isCountryCode(m[1])
+}
+
 /** customFormats for the form's Ajv. */
 export const customFormats: Record<string, (s: string) => boolean> = {
   ip: isIP,
@@ -84,6 +95,8 @@ export const customFormats: Record<string, (s: string) => boolean> = {
   textarea: () => true,
   hostname: isHostname,
   uri: isURI,
+  country: isCountry,
+  subdivision: isSubdivision,
 }
 
 /** Shown under a field whose value fails a format (current language), undefined for an unknown format. */

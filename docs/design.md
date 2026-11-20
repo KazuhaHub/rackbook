@@ -91,6 +91,14 @@ keywords (Chinese titles in the owner's config, so the console reads
 `properties` order. Nothing about presentation is invented on top of the
 schema except the `list` / `facets` hints in `rackbook.yml`.
 
+**Text in other languages.** The standard text (`title`, `description`, a oneOf
+entry's `title`, the `title` of a collection in `rackbook.yml`) is in the default
+language, `i18n.default`. Other languages sit beside it: `x-rackbook-i18n` in
+schemas, an `i18n` map in `rackbook.yml` (top level, collections, notes, `ref` and
+`same_set` rules). A reader takes the entry for its language, else the standard
+text. Stored values are always the codes, never translated. See the README, "Ledger
+text in several languages", for the keys and an example.
+
 ### 1.3 Rules (cross-collection checks, declared in config)
 
 `rackbook check` runs, in order: YAML parse → JSON Schema per record → rules.
@@ -456,11 +464,13 @@ The form picks a widget from the property:
 
 | property | widget |
 |---|---|
-| `type: string` + `enum` | searchable select |
+| `type: string` + `enum`, or `oneOf` of `const`/`title` entries | searchable select (label, icon, code) |
 | `type: array`, `items: {type: string, enum: [...]}` (`uniqueItems: true`) | tags: chips plus a searchable dropdown |
 | reference field (a `ref` rule; `many` too) | searchable selector over the target's values plus the allowed literals, which are marked 特殊值 |
 | `type: array` of strings, `items.pattern` and/or `items.format` | chip list; each entry is checked as it is typed and only a valid one is added |
 | `format: date` | the browser's date input |
+| `format: country` | searchable select of country codes, names in the viewer's language |
+| `format: subdivision` | text input checked against the ISO 3166-2 shape |
 | `format: textarea` | multi-line text |
 | `type: boolean` | switch |
 | plain short text (see below) | text with a dropdown of values already used |

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -54,14 +55,6 @@ type Config struct {
 
 	scanner       *secretscan.Scanner
 	logo, favicon *Asset // branding images, read at load (branding.go)
-}
-
-// I18n is the i18n block.
-type I18n struct {
-	// Default is the console language when the browser's Accept-Language
-	// matches none of the supported locales and the user has no preference:
-	// zh-CN (default), zh-TW or en-US.
-	Default string `yaml:"default"`
 }
 
 // DefaultLocale is i18n.default, or zh-CN when it is not set. It is safe on a
@@ -211,6 +204,8 @@ type Collection struct {
 	Label       string   `yaml:"label"`
 	List        []string `yaml:"list"`
 	Facets      []Facet  `yaml:"facets"`
+	// I18n holds title, description and group in the other languages.
+	I18n Texts `yaml:"i18n"`
 }
 
 // Facet is a filter hint for the console.
@@ -256,6 +251,9 @@ type Note struct {
 	File       string `yaml:"file"`
 	Path       string `yaml:"path"`
 	Collection string `yaml:"collection"`
+	// I18n holds the title in the other languages. The text itself comes from
+	// the data file and is content, so it is not translated.
+	I18n Texts `yaml:"i18n"`
 }
 
 // Rule is one cross-collection check; exactly one field is set.
@@ -276,6 +274,8 @@ type RefRule struct {
 	// target's detail page, the records pointing at it.
 	BackrefTitle   string   `yaml:"backref_title"`
 	BackrefColumns []string `yaml:"backref_columns"`
+	// I18n holds message and backref_title in the other languages.
+	I18n Texts `yaml:"i18n"`
 }
 
 // SameSetRule: the set of values of a collection field equals a key set in another file.
@@ -283,6 +283,8 @@ type SameSetRule struct {
 	Left    SameSetLeft  `yaml:"left"`
 	Right   SameSetRight `yaml:"right"`
 	Message string       `yaml:"message"`
+	// I18n holds message in the other languages.
+	I18n Texts `yaml:"i18n"`
 }
 
 type SameSetLeft struct {
@@ -789,6 +791,9 @@ func Parse(data []byte, path string) (*Config, error) {
 	if root.Kind == 0 {
 		return nil, fmt.Errorf("%s: empty config", path)
 	}
+	if err := checkI18nShapes(root.Content[0]); err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
 	if err := root.Decode(cfg); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
@@ -826,6 +831,9 @@ func (c *Config) finish() error {
 		return fmt.Errorf("i18n.default must be one of %s, got %q", strings.Join(locale.Supported, ", "), c.I18n.Default)
 	} else {
 		c.I18n.Default = l
+	}
+	if err := c.I18n.check("i18n", "title", "description"); err != nil {
+		return err
 	}
 	if _, err := roles.Compile(c.Auth.Roles, roles.Options{MCPMatchEmail: c.Auth.MCP.MatchEmail}, c.Auth.Editors...); err != nil {
 		return err
@@ -882,6 +890,9 @@ func (c *Config) finish() error {
 				return fmt.Errorf("collection %q: %s is Rackbook's own state (.rackbook/), not a data file", col.Name, p)
 			}
 		}
+		if err := col.I18n.check("collections."+col.Name+".i18n", "title", "description", "group"); err != nil {
+			return err
+		}
 		for i := range col.Facets {
 			if col.Facets[i].Field == "" {
 				return fmt.Errorf("collection %q: facet without field", col.Name)
@@ -902,6 +913,9 @@ func (c *Config) finish() error {
 		}
 		if n.Collection != "" && !seen[n.Collection] {
 			return fmt.Errorf("note %q: unknown collection %q", n.Title, n.Collection)
+		}
+		if err := n.I18n.check("note "+strconv.Quote(n.Title)+": i18n", "title"); err != nil {
+			return err
 		}
 	}
 	for i, r := range c.Rules {
@@ -931,10 +945,16 @@ func (c *Config) checkRule(r Rule, cols map[string]bool) error {
 				return fmt.Errorf("ref: %q must be <collection>.<field> of a known collection", s)
 			}
 		}
+		if err := r.Ref.I18n.check("ref.i18n", "message", "backref_title"); err != nil {
+			return err
+		}
 	}
 	if r.SameSet != nil {
 		n++
 		s := r.SameSet
+		if err := s.I18n.check("same_set.i18n", "message"); err != nil {
+			return err
+		}
 		if !cols[s.Left.Collection] || s.Left.Field == "" {
 			return fmt.Errorf("same_set: left needs a known collection and field")
 		}

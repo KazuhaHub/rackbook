@@ -753,10 +753,18 @@ func (s *Scanner) ScanRecordWith(collection, id string, data any, ann Annotation
 
 // schemaKeys are the keywords of a JSON Schema whose values are data: a default
 // or an example is typed in by whoever edits the data type.
+// Rackbook's schema extensions that carry text (see internal/labels).
+const (
+	kwI18n  = "x-rackbook-i18n"
+	kwIcons = "x-rackbook-enum-icons"
+)
+
 var schemaKeys = map[string]bool{"default": true, "examples": true, "example": true, "const": true, "enum": true}
 
-// ScanSchema scans the defaults, examples, constants, enum values, titles and
-// descriptions of a JSON Schema document, wherever they are in it, and a
+// ScanSchema scans the defaults, examples, constants, enum values (a oneOf's
+// const entries too), titles and descriptions of a JSON Schema document, the
+// strings of x-rackbook-i18n (titles, descriptions, enum labels) and the values
+// of x-rackbook-enum-icons, wherever they are in it, and a
 // property's default together with the property's name (a field called password
 // with a default). Paths start
 // with "/schema" so that they read the same in check output and allow entries.
@@ -816,6 +824,20 @@ func (s *Scanner) ScanSchema(collection string, schema []byte) []Finding {
 						continue
 					}
 					visit(x[k], path+"/"+ptr(k), name)
+				case k == kwI18n:
+					// the translated text is read like titles and descriptions; the
+					// locale tags and the enum codes that key it are not data
+					c.i18nBlock(x[k], path+"/"+ptr(k), kind, name, ownCodes(x))
+				case k == kwIcons:
+					if m, ok := x[k].(map[string]any); ok {
+						for code, v := range m {
+							if str, ok := v.(string); ok {
+								c.text(str, path+"/"+ptr(k)+"/"+ptr(code), "", false)
+							}
+						}
+						continue
+					}
+					visit(x[k], path+"/"+ptr(k), name)
 				case schemaKeys[k]:
 					// a default, example or enum is scanned under its property's
 					// annotation, which silences the confirm tier only
@@ -867,6 +889,121 @@ func (s *Scanner) ScanSchema(collection string, schema []byte) []Finding {
 	}
 	blockPass(doc, "/schema")
 	return c.out
+}
+
+// i18nBlock scans an x-rackbook-i18n value. The locale tags that key it are not
+// data and are skipped. The strings under a language (title, description, other
+// text) are text like any title. Enum labels: see enumLabels. codes are the
+// property's own codes (its enum values or oneOf consts).
+func (c *collector) i18nBlock(v any, path, kind, name string, codes map[string]bool) {
+	m, ok := v.(map[string]any)
+	if !ok {
+		c.i18nText(v, path)
+		return
+	}
+	locs := make([]string, 0, len(m))
+	for l := range m {
+		locs = append(locs, l)
+	}
+	sort.Strings(locs)
+	for _, l := range locs {
+		lp := path + "/" + ptr(l)
+		lm, ok := m[l].(map[string]any)
+		if !ok {
+			c.i18nText(m[l], lp)
+			continue
+		}
+		keys := make([]string, 0, len(lm))
+		for k := range lm {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			if k == "enum" {
+				c.enumLabels(lm[k], lp+"/"+ptr(k), kind, name, codes)
+				continue
+			}
+			c.i18nText(lm[k], lp+"/"+ptr(k))
+		}
+	}
+}
+
+// ownCodes collects the codes of an enum-like schema object: its enum values
+// and the const of each oneOf entry.
+func ownCodes(x map[string]any) map[string]bool {
+	out := map[string]bool{}
+	if l, ok := x["enum"].([]any); ok {
+		for _, e := range l {
+			if s, ok := e.(string); ok {
+				out[s] = true
+			}
+		}
+	}
+	if l, ok := x["oneOf"].([]any); ok {
+		for _, e := range l {
+			if m, ok := e.(map[string]any); ok {
+				if s, ok := m["const"].(string); ok {
+					out[s] = true
+				}
+			}
+		}
+	}
+	return out
+}
+
+// enumLabels scans the code -> label map of one language. A key that is one of
+// the property's codes holds a label, which is text like a title: it is not
+// paired with the code as an assignment, so "password": "Password login" is
+// fine. Any other key is not a code of this property, so key and value are
+// walked as data, as an enum always was (it catches a secret smuggled in
+// under a made-up code).
+func (c *collector) enumLabels(v any, path, kind, name string, codes map[string]bool) {
+	m, ok := v.(map[string]any)
+	if !ok {
+		c.kind, c.name = kind, name
+		c.walk(v, path, false)
+		c.kind, c.name = "", ""
+		return
+	}
+	data := map[string]any{}
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		if codes[k] {
+			c.i18nText(m[k], path+"/"+ptr(k))
+		} else {
+			data[k] = m[k]
+		}
+	}
+	if len(data) > 0 {
+		c.kind, c.name = kind, name
+		c.walk(data, path, false)
+		c.kind, c.name = "", ""
+	}
+}
+
+// i18nText scans every string under v as text, without looking at map keys.
+func (c *collector) i18nText(v any, path string) {
+	switch x := v.(type) {
+	case string:
+		c.text(x, path, "", false)
+	case map[string]any:
+		keys := make([]string, 0, len(x))
+		for k := range x {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			c.i18nText(x[k], path+"/"+ptr(k))
+		}
+	case []any:
+		for i, e := range x {
+			c.i18nText(e, path+"/"+strconv.Itoa(i))
+		}
+	}
 }
 
 // blockOnly adds the block-tier findings of one string.

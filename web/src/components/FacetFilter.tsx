@@ -3,9 +3,10 @@ import { ChevronDown, ListFilter } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
+import { EnumIcon } from '@/components/EnumIcon'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 
-export type FacetOption = { value: string; label: string; count: number }
+export type FacetOption = { value: string; label: string; count: number; icon?: string }
 
 export function FacetFilter({
   label,
@@ -19,7 +20,7 @@ export function FacetFilter({
   onChange: (next: string[]) => void
 }) {
   const [q, setQ] = useState('')
-  const shown = q ? options.filter((o) => o.label.toLowerCase().includes(q.toLowerCase())) : options
+  const shown = q ? options.filter((o) => (o.label + ' ' + o.value).toLowerCase().includes(q.toLowerCase())) : options
   const toggle = (v: string) => onChange(selected.includes(v) ? selected.filter((x) => x !== v) : [...selected, v])
   return (
     <Popover>
@@ -42,6 +43,7 @@ export function FacetFilter({
               className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-muted"
             >
               <Checkbox checked={selected.includes(o.value)} onCheckedChange={() => toggle(o.value)} />
+              <EnumIcon name={o.icon} />
               <span className="min-w-0 flex-1 truncate">{o.label}</span>
               <span className="text-xs text-muted-foreground tabular-nums">{o.count}</span>
             </label>

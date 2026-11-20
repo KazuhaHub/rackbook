@@ -17,6 +17,7 @@ import { changedElsewhere, cleanSettings, editBase, isRiskyChange, pinAfterLoadL
 import { modulesKey, previewSettings, saveSettings, useModules, useRequestRun } from '@/lib/modulesApi'
 import { useMeta } from '@/providers/meta'
 import { nextText, typeLabel } from './Modules'
+import { collectionTitleOf } from '@/lib/labels'
 
 function Item({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -135,7 +136,7 @@ function ModuleDetailPage({ name }: { name: string }) {
     save.mutate({ settings, version: base.version })
   }
   const togglePause = () => save.mutate({ settings: cleanSettings({ ...m.settings, paused: m.paused ? undefined : true }), version: m.version })
-  const colTitle = meta.collections.find((c) => c.name === m.collection)?.title ?? m.collection
+  const colTitle = collectionTitleOf(meta.collections.find((c) => c.name === m.collection), m.collection ?? '')
 
   return (
     <div>

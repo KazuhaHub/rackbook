@@ -4,13 +4,46 @@
   "type": "object",
   "additionalProperties": false,
   "required": ["name", "lan"],
+  "x-rackbook-i18n": {"en-US": {"title": "Site"}, "zh-TW": {"title": "站點"}},
   "properties": {
-    "name": {"type": "string", "title": "站点"},
-    "lan": {"type": "string", "title": "局域网"},
-    "gateway": {"type": "string", "title": "网关 IP"},
-    "gateway_os": {"type": "string", "title": "网关系统"},
-    "router_tailscale_ip": {"type": "string", "title": "路由器 Tailscale IP"},
-    "status": {"type": "string", "title": "状态"},
-    "notes": {"type": "string", "title": "备注", "format": "textarea"}
+    "name": {
+      "type": "string",
+      "title": "站点",
+      "x-rackbook-i18n": {"en-US": {"title": "Site"}, "zh-TW": {"title": "站點"}}
+    },
+    "lan": {
+      "type": "string",
+      "title": "局域网",
+      "x-rackbook-i18n": {"en-US": {"title": "LAN"}, "zh-TW": {"title": "區域網路"}}
+    },
+    "gateway": {
+      "type": "string",
+      "title": "网关 IP",
+      "x-rackbook-i18n": {"en-US": {"title": "Gateway IP"}, "zh-TW": {"title": "閘道 IP"}}
+    },
+    "gateway_os": {
+      "type": "string",
+      "title": "网关系统",
+      "x-rackbook-i18n": {"en-US": {"title": "Gateway OS"}, "zh-TW": {"title": "閘道系統"}}
+    },
+    "router_tailscale_ip": {
+      "type": "string",
+      "title": "路由器 Tailscale IP",
+      "x-rackbook-i18n": {"en-US": {"title": "Router Tailscale IP"}, "zh-TW": {"title": "路由器 Tailscale IP"}}
+    },
+    "status": {
+      "type": "string",
+      "title": "状态",
+      "oneOf": [{"const": "connected", "title": "已接入"}, {"const": "reserved", "title": "预留"}],
+      "x-rackbook-enum-icons": {"connected": "circle-check", "reserved": "clock"},
+      "x-rackbook-enum-colors": {"connected": "green", "reserved": "gray"},
+      "x-rackbook-i18n": {"en-US": {"title": "Status", "enum": {"connected": "Connected", "reserved": "Reserved"}}, "zh-TW": {"title": "狀態", "enum": {"connected": "已接入", "reserved": "預留"}}}
+    },
+    "notes": {
+      "type": "string",
+      "title": "备注",
+      "format": "textarea",
+      "x-rackbook-i18n": {"en-US": {"title": "Notes"}, "zh-TW": {"title": "備註"}}
+    }
   }
 }

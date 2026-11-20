@@ -4,10 +4,28 @@
   "type": "object",
   "additionalProperties": false,
   "required": ["service", "port"],
+  "x-rackbook-i18n": {"en-US": {"title": "Port convention"}, "zh-TW": {"title": "連接埠規範"}},
   "properties": {
-    "service": {"type": "string", "title": "服务"},
-    "port": {"type": "string", "title": "端口"},
-    "scope": {"type": "string", "title": "适用范围"},
-    "notes": {"type": "string", "title": "说明", "format": "textarea"}
+    "service": {
+      "type": "string",
+      "title": "服务",
+      "x-rackbook-i18n": {"en-US": {"title": "Service"}, "zh-TW": {"title": "服務"}}
+    },
+    "port": {
+      "type": "string",
+      "title": "端口",
+      "x-rackbook-i18n": {"en-US": {"title": "Port"}, "zh-TW": {"title": "連接埠"}}
+    },
+    "scope": {
+      "type": "string",
+      "title": "适用范围",
+      "x-rackbook-i18n": {"en-US": {"title": "Applies to"}, "zh-TW": {"title": "適用範圍"}}
+    },
+    "notes": {
+      "type": "string",
+      "title": "说明",
+      "format": "textarea",
+      "x-rackbook-i18n": {"en-US": {"title": "Notes"}, "zh-TW": {"title": "說明"}}
+    }
   }
 }

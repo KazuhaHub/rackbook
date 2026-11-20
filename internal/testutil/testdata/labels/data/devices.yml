@@ -1,0 +1,2 @@
+- {name: gw, ipv4_type: static, status: up, tags: [core], ports: [{proto: tcp, port: 22}], country: US, owner: ann}
+- {name: ap, ipv4_type: dynamic, status: down, tags: [edge], country: tbd, owner: ann}

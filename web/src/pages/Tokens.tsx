@@ -24,6 +24,7 @@ import { formatDateTime } from '@/i18n/format'
 import { apiFetch, errorMessage } from '@/lib/api'
 import type { ApiToken, CreatedToken } from '@/lib/types'
 import { useMeta } from '@/providers/meta'
+import { collectionTitle, collectionTitleOf } from '@/lib/labels'
 
 type List = { tokens: ApiToken[]; mcpUrl: string }
 
@@ -136,7 +137,7 @@ function CreateDialog({ open, onOpenChange, onCreated }: { open: boolean; onOpen
                 <div className="flex flex-wrap gap-x-4 gap-y-1.5">
                   {meta.collections.map((c) => (
                     <label key={c.name} className="flex items-center gap-1.5 text-sm">
-                      <input type="checkbox" checked={cols.includes(c.name)} onChange={() => toggle(cols, setCols, c.name)} /> {c.title}
+                      <input type="checkbox" checked={cols.includes(c.name)} onChange={() => toggle(cols, setCols, c.name)} /> {collectionTitle(c)}
                     </label>
                   ))}
                 </div>
@@ -274,7 +275,7 @@ export default function Tokens() {
                   <td className="px-4 py-2.5 text-xs">
                     {k.scope === 'write' ? (
                       <>
-                        <div>{k.collections?.length ? k.collections.map((c) => byName.get(c)?.title ?? c).join(t.common.listSep) : t.tokens.allCollections}</div>
+                        <div>{k.collections?.length ? k.collections.map((c) => collectionTitleOf(byName.get(c), c)).join(t.common.listSep) : t.tokens.allCollections}</div>
                         <div className="text-muted-foreground">
                           {(k.actions?.length ? k.actions : ['create', 'update', 'delete']).map((a) => t.tokens.actionNames[a] ?? a).join(' / ')}
                           {' · '}

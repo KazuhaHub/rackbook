@@ -25,6 +25,7 @@ import { t } from '@/i18n'
 import { useExpiring, useHistory } from '@/lib/hooks'
 import { CollectionIcon } from '@/components/CollectionIcon'
 import { hasExpiry, recordHref, relativeTime } from '@/lib/ledger'
+import { collectionGroup, collectionTitle, collectionTitleOf, ledgerDescription, ledgerTitle, noteTitle } from '@/lib/labels'
 import type { CheckError, Commit } from '@/lib/types'
 import { cn } from '@/lib/utils'
 import { useCheck, useMeta } from '@/providers/meta'
@@ -75,8 +76,8 @@ function StatCard({
         {icon}
       </span>
       <div className="min-w-0">
-        <div className="truncate text-xs text-muted-foreground">{label}</div>
-        <div className="truncate text-2xl leading-tight font-semibold tabular-nums">{value}</div>
+        <div className="line-clamp-2 text-xs text-muted-foreground">{label}</div>
+        <div className="text-2xl leading-tight font-semibold tabular-nums break-words">{value}</div>
       </div>
     </div>
   )
@@ -104,15 +105,15 @@ export default function Dashboard() {
   const expiredCount = expiry.data?.items.filter((i) => i.status === 'expired').length ?? 0
   const soonCount = expiry.data?.items.filter((i) => i.status === 'expiring').length ?? 0
   const total = meta.collections.reduce((n, c) => n + c.count, 0)
-  const notes = meta.collections.flatMap((c) => (c.notes ?? []).map((n) => ({ ...n, source: c.title })))
+  const notes = meta.collections.flatMap((c) => (c.notes ?? []).map((n) => ({ ...n, title: noteTitle(n), source: collectionTitle(c) })))
   const problems = check.data && !check.data.ok ? check.data.errors : []
   const last = history.data?.[0]
 
   return (
     <div>
       <PageHeader
-        title={meta.title || t.dashboard.title}
-        description={meta.description}
+        title={ledgerTitle(meta) || t.dashboard.title}
+        description={ledgerDescription(meta)}
         actions={
           meta.writeMode && (
             <Badge variant="outline">
@@ -185,7 +186,7 @@ export default function Dashboard() {
                         <span className="block truncate text-sm font-medium">{c.subject}</span>
                         <span className="block truncate text-xs text-muted-foreground">
                           {c.author} · <span title={c.date}>{relativeTime(c.date)}</span>
-                          {col && <> · {col.title}</>}
+                          {col && <> · {collectionTitle(col)}</>}
                         </span>
                       </span>
                       <code className="hidden shrink-0 font-mono text-xs text-muted-foreground sm:inline">{c.hash.slice(0, 7)}</code>
@@ -257,7 +258,7 @@ export default function Dashboard() {
                       >
                         <span className="block text-sm leading-snug break-words">{e.message}</span>
                         <span className="mt-0.5 block truncate text-xs text-muted-foreground">
-                          {[byName.get(e.collection ?? '')?.title ?? e.collection, e.id && displayId(e.id)].filter(Boolean).join(' · ') || '—'}
+                          {[collectionTitleOf(byName.get(e.collection ?? ''), e.collection ?? ''), e.id && displayId(e.id)].filter(Boolean).join(' · ') || '—'}
                         </span>
                       </Link>
                     </li>
@@ -290,8 +291,8 @@ export default function Dashboard() {
                 <CollectionIcon col={c} />
               </span>
               <span className="min-w-0 flex-1">
-                <span className="line-clamp-2 font-medium break-words">{c.title}</span>
-                <span className="block truncate text-xs text-muted-foreground">{c.group || c.name}</span>
+                <span className="line-clamp-2 font-medium break-words">{collectionTitle(c)}</span>
+                <span className="block truncate text-xs text-muted-foreground">{collectionGroup(c) || c.name}</span>
               </span>
               <span className="text-2xl leading-tight font-semibold tabular-nums" title={t.dashboard.records(c.count)}>
                 {c.count}

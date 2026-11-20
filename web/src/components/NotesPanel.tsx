@@ -3,6 +3,7 @@ import { ChevronDown, StickyNote } from 'lucide-react'
 import { t } from '@/i18n'
 import type { Note } from '@/lib/types'
 import { cn } from '@/lib/utils'
+import { noteTitle } from '@/lib/labels'
 
 export function NotesPanel({ notes }: { notes: Note[] }) {
   const [open, setOpen] = useState(true)
@@ -24,7 +25,7 @@ export function NotesPanel({ notes }: { notes: Note[] }) {
         <div className="space-y-3 border-t px-4 py-3">
           {notes.map((n, i) => (
             <div key={i}>
-              <div className="text-sm font-medium">{n.title}</div>
+              <div className="text-sm font-medium">{noteTitle(n)}</div>
               <p className="mt-0.5 text-sm whitespace-pre-wrap text-muted-foreground">{n.text}</p>
             </div>
           ))}

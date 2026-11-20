@@ -27,6 +27,7 @@ import { ApiError, errorMessage } from '@/lib/api'
 import { pickTab, splitGeneric, tabHash, type GenericRule } from '@/lib/backrefs'
 import { useRefLookups } from '@/lib/hooks'
 import { canEdit, fieldTitle, idFromPath, recordHref, recordLabel, schemaProps, sourceLabel, str } from '@/lib/ledger'
+import { backrefTitle, collectionTitle, collectionTitleOf, fieldDescription } from '@/lib/labels'
 import { displayId } from '@/lib/recordId'
 import type { Backref, Collection, LedgerRecord, RecordWithBackrefs } from '@/lib/types'
 import { useAfterWrite, useCollection, useMeta } from '@/providers/meta'
@@ -107,7 +108,7 @@ function Show({ col, id }: { col: Collection; id: string }) {
       if (ref) rules.push({ field: b.field, allow: ref.allow ?? [], parentValue: str(rec.data[ref.toField]) })
     }
     const split = splitGeneric(rec.backrefs?.[name] ?? [], rules)
-    const title = brs.find((b) => b.title)?.title || other.title
+    const title = brs.map((b) => backrefTitle(b)).find(Boolean) || collectionTitle(other)
     if (split.own.length > 0 || split.generic.length === 0 || editable) {
       own.push({ key: tabHash({ collection: name, generic: false }).slice(1), col: other, backrefs: brs, records: split.own, label: title, generic: false })
     }
@@ -145,7 +146,7 @@ function Show({ col, id }: { col: Collection; id: string }) {
         eyebrow={
           <span className="flex items-center gap-1">
             <Link to={base} className="hover:text-foreground hover:underline">
-              {col.title}
+              {collectionTitle(col)}
             </Link>
             <ChevronRight className="size-3" />
           </span>
@@ -175,7 +176,7 @@ function Show({ col, id }: { col: Collection; id: string }) {
               <dl className="grid gap-x-8 gap-y-5 sm:grid-cols-[minmax(7rem,12rem)_minmax(0,1fr)]">
                 {props.map(([field, schema]) => (
                   <div key={field} className="contents">
-                    <dt className="text-sm text-muted-foreground" title={schema.description || field}>
+                    <dt className="text-sm text-muted-foreground" title={fieldDescription(schema) || field}>
                       {fieldTitle(col, field)}
                     </dt>
                     <dd className="min-w-0 text-sm">
@@ -287,7 +288,7 @@ function Show({ col, id }: { col: Collection; id: string }) {
                     {blockedBy.map((r) => (
                       <li key={`${r.collection}/${r.id}/${r.field}`}>
                         <Link to={recordHref(r.collection, r.id)} className="font-mono text-brand hover:underline" onClick={() => setConfirm(false)}>
-                          {byName.get(r.collection)?.title ?? r.collection} · {displayId(r.id)}
+                          {collectionTitleOf(byName.get(r.collection), r.collection)} · {displayId(r.id)}
                         </Link>
                         <span className="text-muted-foreground"> {t.common.paren(fieldTitle(byName.get(r.collection) ?? col, r.field))}</span>
                       </li>

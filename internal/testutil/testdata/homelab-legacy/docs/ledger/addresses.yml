@@ -1,0 +1,9 @@
+# 内网地址：每台设备在各网络里的地址。
+- {device: gw-example-springfield-or-us-home, network: Tailscale, address: 100.88.0.1, subnet: 100.88.0.0/20（路由器）, domain: gw.tailnet-example.ts.net, notes: 广播 192.168.0.0/22}
+- {device: gw-example-springfield-or-us-home, network: Springfield 局域网, address: 192.168.0.1, subnet: 192.168.0.0/22, notes: 网关}
+- {device: laptop-me-pc, network: Tailscale, address: 100.88.48.1, subnet: 100.88.48.0/20（我的终端）}
+- {device: web-hostco-ashburn-va-us-dc, network: Tailscale, address: 100.88.32.1, subnet: 100.88.32.0/20（公开·海外）}
+- {device: web-hostco-ashburn-va-us-dc, network: Docker 地址池, address: 172.16.0.1, subnet: 172.16.0.0/16（按 /24 切）, notes: 只用于本机容器}
+- {device: standby-vpsco-sanjose-ca-us-vps, network: Tailscale, address: 100.88.33.1, subnet: 100.88.32.0/20（公开·海外）}
+- {device: nas-example-springfield-or-us-home, network: Tailscale, address: 100.88.64.1, subnet: 100.88.64.0/20（家里服务）}
+- {device: nas-example-springfield-or-us-home, network: Springfield 局域网, address: 192.168.0.4, subnet: 192.168.0.0/22, notes: 手动设置}

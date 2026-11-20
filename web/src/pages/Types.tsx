@@ -9,6 +9,7 @@ import { t } from '@/i18n'
 import { errorMessage } from '@/lib/api'
 import { useTypeList } from '@/lib/typesApi'
 import { useMeta } from '@/providers/meta'
+import { collectionGroup, collectionTitle } from '@/lib/labels'
 
 export default function Types() {
   const { meta } = useMeta()
@@ -63,13 +64,13 @@ export default function Types() {
                     <Link to={`/types/${encodeURIComponent(ty.name)}`} className="flex items-center gap-2.5 font-medium hover:underline">
                       <CollectionIcon col={ty} className="size-4 text-muted-foreground" />
                       <span>
-                        {ty.title}
+                        {collectionTitle(ty)}
                         <span className="ml-2 font-mono text-xs font-normal text-muted-foreground">{ty.name}</span>
                       </span>
                       {ty.problems > 0 && <Badge variant="destructive">{t.check.problems(ty.problems)}</Badge>}
                     </Link>
                   </td>
-                  <td className="px-3 py-2.5 whitespace-nowrap text-muted-foreground">{ty.group || t.types.ungrouped}</td>
+                  <td className="px-3 py-2.5 whitespace-nowrap text-muted-foreground">{collectionGroup(ty) || t.types.ungrouped}</td>
                   <td className="px-3 py-2.5 tabular-nums">{ty.count}</td>
                   <td className="px-3 py-2.5 tabular-nums">{ty.fields}</td>
                   <td className="px-3 py-2.5 font-mono text-xs text-muted-foreground">

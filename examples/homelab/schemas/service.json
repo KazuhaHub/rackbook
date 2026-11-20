@@ -4,12 +4,43 @@
   "type": "object",
   "additionalProperties": false,
   "required": ["device", "service", "port"],
+  "x-rackbook-i18n": {"en-US": {"title": "Service port"}, "zh-TW": {"title": "服務連接埠"}},
   "properties": {
-    "device": {"type": "string", "title": "设备", "description": "设备名；all 表示所有设备"},
-    "service": {"type": "string", "title": "服务"},
-    "port": {"type": "string", "title": "协议 / 端口", "examples": ["TCP 10511", "UDP 41641"]},
-    "exposure": {"type": "string", "title": "开放范围", "examples": ["公网", "公网 + Tailscale", "仅 Tailscale", "本机"]},
-    "managed": {"type": "boolean", "title": "纳管", "default": false},
-    "notes": {"type": "string", "title": "备注", "format": "textarea"}
+    "device": {
+      "type": "string",
+      "title": "设备",
+      "description": "设备名；all 表示所有设备",
+      "x-rackbook-i18n": {"en-US": {"title": "Device", "description": "Device name; all means every device"}, "zh-TW": {"title": "裝置", "description": "裝置名稱；all 表示所有裝置"}}
+    },
+    "service": {
+      "type": "string",
+      "title": "服务",
+      "x-rackbook-i18n": {"en-US": {"title": "Service"}, "zh-TW": {"title": "服務"}}
+    },
+    "port": {
+      "type": "string",
+      "title": "协议 / 端口",
+      "examples": ["TCP 10511", "UDP 41641"],
+      "x-rackbook-i18n": {"en-US": {"title": "Protocol / port"}, "zh-TW": {"title": "協定／連接埠"}}
+    },
+    "exposure": {
+      "type": "array",
+      "title": "开放范围",
+      "uniqueItems": true,
+      "items": {"type": "string", "oneOf": [{"const": "public", "title": "公网"}, {"const": "tailscale", "title": "Tailscale"}, {"const": "lan", "title": "局域网"}, {"const": "localhost", "title": "本机"}, {"const": "cloudflare", "title": "Cloudflare 回源"}], "x-rackbook-i18n": {"en-US": {"enum": {"public": "Public internet", "tailscale": "Tailscale", "lan": "LAN", "localhost": "This host only", "cloudflare": "Cloudflare origin"}}, "zh-TW": {"enum": {"public": "公開網路", "tailscale": "Tailscale", "lan": "區域網路", "localhost": "本機", "cloudflare": "Cloudflare 回源"}}}, "x-rackbook-enum-icons": {"public": "globe", "tailscale": "waypoints", "lan": "network", "localhost": "house", "cloudflare": "cloud"}},
+      "x-rackbook-i18n": {"en-US": {"title": "Exposure"}, "zh-TW": {"title": "開放範圍"}}
+    },
+    "managed": {
+      "type": "boolean",
+      "title": "纳管",
+      "default": false,
+      "x-rackbook-i18n": {"en-US": {"title": "Managed"}, "zh-TW": {"title": "納管"}}
+    },
+    "notes": {
+      "type": "string",
+      "title": "备注",
+      "format": "textarea",
+      "x-rackbook-i18n": {"en-US": {"title": "Notes"}, "zh-TW": {"title": "備註"}}
+    }
   }
 }

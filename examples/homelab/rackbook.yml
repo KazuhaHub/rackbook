@@ -2,6 +2,16 @@
 # ones used by a real multi-site ledger; only the data is made up.
 title: 示例网络台账
 description: 设备、内网地址、服务端口、网段规划、端口规范、站点与待办。以 Git 仓库里的 YAML 为准。
+# The default language is the one the titles and descriptions below are written in;
+# other languages follow under i18n (here and per collection).
+i18n:
+  default: zh-CN
+  en-US:
+    title: Example network ledger
+    description: Devices, internal addresses, service ports, network plans, port conventions, sites and to-dos. The YAML files in the Git repository are the source of truth.
+  zh-TW:
+    title: 範例網路台帳
+    description: 裝置、內網位址、服務連接埠、網段規劃、連接埠規範、站點與待辦。以 Git 倉庫裡的 YAML 為準。
 
 collections:
   devices:
@@ -9,15 +19,29 @@ collections:
     description: 所有设备（服务器、路由器、终端、NAS）。
     file: docs/ledger/devices.yml
     schema: schemas/device.json
+    i18n:
+      en-US:
+        title: Devices
+        description: All devices (servers, routers, personal devices, NAS).
+      zh-TW:
+        title: 裝置
+        description: 所有裝置（伺服器、路由器、終端、NAS）。
     key: [name]
     label: name
-    list: [name, category, site, os, ipv4, domain, managed]
-    facets: [category, site, managed]
+    list: [name, category, country, site, os, ipv4, domain, managed]
+    facets: [category, country, site, managed]
   addresses:
     title: 内网地址
     description: 设备在 Tailscale、站点局域网、服务商内网、Docker 等网络里的地址。
     file: docs/ledger/addresses.yml
     schema: schemas/address.json
+    i18n:
+      en-US:
+        title: Internal addresses
+        description: Addresses of a device on Tailscale, site LANs, provider private networks, Docker and so on.
+      zh-TW:
+        title: 內網位址
+        description: 裝置在 Tailscale、站點區域網路、服務商內網、Docker 等網路裡的位址。
     key: [device, network]
     list: [device, network, address, subnet, domain]
     facets: [device, network]
@@ -26,17 +50,31 @@ collections:
     description: 每台设备上实际开着的服务。device 为 all 表示所有设备。
     file: docs/ledger/services.yml
     schema: schemas/service.json
+    i18n:
+      en-US:
+        title: Service ports
+        description: The services actually listening on each device. A device of "all" means every device.
+      zh-TW:
+        title: 服務連接埠
+        description: 每台裝置上實際開著的服務。device 為 all 表示所有裝置。
     key: [device, service]
     list: [device, service, port, exposure, managed]
     facets:
       - device
       - managed
-      - {field: exposure, match: contains, values: [公网, Tailscale, 局域网, 本机, Cloudflare]}
+      - {field: exposure, values: [public, tailscale, lan, localhost, cloudflare]}
   ports:
     title: 端口规范
     description: 端口约定。改端口先改这里，再改实现。
     file: docs/ledger/ports.yml
     schema: schemas/port.json
+    i18n:
+      en-US:
+        title: Port conventions
+        description: Port conventions. Change a port here first, then the implementation.
+      zh-TW:
+        title: 連接埠規範
+        description: 連接埠約定。改連接埠先改這裡，再改實作。
     key: [service]
   tailscale_ranges:
     title: Tailscale 网段
@@ -44,6 +82,13 @@ collections:
     file: docs/ledger/networks.yml
     path: tailscale
     schema: schemas/network-range.json
+    i18n:
+      en-US:
+        title: Tailscale ranges
+        group: Network plans
+      zh-TW:
+        title: Tailscale 網段
+        group: 網段規劃
     key: [range]
   lan_ranges:
     title: 站点局域网网段
@@ -51,6 +96,13 @@ collections:
     file: docs/ledger/networks.yml
     path: lan
     schema: schemas/network-range.json
+    i18n:
+      en-US:
+        title: Site LAN ranges
+        group: Network plans
+      zh-TW:
+        title: 站點區域網路網段
+        group: 網段規劃
     key: [range]
   docker_ranges:
     title: Docker / 虚拟机网段
@@ -58,6 +110,13 @@ collections:
     file: docs/ledger/networks.yml
     path: docker.ranges
     schema: schemas/network-range.json
+    i18n:
+      en-US:
+        title: Docker / VM ranges
+        group: Network plans
+      zh-TW:
+        title: Docker / 虛擬機網段
+        group: 網段規劃
     key: [range]
   sites:
     title: 站点
@@ -65,27 +124,72 @@ collections:
     file: docs/ledger/sites.yml
     path: sites
     schema: schemas/site.json
+    i18n:
+      en-US:
+        title: Sites
+        description: One /22 per site.
+      zh-TW:
+        title: 站點
+        description: 每個站點一個 /22。
     key: [name]
     facets: [status]
   todo:
     title: 待办
     file: docs/ledger/todo.yml
     schema: schemas/todo.json
+    i18n:
+      en-US:
+        title: To-do
+      zh-TW:
+        title: 待辦
     key: [item]
     facets:
-      - {field: status, match: prefix, values: [完成, 部分完成, 待办, 待决定, 推迟, 可选]}
+      - {field: status, values: [todo, undecided, deferred, partial, optional, done]}
 
 notes:
-  - {title: Docker 地址池规则, file: docs/ledger/networks.yml, path: docker.rule, collection: docker_ranges}
-  - {title: 站点局域网规则, file: docs/ledger/sites.yml, path: rule, collection: sites}
+  - title: Docker 地址池规则
+    file: docs/ledger/networks.yml
+    path: docker.rule
+    collection: docker_ranges
+    i18n: {en-US: {title: Docker address pool rule}, zh-TW: {title: Docker 位址池規則}}
+  - title: 站点局域网规则
+    file: docs/ledger/sites.yml
+    path: rule
+    collection: sites
+    i18n: {en-US: {title: Site LAN rule}, zh-TW: {title: 站點區域網路規則}}
 
 rules:
-  - ref: {from: services.device, to: devices.name, allow: [all]}
-  - ref: {from: addresses.device, to: devices.name}
+  - ref:
+      from: services.device
+      to: devices.name
+      allow: [all]
+      message: 服务所在的设备必须在设备列表里（all 表示所有设备）
+      backref_title: 服务端口
+      i18n:
+        en-US:
+          message: The device of a service must be in the device list (all means every device)
+          backref_title: Service ports
+        zh-TW:
+          message: 服務所在的裝置必須在裝置清單裡（all 表示所有裝置）
+          backref_title: 服務連接埠
+  - ref:
+      from: addresses.device
+      to: devices.name
+      backref_title: 内网地址
+      i18n:
+        en-US:
+          backref_title: Internal addresses
+        zh-TW:
+          backref_title: 內網位址
   - same_set:
       left: {collection: devices, field: name, where: {managed: true}}
       right: {file: inventory/hosts.yml, path: all.children.managed.hosts, take: keys}
-      message: 'devices marked managed: true must equal the inventory group "managed"'
+      message: '标记 managed: true 的设备必须与 inventory 的 "managed" 组一致'
+      i18n:
+        en-US:
+          message: 'devices marked managed: true must equal the inventory group "managed"'
+        zh-TW:
+          message: '標記 managed: true 的裝置必須與 inventory 的 "managed" 群組一致'
 
 write:
   mode: push          # push | pr

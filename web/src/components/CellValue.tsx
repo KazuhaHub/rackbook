@@ -3,10 +3,16 @@ import { Link } from 'react-router'
 import { Badge } from '@/components/ui/badge'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { t } from '@/i18n'
+import { countryName, flagEmoji, subdivisionCountry } from '@/lib/countryDisplay'
+import { displayText, isTbd } from '@/lib/display'
+import { enumColorClass } from '@/lib/enumColors'
+import { enumValues, itemEnum } from '@/lib/fieldKind'
+import { enumOption } from '@/lib/labels'
 import { looksMono, recordHref, str } from '@/lib/ledger'
 import { formatItem, formatPlain, objectItems, type Prop } from '@/lib/objectItems'
 import type { RefLookup } from '@/lib/hooks'
 import { cn } from '@/lib/utils'
+import { EnumIcon } from './EnumIcon'
 
 export function BoolBadge({ value }: { value: boolean }) {
   return value ? (
@@ -16,6 +22,53 @@ export function BoolBadge({ value }: { value: boolean }) {
       {t.common.no}
     </Badge>
   )
+}
+
+/** The placeholder for an unknown value: a word in the viewer's language, muted; the stored value is `tbd`. */
+export function TbdText() {
+  return (
+    <span className="text-muted-foreground italic" title="tbd">
+      {t.placeholder.tbd}
+    </span>
+  )
+}
+
+/** An enum value: its label in the current language with its icon and colour; the icon is decoration, the text carries the meaning. */
+export function EnumBadge({ schema, value }: { schema: Prop; value: string }) {
+  const o = enumOption(schema, value)
+  return (
+    <Badge variant="secondary" className={cn('font-normal', o.color && enumColorClass[o.color])} title={o.label === o.value ? undefined : o.value}>
+      <EnumIcon name={o.icon} />
+      {o.label}
+    </Badge>
+  )
+}
+
+function CountryText({ code }: { code: string }) {
+  return (
+    <span title={code}>
+      <span aria-hidden>{flagEmoji(code)}</span> {countryName(code)}
+    </span>
+  )
+}
+
+function SubdivisionText({ code }: { code: string }) {
+  const country = subdivisionCountry(code)
+  return (
+    <span className="font-mono text-[0.8125rem]" title={country ? countryName(country) : undefined}>
+      {country && <span aria-hidden>{flagEmoji(country)} </span>}
+      {code}
+    </span>
+  )
+}
+
+/** A scalar string with a known meaning (country, subdivision, placeholder); null when it is plain text. */
+function formatted(schema: Prop | undefined, s: string) {
+  if (isTbd(s)) return <TbdText />
+  const f = schema?.format ?? (schema?.items as Prop | undefined)?.format
+  if (f === 'country' && /^[A-Z]{2}$/.test(s)) return <CountryText code={s} />
+  if (f === 'subdivision' && /^[A-Z]{2}-/.test(s)) return <SubdivisionText code={s} />
+  return null
 }
 
 function Text({ value, expandable, className }: { value: string; expandable: boolean; className?: string }) {
@@ -75,7 +128,7 @@ export function CellValue({
       return (
         <span className="inline-flex flex-wrap gap-1">
           {value.map((v, i) => {
-            const f = spec ? formatItem(v, spec) : { text: formatPlain(v), title: undefined }
+            const f = spec ? formatItem(v, spec, (s, x) => displayText(s, x)) : { text: formatPlain(v), title: undefined }
             return (
               <Badge key={i} variant="secondary" className="font-mono font-normal" title={f.title}>
                 {f.text}
@@ -87,13 +140,18 @@ export function CellValue({
     }
     // a list of plain values (tags) reads best as small badges
     if (!lookup && value.every((v) => typeof v === 'string' || typeof v === 'number')) {
+      const listed = schema ? itemEnum(schema) : undefined
       return (
         <span className="inline-flex flex-wrap gap-1">
-          {value.map((v, i) => (
-            <Badge key={i} variant="secondary" className="font-normal">
-              {String(v)}
-            </Badge>
-          ))}
+          {value.map((v, i) =>
+            schema && listed?.includes(String(v)) ? (
+              <EnumBadge key={i} schema={schema} value={String(v)} />
+            ) : (
+              <Badge key={i} variant="secondary" className="font-normal">
+                {(typeof v === 'string' && formatted(schema, v)) || String(v)}
+              </Badge>
+            ),
+          )}
         </span>
       )
     }
@@ -106,6 +164,11 @@ export function CellValue({
     )
   }
   const s = str(value)
+  if (!lookup && typeof value === 'string') {
+    if (schema && enumValues(schema)?.includes(s)) return <EnumBadge schema={schema} value={s} />
+    const f = formatted(schema, s)
+    if (f) return f
+  }
   if (lookup) {
     if (lookup.allow.includes(s) && !lookup.map.has(s)) {
       return <Badge variant="secondary" className="font-mono">{s}</Badge>

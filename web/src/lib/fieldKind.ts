@@ -12,6 +12,7 @@ export type FieldKind =
   | 'boolean'
   | 'textarea'
   | 'date'
+  | 'country' // an ISO 3166-1 country code, picked from a searchable list
   | 'enum' // one of a fixed list of strings
   | 'tags' // several of a fixed list of strings (array, items.enum)
   | 'rows' // an array of flat objects, edited as a table
@@ -27,23 +28,81 @@ export function baseType(p: Prop | undefined): string | undefined {
   return undefined
 }
 
-function stringEnum(p: Prop | undefined): string[] | undefined {
+export type EnumEntry = { value: string; title?: string }
+
+function isObj(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v)
+}
+
+/**
+ * The `oneOf` form of an enum: every element has a string `const`, an optional string
+ * `title` and nothing else. Anything else is some other use of oneOf, not an enum.
+ */
+function oneOfEntries(list: unknown): EnumEntry[] | undefined {
+  if (!Array.isArray(list) || !list.length) return undefined
+  const out: EnumEntry[] = []
+  for (const el of list) {
+    if (!isObj(el) || typeof el.const !== 'string') return undefined
+    if (Object.keys(el).some((k) => k !== 'const' && k !== 'title')) return undefined
+    if (el.title !== undefined && typeof el.title !== 'string') return undefined
+    out.push({ value: el.const, title: el.title || undefined })
+  }
+  return out
+}
+
+/** The key the form keeps the original `oneOf` under while the schema handed to the form library has `enum` instead. */
+export const ONEOF_STASH = 'x-rackbook-oneof'
+
+function stringEnum(p: Prop | undefined): EnumEntry[] | undefined {
+  const one = oneOfEntries(p?.oneOf) ?? oneOfEntries(p?.[ONEOF_STASH])
+  if (one) return one
   const e = p?.enum
   if (!Array.isArray(e)) return undefined
   const vals = e.filter((x) => x !== null)
-  return vals.length && vals.every((x) => typeof x === 'string') ? (vals as string[]) : undefined
+  return vals.length && vals.every((x) => typeof x === 'string') ? (vals as string[]).map((value) => ({ value })) : undefined
 }
 
-/** The allowed values of a string enum property. */
-export function enumValues(p: Prop | undefined): string[] | undefined {
+/** The codes of a string enum property with the default-language titles of the `oneOf` form (plain `enum`: no titles). */
+export function enumEntries(p: Prop | undefined): EnumEntry[] | undefined {
   return baseType(p) === 'string' ? stringEnum(p) : undefined
+}
+
+/** The same for an array property whose items are a string enum. */
+export function itemEntries(p: Prop | undefined): EnumEntry[] | undefined {
+  if (baseType(p) !== 'array') return undefined
+  const items = p?.items as Prop | undefined
+  return items && baseType(items) === 'string' ? stringEnum(items) : undefined
+}
+
+/** The allowed values of a string enum property (`enum` or the `oneOf` form). */
+export function enumValues(p: Prop | undefined): string[] | undefined {
+  return enumEntries(p)?.map((e) => e.value)
 }
 
 /** The allowed values of an array property whose items are a string enum. */
 export function itemEnum(p: Prop | undefined): string[] | undefined {
-  if (baseType(p) !== 'array') return undefined
-  const items = p?.items as Prop | undefined
-  return items && baseType(items) === 'string' ? stringEnum(items) : undefined
+  return itemEntries(p)?.map((e) => e.value)
+}
+
+/**
+ * A copy of a property (recursively: array items, row object properties) in which the
+ * `oneOf` enum form is replaced by plain `enum`. The form library would otherwise treat the
+ * property as a schema chooser and may pre-fill the first `const`; Ajv checks the same
+ * codes either way. The original `oneOf` stays under ONEOF_STASH so labels still read it.
+ */
+export function enumForm<T extends Prop>(p: T): T {
+  const out: Prop = { ...p }
+  const entries = oneOfEntries(p.oneOf)
+  if (entries && !Array.isArray(p.enum)) {
+    out[ONEOF_STASH] = p.oneOf
+    delete out.oneOf
+    out.enum = entries.map((e) => e.value)
+  }
+  if (isObj(p.items)) out.items = enumForm(p.items as Prop)
+  if (isObj(p.properties)) {
+    out.properties = Object.fromEntries(Object.entries(p.properties).map(([k, v]) => [k, isObj(v) ? enumForm(v as Prop) : v]))
+  }
+  return out as T
 }
 
 /** `"x-rackbook": {"suggest": true|false}` on the property; undefined when not set. */
@@ -81,6 +140,7 @@ export function fieldKind(p: Prop | undefined, ctx: FieldCtx): FieldKind {
       if (stringEnum(p)) return 'enum'
       if (p.format === 'textarea') return 'textarea'
       if (p.format === 'date') return 'date'
+      if (p.format === 'country') return 'country'
       // never offer what is already stored in a secret-named or public-annotated field, whatever the option says
       if ((ctx.name && isSecretName(ctx.name)) || (p['x-rackbook'] as Record<string, unknown> | undefined)?.public !== undefined) return 'plain'
       const opt = suggestOption(p)

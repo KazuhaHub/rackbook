@@ -10,6 +10,7 @@ import { errorMessage } from '@/lib/api'
 import { failedCount, type ModuleView } from '@/lib/modules'
 import { useModules } from '@/lib/modulesApi'
 import { useMeta } from '@/providers/meta'
+import { collectionTitleOf } from '@/lib/labels'
 
 /** When the module runs next, in words. */
 export function nextText(m: ModuleView) {
@@ -104,7 +105,7 @@ export default function Modules() {
                       </div>
                     )}
                   </td>
-                  <td className="px-4 py-2.5 text-xs">{m.readOnly ? <span className="text-muted-foreground">{t.modules.noCollection}</span> : t.modules.writesTo(meta.collections.find((c) => c.name === m.collection)?.title ?? m.collection ?? '')}</td>
+                  <td className="px-4 py-2.5 text-xs">{m.readOnly ? <span className="text-muted-foreground">{t.modules.noCollection}</span> : t.modules.writesTo(collectionTitleOf(meta.collections.find((c) => c.name === m.collection), m.collection ?? ''))}</td>
                 </tr>
               ))}
             </tbody>

@@ -15,7 +15,9 @@ import (
 
 	"github.com/kazuhahub/rackbook/internal/config"
 	"github.com/kazuhahub/rackbook/internal/edit"
+	"github.com/kazuhahub/rackbook/internal/labels"
 	"github.com/kazuhahub/rackbook/internal/ledger"
+	"github.com/kazuhahub/rackbook/internal/locale"
 	"github.com/kazuhahub/rackbook/internal/secretscan"
 	"github.com/kazuhahub/rackbook/internal/validate"
 )
@@ -290,6 +292,7 @@ func checkType(l *ledger.Ledger, old, nt *Type, p *Plan) {
 	if len(nt.Fields) == 0 {
 		p.refuse("invalid", "", "a data type needs at least one field")
 	}
+	checkTexts(p, "", "the type's translations", nt.I18n, "title", "description", "group")
 	seen := map[string]bool{}
 	for i := range nt.Fields {
 		f := &nt.Fields[i]
@@ -395,7 +398,27 @@ func checkField(l *ledger.Ledger, t *Type, f *Field, old *Field, p *Plan) {
 			p.refuse("invalid", f.Name, "field %q: %q has no field %q", f.Name, f.Ref.To, f.Ref.ToField)
 		}
 	}
+	if hasExtra(f.Extras, kwI18n) && old != nil && translationsChanged(old, f) {
+		p.refuse("invalid", f.Name, "x-rackbook-i18n on %s is not in the expected shape; fix it in the schema file or remove it", f.Name)
+	}
+	checkTexts(p, f.Name, fmt.Sprintf("field %q translations", f.Name), f.I18n, "title", "description")
+	if f.Ref != nil {
+		checkTexts(p, f.Name, fmt.Sprintf("field %q reference translations", f.Name), f.Ref.I18n, "message", "backref_title")
+	}
 	if f.Type == TEnum {
+		for _, it := range f.Enum {
+			if it.Icon != "" && (len(it.Icon) > 64 || !labels.ValidIcon(it.Icon)) {
+				p.refuse("invalid", f.Name, "field %q: the icon of %q is not an icon name (lowercase letters, digits and hyphens, up to 64 characters, like circle-check)", f.Name, it.Value)
+			}
+			for _, l := range sortedKeys(it.Labels) {
+				if !labels.Supported(l) {
+					p.refuse("invalid", f.Name, "field %q: the label of %q is given for %q, which is not a supported language (use %s)", f.Name, it.Value, l, strings.Join(locale.Supported, ", "))
+				}
+			}
+		}
+		if old == nil || !reflect.DeepEqual(old.Enum, f.Enum) {
+			checkLabelClashes(p, f)
+		}
 		if len(f.Enum) == 0 {
 			p.refuse("invalid", f.Name, "field %q: an enum needs at least one value", f.Name)
 		}
@@ -529,10 +552,38 @@ func normalizeIncoming(in Type, old *Type) *Type {
 	if nt.List == nil {
 		nt.List = []string{}
 	}
+	// translations left out keep what the type has; an empty object clears them
+	nt.I18n = cleanTexts(in.I18n)
+	if in.I18n == nil && old != nil {
+		nt.I18n = old.I18n
+	}
 	nt.Fields = append([]Field(nil), in.Fields...)
 	for i := range nt.Fields {
 		f := &nt.Fields[i]
+		inI18n := f.I18n
+		f.I18n = cleanTexts(inI18n)
+		if inI18n == nil && old != nil {
+			if of := old.Field(f.Name); of != nil {
+				f.I18n = of.I18n
+			}
+		}
+		if f.Enum != nil {
+			f.Enum = append([]EnumItem(nil), f.Enum...)
+			for j := range f.Enum {
+				f.Enum[j].Labels = cleanLabels(f.Enum[j].Labels)
+			}
+		}
 		f.Extras, f.Advanced = nil, false
+		if f.Ref != nil {
+			r := *f.Ref
+			r.I18n = cleanTexts(r.I18n)
+			if f.Ref.I18n == nil && old != nil {
+				if of := old.Field(f.Name); of != nil && of.Ref != nil {
+					r.I18n = of.Ref.I18n // left out: the rule keeps its translations
+				}
+			}
+			f.Ref = &r
+		}
 		if old != nil {
 			if of := old.Field(f.Name); of != nil {
 				f.Extras = of.Extras // the server's copy is the truth
@@ -556,6 +607,75 @@ func normalizeIncoming(in Type, old *Type) *Type {
 		}
 	}
 	return &nt
+}
+
+// cleanTexts returns a copy of m without empty text and empty languages; nil
+// when nothing is left, so that "no translations" has one shape.
+func cleanTexts(m map[string]map[string]string) map[string]map[string]string {
+	var out map[string]map[string]string
+	for loc, texts := range m {
+		for k, v := range texts {
+			if strings.TrimSpace(v) == "" {
+				continue
+			}
+			if out == nil {
+				out = map[string]map[string]string{}
+			}
+			if out[loc] == nil {
+				out[loc] = map[string]string{}
+			}
+			out[loc][k] = v
+		}
+	}
+	return out
+}
+
+func cleanLabels(m map[string]string) map[string]string {
+	var out map[string]string
+	for loc, v := range m {
+		if strings.TrimSpace(v) == "" {
+			continue
+		}
+		if out == nil {
+			out = map[string]string{}
+		}
+		out[loc] = v
+	}
+	return out
+}
+
+// checkTexts refuses a translation for a language the console does not have
+// and a key the object does not take. what names the object for the message.
+func checkTexts(p *Plan, field, what string, m map[string]map[string]string, allowed ...string) {
+	locs := make([]string, 0, len(m))
+	for l := range m {
+		locs = append(locs, l)
+	}
+	sort.Strings(locs)
+	for _, l := range locs {
+		if !labels.Supported(l) {
+			p.refuse("invalid", field, "%s: %q is not a supported language (use %s)", what, l, strings.Join(locale.Supported, ", "))
+			continue
+		}
+		keys := make([]string, 0, len(m[l]))
+		for k := range m[l] {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			ok := false
+			for _, a := range allowed {
+				ok = ok || a == k
+			}
+			if !ok {
+				hint := ""
+				if k == "enum" {
+					hint = "; give enum labels on the enum items"
+				}
+				p.refuse("invalid", field, "%s: %s has no %q text (use %s)%s", what, l, k, strings.Join(allowed, ", "), hint)
+			}
+		}
+	}
 }
 
 // checkRemovedFieldsInUse refuses to drop a field that other parts of the
@@ -761,6 +881,64 @@ func fieldOfPath(path string) string {
 	}
 	f, _, _ := strings.Cut(path[1:], "/")
 	return strings.NewReplacer("~1", "/", "~0", "~").Replace(f)
+}
+
+// translationsChanged reports whether f carries other translations than the ones
+// read into old: its field translations or the other-language labels of its
+// items. The default-language label (the oneOf title) is not part of
+// x-rackbook-i18n and does not count.
+func translationsChanged(old *Field, f *Field) bool {
+	if !reflect.DeepEqual(cleanTexts(old.I18n), cleanTexts(f.I18n)) {
+		return true
+	}
+	oldLabels := map[string]map[string]string{}
+	for _, it := range old.Enum {
+		oldLabels[it.Value] = cleanLabels(it.Labels)
+	}
+	for _, it := range f.Enum {
+		if !reflect.DeepEqual(oldLabels[it.Value], cleanLabels(it.Labels)) {
+			return true
+		}
+	}
+	return false
+}
+
+// checkLabelClashes refuses a label that two codes of one field share in a
+// language, and a label that is another code of the field: either would make
+// "type the label" pick the wrong code.
+func checkLabelClashes(p *Plan, f *Field) {
+	codes := map[string]bool{}
+	for _, it := range f.Enum {
+		codes[it.Value] = true
+	}
+	seen := map[string]string{} // language + label -> code
+	for _, it := range f.Enum {
+		check := func(loc, label string) {
+			if label == "" {
+				return
+			}
+			if other, ok := seen[loc+"\x00"+label]; ok && other != it.Value {
+				p.refuse("invalid", f.Name, "field %q: the label %q is used for both %q and %q (%s)", f.Name, label, other, it.Value, loc)
+			}
+			seen[loc+"\x00"+label] = it.Value
+			if codes[label] && label != it.Value {
+				p.refuse("invalid", f.Name, "field %q: the label %q of %q is the code of another value", f.Name, label, it.Value)
+			}
+		}
+		check("default", it.Label)
+		for _, loc := range sortedKeys(it.Labels) {
+			check(loc, it.Labels[loc])
+		}
+	}
+}
+
+func sortedKeys(m map[string]string) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func dedup(s []string) []string {

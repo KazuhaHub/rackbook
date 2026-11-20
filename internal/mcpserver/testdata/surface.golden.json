@@ -189,7 +189,7 @@
         "openWorldHint": false,
         "readOnlyHint": true
       },
-      "description": "Describe one collection: title, description, key fields, label, the JSON Schema of its records, references in and out, facets, notes, record count and whether it supports documents. Read it to build valid records for records_create and records_update.",
+      "description": "Describe one collection: title, description, key fields, label, the JSON Schema of its records, references in and out, facets, notes, record count and whether it supports documents. For enum-like fields, fields[].values lists the allowed codes with their labels per language: records hold the codes, never the labels. Read it to build valid records for records_create and records_update.",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
@@ -256,11 +256,92 @@
                 "required": {
                   "type": "boolean"
                 },
+                "row": {
+                  "items": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "name": {
+                        "type": "string"
+                      },
+                      "title": {
+                        "type": "string"
+                      },
+                      "titles": {
+                        "additionalProperties": {
+                          "type": "string"
+                        },
+                        "type": "object"
+                      },
+                      "values": {
+                        "items": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "code": {
+                              "type": "string"
+                            },
+                            "labels": {
+                              "additionalProperties": {
+                                "type": "string"
+                              },
+                              "type": "object"
+                            }
+                          },
+                          "required": [
+                            "code"
+                          ],
+                          "type": "object"
+                        },
+                        "type": [
+                          "null",
+                          "array"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "name"
+                    ],
+                    "type": "object"
+                  },
+                  "type": [
+                    "null",
+                    "array"
+                  ]
+                },
                 "title": {
                   "type": "string"
                 },
+                "titles": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "type": "object"
+                },
                 "type": {
                   "type": "string"
+                },
+                "values": {
+                  "items": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "code": {
+                        "type": "string"
+                      },
+                      "labels": {
+                        "additionalProperties": {
+                          "type": "string"
+                        },
+                        "type": "object"
+                      }
+                    },
+                    "required": [
+                      "code"
+                    ],
+                    "type": "object"
+                  },
+                  "type": [
+                    "null",
+                    "array"
+                  ]
                 }
               },
               "required": [
@@ -336,6 +417,15 @@
                 },
                 "field": {
                   "type": "string"
+                },
+                "i18n": {
+                  "additionalProperties": {
+                    "additionalProperties": {
+                      "type": "string"
+                    },
+                    "type": "object"
+                  },
+                  "type": "object"
                 },
                 "title": {
                   "type": "string"
@@ -450,11 +540,92 @@
                       "required": {
                         "type": "boolean"
                       },
+                      "row": {
+                        "items": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "name": {
+                              "type": "string"
+                            },
+                            "title": {
+                              "type": "string"
+                            },
+                            "titles": {
+                              "additionalProperties": {
+                                "type": "string"
+                              },
+                              "type": "object"
+                            },
+                            "values": {
+                              "items": {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "code": {
+                                    "type": "string"
+                                  },
+                                  "labels": {
+                                    "additionalProperties": {
+                                      "type": "string"
+                                    },
+                                    "type": "object"
+                                  }
+                                },
+                                "required": [
+                                  "code"
+                                ],
+                                "type": "object"
+                              },
+                              "type": [
+                                "null",
+                                "array"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "name"
+                          ],
+                          "type": "object"
+                        },
+                        "type": [
+                          "null",
+                          "array"
+                        ]
+                      },
                       "title": {
                         "type": "string"
                       },
+                      "titles": {
+                        "additionalProperties": {
+                          "type": "string"
+                        },
+                        "type": "object"
+                      },
                       "type": {
                         "type": "string"
+                      },
+                      "values": {
+                        "items": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "code": {
+                              "type": "string"
+                            },
+                            "labels": {
+                              "additionalProperties": {
+                                "type": "string"
+                              },
+                              "type": "object"
+                            }
+                          },
+                          "required": [
+                            "code"
+                          ],
+                          "type": "object"
+                        },
+                        "type": [
+                          "null",
+                          "array"
+                        ]
                       }
                     },
                     "required": [
@@ -503,6 +674,15 @@
                       },
                       "field": {
                         "type": "string"
+                      },
+                      "i18n": {
+                        "additionalProperties": {
+                          "additionalProperties": {
+                            "type": "string"
+                          },
+                          "type": "object"
+                        },
+                        "type": "object"
                       },
                       "title": {
                         "type": "string"
@@ -1649,11 +1829,92 @@
                       "required": {
                         "type": "boolean"
                       },
+                      "row": {
+                        "items": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "name": {
+                              "type": "string"
+                            },
+                            "title": {
+                              "type": "string"
+                            },
+                            "titles": {
+                              "additionalProperties": {
+                                "type": "string"
+                              },
+                              "type": "object"
+                            },
+                            "values": {
+                              "items": {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "code": {
+                                    "type": "string"
+                                  },
+                                  "labels": {
+                                    "additionalProperties": {
+                                      "type": "string"
+                                    },
+                                    "type": "object"
+                                  }
+                                },
+                                "required": [
+                                  "code"
+                                ],
+                                "type": "object"
+                              },
+                              "type": [
+                                "null",
+                                "array"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "name"
+                          ],
+                          "type": "object"
+                        },
+                        "type": [
+                          "null",
+                          "array"
+                        ]
+                      },
                       "title": {
                         "type": "string"
                       },
+                      "titles": {
+                        "additionalProperties": {
+                          "type": "string"
+                        },
+                        "type": "object"
+                      },
                       "type": {
                         "type": "string"
+                      },
+                      "values": {
+                        "items": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "code": {
+                              "type": "string"
+                            },
+                            "labels": {
+                              "additionalProperties": {
+                                "type": "string"
+                              },
+                              "type": "object"
+                            }
+                          },
+                          "required": [
+                            "code"
+                          ],
+                          "type": "object"
+                        },
+                        "type": [
+                          "null",
+                          "array"
+                        ]
                       }
                     },
                     "required": [
@@ -1702,6 +1963,15 @@
                       },
                       "field": {
                         "type": "string"
+                      },
+                      "i18n": {
+                        "additionalProperties": {
+                          "additionalProperties": {
+                            "type": "string"
+                          },
+                          "type": "object"
+                        },
+                        "type": "object"
                       },
                       "title": {
                         "type": "string"

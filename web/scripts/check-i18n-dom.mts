@@ -10,7 +10,8 @@
 //
 // Runs the console with the mock API (vite --mode mock) and a headless Chrome
 // driven over the DevTools protocol. CHROME=<path> picks the browser
-// (default google-chrome); PORT the dev server port (default 5199).
+// (default google-chrome); PORT the dev server port (default 5199); CPU_THROTTLE
+// slows the page down (e.g. 6) to check it does not depend on timing.
 import { spawn, type ChildProcess } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -144,14 +145,16 @@ async function evaluate<T>(expression: string): Promise<T> {
 }
 await cdp('Page.enable')
 await cdp('Runtime.enable')
+// CPU_THROTTLE=6 slows the page down like a busy CI runner, to shake out timing assumptions
+if (process.env.CPU_THROTTLE) await cdp('Emulation.setCPUThrottlingRate', { rate: Number(process.env.CPU_THROTTLE) })
 
 /** Waits until the page has stopped changing (lazy chunks, queries). */
 async function settle() {
   let last = ''
   for (let i = 0; i < 40; i++) {
     await sleep(250)
-    const now = await evaluate<string>('document.body.innerText.length + ":" + document.querySelectorAll("*").length')
-    if (now === last) return
+    const now = await evaluate<string>('(document.body ? document.body.innerText.length : -1) + ":" + document.querySelectorAll("*").length')
+    if (now === last && !now.startsWith("-1")) return
     last = now
   }
 }
@@ -170,6 +173,19 @@ const TEXT = `(() => {
   return out.map((s) => s.trim()).filter(Boolean)
 })()`
 
+/**
+ * Waits until the page has applied what the server says about the language
+ * (saved preference, Accept-Language): a switch made before that could be
+ * undone by it, and a text sample taken before it would be in another language.
+ */
+async function synced() {
+  for (let i = 0; i < 100; i++) {
+    if (await evaluate<boolean>('window.__rbLocaleSynced === true && typeof window.__rbChooseLocale === "function"')) return
+    await sleep(100)
+  }
+  throw new Error('the page never synced its language')
+}
+
 async function open(url: string, lang: string) {
   await cdp('Page.navigate', { url: `${BASE}/` })
   await settle()
@@ -179,6 +195,8 @@ async function open(url: string, lang: string) {
     `fetch('/api/account/preferences', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ locale: ${JSON.stringify(lang)} }) }).then((r) => r.status)`,
   )
   await cdp('Page.navigate', { url })
+  await settle()
+  await synced()
   await settle()
 }
 
@@ -224,7 +242,6 @@ for (const [a, b] of pairs) {
     await open(url, b)
     const fresh = new Set(await evaluate<string[]>(TEXT))
     await open(url, a)
-    for (let i = 0; i < 50 && !(await evaluate<boolean>('typeof window.__rbChooseLocale === "function"')); i++) await sleep(200)
     await evaluate(`window.__rbChooseLocale(${JSON.stringify(b)})`)
     await settle()
     const switched = new Set(await evaluate<string[]>(TEXT))

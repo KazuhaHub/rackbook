@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "端口规范",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["service", "port"],
+  "properties": {
+    "service": {"type": "string", "title": "服务"},
+    "port": {"type": "string", "title": "端口"},
+    "scope": {"type": "string", "title": "适用范围"},
+    "notes": {"type": "string", "title": "说明", "format": "textarea"}
+  }
+}

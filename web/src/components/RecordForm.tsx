@@ -8,11 +8,12 @@ import localizeZh from 'ajv-i18n/localize/zh'
 import localizeZhTW from 'ajv-i18n/localize/zh-TW'
 import { locale, t, type Messages } from '@/i18n'
 import { useAllRecords } from '@/lib/hooks'
-import { fieldKind, suggestValues, type Prop } from '@/lib/fieldKind'
+import { enumForm, fieldKind, suggestValues, type Prop } from '@/lib/fieldKind'
+import { enumChoices, fieldDescription, fieldTitle, propAt } from '@/lib/labels'
 import { pointerToPath, str } from '@/lib/ledger'
 import type { CheckError, Collection } from '@/lib/types'
 import { customFormats, formatHint } from '@/lib/formats'
-import { DateWidget, EnumWidget, ListWidget, RefManyWidget, RowsWidget, RefWidget, SuggestWidget, SwitchWidget, TagsWidget, type RefItem } from './form-widgets'
+import { CountryWidget, DateWidget, EnumWidget, ListWidget, RefManyWidget, RowsWidget, RefWidget, SuggestWidget, SwitchWidget, TagsWidget, type RefItem } from './form-widgets'
 
 // Draft 2020-12, the same dialect the server validates with.
 // Ajv's own messages are translated by ajv-i18n for the keywords transformErrors
@@ -26,7 +27,7 @@ const validator = customizeValidator(
   (errors) => localizers[locale](errors),
 )
 
-const widgets = { RefWidget, RefManyWidget, SwitchWidget, EnumWidget, TagsWidget, SuggestWidget, DateWidget, ListWidget, RowsWidget }
+const widgets = { CountryWidget, RefWidget, RefManyWidget, SwitchWidget, EnumWidget, TagsWidget, SuggestWidget, DateWidget, ListWidget, RowsWidget }
 
 // A field shows its errors once the user has been in it (or tried to save), not while it is untouched.
 // formContext carries plain data (not a function) so the fields re-render when it changes.
@@ -55,7 +56,7 @@ export function toErrorSchema(errors: CheckError[], schema: RJSFSchema, collecti
   return root
 }
 
-function transformErrors(errors: RJSFValidationError[]): RJSFValidationError[] {
+function transformErrors(errors: RJSFValidationError[], root: Prop): RJSFValidationError[] {
   const v = t.validation
   return errors.map((e) => {
     const p = e.params ?? {}
@@ -71,7 +72,8 @@ function transformErrors(errors: RJSFValidationError[]): RJSFValidationError[] {
         message = v.type(String(p.type))
         break
       case 'enum':
-        message = v.enum((p.allowedValues ?? []).map(String))
+        // the allowed codes with their labels in the current language
+        message = v.enum(enumChoices(propAt(root, e.property ?? ''), (p.allowedValues ?? []).map(String)))
         break
       case 'minLength':
         message = v.minLength(Number(p.limit))
@@ -204,7 +206,14 @@ export function RecordForm({
     delete s.description
     delete s.$schema
     const ui: UiSchema = { 'ui:submitButtonOptions': { norender: true } }
-    for (const [field, prop] of Object.entries(s.properties ?? {}) as [string, any][]) {
+    for (const [field, original] of Object.entries(s.properties ?? {}) as [string, any][]) {
+      // the oneOf enum form becomes plain enum for the form library; titles and descriptions follow the language
+      const prop = enumForm(original as Prop) as any
+      s.properties![field] = prop
+      prop.title = fieldTitle(original, field)
+      const description = fieldDescription(original)
+      if (description) prop.description = description
+      else delete prop.description
       if (refItems[field]) {
         ui[field] = { 'ui:widget': prop.type === 'array' ? 'RefManyWidget' : 'RefWidget', 'ui:options': { items: refItems[field] } }
         continue
@@ -232,6 +241,9 @@ export function RecordForm({
         case 'date':
           ui[field] = { 'ui:widget': 'DateWidget' }
           break
+        case 'country':
+          ui[field] = { 'ui:widget': 'CountryWidget' }
+          break
         case 'suggest':
           ui[field] = { 'ui:widget': 'SuggestWidget', 'ui:options': { suggestions: suggestValues(ownRecords ?? [], field) } }
           break
@@ -239,7 +251,7 @@ export function RecordForm({
     }
     return { schema: s, uiSchema: ui }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [col, refItems, own?.dataUpdatedAt])
+  }, [col, refItems, own?.dataUpdatedAt, locale])
 
   const extraErrors = useMemo(() => toErrorSchema(serverErrors, schema, col.name), [serverErrors, schema, col.name])
 
@@ -272,7 +284,7 @@ export function RecordForm({
       disabled={disabled}
       noHtml5Validate
       showErrorList={false}
-      transformErrors={transformErrors}
+      transformErrors={(errs) => transformErrors(errs, col.schema as Prop)}
       translateString={translateString}
       extraErrors={extraErrors}
       experimental_defaultFormStateBehavior={{ emptyObjectFields: 'populateRequiredDefaults' }}
