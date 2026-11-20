@@ -321,7 +321,7 @@ rackbook:
 collections: []                     # console. Empty = every collection with an expiry field
 thresholds: [30, 14, 7, 0]          # console. 0 = on the day of expiry and after
 state_file: notify-state.json       # relative to $STATE_DIRECTORY
-language: en                        # console. en or zh
+language: en-US                     # console. zh-CN, zh-TW or en-US (en and zh still work); default en-US
 interval: 6h                        # without --once, and only when the server has no console settings
 smtp:                               # optional
   host: smtp.example.org
@@ -451,7 +451,7 @@ modules:
       timezone: Asia/Shanghai
       thresholds: [30, 14, 7, 0]
       recipients: [ops@example.org, sec@example.org]
-      language: zh
+      language: zh-CN
 ```
 
 - Saving in the console is **one Git commit** (author = the administrator, the

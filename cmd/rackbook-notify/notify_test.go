@@ -182,7 +182,7 @@ func TestConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(c.Thresholds, std) || c.Language != "en" || c.Interval != 6*time.Hour || c.StateFile != "notify-state.json" {
+	if !reflect.DeepEqual(c.Thresholds, std) || c.Language != "en-US" || c.Interval != 6*time.Hour || c.StateFile != "notify-state.json" {
 		t.Fatalf("%+v", c)
 	}
 	bad := map[string]string{
@@ -737,6 +737,46 @@ func TestHeloName(t *testing.T) {
 		s := &SMTPConfig{Host: "h", From: "a@b.c", To: []string{"a@b.c"}, Helo: bad}
 		if err := s.normalize(); err == nil {
 			t.Errorf("helo %q accepted", bad)
+		}
+	}
+}
+
+func TestConfigLanguages(t *testing.T) {
+	for in, want := range map[string]string{"en": "en-US", "zh": "zh-CN", "zh-CN": "zh-CN", "zh-TW": "zh-TW", "en-US": "en-US", "ZH-tw": "zh-TW", "zh_CN": "zh-CN"} {
+		c, err := parseConfig([]byte("rackbook: {url: u, token_file: t}\nlanguage: "+in+"\nwebhook: {url: https://h}\n"), false)
+		if err != nil {
+			t.Fatalf("%s: %v", in, err)
+		}
+		if c.Language != want {
+			t.Errorf("%s: got %s, want %s", in, c.Language, want)
+		}
+	}
+	for _, in := range []string{"fr", "zh-HK", "en-GB", "zh-Hant"} {
+		if _, err := parseConfig([]byte("rackbook: {url: u, token_file: t}\nlanguage: "+in+"\nwebhook: {url: https://h}\n"), false); err == nil || !strings.Contains(err.Error(), "zh-CN, zh-TW, en-US") {
+			t.Errorf("%s: want an error naming the languages, got %v", in, err)
+		}
+	}
+}
+
+func TestDigestTextTraditional(t *testing.T) {
+	due := []rbclient.Item{item("credentials", "a", "2026-11-10", -8), item("hosts", "h1", "2026-12-01", 13)}
+	fin := time.Date(2026, 11, 18, 4, 0, 5, 0, time.UTC)
+	d := buildDigestWith("zh-TW", "https://rb.example", due, []modsettings.ModuleStatus{{Name: "entra", LastRun: &modsettings.Run{Finished: fin, Status: "failed"}}})
+	if d.Subject != "Rackbook：1 筆已過期，1 筆即將到期，1 個模組執行失敗" {
+		t.Fatal(d.Subject)
+	}
+	for _, s := range []string{"[已過期] credentials / a", "剩餘天數: -8", "來源: 手動", "連結: https://rb.example/c/credentials/a", "以下模組執行失敗：", "[失敗] entra"} {
+		if !strings.Contains(d.Body, s) {
+			t.Errorf("missing %q in\n%s", s, d.Body)
+		}
+	}
+	// the old alias still words it in Simplified Chinese
+	if z := buildDigest("zh", "https://rb.example", due[:1]); z.Subject != "Rackbook：1 项已过期" {
+		t.Fatal(z.Subject)
+	}
+	for lang, want := range map[string]string{"zh-TW": "Rackbook：收件者已變更", "zh-CN": "Rackbook：收件人已变更", "en-US": "Rackbook: recipients changed", "en": "Rackbook: recipients changed"} {
+		if s, b := recipientsNotice(lang, "https://rb.example/", []string{"a@x"}, []string{"b@x"}); s != want || !strings.Contains(b, "https://rb.example/modules") || !strings.Contains(b, "b@x") {
+			t.Errorf("%s: %q\n%s", lang, s, b)
 		}
 	}
 }

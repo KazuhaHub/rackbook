@@ -13,7 +13,7 @@ import { isCountryCode } from '../src/lib/countries.ts'
 
 type Data = Record<string, any>
 type Rec = { id: string; hash: string; data: Data }
-type CheckErr = { collection: string; id: string; path: string; rule: string; message: string }
+type CheckErr = { collection: string; id: string; path: string; rule: string; message: string; keyword?: string; params?: Record<string, unknown> }
 type RefRule = {
   collection: string
   field: string
@@ -22,6 +22,7 @@ type RefRule = {
   allow: string[]
   many: boolean
   title?: string
+  message?: string
   i18n?: Record<string, Record<string, string>>
 }
 type Coll = {
@@ -69,7 +70,8 @@ const pickKeys = (i18n: Record<string, Record<string, string>> | undefined, ...k
 
 // "static" -> `"静态" is not allowed; use code "static"` and one issue for a value of no enum code,
 // the way the server words it (the noisy oneOf sub-errors are dropped).
-function enumIssue(e: any): string | undefined {
+// the message and the structured form (keyword + params) of an enum failure, as the server words it
+function enumIssue(e: any): { message: string; params: Record<string, unknown> } | undefined {
   const codes: string[] | undefined =
     e.keyword === 'enum'
       ? e.params.allowedValues.filter((x: unknown) => typeof x === 'string')
@@ -83,7 +85,9 @@ function enumIssue(e: any): string | undefined {
     return out.filter(Boolean) as string[]
   }
   const hit = codes.find((c) => names(c).some((n) => n === e.data || n.toLowerCase() === e.data.toLowerCase()))
-  return hit ? `"${e.data}" is not allowed; use code "${hit}"` : `"${e.data}" is not one of: ${codes.join(', ')}`
+  return hit
+    ? { message: `"${e.data}" is not allowed; use code "${hit}"`, params: { value: e.data, use: hit } }
+    : { message: `"${e.data}" is not one of: ${codes.join(', ')}`, params: { value: e.data, allowed: codes } }
 }
 
 export function mockApi(root: string): Plugin {
@@ -190,6 +194,7 @@ export function mockApi(root: string): Plugin {
         allow: r.ref.allow ?? [],
         many: !!r.ref.many,
         title: r.ref.backref_title,
+        message: r.ref.message,
         i18n: tagsOnly(r.ref.i18n),
       }
     })
@@ -218,11 +223,16 @@ export function mockApi(root: string): Plugin {
                 : e.keyword === 'required'
                   ? `${e.instancePath}/${e.params.missingProperty}`
                   : e.instancePath
-            errs.push({ collection: c.name, id: r.id, path: p, rule: 'schema', message: enumIssue(e) ?? e.message ?? 'invalid' })
+            const en = enumIssue(e)
+            errs.push(
+              en
+                ? { collection: c.name, id: r.id, path: p, rule: 'schema', message: en.message, keyword: 'enum', params: en.params }
+                : { collection: c.name, id: r.id, path: p, rule: 'schema', message: e.message ?? 'invalid' },
+            )
           }
         }
         if (c.cfg.key?.length) {
-          if (seen.has(r.id)) errs.push({ collection: c.name, id: r.id, path: '', rule: 'unique', message: `duplicate key ${r.id}` })
+          if (seen.has(r.id)) errs.push({ collection: c.name, id: r.id, path: '', rule: 'unique', message: `duplicate key ${r.id}`, keyword: 'unique', params: { fields: c.cfg.key, values: c.cfg.key.map((k: string) => String(r.data[k] ?? '')), key: true } })
           seen.add(r.id)
         }
       })
@@ -234,7 +244,15 @@ export function mockApi(root: string): Plugin {
         const vals = rr.many ? [].concat(r.data[rr.field] ?? []) : r.data[rr.field] === undefined ? [] : [r.data[rr.field]]
         for (const v of vals) {
           if (!targets.has(String(v)) && !rr.allow.includes(String(v)))
-            errs.push({ collection: rr.collection, id: r.id, path: `/${rr.field}`, rule: 'ref', message: `unknown ${rr.to}.${rr.toField} "${v}"` })
+            errs.push({
+              collection: rr.collection,
+              id: r.id,
+              path: `/${rr.field}`,
+              rule: 'ref',
+              message: (rr.message ? `${rr.message}: ` : '') + `unknown ${rr.to}.${rr.toField} "${v}"`,
+              keyword: 'ref',
+              params: ruleParams({ value: String(v), target: `${rr.to}.${rr.toField}` }, rr.message, rr.i18n),
+            })
         }
       })
     }
@@ -525,4 +543,12 @@ export function mockApi(root: string): Plugin {
       })
     },
   }
+}
+
+/** A rule's own message and its translations in the params of its issues (as the server sends them). */
+function ruleParams(params: Record<string, unknown>, message: string | undefined, i18n: Record<string, Record<string, string>> | undefined) {
+  if (message) params.ruleMessage = message
+  const tr = Object.fromEntries(Object.entries(i18n ?? {}).flatMap(([l, v]) => (v?.message ? [[l, v.message]] : [])))
+  if (Object.keys(tr).length) params.ruleMessageI18n = tr
+  return params
 }

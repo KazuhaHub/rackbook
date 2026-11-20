@@ -21,7 +21,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"html"
 	"log/slog"
 	"net/http"
 	"net/netip"
@@ -33,6 +32,7 @@ import (
 
 	"github.com/kazuhahub/rackbook/internal/auth"
 	"github.com/kazuhahub/rackbook/internal/config"
+	"github.com/kazuhahub/rackbook/internal/prefs"
 	"github.com/kazuhahub/rackbook/internal/tokens"
 )
 
@@ -80,6 +80,9 @@ type Options struct {
 	// TrustedProxies are the --trusted-proxy prefixes: CF-Connecting-IP is
 	// believed only from them (the registration limit is per client address).
 	TrustedProxies []netip.Prefix
+	// Prefs holds each person's console language, for the pages this server
+	// shows; nil = the browser's language only.
+	Prefs *prefs.Store
 }
 
 // Server is the authorization server.
@@ -295,18 +298,6 @@ func randomToken(n int) (string, error) {
 }
 
 func equalStrings(a, b string) bool { return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1 }
-
-// errorPage answers an authorization request that cannot be sent back to the
-// client (unknown client, redirect_uri that does not match): the user sees the
-// problem and nothing is redirected.
-func errorPage(w http.ResponseWriter, status int, msg string) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-store")
-	w.WriteHeader(status)
-	fmt.Fprintf(w, `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Authorization failed</title>
-<style>body{font:16px/1.5 system-ui,sans-serif;max-width:36rem;margin:4rem auto;padding:0 1rem;color:#222}@media(prefers-color-scheme:dark){body{background:#111;color:#ddd}}</style></head>
-<body><h1>Authorization failed</h1><p>%s</p><p>Nothing was authorized. You can close this page.</p></body></html>`, html.EscapeString(msg))
-}
 
 // pruneExpired drops grants that went idle past idle_expiry while the server was
 // not looking, and registrations nobody uses, so the file does not collect them.

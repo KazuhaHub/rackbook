@@ -106,8 +106,15 @@
                 "id": {
                   "type": "string"
                 },
+                "keyword": {
+                  "type": "string"
+                },
                 "message": {
                   "type": "string"
+                },
+                "params": {
+                  "additionalProperties": true,
+                  "type": "object"
                 },
                 "path": {
                   "type": "string"
@@ -146,8 +153,15 @@
                 "id": {
                   "type": "string"
                 },
+                "keyword": {
+                  "type": "string"
+                },
                 "message": {
                   "type": "string"
+                },
+                "params": {
+                  "additionalProperties": true,
+                  "type": "object"
                 },
                 "path": {
                   "type": "string"
@@ -1370,8 +1384,15 @@
                 "id": {
                   "type": "string"
                 },
+                "keyword": {
+                  "type": "string"
+                },
                 "message": {
                   "type": "string"
+                },
+                "params": {
+                  "additionalProperties": true,
+                  "type": "object"
                 },
                 "path": {
                   "type": "string"
@@ -1430,8 +1451,15 @@
                 "id": {
                   "type": "string"
                 },
+                "keyword": {
+                  "type": "string"
+                },
                 "message": {
                   "type": "string"
+                },
+                "params": {
+                  "additionalProperties": true,
+                  "type": "object"
                 },
                 "path": {
                   "type": "string"
@@ -2085,8 +2113,15 @@
                 "id": {
                   "type": "string"
                 },
+                "keyword": {
+                  "type": "string"
+                },
                 "message": {
                   "type": "string"
+                },
+                "params": {
+                  "additionalProperties": true,
+                  "type": "object"
                 },
                 "path": {
                   "type": "string"
@@ -2135,8 +2170,15 @@
                 "id": {
                   "type": "string"
                 },
+                "keyword": {
+                  "type": "string"
+                },
                 "message": {
                   "type": "string"
+                },
+                "params": {
+                  "additionalProperties": true,
+                  "type": "object"
                 },
                 "path": {
                   "type": "string"

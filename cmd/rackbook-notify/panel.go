@@ -29,11 +29,13 @@ func (c *Config) withPanel(s *modsettings.Notify, log *slog.Logger) *Config {
 		}
 		eff.Thresholds = append([]int(nil), s.Thresholds...)
 	}
-	if s.Language != "" {
-		if c.setLanguage && c.Language != s.Language {
+	if l, ok := modsettings.NotifyLanguage(s.Language); ok {
+		if c.setLanguage && c.Language != l {
 			warn("language")
 		}
-		eff.Language = s.Language
+		eff.Language = l
+	} else if s.Language != "" {
+		log.Warn("the language set in the Rackbook console is not supported; the local one is used", "language", s.Language)
 	}
 	if len(s.Collections) > 0 {
 		if c.setCollections && !reflect.DeepEqual(c.Collections, s.Collections) {
@@ -256,10 +258,8 @@ func recipientsNotice(lang, baseURL string, old, nw []string) (subject, body str
 		}
 		return strings.Join(l, ", ")
 	}
-	if lang == "zh" {
-		return "Rackbook：收件人已变更", fmt.Sprintf("到期提醒的收件人已变更。\n\n原收件人：%s\n新收件人：%s\n\n如果这不是你预期的改动，请在 %s 的“模块”页面检查。\n", list(old), list(nw), strings.TrimRight(baseURL, "/")+"/modules")
-	}
-	return "Rackbook: recipients changed", fmt.Sprintf("The recipients of the expiry reminders changed.\n\nBefore: %s\nNow: %s\n\nIf you did not expect this, check the Modules page at %s.\n", list(old), list(nw), strings.TrimRight(baseURL, "/")+"/modules")
+	t := textsFor(lang)
+	return t.prefix + t.recipientsSubject, fmt.Sprintf(t.recipientsBody, list(old), list(nw), strings.TrimRight(baseURL, "/")+"/modules")
 }
 
 var errNoRecipients = errors.New("no recipients: set them in the Rackbook console (Modules) or in smtp.to")

@@ -124,7 +124,7 @@ func TestAuthorizeChecks(t *testing.T) {
 	p.redirect = ""
 	page["no redirect"] = p
 	for name, p := range page {
-		r := e.startAuth(boss, p)
+		r := e.startAuth(boss, p, "Accept-Language", "en")
 		if r.StatusCode != 400 || r.Header.Get("Location") != "" || !strings.Contains(string(r.body), "Authorization failed") {
 			t.Errorf("%s: %d %q", name, r.StatusCode, r.Header.Get("Location"))
 		}

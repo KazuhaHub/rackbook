@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"go.yaml.in/yaml/v3"
+
+	"github.com/kazuhahub/rackbook/modsettings"
 )
 
 const (
@@ -116,12 +118,12 @@ func (c *Config) normalize(dryRun bool) error {
 	if c.StateFile == "" {
 		c.StateFile = defaultStateFile
 	}
-	switch c.Language {
-	case "":
-		c.Language = "en"
-	case "en", "zh":
-	default:
-		return fmt.Errorf("config: language %q must be en or zh", c.Language)
+	if c.Language == "" {
+		c.Language = "en-US"
+	} else if l, ok := modsettings.NotifyLanguage(c.Language); ok {
+		c.Language = l
+	} else {
+		return fmt.Errorf("config: language %q must be one of %s (en and zh also work)", c.Language, strings.Join(modsettings.NotifyLanguages, ", "))
 	}
 	if c.Interval == 0 {
 		c.Interval = defaultInterval

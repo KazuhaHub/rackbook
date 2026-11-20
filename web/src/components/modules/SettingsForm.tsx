@@ -6,7 +6,7 @@ import { NativeSelect } from '@/components/ui/native-select'
 import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
 import { TagInput } from '@/components/types/TagInput'
-import { t } from '@/i18n'
+import { LOCALE_NAMES, t } from '@/i18n'
 import {
   cleanSettings,
   defaultsToText,
@@ -41,13 +41,27 @@ type Draft = {
 
 const strs = (v: unknown): string[] => (Array.isArray(v) ? v.map(String) : [])
 
+// the languages rackbook-notify writes in (modsettings.NotifyLanguages), shown under their own names
+const NOTIFY_LANGUAGES = ['zh-CN', 'zh-TW', 'en-US'] as const
+
+// rackbook-notify also takes en and zh and any letter case (modsettings.NotifyLanguage); the select
+// shows such a value as the tag it stands for, and saving writes it back as stored unless it was changed
+function notifyLanguage(v: unknown): string {
+  if (typeof v !== 'string') return ''
+  const s = v.trim().replace(/_/g, '-').toLowerCase()
+  if (s === 'zh' || s === 'zh-cn') return 'zh-CN'
+  if (s === 'en' || s === 'en-us') return 'en-US'
+  if (s === 'zh-tw') return 'zh-TW'
+  return v
+}
+
 function toDraft(type: string, st: ModuleSettings): Draft {
   return {
     times: strs(type === 'notify' ? st.send_at : st.sync_at),
     timezone: typeof st.timezone === 'string' ? st.timezone : '',
     thresholds: strs(st.thresholds),
     recipients: strs(st.recipients),
-    language: typeof st.language === 'string' ? st.language : '',
+    language: notifyLanguage(st.language),
     collections: strs(st.collections),
     servicePrincipals: st.service_principals !== false,
     exclude: strs(st.exclude_app_ids),
@@ -86,7 +100,8 @@ function toSettings(type: string, d: Draft, base: ModuleSettings): ModuleSetting
     out.send_at = d.times
     out.thresholds = parseThresholds(d.thresholds).values
     out.recipients = d.recipients
-    out.language = d.language
+    // an unchanged choice keeps the stored spelling (an older rackbook-notify knows only en and zh)
+    out.language = typeof base.language === 'string' && notifyLanguage(base.language) === d.language ? base.language : d.language
     out.collections = d.collections
   } else {
     out.sync_at = d.times
@@ -176,9 +191,10 @@ export function SettingsForm({
             </Field>
             <Field id="mod-lang" label={s.language}>
               <NativeSelect id="mod-lang" value={draft.language} onChange={(e) => set({ language: e.target.value })}>
-                {Object.entries(s.languages).map(([k, label]) => (
-                  <option key={k} value={k}>
-                    {label}
+                <option value="">{s.languageDefault}</option>
+                {NOTIFY_LANGUAGES.map((l) => (
+                  <option key={l} value={l} lang={l}>
+                    {LOCALE_NAMES[l]}
                   </option>
                 ))}
               </NativeSelect>

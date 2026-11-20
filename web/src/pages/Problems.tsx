@@ -10,10 +10,11 @@ import { errorMessage } from '@/lib/api'
 import { fieldTitle, pointerToPath, recordHref } from '@/lib/ledger'
 import { collectionTitle } from '@/lib/labels'
 import { useCheck, useMeta } from '@/providers/meta'
+import { issueText } from '@/lib/issues'
 import { displayId } from '@/lib/recordId'
 
 export default function Problems() {
-  const { byName } = useMeta()
+  const { meta, byName } = useMeta()
   const { data, isPending, isError, error, isFetching } = useCheck()
   const qc = useQueryClient()
 
@@ -83,7 +84,7 @@ export default function Problems() {
                     <td className="px-4 py-2.5">
                       <Badge variant="outline">{t.problems.rules[e.rule ?? ''] ?? e.rule}</Badge>
                     </td>
-                    <td className="px-4 py-2.5">{e.message}</td>
+                    <td className="px-4 py-2.5">{issueText(e, meta.collections)}</td>
                   </tr>
                 )
               })}
