@@ -4,9 +4,31 @@
   "type": "object",
   "additionalProperties": false,
   "required": ["item", "status"],
+  "x-rackbook-i18n": {"en-US": {"title": "To-do"}, "zh-TW": {"title": "待辦"}},
   "properties": {
-    "item": {"type": "string", "title": "事项", "format": "textarea"},
-    "scope": {"type": "string", "title": "涉及"},
-    "status": {"type": "string", "title": "状态", "description": "待办 / 待决定 / 推迟 / 部分完成 / 可选 / 完成（可加括号说明）"}
+    "item": {
+      "type": "string",
+      "title": "事项",
+      "format": "textarea",
+      "x-rackbook-i18n": {"en-US": {"title": "Item"}, "zh-TW": {"title": "事項"}}
+    },
+    "scope": {
+      "type": "string",
+      "title": "涉及",
+      "x-rackbook-i18n": {"en-US": {"title": "Applies to"}, "zh-TW": {"title": "涉及"}}
+    },
+    "status": {
+      "type": "string",
+      "title": "状态",
+      "oneOf": [{"const": "todo", "title": "待办"}, {"const": "undecided", "title": "待决定"}, {"const": "deferred", "title": "推迟"}, {"const": "partial", "title": "部分完成"}, {"const": "optional", "title": "可选"}, {"const": "done", "title": "完成"}],
+      "x-rackbook-enum-icons": {"todo": "circle-dashed", "undecided": "circle-question-mark", "deferred": "clock", "partial": "circle-dot", "optional": "lightbulb", "done": "circle-check"},
+      "x-rackbook-enum-colors": {"todo": "gray", "undecided": "yellow", "deferred": "orange", "partial": "blue", "optional": "purple", "done": "green"},
+      "x-rackbook-i18n": {"en-US": {"title": "Status", "enum": {"todo": "To do", "undecided": "To decide", "deferred": "Postponed", "partial": "Partly done", "optional": "Optional", "done": "Done"}}, "zh-TW": {"title": "狀態", "enum": {"todo": "待辦", "undecided": "待決定", "deferred": "延後", "partial": "部分完成", "optional": "選用", "done": "完成"}}}
+    },
+    "note": {
+      "type": "string",
+      "title": "说明",
+      "x-rackbook-i18n": {"en-US": {"title": "Note"}, "zh-TW": {"title": "說明"}}
+    }
   }
 }

@@ -8,6 +8,7 @@ import { EmptyState, PageHeader } from '@/components/common'
 import { t } from '@/i18n'
 import { errorMessage } from '@/lib/api'
 import { fieldTitle, pointerToPath, recordHref } from '@/lib/ledger'
+import { collectionTitle } from '@/lib/labels'
 import { useCheck, useMeta } from '@/providers/meta'
 import { displayId } from '@/lib/recordId'
 
@@ -54,7 +55,7 @@ export default function Problems() {
                     <td className="px-4 py-2.5 whitespace-nowrap">
                       {col ? (
                         <Link to={`/c/${encodeURIComponent(col.name)}`} className="hover:underline">
-                          {col.title}
+                          {collectionTitle(col)}
                         </Link>
                       ) : (
                         e.collection || '—'

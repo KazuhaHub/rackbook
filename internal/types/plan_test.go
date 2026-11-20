@@ -411,7 +411,7 @@ func TestApplyKeepsRackbookYmlComments(t *testing.T) {
 		t.Fatal(err)
 	}
 	b, _ := os.ReadFile(filepath.Join(dir, "rackbook.yml"))
-	orig, _ := os.ReadFile(filepath.Join(testutil.RepoRoot(t), "examples/homelab/rackbook.yml"))
+	orig, _ := os.ReadFile(filepath.Join(testutil.RepoRoot(t), "internal/testutil/testdata/homelab-legacy/rackbook.yml"))
 	if !strings.HasPrefix(string(b), "# Rackbook config for a fictional homelab.") {
 		t.Fatal("comment lost")
 	}

@@ -8,7 +8,7 @@ import { t } from '@/i18n'
 import { useInlineEdit } from '@/hooks/use-inline-edit'
 import { usePageSize } from '@/hooks/use-page-size'
 import { rowClass, useRowNav } from '@/hooks/use-row-nav'
-import { defaultColumns, fieldTitle, looksMono, recordHref, str } from '@/lib/ledger'
+import { defaultColumns, fieldText, fieldTitle, looksMono, recordHref, str } from '@/lib/ledger'
 import { filterRows, PAGE_SIZES, paginate } from '@/lib/tableView'
 import type { Backref, Collection, LedgerRecord } from '@/lib/types'
 import { useRefLookups } from '@/lib/hooks'
@@ -64,8 +64,8 @@ export function BackrefTable({
 
   const { view: shownRecord } = edit
   const matching = useMemo(
-    () => filterRows(records, (r) => cols.map((c) => str(shownRecord(r).data[c])).join('\n'), q),
-    [records, cols, q, shownRecord],
+    () => filterRows(records, (r) => cols.map((c) => `${str(shownRecord(r).data[c])}\n${fieldText(col, c, shownRecord(r).data[c])}`).join('\n'), q),
+    [records, cols, q, shownRecord, col],
   )
   const view = paginate(matching, page, size)
 
@@ -135,7 +135,7 @@ export function BackrefTable({
                         <td key={c} className="px-3 py-2.5 align-top">
                           {i === 0 && !lookups[c] ? (
                             <Link to={href} title={str(shown.data[c])} className={cn('line-clamp-2 max-w-[44ch] font-medium break-words hover:underline', looksMono(str(shown.data[c])) && 'font-mono text-[0.8125rem]')}>
-                              {str(shown.data[c]) || t.show.empty}
+                              {fieldText(col, c, shown.data[c]) || t.show.empty}
                             </Link>
                           ) : (
                             <RecordCell col={col} rec={r} field={c} lookup={lookups[c]} edit={editable ? edit : undefined} />

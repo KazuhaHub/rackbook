@@ -691,14 +691,104 @@ console keeps the choice in each browser and does not save it on the server. Sav
 If `preferences.json` does not parse, it is logged and treated as empty; the file is moved to
 `preferences.json.corrupt` before the next save.
 
-Only the console's own words are translated. What the ledger says (collection titles, field
-names, notes, record values) is shown as written in `rackbook.yml` and the schemas.
+The console's own words are translated by Rackbook. What the ledger says is yours to translate,
+as described next; record values you type (names, notes) are shown as written.
 
 To add a language: copy `web/src/i18n/en-US.ts` to `web/src/i18n/<tag>.ts` and translate it (the
 compiler rejects a missing or extra key, `npm run check:i18n` a key of the wrong kind), then list
 the tag in `LOCALES`, `LOCALE_NAMES` and the loaders in `web/src/i18n/index.ts` and in `Supported`
 in `internal/locale`, so that `Accept-Language` can match it. `npm run check:i18n-dom` loads every
 page in each language, switches, and fails on text left in the old one.
+
+### Ledger text in several languages
+
+Stored values stay stable English codes (`static`, `TCP 443`, `US`). Only what people read changes
+with the viewer's language. The text in the usual places (`title`, `description`, a oneOf entry's
+`title`, the `title` of a collection in `rackbook.yml`) is in the default language (`i18n.default`).
+Other languages go next to it, under `i18n`. A reader gets the entry for their language, else the
+standard text, so nothing is ever empty. Old files with no translations work as before.
+
+```yaml
+# rackbook.yml
+title: Kazuha Hub 网络台账
+i18n:
+  default: zh-CN
+  en-US: {title: Kazuha Hub network ledger, description: Devices, addresses and services}
+  zh-TW: {title: Kazuha Hub 網路台帳}
+collections:
+  devices:
+    title: 设备
+    group: 网段规划
+    file: ledger/devices.yml
+    schema: schemas/device.json
+    i18n:
+      en-US: {title: Devices, description: All devices, group: Network plans}
+notes:
+  - title: Docker 地址池规则
+    file: ledger/networks.yml
+    path: docker.rule
+    i18n: {en-US: {title: Docker pool rule}}   # the note text itself comes from the file and is not translated
+rules:
+  - ref: {from: services.device, to: devices.name, message: 设备不存在, backref_title: 服务,
+          i18n: {en-US: {message: Unknown device, backref_title: Services}}}
+  - same_set: {left: {...}, right: {...}, message: 设备与清单不一致, i18n: {en-US: {message: Devices differ from the inventory}}}
+```
+
+| Where | Keys under each language |
+|---|---|
+| top level `i18n` | `title`, `description` |
+| `collections.<name>.i18n` | `title`, `description`, `group` |
+| `notes[].i18n` | `title` |
+| `ref` rule `i18n` | `message`, `backref_title` |
+| `same_set` rule `i18n` | `message` |
+
+The languages are `zh-CN`, `zh-TW` and `en-US` (the tag exactly). An unsupported language or an
+unknown key is a config error. Facet `values` hold codes; their display names come from the schema.
+
+In a schema, a field's choices can carry labels, other languages and icons:
+
+```json
+"ipv4_type": {
+  "type": "string",
+  "title": "IPv4 类型",
+  "oneOf": [
+    {"const": "static", "title": "静态"},
+    {"const": "dynamic", "title": "动态"}
+  ],
+  "x-rackbook-i18n": {
+    "en-US": {"title": "IPv4 type", "description": "…", "enum": {"static": "Static", "dynamic": "Dynamic"}},
+    "zh-TW": {"title": "IPv4 類型", "enum": {"static": "靜態"}}
+  },
+  "x-rackbook-enum-icons": {"static": "pin", "dynamic": "refresh-cw"},
+  "x-rackbook-enum-colors": {"static": "green"}
+}
+```
+
+- A choice list is either a plain `enum` of strings (still valid) or a `oneOf` where every entry
+  has a string `const`, an optional string `title` (the default-language label) and nothing else.
+  They mean the same; the `oneOf` form carries the labels. It works on a string property, on the
+  `items` of an array of strings and on the properties of row objects.
+- `x-rackbook-i18n` is keyed by language. Each entry may have `title`, `description` and `enum`
+  (code → label). It is allowed on any property and, with `title` and `description`, on the schema
+  root. A language Rackbook does not have, or a label for a code that is not in the list, is ignored
+  when reading.
+- The label of code C in language L is `x-rackbook-i18n[L].enum[C]`, else the `oneOf` title of C,
+  else C itself.
+- `x-rackbook-enum-icons` maps a code to a lucide icon name in kebab-case (`circle-check`, `clock`).
+  The console shows the icon next to the label, never instead of it, and shows nothing for a name it
+  does not know.
+- The type editor writes the `oneOf` form as soon as a choice has a label in any language, and the
+  plain `enum` when none has. Switching removes the other keyword; keys it does not know stay.
+
+Two more field types: `country` (format `country`, an ISO 3166-1 alpha-2 code in capitals such as
+`US`, `CN`, `SG`) and `subdivision` (format `subdivision`, ISO 3166-2 shape `US-CA`, `CN-GD`). Both
+also accept the placeholder `tbd` for "not known yet"; the console shows it as 待补 / 待補 / TBD.
+
+When a value is refused because it is not one of the choices, the message says what to do. If
+the value is a label in any language, or a code in other letters, it reads
+`"静态" is not allowed; use code "static"`; otherwise `"xyz" is not one of: static, dynamic, nat`.
+The console and `rackbook check` give the same message. Labels, translated text and icon names are
+scanned for secrets like titles and descriptions; the language tags and codes that key them are not.
 
 ## Branding and the sign-in button
 

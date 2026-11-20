@@ -4,12 +4,40 @@
   "type": "object",
   "additionalProperties": false,
   "required": ["device", "network", "address"],
+  "x-rackbook-i18n": {"en-US": {"title": "Internal address"}, "zh-TW": {"title": "內網位址"}},
   "properties": {
-    "device": {"type": "string", "title": "设备"},
-    "network": {"type": "string", "title": "所属网络"},
-    "address": {"type": "string", "title": "地址"},
-    "subnet": {"type": "string", "title": "网段"},
-    "domain": {"type": "string", "title": "域名"},
-    "notes": {"type": "string", "title": "备注", "format": "textarea"}
+    "device": {
+      "type": "string",
+      "title": "设备",
+      "x-rackbook-i18n": {"en-US": {"title": "Device"}, "zh-TW": {"title": "裝置"}}
+    },
+    "network": {
+      "type": "string",
+      "title": "所属网络",
+      "oneOf": [{"const": "tailscale", "title": "Tailscale"}, {"const": "lan", "title": "站点局域网"}, {"const": "docker", "title": "Docker 地址池"}],
+      "x-rackbook-enum-icons": {"tailscale": "waypoints", "lan": "network", "docker": "boxes"},
+      "x-rackbook-i18n": {"en-US": {"title": "Network", "enum": {"tailscale": "Tailscale", "lan": "Site LAN", "docker": "Docker address pool"}}, "zh-TW": {"title": "所屬網路", "enum": {"tailscale": "Tailscale", "lan": "站點區域網路", "docker": "Docker 位址池"}}}
+    },
+    "address": {
+      "type": "string",
+      "title": "地址",
+      "x-rackbook-i18n": {"en-US": {"title": "Address"}, "zh-TW": {"title": "位址"}}
+    },
+    "subnet": {
+      "type": "string",
+      "title": "网段",
+      "x-rackbook-i18n": {"en-US": {"title": "Subnet"}, "zh-TW": {"title": "網段"}}
+    },
+    "domain": {
+      "type": "string",
+      "title": "域名",
+      "x-rackbook-i18n": {"en-US": {"title": "Domain"}, "zh-TW": {"title": "網域"}}
+    },
+    "notes": {
+      "type": "string",
+      "title": "备注",
+      "format": "textarea",
+      "x-rackbook-i18n": {"en-US": {"title": "Notes"}, "zh-TW": {"title": "備註"}}
+    }
   }
 }

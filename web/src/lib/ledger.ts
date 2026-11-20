@@ -3,13 +3,16 @@ import { formatDate } from '@/i18n/format'
 import type { Collection, JsonSchema, LedgerRecord, Meta } from './types'
 import { displayId } from './recordId'
 import { formatPlain, isScalarObject } from './objectItems'
+import { displayText } from './display'
+import { fieldTitle as propTitle } from './labels'
 
 export function schemaProps(col: Collection): [string, JsonSchema][] {
   return Object.entries(col.schema.properties ?? {})
 }
 
+/** The field's title in the current language (its translation, else the schema title, else the field name). */
 export function fieldTitle(col: Collection, field: string): string {
-  return col.schema.properties?.[field]?.title || field
+  return propTitle(col.schema.properties?.[field], field)
 }
 
 /** Columns shown by default: `list` from the config, else every schema property. */
@@ -34,14 +37,20 @@ export function str(v: unknown): string {
   return String(v)
 }
 
+/** A field's value as text in the current language (an enum code as its label, `tbd` as the placeholder word). */
+export function fieldText(col: Collection, field: string, value: unknown): string {
+  const plain = typeof value === 'string' || (Array.isArray(value) && value.every((v) => typeof v === 'string'))
+  return plain ? displayText(col.schema.properties?.[field], value) : str(value)
+}
+
 export function recordLabel(col: Collection, rec: LedgerRecord): string {
-  if (col.label && rec.data[col.label] !== undefined) return str(rec.data[col.label])
+  if (col.label && rec.data[col.label] !== undefined) return fieldText(col, col.label, rec.data[col.label])
   if (col.key?.length) {
-    const parts = col.key.map((k) => str(rec.data[k])).filter(Boolean)
+    const parts = col.key.map((k) => fieldText(col, k, rec.data[k])).filter(Boolean)
     if (parts.length) return parts.join(' / ')
   }
   const first = schemaProps(col)[0]?.[0]
-  return (first && str(rec.data[first])) || displayId(rec.id)
+  return (first && fieldText(col, first, rec.data[first])) || displayId(rec.id)
 }
 
 export { idFromPath, recordHref } from './recordUrl'

@@ -4,10 +4,28 @@
   "type": "object",
   "additionalProperties": false,
   "required": ["range", "purpose"],
+  "x-rackbook-i18n": {"en-US": {"title": "Network range"}, "zh-TW": {"title": "網段"}},
   "properties": {
-    "range": {"type": "string", "title": "网段"},
-    "third_octet": {"type": "string", "title": "第三段"},
-    "purpose": {"type": "string", "title": "用途", "format": "textarea"},
-    "alias": {"type": "string", "title": "Tailscale 别名"}
+    "range": {
+      "type": "string",
+      "title": "网段",
+      "x-rackbook-i18n": {"en-US": {"title": "Range"}, "zh-TW": {"title": "網段"}}
+    },
+    "third_octet": {
+      "type": "string",
+      "title": "第三段",
+      "x-rackbook-i18n": {"en-US": {"title": "Third octet"}, "zh-TW": {"title": "第三段"}}
+    },
+    "purpose": {
+      "type": "string",
+      "title": "用途",
+      "format": "textarea",
+      "x-rackbook-i18n": {"en-US": {"title": "Purpose"}, "zh-TW": {"title": "用途"}}
+    },
+    "alias": {
+      "type": "string",
+      "title": "Tailscale 别名",
+      "x-rackbook-i18n": {"en-US": {"title": "Tailscale alias"}, "zh-TW": {"title": "Tailscale 別名"}}
+    }
   }
 }

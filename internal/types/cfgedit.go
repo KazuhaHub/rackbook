@@ -7,13 +7,14 @@ import (
 	"sort"
 
 	"github.com/kazuhahub/rackbook/internal/config"
+	"github.com/kazuhahub/rackbook/internal/locale"
 	"github.com/kazuhahub/rackbook/internal/yamledit"
 )
 
 // The rackbook.yml side of a Type: the collection's entry under `collections:`
 // and the rules it owns under `rules:`, both spliced in place.
 
-var entryOrder = []string{"title", "description", "group", "icon", "file", "path", "schema", "key", "label", "list", "facets"}
+var entryOrder = []string{"title", "description", "group", "icon", "i18n", "file", "path", "schema", "key", "label", "list", "facets"}
 
 // entryValues lists the keys of the collection entry for t, with the empty
 // ones as nil.
@@ -33,6 +34,28 @@ func entryValues(t *Type) map[string]any {
 			out[i] = s
 		}
 		return out
+	}
+	// i18n: {en-US: {title: ..., description: ..., group: ...}} in the order of
+	// the supported languages, so that equal content renders the same text.
+	var i18n any
+	var locs []string
+	loc := map[string]any{}
+	for _, l := range locale.Supported {
+		var keys []string
+		vals := map[string]any{}
+		for _, k := range []string{"title", "description", "group"} {
+			if s := t.I18n[l][k]; s != "" {
+				keys = append(keys, k)
+				vals[k] = s
+			}
+		}
+		if len(keys) > 0 {
+			locs = append(locs, l)
+			loc[l] = yamledit.Flow{Keys: keys, Values: vals}
+		}
+	}
+	if len(locs) > 0 {
+		i18n = yamledit.Flow{Keys: locs, Values: loc}
 	}
 	var facets any
 	if len(t.Facets) > 0 {
@@ -55,7 +78,7 @@ func entryValues(t *Type) map[string]any {
 		facets = out
 	}
 	return map[string]any{
-		"title": str(t.Title), "description": str(t.Description), "group": str(t.Group), "icon": str(t.Icon),
+		"title": str(t.Title), "description": str(t.Description), "group": str(t.Group), "icon": str(t.Icon), "i18n": i18n,
 		"file": str(t.File), "path": str(t.Path), "schema": str(t.SchemaFile),
 		"key": list(t.Key), "label": str(t.Label), "list": list(t.List), "facets": facets,
 	}
@@ -133,6 +156,7 @@ func canonRef(r *config.RefRule) *config.RefRule {
 	if len(c.BackrefColumns) == 0 {
 		c.BackrefColumns = nil
 	}
+	c.I18n = c.I18n.Clean("message", "backref_title")
 	return &c
 }
 
@@ -182,6 +206,25 @@ func ruleItem(r config.Rule) (string, any) {
 		}
 		if r.Ref.Message != "" {
 			add("message", r.Ref.Message)
+		}
+		var locs []string
+		byLoc := map[string]any{}
+		for _, l := range locale.Supported {
+			var keys []string
+			vals := map[string]any{}
+			for _, k := range []string{"message", "backref_title"} {
+				if s := r.Ref.I18n[l][k]; s != "" {
+					keys = append(keys, k)
+					vals[k] = s
+				}
+			}
+			if len(keys) > 0 {
+				locs = append(locs, l)
+				byLoc[l] = yamledit.Flow{Keys: keys, Values: vals}
+			}
+		}
+		if len(locs) > 0 {
+			add("i18n", yamledit.Flow{Keys: locs, Values: byLoc})
 		}
 	case r.Unique != nil:
 		key = "unique"

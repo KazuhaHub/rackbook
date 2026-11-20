@@ -10,6 +10,7 @@ import { t } from '@/i18n'
 import { errorMessage } from '@/lib/api'
 import { consentInfo, decideConsent } from '@/lib/grants'
 import { useMeta } from '@/providers/meta'
+import { ledgerTitle } from '@/lib/labels'
 
 function Row({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -33,7 +34,7 @@ export default function Consent() {
   const [busy, setBusy] = useState<'approve' | 'deny' | null>(null)
   const [sent, setSent] = useState(false)
   const [error, setError] = useState('')
-  const name = meta.branding?.name || meta.title || t.appName
+  const name = meta.branding?.name || ledgerTitle(meta) || t.appName
 
   useEffect(() => {
     document.title = `${t.oauth.consent.title} · ${name}`

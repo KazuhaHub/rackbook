@@ -22,6 +22,7 @@ import {
   type ModuleView,
 } from '@/lib/modules'
 import { useMeta } from '@/providers/meta'
+import { collectionTitle } from '@/lib/labels'
 
 /** What the form edits, in the shapes the inputs use (text, not numbers). */
 type Draft = {
@@ -196,7 +197,7 @@ export function SettingsForm({
                     checked={draft.collections.includes(c.name)}
                     onChange={() => set({ collections: draft.collections.includes(c.name) ? draft.collections.filter((x) => x !== c.name) : [...draft.collections, c.name] })}
                   />
-                  {c.title}
+                  {collectionTitle(c)}
                 </label>
               ))}
             </div>

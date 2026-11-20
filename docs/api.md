@@ -29,6 +29,7 @@ except the export endpoints. Errors always have the shape
            "canEdit": true, "canAdmin": false, "locale": "en-US"},
   "locale": "zh-CN",
   "defaultLocale": "zh-CN",
+  "i18n": {"en-US": {"title": "Example network ledger", "description": "…"}},
   "alert": {"kind": "history_rewritten", "lastGood": "<40 hex>", "remote": "<40 hex>"},
   "collections": [
     {
@@ -36,6 +37,7 @@ except the export endpoints. Errors always have the shape
       "title": "服务端口",
       "description": "…",
       "group": "",
+      "i18n": {"en-US": {"title": "Services", "description": "…", "group": "…"}},
       "key": ["device", "service"],
       "label": "",
       "list": ["device", "service", "port", "exposure", "managed"],
@@ -45,8 +47,9 @@ except the export endpoints. Errors always have the shape
       ],
       "schema": { "…JSON Schema object…": true },
       "refs": [{"field": "device", "to": "devices", "toField": "name", "allow": ["all"]}],
-      "backrefs": [],
-      "notes": [{"title": "…", "text": "…"}],
+      "backrefs": [{"collection": "addresses", "field": "device", "title": "地址",
+                    "i18n": {"en-US": {"title": "Addresses"}}}],
+      "notes": [{"title": "…", "text": "…", "i18n": {"en-US": {"title": "…"}}}],
       "count": 12,
       "expiryField": "",
       "revokedField": ""
@@ -67,6 +70,16 @@ unset). `user.locale` is the language the person saved with
 `PUT /api/account/preferences`; it is absent until they choose one, and the console
 prefers it over `locale`. The response carries `Vary: Accept-Language` and
 `Cache-Control: no-store`.
+
+`i18n` carries the configured text in the other languages as raw maps (`{<locale>: {key: text}}`),
+so the console resolves by its current language and a language switch needs no new request. The
+top level has `title` and `description`, a collection `title`, `description` and `group`, a note
+`title`, and a back-reference entry `title` (from `backref_title`). A key is left out when it has no
+translation, and the whole `i18n` is left out when there is none. `title`, `description`, `group`
+stay the standard text, in `defaultLocale`. A language's text is its entry, else the standard
+text. `schema` is the raw schema file, so `x-rackbook-i18n`, `x-rackbook-enum-icons` and `oneOf`
+labels reach the console as written (see the README, "Ledger text in several languages"). The
+check API's messages are not translated.
 
 ### `PUT /api/account/preferences`
 
@@ -408,6 +421,28 @@ All answers are 403 for anyone below the admin role. Design: `docs/design-v0.2.m
 | `POST /api/types` | create from `{type}`: one commit with `rackbook.yml`, `schemas/<name>.json` and the empty data file. 201 |
 | `PUT /api/types/{name}` | change from `{type, migrations}` (the `type` carries the `version` it was read with, or send `version` beside it; 400 without): one commit. 409 `conflict` with `current` when the type changed since; 422 `refused` with the plan when it is not clean. Removing a field that has values is refused unless the `remove-field` migration is chosen |
 | `DELETE /api/types/{name}?version=…` | remove an empty, unreferenced collection (its data file stays). 400 without `version`, 409 `conflict` when stale, 422 `refused` otherwise |
+
+Shapes of `type` (the console's view of a collection), beyond the fields named above:
+
+- `type.i18n`: `{<locale>: {title?, description?, group?}}`, the collection's `i18n` entry in `rackbook.yml`.
+- `field.i18n`: `{<locale>: {title?, description?}}`, the property's `x-rackbook-i18n` (the standard `title` and
+  `description` are in the default language).
+- Leaving `type.i18n`, `field.i18n` or `field.ref.i18n` out of a request keeps what is stored; `{}` clears it.
+  (Enum `labels` are part of the items and are replaced with them.)
+- `field.enum[]`: `{value, color?, icon?, label?, labels?: {<locale>: text}}`. `value` is the stored code, `color` goes to
+  `x-rackbook-enum-colors`, `icon` (a lucide name in kebab-case) to `x-rackbook-enum-icons`, `label` is the
+  default-language label (the `oneOf` title) and `labels` the other languages (`x-rackbook-i18n.<locale>.enum`).
+  When any item has a `label` or `labels` the field is written as `oneOf` (`{const, title?}` entries), otherwise as a
+  plain `enum`; the other keyword is removed.
+- `field.ref.i18n`: `{<locale>: {message?, backref_title?}}`, the translations of the reference rule.
+- `fieldTypes` has `country` and `subdivision` after `hostname`; `formats` lists their formats too.
+
+A plan is refused (`refusals`, code `invalid`) for an unsupported language, a key a block does not take
+(`field.i18n` has no `enum`; give enum labels on the items), an empty enum code, and an icon name that is not
+lowercase letters, digits and single hyphens (at most 64 characters), a label used for two codes of a field in one
+language or equal to another code of the field, and any translation sent for a field whose stored `x-rackbook-i18n` the
+console cannot read (fix it in the schema file). Empty text is dropped, not refused. Keys the console does not know
+inside an existing `x-rackbook-i18n` language (and languages it does not have) are kept.
 
 Migrations: `{kind: "remove-field", field}` deletes the field from the records that have it;
 `{kind: "fill-default", field, value?}` gives a new required field a value (the field default when `value` is

@@ -4,7 +4,9 @@ package validate
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -13,11 +15,13 @@ import (
 	"strings"
 
 	"github.com/santhosh-tekuri/jsonschema/v6"
+	"github.com/santhosh-tekuri/jsonschema/v6/kind"
 	"go.yaml.in/yaml/v3"
 	"golang.org/x/text/language"
 	"golang.org/x/text/message"
 
 	"github.com/kazuhahub/rackbook/internal/config"
+	"github.com/kazuhahub/rackbook/internal/labels"
 	"github.com/kazuhahub/rackbook/internal/ledger"
 	"github.com/kazuhahub/rackbook/internal/secretscan"
 	"github.com/kazuhahub/rackbook/internal/yamledit"
@@ -230,6 +234,8 @@ func schemaIssues(c *ledger.Collection) []ledger.Issue {
 	if err != nil {
 		return []ledger.Issue{{Collection: c.Name, Rule: ledger.RuleConfig, Message: fmt.Sprintf("schema %s: %v", c.Collection.Schema, err)}}
 	}
+	var root map[string]any
+	_ = json.Unmarshal(c.SchemaRaw, &root) // the schema compiled, so it is JSON
 	var out []ledger.Issue
 	for _, r := range c.Records {
 		err := sch.Validate(r.Data)
@@ -242,12 +248,12 @@ func schemaIssues(c *ledger.Collection) []ledger.Issue {
 			continue
 		}
 		seen := map[string]bool{}
-		for _, leaf := range leaves(verr) {
-			path := "/" + strings.Join(escapeTokens(leaf.InstanceLocation), "/")
-			if len(leaf.InstanceLocation) == 0 {
+		for _, leaf := range leaves(verr, root, "mem:///"+c.Name+".json", r.Data) {
+			path := "/" + strings.Join(escapeTokens(leaf.loc), "/")
+			if len(leaf.loc) == 0 {
 				path = ""
 			}
-			msg := leaf.ErrorKind.LocalizedString(printer)
+			msg := leaf.msg
 			if key := path + "\x00" + msg; !seen[key] {
 				seen[key] = true
 				out = append(out, ledger.Issue{Collection: c.Name, ID: r.ID, Path: path, Rule: ledger.RuleSchema, Hash: r.Hash, Message: msg})
@@ -271,15 +277,134 @@ func compile(c *ledger.Collection) (*jsonschema.Schema, error) {
 	return comp.Compile(url)
 }
 
-func leaves(e *jsonschema.ValidationError) []*jsonschema.ValidationError {
-	if len(e.Causes) == 0 {
-		return []*jsonschema.ValidationError{e}
+// leaf is one reportable problem: where in the record and what is wrong.
+type leaf struct {
+	loc []string
+	msg string
+}
+
+// leaves flattens a validation error into its leaf problems. A failure of an
+// enum-like property (a plain enum, or the oneOf of const entries) is reported
+// as one issue, with a hint when the value is a label or a code in other
+// letters, instead of the oneOf's "none matched" and one error per code.
+func leaves(e *jsonschema.ValidationError, root map[string]any, base string, data any) []leaf {
+	switch k := e.ErrorKind.(type) {
+	case *kind.Enum:
+		if en := enumAt(root, base, e, "enum"); en != nil {
+			return []leaf{{e.InstanceLocation, enumMessage(en, valueAt(data, e.InstanceLocation))}}
+		}
+	case *kind.OneOf:
+		if len(k.Subschemas) == 0 {
+			if en := enumAt(root, base, e, "oneOf"); en != nil {
+				return []leaf{{e.InstanceLocation, enumMessage(en, valueAt(data, e.InstanceLocation))}}
+			}
+		}
 	}
-	var out []*jsonschema.ValidationError
+	if len(e.Causes) == 0 {
+		return []leaf{{e.InstanceLocation, e.ErrorKind.LocalizedString(printer)}}
+	}
+	var out []leaf
 	for _, c := range e.Causes {
-		out = append(out, leaves(c)...)
+		out = append(out, leaves(c, root, base, data)...)
 	}
 	return out
+}
+
+// enumAt returns the enum-like view of the schema property that holds the value
+// at the error's instance location, for the keyword that failed (enum or
+// oneOf), or nil. The view is used only when the failing keyword sits in that
+// property's own schema: an enum under if/then or allOf, or behind a $ref, is a
+// different list, so its error keeps the library's message. When a property has
+// both keywords, the codes come from the one that failed.
+func enumAt(root map[string]any, base string, e *jsonschema.ValidationError, keyword string) *labels.Enum {
+	if root == nil {
+		return nil
+	}
+	prop, ptr := property(root, e.InstanceLocation)
+	if prop == nil || !sameLocation(e.SchemaURL, base, ptr) {
+		return nil
+	}
+	own := map[string]any{}
+	for k, v := range prop {
+		if k != "enum" && k != "oneOf" {
+			own[k] = v
+		}
+	}
+	own[keyword] = prop[keyword]
+	en, _ := labels.Parse(own)
+	return en
+}
+
+// sameLocation reports whether a schema location from the validator (the
+// resource URL and a percent-encoded JSON pointer as fragment) is the pointer
+// ptr (unencoded, JSON-pointer-escaped) in the resource base.
+func sameLocation(schemaURL, base, ptr string) bool {
+	res, frag, _ := strings.Cut(schemaURL, "#")
+	if res != base {
+		return false
+	}
+	if dec, err := url.PathUnescape(frag); err == nil {
+		frag = dec
+	}
+	return frag == ptr
+}
+
+// property follows an instance location through properties and items, and
+// returns the schema object there with its JSON pointer (like "/properties/a/items").
+func property(root map[string]any, loc []string) (map[string]any, string) {
+	cur, ptr := root, ""
+	for _, tok := range loc {
+		if props, ok := cur["properties"].(map[string]any); ok {
+			if p, ok := props[tok].(map[string]any); ok {
+				cur, ptr = p, ptr+"/properties/"+strings.NewReplacer("~", "~0", "/", "~1").Replace(tok)
+				continue
+			}
+		}
+		if items, ok := cur["items"].(map[string]any); ok {
+			if _, err := strconv.Atoi(tok); err == nil {
+				cur, ptr = items, ptr+"/items"
+				continue
+			}
+		}
+		return nil, ""
+	}
+	return cur, ptr
+}
+
+// valueAt follows an instance location through a record.
+func valueAt(data any, loc []string) any {
+	cur := data
+	for _, tok := range loc {
+		switch x := cur.(type) {
+		case map[string]any:
+			cur = x[tok]
+		case []any:
+			i, err := strconv.Atoi(tok)
+			if err != nil || i < 0 || i >= len(x) {
+				return nil
+			}
+			cur = x[i]
+		default:
+			return nil
+		}
+	}
+	return cur
+}
+
+// enumMessage says what is wrong with v for an enum-like property: it names the
+// code to use when v is a label (in any language) or a code in other letters, and
+// otherwise lists the codes.
+func enumMessage(en *labels.Enum, v any) string {
+	shown := fmt.Sprintf("%v", v)
+	if s, ok := v.(string); ok {
+		shown = strconv.Quote(s)
+		if code, exact, found := en.Match(s); found && !exact {
+			return fmt.Sprintf("%s is not allowed; use code %s", shown, strconv.Quote(code))
+		}
+	} else if b, err := json.Marshal(v); err == nil {
+		shown = string(b)
+	}
+	return fmt.Sprintf("%s is not one of: %s", shown, strings.Join(en.Codes(), ", "))
 }
 
 func escapeTokens(t []string) []string {

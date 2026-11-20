@@ -7,10 +7,10 @@ sites:
     gateway: 192.168.0.1
     gateway_os: OPNsense 26.7
     router_tailscale_ip: 100.88.0.1
-    status: 已接入
+    status: connected
   - name: 下一个站点
     lan: 192.168.4.0/22
     gateway: 192.168.4.1（建议）
     router_tailscale_ip: 100.88.0.2
-    status: 预留
+    status: reserved
     notes: 每站一个 /22，按顺序分配

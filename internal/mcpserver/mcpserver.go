@@ -153,6 +153,31 @@ type fieldInfo struct {
 	Title    string `json:"title,omitempty"`
 	Type     string `json:"type,omitempty"`
 	Required bool   `json:"required,omitempty"`
+	// Titles is the field title per language, only when the schema translates it
+	// (collections_describe).
+	Titles map[string]string `json:"titles,omitempty"`
+	// Values lists the codes of an enum-like field, or of an array of them,
+	// with their labels per language (collections_describe). Records hold the
+	// codes; the labels are for reading.
+	Values []valueInfo `json:"values,omitempty"`
+	// Row describes the properties of a row object (an array of objects) that
+	// have translated titles or enum-like values.
+	Row []rowField `json:"row,omitempty"`
+}
+
+// rowField is a property inside the row objects of an array field.
+type rowField struct {
+	Name   string            `json:"name"`
+	Title  string            `json:"title,omitempty"`
+	Titles map[string]string `json:"titles,omitempty"`
+	Values []valueInfo       `json:"values,omitempty"`
+}
+
+// valueInfo is one code of an enum-like field. Labels is left out when the code
+// is its own label in every language.
+type valueInfo struct {
+	Code   string            `json:"code"`
+	Labels map[string]string `json:"labels,omitempty"`
 }
 
 type collectionInfo struct {

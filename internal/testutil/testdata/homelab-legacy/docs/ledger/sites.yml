@@ -1,0 +1,16 @@
+# 站点局域网：每个站点一个 /22，都在 lan-sites 192.168.0.0/18 内。
+rule: >-
+  总组 lan-sites = 192.168.0.0/18（可信来源，新站点不用改规则）；单站别名 lan-<路由器主机名>。
+sites:
+  - name: Springfield 家
+    lan: 192.168.0.0/22
+    gateway: 192.168.0.1
+    gateway_os: OPNsense 26.7
+    router_tailscale_ip: 100.88.0.1
+    status: 已接入
+  - name: 下一个站点
+    lan: 192.168.4.0/22
+    gateway: 192.168.4.1（建议）
+    router_tailscale_ip: 100.88.0.2
+    status: 预留
+    notes: 每站一个 /22，按顺序分配

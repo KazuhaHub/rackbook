@@ -13,7 +13,8 @@ import {
 } from '@/components/ui/command'
 import { t } from '@/i18n'
 import { useAllRecords } from '@/lib/hooks'
-import { fieldTitle, recordHref, recordLabel, str } from '@/lib/ledger'
+import { fieldText, fieldTitle, recordHref, recordLabel, str } from '@/lib/ledger'
+import { collectionTitle } from '@/lib/labels'
 import { useMeta } from '@/providers/meta'
 
 const PER_GROUP = 8
@@ -48,8 +49,9 @@ export function GlobalSearch() {
       .map((c, i) => {
         const hits = (results[i]?.data ?? [])
           .map((r) => {
-            const matchedField = Object.entries(r.data).find(([, v]) => str(v).toLowerCase().includes(dq))
-            return matchedField ? { r, field: matchedField[0], value: str(matchedField[1]) } : null
+            // a value matches by what is stored (the code) or by how it reads in the current language
+            const matchedField = Object.entries(r.data).find(([k, v]) => str(v).toLowerCase().includes(dq) || fieldText(c, k, v).toLowerCase().includes(dq))
+            return matchedField ? { r, field: matchedField[0], value: fieldText(c, matchedField[0], matchedField[1]) } : null
           })
           .filter((x) => x !== null)
         return { c, hits }
@@ -85,7 +87,7 @@ export function GlobalSearch() {
               <>
                 <CommandEmpty>{t.nav.searchEmpty}</CommandEmpty>
                 {groups.map(({ c, hits }) => (
-                  <CommandGroup key={c.name} heading={`${c.title} · ${hits.length}`}>
+                  <CommandGroup key={c.name} heading={`${collectionTitle(c)} · ${hits.length}`}>
                     {hits.slice(0, PER_GROUP).map(({ r, field, value }) => (
                       <CommandItem
                         key={r.id}

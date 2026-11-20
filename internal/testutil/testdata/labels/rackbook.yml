@@ -1,0 +1,31 @@
+title: 家庭网络台账
+description: 设备与服务
+i18n:
+  default: zh-CN
+  en-US: {title: Home network ledger, description: Devices and services}
+  zh-TW: {title: 家庭網路台帳}
+collections:
+  devices:
+    title: 设备
+    description: 所有设备
+    group: 网络
+    file: data/devices.yml
+    schema: schemas/device.json
+    key: [name]
+    list: [name, ipv4_type, status]
+    i18n:
+      en-US: {title: Devices, description: All devices, group: Network}
+      zh-TW: {title: 設備}
+  people:
+    title: 人员
+    file: data/people.yml
+    schema: schemas/person.json
+    key: [name]
+notes:
+  - title: 地址池规则
+    file: data/notes.yml
+    path: pool
+    collection: devices
+    i18n: {en-US: {title: Address pool rule}}
+rules:
+  - ref: {from: devices.owner, to: people.name, backref_title: 名下设备, message: 负责人不存在, i18n: {en-US: {message: Unknown owner, backref_title: Devices owned}}}

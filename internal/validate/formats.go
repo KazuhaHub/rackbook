@@ -5,17 +5,19 @@ import (
 	"fmt"
 	"net/netip"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/santhosh-tekuri/jsonschema/v6"
+	"golang.org/x/text/language"
 )
 
 // FormatNames lists the string formats Rackbook validates itself. The console
 // registers the same names with the same rules (web/src/lib/formats.ts), so the
 // form and the server agree.
-var FormatNames = []string{"ip", "ipv4", "ipv6", "cidr", "port-spec", "date", "textarea", "hostname", "uri"}
+var FormatNames = []string{"ip", "ipv4", "ipv6", "cidr", "port-spec", "date", "textarea", "hostname", "uri", "country", "subdivision"}
 
 // CheckFormat validates s against one of FormatNames. ok is false for a name
 // Rackbook does not know.
@@ -39,6 +41,10 @@ func CheckFormat(name, s string) (err error, ok bool) {
 		return checkHostname(s), true
 	case "uri":
 		return checkURI(s), true
+	case "country":
+		return checkCountry(s), true
+	case "subdivision":
+		return checkSubdivision(s), true
 	}
 	return nil, false
 }
@@ -143,4 +149,61 @@ func checkURI(s string) error {
 		return errors.New("not a URI (e.g. https://example.com/path)")
 	}
 	return nil
+}
+
+// Tbd is the placeholder for a value that is not known yet. The country and
+// subdivision formats accept it next to real codes.
+const Tbd = "tbd"
+
+// notAssigned lists region codes that x/text counts as countries but that ISO
+// 3166-1 does not assign: exceptionally reserved codes (AC, CP, DG, EA, IC, TA,
+// UN, EZ), transitional ones (AN, CS, FQ, NT, PC, SU, YU), CQ and XK (Kosovo,
+// user-assigned). What is left are the 249 officially assigned codes.
+var notAssigned = map[string]bool{
+	"AC": true, "AN": true, "CP": true, "CQ": true, "CS": true, "DG": true, "EA": true, "EZ": true,
+	"FQ": true, "IC": true, "XK": true, "NT": true, "PC": true, "SU": true, "TA": true, "UN": true, "YU": true,
+}
+
+// isCountryCode reports an assigned, upper-case ISO 3166-1 alpha-2 code. The
+// code must be what x/text reads it as: "UK" (read as GB) and numeric codes fail.
+func isCountryCode(s string) bool {
+	if len(s) != 2 || notAssigned[s] {
+		return false
+	}
+	r, err := language.ParseRegion(s)
+	return err == nil && r.String() == s && r.IsCountry() && r.Canonicalize() == r
+}
+
+// Countries lists every country code the country format accepts, sorted. The
+// console keeps the same list (web/src/lib/countries.ts); a test compares them.
+func Countries() []string {
+	var out []string
+	for a := 'A'; a <= 'Z'; a++ {
+		for b := 'A'; b <= 'Z'; b++ {
+			if s := string([]rune{a, b}); isCountryCode(s) {
+				out = append(out, s)
+			}
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+func checkCountry(s string) error {
+	if s == Tbd || isCountryCode(s) {
+		return nil
+	}
+	return errors.New(`not a country code (ISO 3166-1 alpha-2 in capitals, like US, or "tbd")`)
+}
+
+var subdivisionRe = regexp.MustCompile(`^([A-Z]{2})-[A-Z0-9]{1,3}$`)
+
+func checkSubdivision(s string) error {
+	if s == Tbd {
+		return nil
+	}
+	if m := subdivisionRe.FindStringSubmatch(s); m != nil && isCountryCode(m[1]) {
+		return nil
+	}
+	return errors.New(`not a subdivision code (ISO 3166-2, like US-CA or CN-GD, or "tbd")`)
 }

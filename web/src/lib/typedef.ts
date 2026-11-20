@@ -1,5 +1,5 @@
 // Data type management (docs/design-v0.2.md section 3): shapes of /api/types.
-import { t } from '@/i18n'
+import { locale, t } from '@/i18n'
 
 export type FieldType =
   | 'text'
@@ -13,6 +13,8 @@ export type FieldType =
   | 'port'
   | 'port-spec'
   | 'hostname'
+  | 'country'
+  | 'subdivision'
   | 'url'
   | 'enum'
   | 'bool'
@@ -20,7 +22,10 @@ export type FieldType =
   | 'ref'
   | 'advanced'
 
-export type EnumItem = { value: string; color?: string }
+/** One code of an enum field. `label` is its text in the default language, `labels` the other languages (locale -> text). */
+export type EnumItem = { value: string; color?: string; icon?: string; label?: string; labels?: Record<string, string> }
+/** Text of other languages, keyed by locale tag; an entry has only the keys that are filled in. */
+export type I18n<K extends string> = Record<string, Partial<Record<K, string>>>
 export type RefSpec = {
   to: string
   toField: string
@@ -36,6 +41,7 @@ export type FieldDef = {
   name: string
   title?: string
   description?: string
+  i18n?: I18n<'title' | 'description'>
   type: FieldType
   required: boolean
   unique: boolean
@@ -59,6 +65,7 @@ export type TypeDef = {
   title: string
   description?: string
   group?: string
+  i18n?: I18n<'title' | 'description' | 'group'>
   icon?: string
   file: string
   path?: string
@@ -81,6 +88,7 @@ export type TypeSummary = {
   title: string
   description?: string
   group?: string
+  i18n?: I18n<'title' | 'description' | 'group'>
   icon?: string
   file: string
   path?: string
@@ -127,7 +135,7 @@ export type TypeWrite = { name: string; commit: string; files: string[]; changed
 
 /** The console types, in the order the field dialog offers them. */
 const FIELD_TYPE_ORDER: Exclude<FieldType, 'advanced'>[] = [
-  'text', 'textarea', 'integer', 'number', 'ip', 'ipv4', 'ipv6', 'cidr', 'port', 'port-spec', 'hostname', 'url', 'enum', 'bool', 'date', 'ref',
+  'text', 'textarea', 'integer', 'number', 'ip', 'ipv4', 'ipv6', 'cidr', 'port', 'port-spec', 'hostname', 'country', 'subdivision', 'url', 'enum', 'bool', 'date', 'ref',
 ]
 
 /** Console types with their label and hint in the current language (call at render time). */
@@ -158,3 +166,27 @@ export function emptyType(): TypeDef {
 
 /** Stable JSON used to tell whether a draft differs from what is saved. */
 export const stable = (v: unknown) => JSON.stringify(v)
+
+/** A field's title in the current language: its translation, else the standard title. */
+export function fieldTitleText(f: Pick<FieldDef, 'title' | 'i18n'>, loc: string = locale): string | undefined {
+  return f.i18n?.[loc]?.title || f.title || undefined
+}
+
+/** `map` with the text of one language set (empty text removes it, an empty language or map disappears). Other keys are kept. */
+export function withText<K extends string>(map: I18n<K> | undefined, loc: string, key: K, text: string): I18n<K> | undefined {
+  const entry: Partial<Record<K, string>> = { ...map?.[loc] }
+  if (text === '') delete entry[key]
+  else entry[key] = text
+  const next: I18n<K> = { ...map }
+  if (Object.keys(entry).length) next[loc] = entry
+  else delete next[loc]
+  return Object.keys(next).length ? next : undefined
+}
+
+/** `labels` with the label of one language set (empty removes it). */
+export function withLabel(labels: Record<string, string> | undefined, loc: string, text: string): Record<string, string> | undefined {
+  const next = { ...labels }
+  if (text === '') delete next[loc]
+  else next[loc] = text
+  return Object.keys(next).length ? next : undefined
+}

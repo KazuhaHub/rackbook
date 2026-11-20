@@ -13,6 +13,7 @@ import { ErrorBoundary } from '@/components/ErrorBoundary'
 import { t } from '@/i18n'
 import { dataProvider } from '@/providers/dataProvider'
 import { MetaProvider, useMeta } from '@/providers/meta'
+import { collectionTitle, ledgerTitle } from '@/lib/labels'
 import { retryImport } from '@/lib/staleChunk'
 
 // Route-level code splitting: the table and form stacks are the heavy parts.
@@ -52,13 +53,13 @@ function RefineApp() {
         create: `/c/${c.name}/-/new`,
         show: `/c/${c.name}/:id`,
         edit: `/c/${c.name}/:id/edit`,
-        meta: { label: c.title },
+        meta: { label: collectionTitle(c) },
       }))}
       options={{
         syncWithLocation: false,
         warnWhenUnsavedChanges: false,
         disableTelemetry: true,
-        title: { text: meta.title || meta.branding?.name || t.appName },
+        title: { text: ledgerTitle(meta) || meta.branding?.name || t.appName },
         reactQuery: { clientConfig: queryClient },
       }}
     >
@@ -97,7 +98,7 @@ function RefineApp() {
         </Route>
       </Routes>
       <UnsavedChangesNotifier />
-      <DocumentTitleHandler handler={({ resource, action }) => titleFor(meta.title || meta.branding?.name || '', resource?.meta?.label, action)} />
+      <DocumentTitleHandler handler={({ resource, action }) => titleFor(ledgerTitle(meta) || meta.branding?.name || '', resource?.meta?.label, action)} />
     </Refine>
   )
 }

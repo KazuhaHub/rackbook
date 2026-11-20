@@ -5,10 +5,12 @@ import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, Command
 import { Input } from '@/components/ui/input'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { t } from '@/i18n'
-import { enumValues, itemEnum, type InlineKind, type Prop } from '@/lib/fieldKind'
+import { type InlineKind, type Prop } from '@/lib/fieldKind'
+import { enumNames, enumOptions, type EnumOption } from '@/lib/labels'
 import { isDate } from '@/lib/formats'
 import { cn } from '@/lib/utils'
 import { BoolBadge, CellValue } from './CellValue'
+import { EnumIcon } from './EnumIcon'
 
 const trigger =
   'group/inline -mx-1.5 inline-flex max-w-full items-center gap-1 rounded-md px-1.5 py-0.5 text-left outline-none hover:bg-foreground/5 focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-wait disabled:opacity-60'
@@ -59,7 +61,8 @@ export function InlineCell({
   return (
     <PickCell
       multiple={kind === 'tags'}
-      options={(kind === 'tags' ? itemEnum(prop) : enumValues(prop)) ?? []}
+      prop={prop}
+      options={enumOptions(prop)}
       value={value}
       aria={aria}
       required={required}
@@ -72,6 +75,7 @@ export function InlineCell({
 
 function PickCell({
   multiple,
+  prop,
   options,
   value,
   aria,
@@ -81,7 +85,8 @@ function PickCell({
   onSave,
 }: {
   multiple: boolean
-  options: string[]
+  prop: Prop
+  options: EnumOption[]
   value: unknown
   aria: string
   required: boolean
@@ -96,7 +101,8 @@ function PickCell({
   const draft = draftState.version === version ? draftState.values : multiple ? (current as string[]) : []
   const setDraft = (f: (d: string[]) => string[]) => setDraftState({ version, values: f(draft) })
   // a value the schema no longer lists stays selectable, so it can be seen and removed
-  const all = [...options, ...(multiple ? (current as string[]) : current ? [current as string] : [])].filter((v, i, a) => a.indexOf(v) === i)
+  const stored = multiple ? (current as string[]) : current ? [current as string] : []
+  const all: EnumOption[] = [...options, ...stored.filter((v) => !options.some((o) => o.value === v)).map((v) => ({ value: v, label: v }))]
   const changed = multiple && !(draft.length === (current as string[]).length && draft.every((v) => (current as string[]).includes(v)))
 
   // closing without 确定 (Escape, a click outside) discards the draft
@@ -106,7 +112,7 @@ function PickCell({
   }
   const confirm = () => {
     setOpen(false)
-    if (changed) onSave(all.filter((v) => draft.includes(v)))
+    if (changed) onSave(all.map((o) => o.value).filter((v) => draft.includes(v)))
   }
   const choose = (v: string) => {
     if (multiple) setDraft((d) => (d.includes(v) ? d.filter((x) => x !== v) : [...d, v]))
@@ -120,7 +126,7 @@ function PickCell({
   return (
     <Popover open={open} onOpenChange={onOpenChange}>
       <PopoverTrigger render={<button type="button" className={trigger} disabled={busy} aria-label={aria} />}>
-        <CellValue value={value} />
+        <CellValue value={value} schema={prop} />
         <Chevron busy={busy} />
       </PopoverTrigger>
       <PopoverContent align="start" className="w-56 gap-0 p-0">
@@ -129,9 +135,10 @@ function PickCell({
           <CommandList>
             <CommandEmpty>{t.form.noReferenceMatch}</CommandEmpty>
             <CommandGroup>
-              {all.map((v) => (
-                <CommandItem key={v} value={v} data-checked={checked(v)} onSelect={() => choose(v)}>
-                  {v}
+              {all.map((o) => (
+                <CommandItem key={o.value} value={o.value} keywords={enumNames(prop, o.value)} data-checked={checked(o.value)} onSelect={() => choose(o.value)}>
+                  <EnumIcon name={o.icon} />
+                  {o.label}
                 </CommandItem>
               ))}
             </CommandGroup>

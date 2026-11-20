@@ -1,47 +1,56 @@
 # 设备。以本文件为准。
 # name 按命名规范：<角色/主机>-<服务商或站点>-<城市>-<州/省>-<国家>-<类型>
 - name: gw-example-springfield-or-us-home
-  category: 路由器
+  category: router
   site: Springfield 家
+  country: US
+  subdivision: US-OR
   os: OPNsense 26.7
   ipv4: 203.0.113.10
-  ipv4_type: 动态
+  ipv4_type: dynamic
   ipv6: "2001:db8:10::1"
   domain: gw.springfield.or.us.home.example.com
   managed: false
   notes: 站点网关；内网域 springfield.or.us.lan.example.com
 
 - name: laptop-me-pc
-  category: 我的终端
+  category: personal_device
   site: 随身
+  country: tbd
   os: macOS 26
   managed: false
 
 - name: web-hostco-ashburn-va-us-dc
-  category: 公开服务器（海外）
+  category: public_server
   site: HostCo Ashburn, VA
+  country: US
+  subdivision: US-VA
   os: Ubuntu 26.04
   ipv4: 198.51.100.20
-  ipv4_type: 静态
+  ipv4_type: static
   ipv6: "2001:db8:20::1"
   domain: web.hostco.ashburn.va.us.dc.example.com
   managed: true
   notes: 主站、证书中心
 
 - name: standby-vpsco-sanjose-ca-us-vps
-  category: 公开服务器（海外）
+  category: public_server
   site: VPSCo San Jose, CA
+  country: US
+  subdivision: US-CA
   os: Ubuntu 26.04
   ipv4: 198.51.100.30
-  ipv4_type: 静态
+  ipv4_type: static
   domain: standby.vpsco.sanjose.ca.us.vps.example.com
   managed: true
   notes: web 的容灾备机
 
 - name: nas-example-springfield-or-us-home
-  category: 家里服务
+  category: home_service
   site: Springfield 家
+  country: US
+  subdivision: US-OR
   os: Linux
-  ipv4: —（经家里 NAT）
+  ipv4_type: nat
   domain: nas.springfield.or.us.home.example.com
   managed: false

@@ -39,6 +39,20 @@ func (m *omap) del(k string) {
 	}
 }
 
+func (m *omap) has(k string) bool { _, ok := m.vals[k]; return ok }
+
+// rename gives the value of key from the name to, in the same place.
+func (m *omap) rename(from, to string) {
+	for i, k := range m.keys {
+		if k == from {
+			m.keys[i] = to
+			m.vals[to] = m.vals[from]
+			delete(m.vals, from)
+			return
+		}
+	}
+}
+
 func (m *omap) clone() *omap {
 	c := newOmap()
 	for _, k := range m.keys {

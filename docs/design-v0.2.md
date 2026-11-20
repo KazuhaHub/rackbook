@@ -200,8 +200,10 @@ schema). Opening one shows:
 | 端口 | `integer`, 1–65535 | |
 | 端口 + 协议 | `string`, `format: port-spec` | e.g. `TCP 443`, `UDP 41641` (free-text ports in the current ledger stay 文本) |
 | 域名 | `string`, `format: hostname` | |
+| 国家 / 地区 | `string`, `format: country` | ISO 3166-1 alpha-2 in capitals (`US`, `CN`), or `tbd` |
+| 行政区划 | `string`, `format: subdivision` | ISO 3166-2 shape (`US-CA`, `CN-GD`), or `tbd` |
 | URL | `string`, `format: uri` | |
-| 枚举 | `string` + `enum` | values, optional colours for badges |
+| 枚举 | `string` + `enum`, or `oneOf` of `const` + `title` | values, optional labels per language (`label`, `labels`), icons, colours for badges |
 | 布尔 | `boolean` | default |
 | 日期 | `string`, `format: date` | |
 | 引用 | `string` (or `array` of strings when multiple) + a `ref` rule | target collection and field, allowed literals (e.g. `all`), single/multiple |
@@ -210,8 +212,13 @@ schema). Opening one shows:
   be shown again exactly; standard keywords carry the meaning. Hand-written
   schemas with other keywords are preserved, and the editor marks those fields
   "高级（在 YAML 中编辑）".
-- Formats `ip`, `cidr`, `port-spec`, `textarea` and `date` are registered in
-  the Go validator and the console's ajv, so both validate identically.
+- Formats `ip`, `cidr`, `port-spec`, `textarea`, `date`, `country` and `subdivision` are
+  registered in the Go validator and the console's ajv, so both validate identically.
+  The country list is `web/src/lib/countries.ts`; a Go test compares it with the server's.
+- An enum with a label or a translated label is written as `oneOf`, otherwise as a plain
+  `enum`; switching removes the other keyword. Translations of titles and labels go in
+  `x-rackbook-i18n` (title and description of any property, `enum` labels per code), icons in
+  `x-rackbook-enum-icons`.
 - **unique** adds a `unique` rule in `rackbook.yml`; required goes in schema
   `required`.
 

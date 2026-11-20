@@ -35,7 +35,9 @@ import { useInlineEdit } from '@/hooks/use-inline-edit'
 import { rowClass, useRowNav } from '@/hooks/use-row-nav'
 import { useFirstRender, useRefLookups } from '@/lib/hooks'
 import { CollectionIcon } from '@/components/CollectionIcon'
-import { canEdit, defaultColumns, fieldTitle, looksMono, recordHref, schemaProps, str } from '@/lib/ledger'
+import { canEdit, defaultColumns, fieldText, fieldTitle, looksMono, recordHref, schemaProps, str } from '@/lib/ledger'
+import { displayText } from '@/lib/display'
+import { collectionDescription, collectionTitle, enumOption, isEnumLike } from '@/lib/labels'
 import type { Collection, Facet, LedgerRecord } from '@/lib/types'
 import { cn } from '@/lib/utils'
 import { collator } from '@/i18n/format'
@@ -60,10 +62,18 @@ function matches(f: Facet, vals: string[], sel: string) {
 }
 
 const searchText = new WeakMap<object, string>()
-function textOf(rec: LedgerRecord) {
+/** Everything a quick filter looks at in a row: each value as stored and as shown (an enum label, the placeholder word). */
+function textOf(col: Collection, rec: LedgerRecord) {
   let s = searchText.get(rec)
   if (s === undefined) {
-    s = Object.values(rec.data).map(str).join('\u0001').toLowerCase()
+    s = Object.entries(rec.data)
+      .flatMap(([k, v]) => {
+        const stored = str(v)
+        const shown = fieldText(col, k, v)
+        return shown === stored ? [stored] : [stored, shown]
+      })
+      .join('\u0001')
+      .toLowerCase()
     searchText.set(rec, s)
   }
   return s
@@ -169,7 +179,7 @@ function CollectionTable({ col }: { col: Collection }) {
             const x = a.getValue(id)
             const y = b.getValue(id)
             if (typeof x === 'boolean' && typeof y === 'boolean') return Number(x) - Number(y)
-            return collator().compare(str(x), str(y))
+            return collator().compare(fieldText(col, id, x), fieldText(col, id, y))
           },
         } satisfies ColumnDef<LedgerRecord>
       }),
@@ -200,7 +210,7 @@ function CollectionTable({ col }: { col: Collection }) {
     enableSortingRemoval: true,
     getColumnCanGlobalFilter: () => true,
     globalFilterFn: (row, _id, value: string) => {
-      const text = textOf(row.original)
+      const text = textOf(col, row.original)
       return String(value)
         .toLowerCase()
         .split(/\s+/)
@@ -225,8 +235,13 @@ function CollectionTable({ col }: { col: Collection }) {
         for (const r of all) for (const v of new Set(rowValues(r.data[f.field]))) counts.set(v, (counts.get(v) ?? 0) + 1)
       }
       const prop = col.schema.properties?.[f.field]
-      const label = (v: string) => (prop?.type === 'boolean' ? (v === 'true' ? t.common.yes : t.common.no) : v)
-      const opts = [...counts].map(([value, count]) => ({ value, label: label(value), count }))
+      const label = (v: string) => (prop?.type === 'boolean' ? (v === 'true' ? t.common.yes : t.common.no) : displayText(prop, v))
+      const opts = [...counts].map(([value, count]) => ({
+        value,
+        label: label(value),
+        count,
+        icon: prop && isEnumLike(prop) ? enumOption(prop, value).icon : undefined,
+      }))
       if (!f.values?.length) opts.sort((a, b) => collator().compare(a.label, b.label))
       out.set(f.field, opts)
     }
@@ -239,8 +254,8 @@ function CollectionTable({ col }: { col: Collection }) {
     <div>
       <PageHeader
         icon={<CollectionIcon col={col} className="size-5" />}
-        title={col.title}
-        description={col.description}
+        title={collectionTitle(col)}
+        description={collectionDescription(col)}
         actions={
           editable && (
             <Button render={<Link to={`/c/${encodeURIComponent(col.name)}/-/new`} />}>
@@ -388,7 +403,7 @@ function CollectionTable({ col }: { col: Collection }) {
                           <td key={c.id} className={cn('px-4 py-2.5 align-top', i === 0 && 'font-medium')}>
                             {i === 0 && !lookups[c.id] ? (
                               <Link to={href} title={str(v)} className={cn('line-clamp-2 max-w-[44ch] break-words hover:underline', looksMono(str(v)) && 'font-mono text-[0.8125rem]')}>
-                                {str(v) || t.show.empty}
+                                {fieldText(col, c.id, v) || t.show.empty}
                               </Link>
                             ) : (
                               <RecordCell col={col} rec={rec} field={c.id} lookup={lookups[c.id]} edit={editable ? edit : undefined} />

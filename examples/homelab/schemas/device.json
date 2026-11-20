@@ -4,16 +4,81 @@
   "type": "object",
   "additionalProperties": false,
   "required": ["name", "category"],
+  "x-rackbook-i18n": {"en-US": {"title": "Device"}, "zh-TW": {"title": "裝置"}},
   "properties": {
-    "name": {"type": "string", "title": "设备名", "description": "<角色/主机>-<服务商或站点>-<城市>-<州/省>-<国家>-<类型>", "pattern": "^[a-z0-9][a-z0-9-]*$"},
-    "category": {"type": "string", "title": "类别"},
-    "site": {"type": "string", "title": "站点 / 服务商"},
-    "os": {"type": "string", "title": "系统"},
-    "ipv4": {"type": "string", "title": "公网 IPv4"},
-    "ipv4_type": {"type": "string", "title": "IPv4 类型", "examples": ["静态", "动态"]},
-    "ipv6": {"type": "string", "title": "公网 IPv6"},
-    "domain": {"type": "string", "title": "公网域名"},
-    "managed": {"type": "boolean", "title": "纳管", "description": "由配置仓库（ansible）管理；必须与 inventory 的 managed 组一致", "default": false},
-    "notes": {"type": "string", "title": "备注", "format": "textarea"}
+    "name": {
+      "type": "string",
+      "title": "设备名",
+      "description": "<角色/主机>-<服务商或站点>-<城市>-<州/省>-<国家>-<类型>",
+      "pattern": "^[a-z0-9][a-z0-9-]*$",
+      "x-rackbook-i18n": {"en-US": {"title": "Device name", "description": "<role/host>-<provider or site>-<city>-<state/province>-<country>-<type>"}, "zh-TW": {"title": "裝置名稱", "description": "<角色/主機>-<服務商或站點>-<城市>-<州/省>-<國家>-<類型>"}}
+    },
+    "category": {
+      "type": "string",
+      "title": "类别",
+      "oneOf": [{"const": "router", "title": "路由器"}, {"const": "personal_device", "title": "我的终端"}, {"const": "public_server", "title": "公开服务器（海外）"}, {"const": "home_service", "title": "家里服务"}],
+      "x-rackbook-enum-icons": {"router": "router", "personal_device": "laptop", "public_server": "server", "home_service": "house"},
+      "x-rackbook-i18n": {"en-US": {"title": "Category", "enum": {"router": "Router", "personal_device": "Personal device", "public_server": "Public server (overseas)", "home_service": "Home service"}}, "zh-TW": {"title": "類別", "enum": {"router": "路由器", "personal_device": "我的終端", "public_server": "公開伺服器（海外）", "home_service": "家裡服務"}}}
+    },
+    "site": {
+      "type": "string",
+      "title": "站点 / 服务商",
+      "x-rackbook-i18n": {"en-US": {"title": "Site / provider"}, "zh-TW": {"title": "站點／服務商"}}
+    },
+    "country": {
+      "type": "string",
+      "title": "国家 / 地区",
+      "description": "ISO 3166-1 国家代码；未知填 tbd",
+      "format": "country",
+      "x-rackbook-i18n": {"en-US": {"title": "Country or region", "description": "ISO 3166-1 country code; tbd when unknown"}, "zh-TW": {"title": "國家／地區", "description": "ISO 3166-1 國家代碼；未知填 tbd"}}
+    },
+    "subdivision": {
+      "type": "string",
+      "title": "州 / 省",
+      "description": "ISO 3166-2 代码，如 US-OR",
+      "format": "subdivision",
+      "x-rackbook-i18n": {"en-US": {"title": "State / province", "description": "ISO 3166-2 code, such as US-OR"}, "zh-TW": {"title": "州／省", "description": "ISO 3166-2 代碼，如 US-OR"}}
+    },
+    "os": {
+      "type": "string",
+      "title": "系统",
+      "x-rackbook-i18n": {"en-US": {"title": "Operating system"}, "zh-TW": {"title": "作業系統"}}
+    },
+    "ipv4": {
+      "type": "string",
+      "title": "公网 IPv4",
+      "x-rackbook-i18n": {"en-US": {"title": "Public IPv4"}, "zh-TW": {"title": "公開 IPv4"}}
+    },
+    "ipv4_type": {
+      "type": "string",
+      "title": "IPv4 类型",
+      "oneOf": [{"const": "static", "title": "静态"}, {"const": "dynamic", "title": "动态"}, {"const": "nat", "title": "NAT"}],
+      "x-rackbook-enum-icons": {"static": "pin", "dynamic": "refresh-cw", "nat": "network"},
+      "x-rackbook-enum-colors": {"static": "green", "dynamic": "orange", "nat": "blue"},
+      "x-rackbook-i18n": {"en-US": {"title": "IPv4 type", "enum": {"static": "Static", "dynamic": "Dynamic", "nat": "NAT"}}, "zh-TW": {"title": "IPv4 類型", "enum": {"static": "靜態", "dynamic": "動態", "nat": "NAT"}}}
+    },
+    "ipv6": {
+      "type": "string",
+      "title": "公网 IPv6",
+      "x-rackbook-i18n": {"en-US": {"title": "Public IPv6"}, "zh-TW": {"title": "公開 IPv6"}}
+    },
+    "domain": {
+      "type": "string",
+      "title": "公网域名",
+      "x-rackbook-i18n": {"en-US": {"title": "Public domain"}, "zh-TW": {"title": "公開網域"}}
+    },
+    "managed": {
+      "type": "boolean",
+      "title": "纳管",
+      "description": "由配置仓库（ansible）管理；必须与 inventory 的 managed 组一致",
+      "default": false,
+      "x-rackbook-i18n": {"en-US": {"title": "Managed", "description": "Managed by the configuration repository (ansible); must match the inventory group \"managed\""}, "zh-TW": {"title": "納管", "description": "由設定倉庫（ansible）管理；必須與 inventory 的 managed 群組一致"}}
+    },
+    "notes": {
+      "type": "string",
+      "title": "备注",
+      "format": "textarea",
+      "x-rackbook-i18n": {"en-US": {"title": "Notes"}, "zh-TW": {"title": "備註"}}
+    }
   }
 }

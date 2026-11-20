@@ -8,6 +8,9 @@ import { t } from '@/i18n'
 import { errorMessage } from '@/lib/api'
 import { useExpiring } from '@/lib/hooks'
 import { hasExpiry, recordHref, sourceLabel } from '@/lib/ledger'
+import { collectionTitle } from '@/lib/labels'
+import { TbdText } from '@/components/CellValue'
+import { isTbd } from '@/lib/display'
 import type { ExpiringItem } from '@/lib/types'
 import { cn } from '@/lib/utils'
 import { useMeta } from '@/providers/meta'
@@ -74,7 +77,7 @@ function Section({
                     <td className="px-4 py-2.5 whitespace-nowrap">
                       {col ? (
                         <Link to={`/c/${encodeURIComponent(col.name)}`} className="hover:underline">
-                          {col.title}
+                          {collectionTitle(col)}
                         </Link>
                       ) : (
                         it.collection
@@ -88,7 +91,7 @@ function Section({
                         {it.label || displayId(it.id)}
                       </Link>
                     </td>
-                    <td className="px-4 py-2.5 whitespace-nowrap tabular-nums">{it.expires || '—'}</td>
+                    <td className="px-4 py-2.5 whitespace-nowrap tabular-nums">{isTbd(it.expires) ? <TbdText /> : it.expires || '—'}</td>
                     <td
                       className={cn(
                         'px-4 py-2.5 whitespace-nowrap tabular-nums',

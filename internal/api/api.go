@@ -314,30 +314,33 @@ type facetOut struct {
 }
 
 type noteOut struct {
-	Title string `json:"title"`
-	Text  string `json:"text"`
+	Title string                       `json:"title"`
+	Text  string                       `json:"text"`
+	I18n  map[string]map[string]string `json:"i18n,omitempty"`
 }
 
 type collectionOut struct {
-	Name         string           `json:"name"`
-	Title        string           `json:"title"`
-	Description  string           `json:"description"`
-	Group        string           `json:"group"`
-	Icon         string           `json:"icon,omitempty"`
-	File         string           `json:"file"`
-	Path         string           `json:"path,omitempty"`
-	SchemaFile   string           `json:"schemaFile"`
-	Key          []string         `json:"key"`
-	Label        string           `json:"label"`
-	List         []string         `json:"list"`
-	Facets       []facetOut       `json:"facets"`
-	Schema       json.RawMessage  `json:"schema"`
-	Refs         []ledger.RefInfo `json:"refs"`
-	Backrefs     []ledger.BackRef `json:"backrefs"`
-	Notes        []noteOut        `json:"notes"`
-	Count        int              `json:"count"`
-	ExpiryField  string           `json:"expiryField"`
-	RevokedField string           `json:"revokedField"`
+	Name        string           `json:"name"`
+	Title       string           `json:"title"`
+	Description string           `json:"description"`
+	Group       string           `json:"group"`
+	Icon        string           `json:"icon,omitempty"`
+	File        string           `json:"file"`
+	Path        string           `json:"path,omitempty"`
+	SchemaFile  string           `json:"schemaFile"`
+	Key         []string         `json:"key"`
+	Label       string           `json:"label"`
+	List        []string         `json:"list"`
+	Facets      []facetOut       `json:"facets"`
+	Schema      json.RawMessage  `json:"schema"`
+	Refs        []ledger.RefInfo `json:"refs"`
+	Backrefs    []ledger.BackRef `json:"backrefs"`
+	Notes       []noteOut        `json:"notes"`
+	Count       int              `json:"count"`
+	// I18n is title, description and group in the other languages.
+	I18n         map[string]map[string]string `json:"i18n,omitempty"`
+	ExpiryField  string                       `json:"expiryField"`
+	RevokedField string                       `json:"revokedField"`
 }
 
 type moduleOut struct {
@@ -379,6 +382,7 @@ func (s *server) meta(w http.ResponseWriter, r *http.Request) {
 			Key: strs(c.Key), Label: c.Label, List: strs(c.List), Facets: []facetOut{},
 			Schema: c.SchemaRaw, Refs: l.Refs(c.Name), Backrefs: l.BackRefs(c.Name), Notes: []noteOut{}, Count: len(c.Records),
 			ExpiryField: expiry.ExpiryField(c), RevokedField: expiry.RevokedField(c),
+			I18n: c.I18n.Only("title", "description", "group"),
 		}
 		if out.Schema == nil {
 			out.Schema = json.RawMessage("{}")
@@ -388,7 +392,7 @@ func (s *server) meta(w http.ResponseWriter, r *http.Request) {
 		}
 		for _, n := range l.Notes {
 			if n.Collection == c.Name {
-				out.Notes = append(out.Notes, noteOut{Title: n.Title, Text: n.Text})
+				out.Notes = append(out.Notes, noteOut{Title: n.Title, Text: n.Text, I18n: n.I18n.Only("title")})
 			}
 		}
 		cols = append(cols, out)
@@ -404,6 +408,9 @@ func (s *server) meta(w http.ResponseWriter, r *http.Request) {
 	}
 	if s.o.OAuth != nil {
 		meta["oauthServer"] = true // the console shows the authorized-clients lists
+	}
+	if t := cfg.I18n.Texts.Only("title", "description"); t != nil {
+		meta["i18n"] = t // raw per-language text; the console picks by its current language
 	}
 	// The Accept-Language match and the configured default let the console pick
 	// its language at boot; user.locale (a saved choice) wins over both.

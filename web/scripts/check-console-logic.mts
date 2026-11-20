@@ -2,6 +2,10 @@ import { displayId, idParts } from '../src/lib/recordId.ts'
 import { isGeneric, parseTabHash, pickTab, splitGeneric, tabHash, type GenericRule } from '../src/lib/backrefs.ts'
 import { filterRows, paginate, parsePageSize } from '../src/lib/tableView.ts'
 import {
+  enumEntries,
+  enumForm,
+  enumValues,
+  itemEnum,
   fieldKind,
   inlineKind,
   listEntryError,
@@ -13,6 +17,27 @@ import {
 import { customFormats } from '../src/lib/formats.ts'
 import { isSecretName } from '../src/lib/secretName.ts'
 import { formatItem, formatPlain, isScalarObject, objectItems } from '../src/lib/objectItems.ts'
+import {
+  backrefTitle,
+  codeForLabel,
+  collectionDescription,
+  collectionGroup,
+  collectionTitle,
+  enumChoices,
+  enumLabel,
+  enumMatches,
+  propAt,
+  enumOption,
+  enumOptions,
+  fieldDescription,
+  fieldTitle,
+  isEnumLike,
+  ledgerTitle,
+  noteTitle,
+} from '../src/lib/labels.ts'
+import { displayText } from '../src/lib/display.ts'
+import { countryName, flagEmoji, subdivisionCountry } from '../src/lib/countryDisplay.ts'
+import { COUNTRY_CODES } from '../src/lib/countries.ts'
 
 let failed = 0
 function eq(name: string, got: unknown, want: unknown) {
@@ -200,6 +225,161 @@ eq('scalar object', [isScalarObject({ a: 1, b: 'x' }), isScalarObject({ a: { b: 
 eq('nested object items are not flat', objectItems({ type: 'array', items: { type: 'object', properties: { a: { type: 'object' } } } }), undefined)
 eq('array of strings is not object items', objectItems({ type: 'array', items: { type: 'string' } }), undefined)
 eq('object without properties', objectItems({ type: 'array', items: { type: 'object' } }), undefined)
+
+// the oneOf form of an enum (default-language titles in oneOf, other languages in x-rackbook-i18n)
+const ipv4Type = {
+  type: 'string',
+  title: 'IPv4 类型',
+  description: '地址的分配方式',
+  oneOf: [{ const: 'static', title: '静态' }, { const: 'dynamic', title: '动态' }, { const: 'nat' }],
+  'x-rackbook-i18n': {
+    'en-US': { title: 'IPv4 type', description: 'How the address is assigned', enum: { static: 'Static', dynamic: 'Dynamic', nat: 'NAT' } },
+    'zh-TW': { title: 'IPv4 類型', enum: { static: '靜態' } },
+  },
+  'x-rackbook-enum-icons': { static: 'pin', dynamic: 'refresh-cw' },
+  'x-rackbook-enum-colors': { static: 'green' },
+}
+eq('oneOf kind', fieldKind(ipv4Type, ctx), 'enum')
+eq('oneOf nullable kind', fieldKind({ ...ipv4Type, type: ['string', 'null'] }, ctx), 'enum')
+eq('oneOf values', enumValues(ipv4Type), ['static', 'dynamic', 'nat'])
+eq('oneOf entries', enumEntries(ipv4Type), [{ value: 'static', title: '静态' }, { value: 'dynamic', title: '动态' }, { value: 'nat' }])
+eq('plain enum entries', enumEntries({ type: 'string', enum: ['a', 'b'] }), [{ value: 'a' }, { value: 'b' }])
+eq('oneOf inline', inlineKind(ipv4Type, ctx), 'enum')
+eq('oneOf is not an enum with extra keys', enumValues({ type: 'string', oneOf: [{ const: 'a', description: 'x' }] }), undefined)
+eq('oneOf is not an enum with a non-string const', enumValues({ type: 'string', oneOf: [{ const: 1 }] }), undefined)
+eq('oneOf is not an enum with a schema alternative', enumValues({ type: 'string', oneOf: [{ const: 'a' }, { pattern: '^b' }] }), undefined)
+eq('oneOf of a number is not a string enum', enumValues({ type: 'integer', oneOf: [{ const: 'a' }] }), undefined)
+eq('empty oneOf', enumValues({ type: 'string', oneOf: [] }), undefined)
+const tagsOneOf = { type: 'array', items: { type: 'string', oneOf: [{ const: 'public', title: '公网' }, { const: 'lan', title: '局域网' }] } }
+eq('oneOf tags kind', fieldKind(tagsOneOf, ctx), 'tags')
+eq('oneOf tags values', itemEnum(tagsOneOf), ['public', 'lan'])
+eq('oneOf tags inline', inlineKind(tagsOneOf, ctx), 'tags')
+// what the form library gets: plain enum, the original kept for the labels
+const formProp = enumForm(ipv4Type) as Record<string, unknown>
+eq('form schema has enum', formProp.enum, ['static', 'dynamic', 'nat'])
+eq('form schema has no oneOf', 'oneOf' in formProp, false)
+eq('form schema keeps the labels', enumLabel(formProp, 'static', 'zh-CN'), '静态')
+eq('form schema keeps the translations', enumLabel(formProp, 'static', 'en-US'), 'Static')
+eq('form schema kind', fieldKind(formProp, ctx), 'enum')
+eq('form schema leaves the original alone', 'oneOf' in ipv4Type, true)
+eq('form schema plain enum unchanged', enumForm({ type: 'string', enum: ['a'] }), { type: 'string', enum: ['a'] })
+const rowsOneOf = { type: 'array', items: { type: 'object', properties: { protocol: { type: 'string', oneOf: [{ const: 'tcp', title: 'TCP' }] }, port: { type: 'string' } } } }
+const rowsForm = enumForm(rowsOneOf) as any
+eq('form schema row enum', rowsForm.items.properties.protocol.enum, ['tcp'])
+eq('form schema row has no oneOf', 'oneOf' in rowsForm.items.properties.protocol, false)
+eq('form schema rows are still rows', fieldKind(rowsForm, ctx), 'rows')
+eq('form schema array items', (enumForm(tagsOneOf) as any).items.enum, ['public', 'lan'])
+eq('oneOf rows: an enum property is not a note', formatItem({ protocol: 'tcp', port: '1' }, objectItems(rowsOneOf)!), { text: 'tcp', title: '1' })
+
+// labels: the language's translation, else the standard text, else the code
+eq('label zh-CN is the standard text', enumLabel(ipv4Type, 'static', 'zh-CN'), '静态')
+eq('label en-US', enumLabel(ipv4Type, 'dynamic', 'en-US'), 'Dynamic')
+eq('label zh-TW translated', enumLabel(ipv4Type, 'static', 'zh-TW'), '靜態')
+eq('label zh-TW falls back to the standard text', enumLabel(ipv4Type, 'dynamic', 'zh-TW'), '动态')
+eq('label falls back to the code', enumLabel(ipv4Type, 'nat', 'zh-CN'), 'nat')
+eq('label zh-TW code fallback', enumLabel(ipv4Type, 'nat', 'zh-TW'), 'nat')
+eq('label of an unknown code', enumLabel(ipv4Type, 'wifi', 'en-US'), 'wifi')
+eq('label of a plain enum', enumLabel({ type: 'string', enum: ['a'] }, 'a', 'en-US'), 'a')
+eq('label of a non-enum', enumLabel({ type: 'string' }, 'x', 'en-US'), 'x')
+eq('label ignores an empty translation', enumLabel({ ...ipv4Type, 'x-rackbook-i18n': { 'en-US': { enum: { static: '' } } } }, 'static', 'en-US'), '静态')
+eq('label ignores an unsupported shape', enumLabel({ ...ipv4Type, 'x-rackbook-i18n': 'oops' }, 'static', 'en-US'), '静态')
+eq('options en-US', enumOptions(ipv4Type, 'en-US'), [
+  { value: 'static', label: 'Static', icon: 'pin', color: 'green' },
+  { value: 'dynamic', label: 'Dynamic', icon: 'refresh-cw', color: undefined },
+  { value: 'nat', label: 'NAT', icon: undefined, color: undefined },
+])
+eq('options of a plain enum', enumOptions({ type: 'string', enum: ['x', 'y'] }, 'en-US').map((o) => o.label), ['x', 'y'])
+eq('options of a non-enum', enumOptions({ type: 'string' }, 'en-US'), [])
+eq('option of an unlisted value', enumOption(ipv4Type, 'wifi', 'en-US'), { value: 'wifi', label: 'wifi' })
+eq('options of tags use the items', enumOptions({ ...tagsOneOf, items: { ...tagsOneOf.items, 'x-rackbook-enum-icons': { lan: 'network' } } }, 'zh-CN').map((o) => [o.value, o.label, o.icon]), [['public', '公网', undefined], ['lan', '局域网', 'network']])
+eq('enum-like', [isEnumLike(ipv4Type), isEnumLike({ type: 'string', enum: ['a'] }), isEnumLike(tagsOneOf), isEnumLike({ type: 'string' })], [true, true, true, false])
+eq('title en-US', fieldTitle(ipv4Type, 'ipv4_type', 'en-US'), 'IPv4 type')
+eq('title zh-CN standard', fieldTitle(ipv4Type, 'ipv4_type', 'zh-CN'), 'IPv4 类型')
+eq('title falls back to the field name', fieldTitle({ type: 'string' }, 'os', 'en-US'), 'os')
+eq('description en-US', fieldDescription(ipv4Type, 'en-US'), 'How the address is assigned')
+eq('description zh-TW falls back', fieldDescription(ipv4Type, 'zh-TW'), '地址的分配方式')
+eq('no description', fieldDescription({ type: 'string' }, 'en-US'), undefined)
+
+// a typed label stands for its code, in any language
+eq('typed code', codeForLabel(ipv4Type, 'static'), 'static')
+eq('typed zh label', codeForLabel(ipv4Type, '静态'), 'static')
+eq('typed en label', codeForLabel(ipv4Type, 'Static'), 'static')
+eq('typed zh-TW label', codeForLabel(ipv4Type, '靜態'), 'static')
+eq('typed label ignoring case', codeForLabel(ipv4Type, 'DYNAMIC'), 'dynamic')
+eq('typed label with spaces', codeForLabel(ipv4Type, '  动态 '), 'dynamic')
+eq('typed unknown', codeForLabel(ipv4Type, 'wifi'), undefined)
+eq('typed empty', codeForLabel(ipv4Type, ''), undefined)
+eq('typed on a non-enum', codeForLabel({ type: 'string' }, 'x'), undefined)
+const clash = { type: 'string', oneOf: [{ const: 'a', title: 'Same' }, { const: 'b', title: 'same' }, { const: 'c' }] }
+eq('typed label exact match wins over case-insensitive', codeForLabel(clash, 'Same'), 'a')
+eq('typed label ambiguous ignoring case', codeForLabel(clash, 'SAME'), undefined)
+eq('typed code wins', codeForLabel({ type: 'string', oneOf: [{ const: 'x', title: 'y' }, { const: 'y', title: 'x' }] }, 'x'), 'x')
+eq('search by label in another language', enumMatches(ipv4Type, 'static', 'Stat'), true)
+eq('search by code', enumMatches(ipv4Type, 'static', 'STAT'), true)
+eq('search by the standard text', enumMatches(ipv4Type, 'static', '静'), true)
+eq('search miss', enumMatches(ipv4Type, 'static', 'dyn'), false)
+eq('search empty', enumMatches(ipv4Type, 'static', ' '), true)
+
+// meta objects
+const coll = { name: 'devices', title: '设备', description: '所有设备', group: '网段规划', i18n: { 'en-US': { title: 'Devices', group: 'Network plans' } } }
+eq('collection title en-US', collectionTitle(coll, 'en-US'), 'Devices')
+eq('collection title zh-TW falls back', collectionTitle(coll, 'zh-TW'), '设备')
+eq('collection description falls back', collectionDescription(coll, 'en-US'), '所有设备')
+eq('collection group en-US', collectionGroup(coll, 'en-US'), 'Network plans')
+eq('collection group none', collectionGroup({ name: 'x', title: 'X' }, 'en-US'), undefined)
+eq('collection title falls back to the name', collectionTitle({ name: 'x', title: '' }, 'en-US'), 'x')
+eq('ledger title', [ledgerTitle({ title: '台账', i18n: { 'en-US': { title: 'Ledger' } } }, 'en-US'), ledgerTitle({ title: '台账' }, 'en-US')], ['Ledger', '台账'])
+eq('note title', [noteTitle({ title: '规则', i18n: { 'en-US': { title: 'Rule' } } }, 'en-US'), noteTitle({ title: '规则' }, 'zh-TW')], ['Rule', '规则'])
+eq('backref title', [backrefTitle({ title: '服务', i18n: { 'en-US': { title: 'Services' } } }, 'en-US'), backrefTitle({}, 'en-US')], ['Services', undefined])
+
+// placeholders and countries as shown
+eq('tbd reads as the placeholder word', displayText({ type: 'string' }, 'tbd'), '待补')
+eq('tbd in a list', displayText({ type: 'array', items: { type: 'string' } }, ['tbd', 'x']), '待补, x')
+eq('enum value reads as its label', displayText(ipv4Type, 'static', 'en-US'), 'Static')
+eq('unknown enum value as it is', displayText(ipv4Type, 'wifi', 'en-US'), 'wifi')
+eq('tags read as labels', displayText(tagsOneOf, ['public', 'lan'], 'zh-CN'), '公网, 局域网')
+const tagsParent = { ...tagsOneOf, 'x-rackbook-i18n': { 'en-US': { enum: { public: 'Public' } } } }
+eq('array labels: translation on the parent array', displayText(tagsParent, ['public', 'lan'], 'en-US'), 'Public, 局域网')
+eq('array labels agree with the options', enumOptions(tagsParent, 'en-US').map((o) => o.label), ['Public', '局域网'])
+eq('country as plain text has no flag', displayText({ type: 'string', format: 'country' }, 'US', 'en-US'), 'United States')
+const byName = [{ f: 'JP' }, { f: 'AU' }, { f: 'US' }].sort((a, b) => countryName(a.f, 'en-US').localeCompare(countryName(b.f, 'en-US'))).map((x) => x.f)
+eq('country sorts by the shown name, not the flag', byName, ['AU', 'JP', 'US'])
+eq('country list is sorted by name in plain text', ['JP', 'AU'].map((c) => displayText({ type: 'string', format: 'country' }, c, 'en-US')).sort(), ['Australia', 'Japan'])
+eq('subdivision as plain text is the code', displayText({ type: 'string', format: 'subdivision' }, 'US-OR', 'en-US'), 'US-OR')
+eq('country tbd', displayText({ type: 'string', format: 'country' }, 'tbd'), '待补')
+eq('plain text as written', displayText({ type: 'string' }, '静态'), '静态')
+eq('flag', [flagEmoji('CN'), flagEmoji('cn'), flagEmoji('USA'), flagEmoji('')], ['🇨🇳', '', '', ''])
+eq('country name zh-CN', countryName('CN', 'zh-CN'), '中国')
+eq('country name en-US', countryName('TW', 'en-US'), 'Taiwan')
+eq('country name of a non-code', countryName('tbd', 'en-US'), 'tbd')
+eq('subdivision country', [subdivisionCountry('US-OR'), subdivisionCountry('tbd'), subdivisionCountry('us-or')], ['US', undefined, undefined])
+eq('country list', [COUNTRY_CODES.length, COUNTRY_CODES.includes('US'), COUNTRY_CODES.includes('XK'), COUNTRY_CODES.includes('UK'), [...COUNTRY_CODES].sort().join() === COUNTRY_CODES.join()], [249, true, false, false, true])
+for (const c of COUNTRY_CODES) if (countryName(c, 'en-US') === c) eq('country has a name ' + c, countryName(c, 'en-US'), '(a name)')
+
+// icon names: only real lucide icons have a loader
+import lucideLoaders from 'lucide-react/dynamicIconImports'
+import { iconLoader } from '../src/lib/iconTable.ts'
+const loaders = lucideLoaders as never
+eq('icon loader of a real icon', typeof iconLoader(loaders, 'circle-check'), 'function')
+eq('icon loader of an alias', typeof iconLoader(loaders, 'circle-help'), 'function')
+for (const n of ['icon', 'lucide-provider', 'create-lucide-icon', 'Icon', 'LucideProvider', 'createLucideIcon', 'icons', 'constructor', '__proto__', 'toString', 'nope', '']) {
+  eq('icon loader rejects ' + JSON.stringify(n), iconLoader(loaders, n), undefined)
+}
+eq('icon loader without a table', iconLoader(null, 'circle-check'), undefined)
+
+// error paths and the allowed values an enum error lists
+const rootSchema = { type: 'object', properties: { ipv4_type: ipv4Type, exposure: tagsOneOf, ports: rowsOneOf } }
+eq('propAt property', propAt(rootSchema, '.ipv4_type'), ipv4Type)
+eq('propAt array item', propAt(rootSchema, '.exposure[0]'), tagsOneOf.items)
+eq('propAt row property', (propAt(rootSchema, '.ports[2].protocol') as any)?.oneOf?.[0]?.const, 'tcp')
+// the form RJSF 6 actually gives e.property: instancePath with "/" turned into "."
+eq('propAt array item (RJSF path)', propAt(rootSchema, '.exposure.0'), tagsOneOf.items)
+eq('propAt row property (RJSF path)', (propAt(rootSchema, '.ports.2.protocol') as any)?.oneOf?.[0]?.const, 'tcp')
+eq('propAt unknown', propAt(rootSchema, '.nope.x'), undefined)
+eq('allowed values with labels', enumChoices(ipv4Type, ['static', 'dynamic', 'nat'], 'zh-CN'), ['静态 (static)', '动态 (dynamic)', 'nat'])
+eq('allowed values en-US', enumChoices(ipv4Type, ['static', 'nat'], 'en-US'), ['Static (static)', 'NAT (nat)'])
+eq('allowed values of a plain enum', enumChoices({ type: 'string', enum: ['a'] }, ['a'], 'en-US'), ['a'])
+eq('allowed values without a schema', enumChoices(undefined, ['a'], 'en-US'), ['a'])
 
 if (failed) process.exit(1)
 console.log('console logic: ok')

@@ -6,6 +6,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { t } from '@/i18n'
 import type { TypeDef } from '@/lib/typedef'
 import { useMeta } from '@/providers/meta'
+import { backrefTitle, collectionTitle } from '@/lib/labels'
 
 export function RelationsTab({
   draft,
@@ -72,10 +73,10 @@ export function RelationsTab({
                   <span className="font-mono text-[0.8125rem]">{b.collection}.{b.field}</span>
                   <ArrowRight className="size-3.5 text-muted-foreground" />
                   <span className="font-mono text-[0.8125rem]">{draft.name}</span>
-                  {b.title && <span className="text-xs text-muted-foreground">{b.title}</span>}
+                  {backrefTitle(b) && <span className="text-xs text-muted-foreground">{backrefTitle(b)}</span>}
                   {byName.has(b.collection) && (
                     <Link to={`/types/${encodeURIComponent(b.collection)}`} className="ml-auto text-xs text-brand hover:underline">
-                      {t.types.relations.open} {byName.get(b.collection)!.title}
+                      {t.types.relations.open} {collectionTitle(byName.get(b.collection)!)}
                     </Link>
                   )}
                 </li>

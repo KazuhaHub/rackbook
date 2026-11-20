@@ -7,6 +7,7 @@ import { t } from '@/i18n'
 import { iconChoices } from '@/lib/icons'
 import type { TypeDef } from '@/lib/typedef'
 import { cn } from 'cn'
+import { OtherLanguages } from './OtherLanguages'
 
 function Field({ label, hint, children, className }: { label: string; hint?: string; children: React.ReactNode; className?: string }) {
   return (
@@ -56,6 +57,17 @@ export function BasicTab({
       <Field label={t.types.basic.group} hint={t.types.basic.groupHint}>
         <Input value={draft.group ?? ''} onChange={(e) => set({ group: e.target.value })} />
       </Field>
+      <div className="sm:col-span-2">
+        <OtherLanguages
+          value={draft.i18n}
+          onChange={(i18n) => set({ i18n })}
+          fields={[
+            { key: 'title', label: t.types.basic.title },
+            { key: 'group', label: t.types.basic.group },
+            { key: 'description', label: t.types.basic.description, multiline: true },
+          ]}
+        />
+      </div>
       <Field label={t.types.basic.icon}>
         <div className="flex flex-wrap gap-1">
           <button

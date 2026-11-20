@@ -7,6 +7,8 @@ import (
 	"strconv"
 
 	"github.com/kazuhahub/rackbook/internal/config"
+	"github.com/kazuhahub/rackbook/internal/labels"
+	"github.com/kazuhahub/rackbook/internal/locale"
 )
 
 // The JSON Schema side of a Type. A schema is read into Fields and written
@@ -16,6 +18,8 @@ import (
 const (
 	kwType     = "x-rackbook-type"
 	kwColors   = "x-rackbook-enum-colors"
+	kwIcons    = labels.KeyIcons
+	kwI18n     = labels.KeyI18n
 	schemaDraf = "https://json-schema.org/draft/2020-12/schema"
 )
 
@@ -49,6 +53,10 @@ func schemaShape(f Field) (jtype, format string) {
 		return "string", "port-spec"
 	case THostname:
 		return "string", "hostname"
+	case TCountry:
+		return "string", "country"
+	case TSubdivision:
+		return "string", "subdivision"
 	case TURL:
 		return "string", "uri"
 	case TDate:
@@ -60,11 +68,12 @@ func schemaShape(f Field) (jtype, format string) {
 var formatToType = map[string]string{
 	"textarea": TTextarea, "ip": TIP, "ipv4": TIPv4, "ipv6": TIPv6, "cidr": TCIDR,
 	"port-spec": TPortSpec, "hostname": THostname, "uri": TURL, "date": TDate,
+	"country": TCountry, "subdivision": TSubdivision,
 }
 
 // known lists the keywords the console manages for a type.
 func known(t string) map[string]bool {
-	k := map[string]bool{"title": true, "description": true, kwType: true}
+	k := map[string]bool{"title": true, "description": true, kwType: true, kwI18n: true}
 	add := func(s ...string) {
 		for _, x := range s {
 			k[x] = true
@@ -78,7 +87,7 @@ func known(t string) map[string]bool {
 	case TPort:
 		add("type", "default", "minimum", "maximum")
 	case TEnum:
-		add("type", "default", "enum", kwColors)
+		add("type", "default", "enum", "oneOf", kwColors, kwIcons)
 	case TBool:
 		add("type", "default")
 	case TRef:
@@ -140,6 +149,111 @@ func isScalar(v any) bool {
 	return false
 }
 
+// plain converts an ordered value into plain maps and slices, the form the
+// labels package reads.
+func plain(v any) any {
+	switch x := v.(type) {
+	case *omap:
+		m := make(map[string]any, len(x.keys))
+		for _, k := range x.keys {
+			m[k] = plain(x.vals[k])
+		}
+		return m
+	case []any:
+		out := make([]any, len(x))
+		for i, e := range x {
+			out[i] = plain(e)
+		}
+		return out
+	}
+	return v
+}
+
+// enumOf reads a property as an enum-like one: a string with a plain enum or a
+// oneOf of const/title entries. A property that has both keywords is not one
+// (the console cannot tell which to edit), so it stays advanced.
+func enumOf(prop *omap) (*labels.Enum, bool) {
+	_, hasEnum := prop.vals["enum"]
+	_, hasOneOf := prop.vals["oneOf"]
+	if hasEnum && hasOneOf {
+		return nil, false
+	}
+	small := map[string]any{}
+	for _, k := range []string{"type", "enum", "oneOf", kwI18n, kwIcons} {
+		if v, ok := prop.vals[k]; ok {
+			small[k] = plain(v)
+		}
+	}
+	return labels.Parse(small)
+}
+
+// i18nClean reports whether the x-rackbook-i18n value has the shape the
+// console reads and writes back without losing anything: an object of objects,
+// and in the supported languages string title and description and an enum
+// object of strings. Anything else is kept as it is and edited by hand.
+func i18nClean(v any) bool {
+	m, ok := v.(*omap)
+	if !ok {
+		return false
+	}
+	for _, loc := range m.keys {
+		lo, ok := m.vals[loc].(*omap)
+		if !ok {
+			return false
+		}
+		if !labels.Supported(loc) {
+			continue
+		}
+		for _, k := range []string{"title", "description"} {
+			if x, has := lo.vals[k]; has {
+				if _, ok := x.(string); !ok {
+					return false
+				}
+			}
+		}
+		if x, has := lo.vals["enum"]; has {
+			em, ok := x.(*omap)
+			if !ok {
+				return false
+			}
+			for _, c := range em.keys {
+				if _, ok := em.vals[c].(string); !ok {
+					return false
+				}
+			}
+		}
+	}
+	return true
+}
+
+// iconsClean reports whether x-rackbook-enum-icons is an object of strings.
+func iconsClean(v any) bool {
+	m, ok := v.(*omap)
+	if !ok {
+		return false
+	}
+	for _, c := range m.keys {
+		if _, ok := m.vals[c].(string); !ok {
+			return false
+		}
+	}
+	return true
+}
+
+// fieldI18n reads the title and description translations of the supported
+// languages.
+func fieldI18n(prop *omap) map[string]map[string]string {
+	m, _ := prop.vals[kwI18n].(*omap)
+	if m == nil {
+		return nil
+	}
+	out := labels.Translations(map[string]any{kwI18n: plain(m)})
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 // detectType decides the console type of a property.
 func detectType(prop *omap, ref *config.RefRule) string {
 	jt, _ := prop.vals["type"].(string)
@@ -163,10 +277,10 @@ func detectType(prop *omap, ref *config.RefRule) string {
 		if t, ok := formatToType[format]; ok {
 			return t
 		}
+		if _, ok := enumOf(prop); ok {
+			return TEnum
+		}
 		if _, ok := prop.vals["enum"]; ok {
-			if _, all := stringList(prop.vals["enum"]); all {
-				return TEnum
-			}
 			return TAdvanced
 		}
 		return TText
@@ -196,7 +310,7 @@ func compatible(t, jt, format string, prop *omap) bool {
 	case TBool:
 		return jt == "boolean"
 	case TEnum:
-		_, ok := stringList(prop.vals["enum"])
+		_, ok := enumOf(prop)
 		return jt == "string" && ok
 	}
 	want, ok := formatToType[format]
@@ -214,12 +328,21 @@ func fieldFromProp(name string, v any, ref *config.RefRule) Field {
 	}
 	f.Title, f.Description = str(prop, "title"), str(prop, "description")
 	f.Type = detectType(prop, ref)
+	extraI18n := false
+	if v, has := prop.vals[kwI18n]; has {
+		if i18nClean(v) {
+			f.I18n = fieldI18n(prop)
+		} else {
+			extraI18n = true
+		}
+	}
 	if ref != nil {
-		f.Ref = &Ref{ToField: "", Allow: ref.Allow, Many: ref.Many, Message: ref.Message, BackrefTitle: ref.BackrefTitle, BackrefColumns: ref.BackrefColumns}
+		f.Ref = &Ref{ToField: "", Allow: ref.Allow, Many: ref.Many, Message: ref.Message, BackrefTitle: ref.BackrefTitle, BackrefColumns: ref.BackrefColumns,
+			I18n: ref.I18n.Only("message", "backref_title")}
 		f.Ref.To, f.Ref.ToField, _ = config.SplitRef(ref.To)
 	}
 	k := known(f.Type)
-	extra := map[string]bool{}
+	extra := map[string]bool{kwI18n: extraI18n}
 	if f.Type != TAdvanced {
 		if d, has := prop.vals["default"]; has && k["default"] {
 			if isScalar(d) {
@@ -270,18 +393,27 @@ func fieldFromProp(name string, v any, ref *config.RefRule) Field {
 			}
 		}
 	case TEnum:
-		vals, _ := stringList(prop.vals["enum"])
 		colors, _ := prop.vals[kwColors].(*omap)
-		for _, s := range vals {
-			it := EnumItem{Value: s}
-			if colors != nil {
-				it.Color = str(colors, s)
-			}
-			f.Enum = append(f.Enum, it)
-		}
 		if c, has := prop.vals[kwColors]; has && colors == nil {
 			_ = c
 			extra[kwColors] = true
+		}
+		if v, has := prop.vals[kwIcons]; has && !iconsClean(v) {
+			extra[kwIcons] = true
+		}
+		e, _ := enumOf(prop)
+		for _, it := range e.Items {
+			item := EnumItem{Value: it.Code, Label: it.Label, Labels: it.Labels}
+			if extra[kwI18n] {
+				item.Labels = nil
+			}
+			if !extra[kwIcons] {
+				item.Icon = it.Icon
+			}
+			if colors != nil {
+				item.Color = str(colors, it.Code)
+			}
+			f.Enum = append(f.Enum, item)
 		}
 	}
 	for _, key := range prop.keys {
@@ -298,6 +430,7 @@ func fieldFromProp(name string, v any, ref *config.RefRule) Field {
 func ParseType(col *config.Collection, schemaRaw []byte, rules []config.Rule, count int) (*Type, error) {
 	t := &Type{
 		Name: col.Name, Title: col.Title, Description: col.Description, Group: col.Group, Icon: col.Icon,
+		I18n: col.I18n.Only("title", "description", "group"),
 		File: col.File, Path: col.Path, SchemaFile: col.Schema,
 		Key: nonNil(col.Key), Label: col.Label, List: nonNil(col.List), Facets: col.Facets, Unique: [][]string{}, Count: count,
 	}
@@ -419,16 +552,37 @@ func desired(f Field) [][2]any {
 		add("maximum", json.Number("65535"))
 	case TEnum:
 		vals := make([]any, len(f.Enum))
-		colors := newOmap()
+		colors, icons := newOmap(), newOmap()
+		withLabels := false
 		for i, it := range f.Enum {
 			vals[i] = it.Value
 			if it.Color != "" {
 				colors.set(it.Value, it.Color)
 			}
+			if it.Icon != "" {
+				icons.set(it.Value, it.Icon)
+			}
+			withLabels = withLabels || it.Label != "" || len(it.Labels) > 0
 		}
-		add("enum", vals)
+		if withLabels {
+			one := make([]any, len(f.Enum))
+			for i, it := range f.Enum {
+				e := newOmap()
+				e.set("const", it.Value)
+				if it.Label != "" {
+					e.set("title", it.Label)
+				}
+				one[i] = e
+			}
+			add("oneOf", one)
+		} else {
+			add("enum", vals)
+		}
 		if len(colors.keys) > 0 {
 			add(kwColors, colors)
+		}
+		if len(icons.keys) > 0 {
+			add(kwIcons, icons)
 		}
 	case TRef:
 		if f.Ref != nil && f.Ref.Many {
@@ -464,6 +618,9 @@ func buildProp(f Field, base *omap, old *Field) *omap {
 				p.set(kv[0], kv[1])
 			}
 		}
+		if old == nil || !hasExtra(old.Extras, kwI18n) {
+			setI18n(p, f, old)
+		}
 		return p
 	}
 	managed := known(f.Type)
@@ -475,11 +632,17 @@ func buildProp(f Field, base *omap, old *Field) *omap {
 			delete(managed, e.Key)
 		}
 	}
-	want := map[string]bool{}
+	want := map[string]bool{kwI18n: true} // written by setI18n below
 	for _, kv := range desired(f) {
 		k := kv[0].(string)
 		if !managed[k] && base != nil {
 			continue
+		}
+		// switching between enum and oneOf keeps the keyword's place
+		if k == "oneOf" && p.has("enum") && !p.has("oneOf") {
+			p.rename("enum", "oneOf")
+		} else if k == "enum" && p.has("oneOf") && !p.has("enum") {
+			p.rename("oneOf", "enum")
 		}
 		want[k] = true
 		p.set(k, kv[1])
@@ -489,7 +652,75 @@ func buildProp(f Field, base *omap, old *Field) *omap {
 			p.del(k)
 		}
 	}
+	if managed[kwI18n] {
+		setI18n(p, f, old)
+	}
 	return p
+}
+
+func hasExtra(l []Extra, key string) bool {
+	for _, e := range l {
+		if e.Key == key {
+			return true
+		}
+	}
+	return false
+}
+
+// setI18n writes the translations of f into p's x-rackbook-i18n: title and
+// description for every property, the enum labels for an enum. Keys the console
+// does not know, inside a language's object or in an unsupported language's, are
+// kept; a language that ends up empty is removed, and so is the keyword.
+func setI18n(p *omap, f Field, old *Field) {
+	cur := newOmap()
+	if m, ok := p.vals[kwI18n].(*omap); ok {
+		cur = m.clone()
+	}
+	for _, loc := range locale.Supported {
+		lo := newOmap()
+		if m, ok := cur.vals[loc].(*omap); ok {
+			lo = m.clone()
+		}
+		for _, k := range []string{"title", "description"} {
+			if s := f.I18n[loc][k]; s != "" {
+				lo.set(k, s)
+			} else {
+				lo.del(k)
+			}
+		}
+		switch f.Type {
+		case TAdvanced:
+			// the enum labels of a property the console cannot express stay as they are
+		case TEnum:
+			labs := newOmap()
+			for _, it := range f.Enum {
+				if s := it.Labels[loc]; s != "" {
+					labs.set(it.Value, s)
+				}
+			}
+			if len(labs.keys) > 0 {
+				lo.set("enum", labs)
+			} else {
+				lo.del("enum")
+			}
+		default:
+			// enum labels are managed for enums only: they go when the field stops
+			// being one, and hand-written ones on any other property stay
+			if old != nil && old.Type == TEnum {
+				lo.del("enum")
+			}
+		}
+		if len(lo.keys) > 0 {
+			cur.set(loc, lo)
+		} else {
+			cur.del(loc)
+		}
+	}
+	if len(cur.keys) > 0 {
+		p.set(kwI18n, cur)
+	} else {
+		p.del(kwI18n)
+	}
 }
 
 // applySchema returns the schema file content for newT, starting from oldRaw

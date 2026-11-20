@@ -12,16 +12,20 @@ export type JsonSchema = {
   [k: string]: unknown
 }
 
+/** Text of other languages, keyed by locale tag (raw from /api/meta; the console picks by its language). */
+export type MetaI18n = Record<string, Record<string, string | undefined>>
+
 export type Facet = { field: string; match: 'exact' | 'contains' | 'prefix'; values: string[] }
 export type Ref = { field: string; to: string; toField: string; allow?: string[]; many?: boolean }
-export type Backref = { collection: string; field: string; title?: string; columns?: string[] }
-export type Note = { title: string; text: string }
+export type Backref = { collection: string; field: string; title?: string; columns?: string[]; i18n?: MetaI18n }
+export type Note = { title: string; text: string; i18n?: MetaI18n }
 
 export type Collection = {
   name: string
   title: string
   description?: string
   group?: string
+  i18n?: MetaI18n
   /** optional lucide icon name; unknown names are ignored */
   icon?: string
   file?: string
@@ -74,6 +78,7 @@ export type ModuleInfo = {
 export type Meta = {
   title: string
   description?: string
+  i18n?: MetaI18n
   readOnly: boolean
   writeMode?: string
   user: MetaUser | null

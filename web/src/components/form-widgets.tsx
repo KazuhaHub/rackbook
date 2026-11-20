@@ -21,10 +21,16 @@ import { Input } from '@/components/ui/input'
 import { NativeSelect } from '@/components/ui/native-select'
 import { Switch } from '@/components/ui/switch'
 import { t } from '@/i18n'
-import { enumValues, itemEnum, listEntryError, listHint, type Prop } from '@/lib/fieldKind'
+import { listEntryError, listHint, type Prop } from '@/lib/fieldKind'
+import { COUNTRY_CODES } from '@/lib/countries'
+import { countryName, flagEmoji } from '@/lib/countryDisplay'
+import { codeForLabel, enumMatches, enumOptions, fieldDescription, fieldTitle, isEnumLike, type EnumOption } from '@/lib/labels'
+import { enumColorClass } from '@/lib/enumColors'
+import { collator } from '@/i18n/format'
 import { customFormats } from '@/lib/formats'
 import { objectItems } from '@/lib/objectItems'
 import { cn } from '@/lib/utils'
+import { EnumIcon } from './EnumIcon'
 
 export type RefItem = { value: string; label: string; literal?: boolean }
 
@@ -141,21 +147,74 @@ export function RefManyWidget({ id, value, onChange, options, disabled, readonly
   )
 }
 
-/** A string enum as a searchable select. */
-export function EnumWidget({ id, value, onChange, schema, disabled, readonly, required, rawErrors }: WidgetProps) {
-  const base = enumValues(schema as Prop) ?? []
-  const current = typeof value === 'string' && value !== '' ? value : null
-  // a stored value the schema no longer lists stays visible, so it can be seen and changed
-  const items = current !== null && !base.includes(current) ? [...base, current] : base
+/** A choice in a picker: a stored code with the text, icon and colour it is shown with. */
+type PickItem = EnumOption & { prefix?: string }
+
+function ItemLabel({ item }: { item: PickItem }) {
   return (
-    <Combobox autoHighlight items={items} value={current} onValueChange={(v: string | null) => onChange(v ?? undefined)} disabled={disabled || readonly}>
-      <ComboboxInput id={id} placeholder={t.form.pickOption} showClear={current !== null && !required} aria-invalid={invalid(rawErrors)} className="w-full" />
+    <>
+      {item.prefix && <span aria-hidden>{item.prefix}</span>}
+      <EnumIcon name={item.icon} />
+      {item.label}
+    </>
+  )
+}
+
+/**
+ * A searchable single select over codes. `matches` decides what a typed query finds (the code and
+ * its names in every language); `resolve` maps text typed and left in the box to a code, so typing a
+ * label exactly picks its code.
+ */
+function SinglePick({
+  id,
+  items,
+  current,
+  onChange,
+  matches,
+  resolve,
+  disabled,
+  required,
+  rawErrors,
+}: {
+  id: string
+  items: PickItem[]
+  current: string | null
+  onChange: (v: string | undefined) => void
+  matches: (item: PickItem, query: string) => boolean
+  resolve: (text: string) => string | undefined
+  disabled?: boolean
+  required?: boolean
+  rawErrors?: string[]
+}) {
+  const selected = items.find((i) => i.value === current) ?? null
+  return (
+    <Combobox
+      autoHighlight
+      items={items}
+      value={selected}
+      itemToStringLabel={(item: PickItem) => item.label}
+      isItemEqualToValue={(a: PickItem, b: PickItem) => a.value === b.value}
+      filter={matches}
+      onValueChange={(item: PickItem | null) => onChange(item ? item.value : undefined)}
+      disabled={disabled}
+    >
+      <ComboboxInput
+        id={id}
+        placeholder={t.form.pickOption}
+        showClear={current !== null && !required}
+        aria-invalid={invalid(rawErrors)}
+        className="w-full"
+        onBlur={(e) => {
+          const code = resolve(e.currentTarget.value)
+          if (code !== undefined && code !== current) onChange(code)
+        }}
+      />
       <ComboboxContent>
         <ComboboxEmpty>{t.form.noOptionMatch}</ComboboxEmpty>
         <ComboboxList>
-          {(item: string) => (
-            <ComboboxItem key={item} value={item}>
-              {item}
+          {(item: PickItem) => (
+            <ComboboxItem key={item.value} value={item}>
+              <ItemLabel item={item} />
             </ComboboxItem>
           )}
         </ComboboxList>
@@ -164,31 +223,92 @@ export function EnumWidget({ id, value, onChange, schema, disabled, readonly, re
   )
 }
 
+/** A string enum as a searchable select: icon and label in the current language, the code is what is stored. */
+export function EnumWidget({ id, value, onChange, schema, disabled, readonly, required, rawErrors }: WidgetProps) {
+  const prop = schema as Prop
+  const options = enumOptions(prop)
+  const current = typeof value === 'string' && value !== '' ? value : null
+  // a stored value the schema no longer lists stays visible, so it can be seen and changed
+  const items = current !== null && !options.some((o) => o.value === current) ? [...options, { value: current, label: current }] : options
+  return (
+    <SinglePick
+      id={id}
+      items={items}
+      current={current}
+      onChange={onChange}
+      matches={(item, q) => enumMatches(prop, item.value, q) || item.label.toLowerCase().includes(q.trim().toLowerCase())}
+      resolve={(text) => codeForLabel(prop, text)}
+      disabled={disabled || readonly}
+      required={required}
+      rawErrors={rawErrors}
+    />
+  )
+}
+
+/** The country picker: every assigned code (plus the placeholder tbd) by flag and name in the current language. */
+export function CountryWidget({ id, value, onChange, disabled, readonly, required, rawErrors }: WidgetProps) {
+  const current = typeof value === 'string' && value !== '' ? value : null
+  const items: PickItem[] = COUNTRY_CODES.map((code) => ({ value: code, label: countryName(code), prefix: flagEmoji(code) })).sort((a, b) =>
+    collator().compare(a.label, b.label),
+  )
+  items.push({ value: 'tbd', label: t.placeholder.tbd })
+  if (current !== null && !items.some((i) => i.value === current)) items.push({ value: current, label: current })
+  const names = (code: string) => [code, countryName(code), countryName(code, 'en-US')]
+  return (
+    <SinglePick
+      id={id}
+      items={items}
+      current={current}
+      onChange={onChange}
+      matches={(item, q) => {
+        const x = q.trim().toLowerCase()
+        return x === '' || [...names(item.value), item.label].some((n) => n.toLowerCase().includes(x))
+      }}
+      resolve={(text) => {
+        const x = text.trim()
+        if (x === 'tbd' || x.toLowerCase() === t.placeholder.tbd.toLowerCase()) return 'tbd'
+        const code = x.toUpperCase()
+        if (COUNTRY_CODES.includes(code)) return code
+        return COUNTRY_CODES.find((c) => names(c).some((n) => n.toLowerCase() === x.toLowerCase()))
+      }}
+      disabled={disabled || readonly}
+      required={required}
+      rawErrors={rawErrors}
+    />
+  )
+}
+
 /** An array of enum values as chips with a searchable dropdown. */
 export function TagsWidget({ id, value, onChange, schema, disabled, readonly, rawErrors }: WidgetProps) {
   const anchor = useComboboxAnchor()
-  const base = itemEnum(schema as Prop) ?? []
+  const prop = schema as Prop
+  const base = enumOptions(prop)
   const current: string[] = Array.isArray(value) ? value.map(String) : []
-  const items = [...base, ...current.filter((v) => !base.includes(v))]
+  const items: PickItem[] = [...base, ...current.filter((v) => !base.some((o) => o.value === v)).map((v) => ({ value: v, label: v }))]
+  const chosen = items.filter((i) => current.includes(i.value))
   return (
     <Combobox
       multiple
       autoHighlight
       items={items}
-      value={current}
-      onValueChange={(v: string[]) => {
-        const next = items.filter((x) => v.includes(x)) // keep the schema's order
+      value={chosen}
+      itemToStringLabel={(item: PickItem) => item.label}
+      isItemEqualToValue={(a: PickItem, b: PickItem) => a.value === b.value}
+      filter={(item: PickItem, q: string) => enumMatches(prop, item.value, q) || item.label.toLowerCase().includes(q.trim().toLowerCase())}
+      onValueChange={(v: PickItem[]) => {
+        const codes = v.map((x) => x.value)
+        const next = items.filter((x) => codes.includes(x.value)).map((x) => x.value) // keep the schema's order
         onChange(next.length ? next : undefined)
       }}
       disabled={disabled || readonly}
     >
       <ComboboxChips ref={anchor} aria-invalid={invalid(rawErrors)}>
         <ComboboxValue>
-          {(vals: string[]) => (
+          {(vals: PickItem[]) => (
             <>
               {vals.map((v) => (
-                <ComboboxChip key={v} showRemove={!(disabled || readonly)}>
-                  {v}
+                <ComboboxChip key={v.value} showRemove={!(disabled || readonly)} className={cn(v.color && enumColorClass[v.color])}>
+                  <ItemLabel item={v} />
                 </ComboboxChip>
               ))}
               <ComboboxChipsInput id={id} placeholder={vals.length ? '' : t.form.pickTags} />
@@ -199,9 +319,9 @@ export function TagsWidget({ id, value, onChange, schema, disabled, readonly, ra
       <ComboboxContent anchor={anchor}>
         <ComboboxEmpty>{t.form.noOptionMatch}</ComboboxEmpty>
         <ComboboxList>
-          {(item: string) => (
-            <ComboboxItem key={item} value={item}>
-              {item}
+          {(item: PickItem) => (
+            <ComboboxItem key={item.value} value={item}>
+              <ItemLabel item={item} />
             </ComboboxItem>
           )}
         </ComboboxList>
@@ -349,7 +469,7 @@ export function RowsWidget({ id, value, onChange, schema, disabled, readonly, ra
   const rows: Record<string, unknown>[] = Array.isArray(value) ? (value as Record<string, unknown>[]) : []
   const off = disabled || readonly
   if (!spec) return null
-  const cols = spec.props.map(([, s]) => (Array.isArray(s.enum) || s.pattern || s.format ? 'minmax(5.5rem,9rem)' : 'minmax(8rem,1fr)')).join(' ')
+  const cols = spec.props.map(([, s]) => (isEnumLike(s) || s.pattern || s.format ? 'minmax(5.5rem,9rem)' : 'minmax(8rem,1fr)')).join(' ')
   const grid = { '--cols': `${cols} 2rem` } as React.CSSProperties
   const set = (i: number, name: string, v: unknown) => {
     const next = rows.map((r, j) => {
@@ -361,7 +481,7 @@ export function RowsWidget({ id, value, onChange, schema, disabled, readonly, ra
     })
     onChange(next)
   }
-  const label = (name: string, s: Prop) => `${(s.title as string) || name}${spec.required.includes(name) ? '*' : ''}`
+  const label = (name: string, s: Prop) => `${fieldTitle(s, name)}${spec.required.includes(name) ? '*' : ''}`
 
   return (
     <div className="space-y-2" aria-invalid={invalid(rawErrors)}>
@@ -380,10 +500,10 @@ export function RowsWidget({ id, value, onChange, schema, disabled, readonly, ra
             {spec.props.map(([name, s]) => {
               const raw = row[name]
               const text = raw === undefined || raw === null ? '' : String(raw)
-              const isEnum = Array.isArray(s.enum)
+              const isEnum = isEnumLike(s)
               const type = Array.isArray(s.type) ? s.type.find((x) => x !== 'null') : s.type
               const missing = started && text === '' && spec.required.includes(name)
-              const err = !isEnum && text !== '' && typeof s.type !== 'undefined' && type === 'string' ? listEntryError(s, text, customFormats, s.description) : undefined
+              const err = !isEnum && text !== '' && typeof s.type !== 'undefined' && type === 'string' ? listEntryError(s, text, customFormats, fieldDescription(s)) : undefined
               const cid = `${id}_${i}_${name}`
               return (
                 <div key={name} className="min-w-0 space-y-1">
@@ -393,9 +513,9 @@ export function RowsWidget({ id, value, onChange, schema, disabled, readonly, ra
                   {isEnum ? (
                     <NativeSelect id={cid} value={text} disabled={off} aria-invalid={missing ? true : undefined} onChange={(e) => set(i, name, e.target.value)}>
                       <option value="">—</option>
-                      {(s.enum as unknown[]).filter((x) => x !== null).map((x) => (
-                        <option key={String(x)} value={String(x)}>
-                          {String(x)}
+                      {[...enumOptions(s), ...(text !== '' && !enumOptions(s).some((o) => o.value === text) ? [{ value: text, label: text }] : [])].map((o) => (
+                        <option key={o.value} value={o.value}>
+                          {o.label}
                         </option>
                       ))}
                     </NativeSelect>
@@ -407,7 +527,7 @@ export function RowsWidget({ id, value, onChange, schema, disabled, readonly, ra
                       value={text}
                       disabled={disabled}
                       readOnly={readonly}
-                      placeholder={(s.title as string) || name}
+                      placeholder={fieldTitle(s, name)}
                       aria-invalid={err || missing ? true : undefined}
                       className={cn(!s.enum && s.pattern ? 'font-mono text-[0.8125rem]' : undefined)}
                       title={err}

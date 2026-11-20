@@ -46,6 +46,8 @@ type typeSummary struct {
 	Count       int    `json:"count"`
 	Fields      int    `json:"fields"`
 	Problems    int    `json:"problems"`
+	// I18n is title, description and group in the other languages.
+	I18n map[string]map[string]string `json:"i18n,omitempty"`
 }
 
 func (s *server) typesList(w http.ResponseWriter, r *http.Request) {
@@ -64,7 +66,8 @@ func (s *server) typesList(w http.ResponseWriter, r *http.Request) {
 	for _, c := range l.Collections {
 		fields := len(c.Schema.Props)
 		out = append(out, typeSummary{Name: c.Name, Title: c.Title, Description: c.Description, Group: c.Group, Icon: c.Icon,
-			File: c.File, Path: c.Path, SchemaFile: c.Collection.Schema, Count: len(c.Records), Fields: fields, Problems: problems[c.Name]})
+			File: c.File, Path: c.Path, SchemaFile: c.Collection.Schema, Count: len(c.Records), Fields: fields, Problems: problems[c.Name],
+			I18n: c.I18n.Only("title", "description", "group")})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"types": out, "fieldTypes": types.FieldTypes, "formats": validate.FormatNames,
