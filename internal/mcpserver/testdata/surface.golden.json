@@ -87,7 +87,7 @@
         "openWorldHint": false,
         "readOnlyHint": true
       },
-      "description": "Deprecated: use ledger_check; removed in v0.7.0. Validate the whole ledger (YAML syntax, JSON Schema, unique keys, references, set rules) and return ok plus every error with collection, record id, field path and message.",
+      "description": "Deprecated: use ledger_check; removed in v0.8.0. Validate the whole ledger (YAML syntax, JSON Schema, unique keys, references, set rules) and return ok plus every error with collection, record id, field path and message.",
       "inputSchema": {
         "additionalProperties": false,
         "type": "object"
@@ -793,7 +793,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "description": "Deprecated: use records_create; removed in v0.7.0. Add a record to a collection. data is the whole record (see get_schema for the fields). Validated like the console; the result tells whether it was committed or opened as a pull request (url).",
+      "description": "Deprecated: use records_create; removed in v0.8.0. Add a record to a collection. data is the whole record (see get_schema for the fields). Validated like the console; the result tells whether it was committed or opened as a pull request (url).",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
@@ -826,7 +826,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "description": "Deprecated: use records_delete; removed in v0.7.0. Delete a record. Needs the hash from get_record. A delete always opens a pull request, even for credentials that may commit directly; it is refused while other records still reference the record.",
+      "description": "Deprecated: use records_delete; removed in v0.8.0. Delete a record. Needs the hash from get_record. A delete always opens a pull request, even for credentials that may commit directly; it is refused while other records still reference the record.",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
@@ -973,7 +973,7 @@
         "openWorldHint": false,
         "readOnlyHint": true
       },
-      "description": "Deprecated: use ledger_export; removed in v0.7.0. Return the whole ledger as one Markdown document (a table per collection). Large; prefer list_records, get_record or search for targeted questions.",
+      "description": "Deprecated: use ledger_export; removed in v0.8.0. Return the whole ledger as one Markdown document (a table per collection). Large; prefer list_records, get_record or search for targeted questions.",
       "inputSchema": {
         "additionalProperties": false,
         "type": "object"
@@ -987,7 +987,7 @@
         "openWorldHint": false,
         "readOnlyHint": true
       },
-      "description": "Deprecated: use records_get; removed in v0.7.0. Get one record by id (the key field values joined with \"/\", with \"/\" and \"%\" inside a value written as %2F and %25) together with backrefs: the records of other collections that reference it. For a device this returns its addresses and its services (including services declared for device \"all\") in a single call.",
+      "description": "Deprecated: use records_get; removed in v0.8.0. Get one record by id (the key field values joined with \"/\", with \"/\" and \"%\" inside a value written as %2F and %25) together with backrefs: the records of other collections that reference it. For a device this returns its addresses and its services (including services declared for device \"all\") in a single call.",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
@@ -1067,7 +1067,7 @@
         "openWorldHint": false,
         "readOnlyHint": true
       },
-      "description": "Deprecated: use collections_describe; removed in v0.7.0. Get the JSON Schema of one collection's records: field names, types, titles, descriptions and required fields.",
+      "description": "Deprecated: use collections_describe; removed in v0.8.0. Get the JSON Schema of one collection's records: field names, types, titles, descriptions and required fields.",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
@@ -1831,7 +1831,7 @@
         "openWorldHint": false,
         "readOnlyHint": true
       },
-      "description": "Deprecated: use collections_list; removed in v0.7.0. List every collection in the ledger with its title, description, key fields, fields (name, title, type, required), reference links to other collections and record count. Call this first to learn the collection names and field names used by the other tools.",
+      "description": "Deprecated: use collections_list; removed in v0.8.0. List every collection in the ledger with its title, description, key fields, fields (name, title, type, required), reference links to other collections and record count. Call this first to learn the collection names and field names used by the other tools.",
       "inputSchema": {
         "additionalProperties": false,
         "type": "object"
@@ -2094,7 +2094,7 @@
         "openWorldHint": false,
         "readOnlyHint": true
       },
-      "description": "Deprecated: use ledger_check; removed in v0.7.0. List what is wrong with the ledger: validation errors (collection, record id, field path, message) and any store state that pauses writes (history_rewritten, config_error). Check this before writing, and after.",
+      "description": "Deprecated: use ledger_check; removed in v0.8.0. List what is wrong with the ledger: validation errors (collection, record id, field path, message) and any store state that pauses writes (history_rewritten, config_error). Check this before writing, and after.",
       "inputSchema": {
         "additionalProperties": false,
         "type": "object"
@@ -2221,7 +2221,7 @@
         "openWorldHint": false,
         "readOnlyHint": true
       },
-      "description": "Deprecated: use records_query; removed in v0.7.0. List the records of one collection in file order, optionally filtered by exact field values (where is an object like {\"device\": \"web-1\", \"managed\": true}; all entries must match; values are compared as text). To answer \"what services run on host X\" use collection=services where={\"device\":\"X\"} and remember that rows with device \"all\" apply to every host.",
+      "description": "Deprecated: use records_query; removed in v0.8.0. List the records of one collection in file order, optionally filtered by exact field values (where is an object like {\"device\": \"web-1\", \"managed\": true}; all entries must match; values are compared as text). To answer \"what services run on host X\" use collection=services where={\"device\":\"X\"} and remember that rows with device \"all\" apply to every host.",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
@@ -2289,7 +2289,7 @@
         "openWorldHint": false,
         "readOnlyHint": true
       },
-      "description": "Deprecated: use history_list; removed in v0.7.0. List the commits that changed one record (newest first: hash, author, date, subject), falling back to the collection's file history for records edited before per-record history existed.",
+      "description": "Deprecated: use history_list; removed in v0.8.0. List the commits that changed one record (newest first: hash, author, date, subject), falling back to the collection's file history for records edited before per-record history existed.",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
@@ -3275,7 +3275,7 @@
         "openWorldHint": false,
         "readOnlyHint": true
       },
-      "description": "Deprecated: use ledger_search; removed in v0.7.0. Case-insensitive substring search over every text, number and boolean field of every record (or one collection). Use it for questions where you do not know the collection, e.g. \"who uses port 10511\" (query=10511), \"where is nginx\", \"which host has IP 198.51.100.20\". Each match lists the fields that matched.",
+      "description": "Deprecated: use ledger_search; removed in v0.8.0. Case-insensitive substring search over every text, number and boolean field of every record (or one collection). Use it for questions where you do not know the collection, e.g. \"who uses port 10511\" (query=10511), \"where is nginx\", \"which host has IP 198.51.100.20\". Each match lists the fields that matched.",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
@@ -3356,7 +3356,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "description": "Deprecated: use records_update; removed in v0.7.0. Replace a record. Needs the hash from get_record; data is the whole new record. Fails with a conflict (and the current record) if it changed meanwhile.",
+      "description": "Deprecated: use records_update; removed in v0.8.0. Replace a record. Needs the hash from get_record; data is the whole new record. Fails with a conflict (and the current record) if it changed meanwhile.",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {

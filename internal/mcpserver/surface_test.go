@@ -92,7 +92,7 @@ func TestSurfaceListsNewToolsAndDeprecatedAliases(t *testing.T) {
 			t.Errorf("alias %s is gone", old)
 			continue
 		}
-		if want := "Deprecated: use " + repl + "; removed in v0.7.0. "; !strings.HasPrefix(tool.Description, want) {
+		if want := "Deprecated: use " + repl + "; removed in v0.8.0. "; !strings.HasPrefix(tool.Description, want) {
 			t.Errorf("%s: description %q must start with %q", old, tool.Description, want)
 		}
 	}
@@ -132,7 +132,7 @@ func TestLedgerInfo(t *testing.T) {
 		m := d.(map[string]any)
 		dep[m["tool"].(string)] = m["replacement"].(string) + "@" + m["removed_in"].(string)
 	}
-	if dep["list_records"] != "records_query@v0.7.0" || dep["list_problems"] != "ledger_check@v0.7.0" || len(dep) != 8 {
+	if dep["list_records"] != "records_query@v0.8.0" || dep["list_problems"] != "ledger_check@v0.8.0" || len(dep) != 8 {
 		t.Fatalf("%v", dep)
 	}
 }

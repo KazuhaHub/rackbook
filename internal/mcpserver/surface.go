@@ -28,7 +28,7 @@ const (
 	maxResultBytes = 1 << 20
 
 	// removedIn is the release that drops the deprecated v0.2 tool names.
-	removedIn = "v0.7.0"
+	removedIn = "v0.8.0"
 
 	idempotencyTTL = 24 * time.Hour
 )

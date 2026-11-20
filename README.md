@@ -411,8 +411,8 @@ the resources `rackbook://info`, `rackbook://collections`,
 (percent-encode the id), `rackbook://export/markdown` and `rackbook://llms.txt`,
 and the prompts `audit_record`, `prepare_change` and `explain_collection`.
 
-The v0.2 tool names still work in v0.6.0 as deprecated aliases with their old
-arguments and result shapes, and are removed in **v0.7.0**:
+The v0.2 tool names still work, from v0.6.0 until v0.8.0, as deprecated aliases with their old
+arguments and result shapes, and are removed in **v0.8.0**:
 
 | deprecated | use |
 |---|---|
@@ -426,7 +426,7 @@ arguments and result shapes, and are removed in **v0.7.0**:
 | `record_history` | `history_list` |
 | `create_record`, `update_record`, `delete_record` | `records_create`, `records_update` (`hash` is now `expected_hash`), `records_delete` |
 
-Each alias's description starts with `Deprecated: use <new>; removed in v0.7.0`,
+Each alias's description starts with `Deprecated: use <new>; removed in v0.8.0`,
 and `ledger_info.deprecated` lists them. `tools/list` shows the write tools only
 to callers whose role and scopes allow them.
 
@@ -1046,7 +1046,7 @@ A change is **breaking** if it is incompatible for any of:
 - the `rackbook.yml` format;
 - the HTTP API;
 - MCP tool names, arguments or result shapes (a rename keeps the old name as a
-  deprecated alias for one minor release);
+  deprecated alias for at least one minor release);
 - the on-disk data layout.
 
 Every breaking release ships migration notes in its release notes.
@@ -1058,8 +1058,10 @@ Release plan (details in `docs/design-v0.2.md`, "Versioning"):
   the MCP surface (`docs/mcp-surface.md`).
 - **v0.6.1**: GitHub App authentication and record documents. Both were
   planned for v0.6.0 and moved here (owner, 2026-11-18).
-- **v0.7.0**: one record per file storage; the deprecated MCP tool names are
-  removed.
+- **v0.7.0**: the console, configured text and server-side text in zh-CN, zh-TW and
+  en-US, with English codes in the data.
+- **v0.8.0**: one record per file storage; the deprecated MCP tool names are
+  removed. Both were planned for v0.7.0 and moved here (owner, 2026-11-20).
 
 ## Verifying releases
 
@@ -1115,7 +1117,7 @@ Rackbook 是一个以 Git 为核心的基础设施台账：设备、内网地址
 - `rackbook mcp`：MCP 服务，让 AI 读取台账。工具名统一为 `<族>_<动作>`（`ledger_info`、`collections_list`、
   `records_query`、`records_get`、`history_list` 等；`serve` 下有写权限的调用方另有 `records_create`、
   `records_update`、`records_delete`，均支持 `dry_run` 与 `idempotency_key`）。v0.2 的旧工具名（`list_records`、
-  `get_record`、`search`、`create_record` 等）在 v0.6.0 作为已弃用别名继续可用，v0.7.0 移除。
+  `get_record`、`search`、`create_record` 等）从 v0.6.0 起作为已弃用别名继续可用，v0.8.0 移除。
 - `rackbook export`：导出 Markdown、`llms.txt`、JSON。
 
 写入时只替换被修改的那一条记录所在的行，注释、空行和原有格式保持不变，Git diff 一目了然。

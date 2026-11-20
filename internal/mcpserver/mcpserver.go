@@ -2,7 +2,7 @@
 // always, and records_create, records_update and records_delete over HTTP for
 // callers whose role and credential allow writing (see records_write.go). The
 // tool surface is specified in docs/mcp-surface.md; the v0.2 tool names stay as
-// deprecated aliases until v0.7.0.
+// deprecated aliases until v0.8.0.
 package mcpserver
 
 import (
@@ -68,7 +68,7 @@ func NewWithOptions(o Options) *mcp.Server {
 	t.addPrompts(s)
 
 	// The v0.2 names, kept as deprecated aliases with their old arguments and
-	// result shapes until v0.7.0.
+	// result shapes until v0.8.0.
 
 	mcp.AddTool(s, t.legacy(&mcp.Tool{Name: "list_collections",
 		Description: "List every collection in the ledger with its title, description, key fields, fields (name, title, type, required), reference links to other collections and record count. Call this first to learn the collection names and field names used by the other tools."}),

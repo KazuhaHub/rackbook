@@ -538,7 +538,7 @@ Agreed with the owner on 2026-11-18:
    fixed header.
 10. **Built-in authorization server**, so standalone users without MCPHub can
     add Rackbook directly to Claude, Cursor, VS Code or MCP Inspector. It is
-    proposed for **v0.6.0** (renumbered four times, see the versioning note below), before the storage work (now v0.7.0).
+    proposed for **v0.6.0** (renumbered four times, see the versioning note below), before the storage work (now v0.8.0).
     **Approved in round 5 (decision 12) and built in v0.6.0.**
     - Spec: the MCP authorization spec — OAuth 2.1 + PKCE S256, RFC 8707
       resource indicators (`aud` = the `/mcp` URL), RFC 8414 metadata, and
@@ -648,8 +648,13 @@ Rackbook uses SemVer (Go modules require SemVer tags). Release plan:
   and neither of these two is needed by them. They keep their designs; only the
   version changes. v0.6.1 so they land before the storage work (owner
   decision, 2026-11-18).
-- **v0.7.0** — storage: one record per file (design in
-  `design-v0.4-storage.md`; the file keeps its name).
+- **v0.7.0** — the console, configured text and server-side text in zh-CN,
+  zh-TW and en-US, with English codes in the data (owner decision,
+  2026-11-20: this release took the number; the storage work and the removal of
+  the deprecated MCP tool names moved to v0.8.0).
+- **v0.8.0** — storage: one record per file (design in
+  `design-v0.4-storage.md`; the file keeps its name); the deprecated MCP tool
+  names are removed.
 - **1.0** — once the storage layout, config format and API are stable.
 
 See README, "Versioning and compatibility".
@@ -875,7 +880,8 @@ Details settled while building:
       contract tests.
 
     The renames of the v0.2 tools ship in v0.6.0, with deprecated aliases that
-    are removed in v0.7.0.
+    are removed in v0.8.0 (planned for v0.7.0; moved when v0.7.0 became the
+    language release, owner decision 2026-11-20).
 
 ### Decision 17 (2026-11-18): expiry tracking and modules (v0.3.0)
 
