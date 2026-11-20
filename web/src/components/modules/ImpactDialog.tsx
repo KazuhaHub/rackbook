@@ -10,7 +10,7 @@ import {
 } from '@/components/ui/alert-dialog'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { t } from '@/i18n/zh-CN'
+import { t } from '@/i18n'
 import type { Affected, Impact } from '@/lib/modules'
 
 function List({ rows }: { rows: Affected[] }) {

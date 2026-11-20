@@ -1,21 +1,30 @@
 import { useCallback, useMemo, useRef, useState } from 'react'
 import Form, { generateTemplates } from '@rjsf/shadcn'
 import { customizeValidator } from '@rjsf/validator-ajv8'
-import type { ErrorSchema, FieldTemplateProps, RJSFSchema, RJSFValidationError, UiSchema } from '@rjsf/utils'
+import { TranslatableString, type ErrorSchema, type FieldTemplateProps, type RJSFSchema, type RJSFValidationError, type UiSchema } from '@rjsf/utils'
 import { Ajv2020 } from 'ajv/dist/2020.js'
-import { t } from '@/i18n/zh-CN'
+import localizeEn from 'ajv-i18n/localize/en'
+import localizeZh from 'ajv-i18n/localize/zh'
+import localizeZhTW from 'ajv-i18n/localize/zh-TW'
+import { locale, t, type Messages } from '@/i18n'
 import { useAllRecords } from '@/lib/hooks'
 import { fieldKind, suggestValues, type Prop } from '@/lib/fieldKind'
 import { pointerToPath, str } from '@/lib/ledger'
 import type { CheckError, Collection } from '@/lib/types'
-import { customFormats, formatHints } from '@/lib/formats'
+import { customFormats, formatHint } from '@/lib/formats'
 import { DateWidget, EnumWidget, ListWidget, RefManyWidget, RowsWidget, RefWidget, SuggestWidget, SwitchWidget, TagsWidget, type RefItem } from './form-widgets'
 
 // Draft 2020-12, the same dialect the server validates with.
-const validator = customizeValidator({
-  AjvClass: Ajv2020 as any,
-  customFormats,
-})
+// Ajv's own messages are translated by ajv-i18n for the keywords transformErrors
+// does not rewrite; the language is chosen when a validation runs, not at load.
+const localizers = { 'zh-CN': localizeZh, 'zh-TW': localizeZhTW, 'en-US': localizeEn }
+const validator = customizeValidator(
+  {
+    AjvClass: Ajv2020 as any,
+    customFormats,
+  },
+  (errors) => localizers[locale](errors),
+)
 
 const widgets = { RefWidget, RefManyWidget, SwitchWidget, EnumWidget, TagsWidget, SuggestWidget, DateWidget, ListWidget, RowsWidget }
 
@@ -47,6 +56,7 @@ export function toErrorSchema(errors: CheckError[], schema: RJSFSchema, collecti
 }
 
 function transformErrors(errors: RJSFValidationError[]): RJSFValidationError[] {
+  const v = t.validation
   return errors.map((e) => {
     const p = e.params ?? {}
     let message = e.message
@@ -55,33 +65,84 @@ function transformErrors(errors: RJSFValidationError[]): RJSFValidationError[] {
         message = t.form.required
         break
       case 'pattern':
-        message = `格式不正确（需匹配 ${p.pattern}）`
+        message = v.pattern(String(p.pattern))
         break
       case 'type':
-        message = `类型应为 ${p.type}`
+        message = v.type(String(p.type))
         break
       case 'enum':
-        message = `只能是：${(p.allowedValues ?? []).join('、')}`
+        message = v.enum((p.allowedValues ?? []).map(String))
         break
       case 'minLength':
-        message = `至少 ${p.limit} 个字符`
+        message = v.minLength(Number(p.limit))
         break
       case 'maxLength':
-        message = `最多 ${p.limit} 个字符`
+        message = v.maxLength(Number(p.limit))
         break
       case 'minimum':
+        message = v.minimum(p.limit)
+        break
       case 'maximum':
-        message = `超出范围（${e.name === 'minimum' ? '≥' : '≤'} ${p.limit}）`
+        message = v.maximum(p.limit)
         break
       case 'format':
-        message = formatHints[String(p.format)] ?? `格式不正确（${p.format}）`
+        message = formatHint(String(p.format)) ?? v.formatFallback(String(p.format))
         break
       case 'additionalProperties':
-        message = `不允许的字段：${p.additionalProperty}`
+        message = v.additionalProperty(String(p.additionalProperty))
         break
     }
     return { ...e, message }
   })
+}
+
+/** TranslatableString -> its message in t.rjsf; the Record type makes the compiler check every member is covered. */
+const rjsfKeys: Record<TranslatableString, keyof Messages['rjsf']> = {
+  [TranslatableString.ArrayItemTitle]: 'arrayItemTitle',
+  [TranslatableString.MissingItems]: 'missingItems',
+  [TranslatableString.EmptyArray]: 'emptyArray',
+  [TranslatableString.YesLabel]: 'yesLabel',
+  [TranslatableString.NoLabel]: 'noLabel',
+  [TranslatableString.CloseLabel]: 'closeLabel',
+  [TranslatableString.ErrorsLabel]: 'errorsLabel',
+  [TranslatableString.NewStringDefault]: 'newStringDefault',
+  [TranslatableString.AddButton]: 'addButton',
+  [TranslatableString.AddItemButton]: 'addItemButton',
+  [TranslatableString.CopyButton]: 'copyButton',
+  [TranslatableString.ExpandButton]: 'expandButton',
+  [TranslatableString.MoveDownButton]: 'moveDownButton',
+  [TranslatableString.MoveUpButton]: 'moveUpButton',
+  [TranslatableString.RemoveButton]: 'removeButton',
+  [TranslatableString.NowLabel]: 'nowLabel',
+  [TranslatableString.ClearLabel]: 'clearLabel',
+  [TranslatableString.AriaDateLabel]: 'ariaDateLabel',
+  [TranslatableString.PreviewLabel]: 'previewLabel',
+  [TranslatableString.DecrementAriaLabel]: 'decrementAriaLabel',
+  [TranslatableString.IncrementAriaLabel]: 'incrementAriaLabel',
+  [TranslatableString.OptionalObjectAdd]: 'optionalObjectAdd',
+  [TranslatableString.OptionalObjectRemove]: 'optionalObjectRemove',
+  [TranslatableString.OptionalObjectEmptyMsg]: 'optionalObjectEmptyMsg',
+  [TranslatableString.Type]: 'type',
+  [TranslatableString.Value]: 'value',
+  [TranslatableString.ClearButton]: 'clearButton',
+  [TranslatableString.UnknownFieldType]: 'unknownFieldType',
+  [TranslatableString.OptionPrefix]: 'optionPrefix',
+  [TranslatableString.TitleOptionPrefix]: 'titleOptionPrefix',
+  [TranslatableString.KeyLabel]: 'keyLabel',
+  [TranslatableString.DeprecatedLabel]: 'deprecatedLabel',
+  [TranslatableString.CycleDetected]: 'cycleDetected',
+  [TranslatableString.InvalidObjectField]: 'invalidObjectField',
+  [TranslatableString.UnsupportedField]: 'unsupportedField',
+  [TranslatableString.UnsupportedFieldWithId]: 'unsupportedFieldWithId',
+  [TranslatableString.UnsupportedFieldWithReason]: 'unsupportedFieldWithReason',
+  [TranslatableString.UnsupportedFieldWithIdAndReason]: 'unsupportedFieldWithIdAndReason',
+  [TranslatableString.FilesInfo]: 'filesInfo',
+}
+
+/** Form library texts in the current language; read t at call time so a language switch applies. */
+function translateString(str: TranslatableString, params: string[] = []): string {
+  const m = t.rjsf[rjsfKeys[str]]
+  return typeof m === 'function' ? (m as (...a: string[]) => string)(...params) : m
 }
 
 function useRefItems(col: Collection) {
@@ -212,6 +273,7 @@ export function RecordForm({
       noHtml5Validate
       showErrorList={false}
       transformErrors={transformErrors}
+      translateString={translateString}
       extraErrors={extraErrors}
       experimental_defaultFormStateBehavior={{ emptyObjectFields: 'populateRequiredDefaults' }}
       onChange={(e, id) => {
@@ -222,7 +284,7 @@ export function RecordForm({
         setTried(true)
         onSubmit((e.formData ?? {}) as Record<string, unknown>)
       }}
-      onError={(errs) => { setTried(true); onInvalid?.(errs.map((e) => (e.property && e.property !== '.' ? `${e.property.replace(/^\./, '')}：` : '') + (e.message ?? e.stack ?? '')))}}
+      onError={(errs) => { setTried(true); onInvalid?.(errs.map((e) => (e.property && e.property !== '.' ? `${e.property.replace(/^\./, '')}${t.common.colon}` : '') + (e.message ?? e.stack ?? '')))}}
     />
     </div>
   )

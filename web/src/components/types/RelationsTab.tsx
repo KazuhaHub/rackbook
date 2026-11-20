@@ -3,7 +3,7 @@ import { ArrowRight, Pencil, Plus } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
-import { t } from '@/i18n/zh-CN'
+import { t } from '@/i18n'
 import type { TypeDef } from '@/lib/typedef'
 import { useMeta } from '@/providers/meta'
 
@@ -43,7 +43,7 @@ export function RelationsTab({
                       {a}
                     </Badge>
                   ))}
-                  {f.ref!.backrefTitle && <span className="text-xs text-muted-foreground">{t.types.relations.backTitle}：{f.ref!.backrefTitle}</span>}
+                  {f.ref!.backrefTitle && <span className="text-xs text-muted-foreground">{t.types.relations.backTitle}{t.common.colon}{f.ref!.backrefTitle}</span>}
                   <Button className="ml-auto" variant="ghost" size="icon-sm" aria-label={t.types.fields.edit} onClick={() => onEdit(f.name)}>
                     <Pencil />
                   </Button>

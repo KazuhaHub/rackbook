@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { ChevronDown, StickyNote } from 'lucide-react'
-import { t } from '@/i18n/zh-CN'
+import { t } from '@/i18n'
 import type { Note } from '@/lib/types'
 import { cn } from '@/lib/utils'
 

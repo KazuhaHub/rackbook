@@ -1,4 +1,5 @@
 // Data type management (docs/design-v0.2.md section 3): shapes of /api/types.
+import { t } from '@/i18n'
 
 export type FieldType =
   | 'text'
@@ -124,28 +125,18 @@ export type Plan = {
 
 export type TypeWrite = { name: string; commit: string; files: string[]; changed: boolean }
 
-/** Console types in the order the field dialog offers them. */
-export const FIELD_TYPES: { type: FieldType; label: string; hint: string }[] = [
-  { type: 'text', label: '文本', hint: '短文本，可限制长度、正则，给出输入建议' },
-  { type: 'textarea', label: '长文本', hint: '多行文字，如备注' },
-  { type: 'integer', label: '整数', hint: '整数，可限制范围' },
-  { type: 'number', label: '数字', hint: '小数或整数，可限制范围' },
-  { type: 'ip', label: 'IP 地址', hint: 'IPv4 或 IPv6' },
-  { type: 'ipv4', label: 'IPv4 地址', hint: '只接受 IPv4' },
-  { type: 'ipv6', label: 'IPv6 地址', hint: '只接受 IPv6' },
-  { type: 'cidr', label: '网段（CIDR）', hint: '如 10.0.0.0/24、fd00::/64' },
-  { type: 'port', label: '端口', hint: '整数 1–65535' },
-  { type: 'port-spec', label: '端口 + 协议', hint: '如 TCP 443、UDP 41641' },
-  { type: 'hostname', label: '域名', hint: '主机名或域名' },
-  { type: 'url', label: 'URL', hint: '如 https://example.com' },
-  { type: 'enum', label: '枚举', hint: '从固定的几个值中选一个，可配颜色' },
-  { type: 'bool', label: '布尔', hint: '是 / 否' },
-  { type: 'date', label: '日期', hint: 'YYYY-MM-DD' },
-  { type: 'ref', label: '引用', hint: '指向另一个集合的记录' },
+/** The console types, in the order the field dialog offers them. */
+const FIELD_TYPE_ORDER: Exclude<FieldType, 'advanced'>[] = [
+  'text', 'textarea', 'integer', 'number', 'ip', 'ipv4', 'ipv6', 'cidr', 'port', 'port-spec', 'hostname', 'url', 'enum', 'bool', 'date', 'ref',
 ]
 
+/** Console types with their label and hint in the current language (call at render time). */
+export function fieldTypes(): { type: FieldType; label: string; hint: string }[] {
+  return FIELD_TYPE_ORDER.map((type) => ({ type, ...t.types.fieldTypes[type] }))
+}
+
 export function fieldTypeLabel(type: FieldType): string {
-  return FIELD_TYPES.find((x) => x.type === type)?.label ?? '高级'
+  return (t.types.fieldTypes as Record<string, { label: string }>)[type]?.label ?? t.types.fieldTypeAdvanced
 }
 
 export const EMPTY_FIELD: FieldDef = { name: '', type: 'text', required: false, unique: false }

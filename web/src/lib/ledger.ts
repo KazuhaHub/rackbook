@@ -1,4 +1,5 @@
-import { t } from '@/i18n/zh-CN'
+import { t } from '@/i18n'
+import { formatDate } from '@/i18n/format'
 import type { Collection, JsonSchema, LedgerRecord, Meta } from './types'
 import { displayId } from './recordId'
 import { formatPlain, isScalarObject } from './objectItems'
@@ -72,7 +73,7 @@ export function relativeTime(iso: string, now = Date.now()): string {
   if (h < 24) return t.time.hours(h)
   const d = Math.round(h / 24)
   if (d < 30) return t.time.days(d)
-  return new Date(iso).toLocaleDateString('zh-CN')
+  return formatDate(iso)
 }
 
 /** JSON pointer (/a/b/0) -> path segments */

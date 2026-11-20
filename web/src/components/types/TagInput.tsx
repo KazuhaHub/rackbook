@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { X } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
+import { t } from '@/i18n'
 
 /** A list of short strings: type a value and press Enter (or comma); click a chip's × to remove it. */
 export function TagInput({
@@ -31,7 +32,7 @@ export function TagInput({
               <button
                 type="button"
                 className="-mr-1 rounded-full p-0.5 hover:bg-foreground/10"
-                aria-label={`移除 ${v}`}
+                aria-label={t.form.removeTag(v)}
                 onClick={() => onChange(value.filter((x) => x !== v))}
               >
                 <X />

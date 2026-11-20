@@ -26,6 +26,7 @@ import (
 	"github.com/kazuhahub/rackbook/internal/config"
 	"github.com/kazuhahub/rackbook/internal/gitstore"
 	"github.com/kazuhahub/rackbook/internal/login/testidp"
+	"github.com/kazuhahub/rackbook/internal/prefs"
 	"github.com/kazuhahub/rackbook/internal/testutil"
 )
 
@@ -200,7 +201,9 @@ func newEnv(t *testing.T, o options) *env {
 	if err != nil {
 		t.Fatal(err)
 	}
+	ps := &prefs.Store{}
 	lo := Options{
+		Prefs: ps,
 		Login: cfg.Auth.Login, BaseURL: e.base, Key: testKey, ClientSecret: clientSecret,
 		Config: st.Config, HTTPClient: e.idpS.Client(), ReadOnly: o.readOnly, Logger: logger, Now: e.clk.Now,
 	}
@@ -217,7 +220,7 @@ func newEnv(t *testing.T, o options) *env {
 	}
 	e.svc.Bind(authn)
 	web := fstest.MapFS{"index.html": {Data: []byte("<!doctype html><title>console</title>")}, "favicon.svg": {Data: []byte("<svg xmlns=\"http://www.w3.org/2000/svg\"/>")}}
-	handler := api.New(api.Options{Store: st, Auth: authn, BaseURL: e.base, Web: web, Logger: logger, Login: e.svc})
+	handler := api.New(api.Options{Store: st, Auth: authn, BaseURL: e.base, Web: web, Logger: logger, Login: e.svc, Prefs: ps})
 	h.Store(&handler)
 	return e
 }

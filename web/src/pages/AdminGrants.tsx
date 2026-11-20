@@ -1,7 +1,7 @@
 import { PlugZap } from 'lucide-react'
 import { GrantsList } from '@/components/GrantsList'
 import { PageHeader } from '@/components/common'
-import { t } from '@/i18n/zh-CN'
+import { t } from '@/i18n'
 
 export default function AdminGrants() {
   return (

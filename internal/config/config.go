@@ -14,6 +14,7 @@ import (
 
 	"go.yaml.in/yaml/v3"
 
+	"github.com/kazuhahub/rackbook/internal/locale"
 	"github.com/kazuhahub/rackbook/internal/roles"
 	"github.com/kazuhahub/rackbook/internal/secretscan"
 	"github.com/kazuhahub/rackbook/modsettings"
@@ -41,6 +42,8 @@ type Config struct {
 	// Modules is the allow list of write modules (docs/modules.md), by name.
 	Modules  map[string]*Module `yaml:"modules"`
 	Branding Branding           `yaml:"branding"`
+	// I18n sets the console's language for people who have not chosen one.
+	I18n I18n `yaml:"i18n"`
 	// SecretScan configures the built-in scan for secrets on every write. It is
 	// on unless secret_scan.enabled is false.
 	SecretScan secretscan.Config `yaml:"secret_scan"`
@@ -51,6 +54,23 @@ type Config struct {
 
 	scanner       *secretscan.Scanner
 	logo, favicon *Asset // branding images, read at load (branding.go)
+}
+
+// I18n is the i18n block.
+type I18n struct {
+	// Default is the console language when the browser's Accept-Language
+	// matches none of the supported locales and the user has no preference:
+	// zh-CN (default), zh-TW or en-US.
+	Default string `yaml:"default"`
+}
+
+// DefaultLocale is i18n.default, or zh-CN when it is not set. It is safe on a
+// nil Config.
+func (c *Config) DefaultLocale() string {
+	if c == nil || c.I18n.Default == "" {
+		return locale.Default
+	}
+	return c.I18n.Default
 }
 
 // SecretScanner is the compiled secret_scan block. It is never nil, and a
@@ -799,6 +819,13 @@ func (c *Config) finish() error {
 	}
 	if c.Write.Mode != "push" && c.Write.Mode != "pr" {
 		return fmt.Errorf("write.mode must be push or pr, got %q", c.Write.Mode)
+	}
+	if c.I18n.Default == "" {
+		c.I18n.Default = locale.Default
+	} else if l, ok := locale.Normalize(c.I18n.Default); !ok {
+		return fmt.Errorf("i18n.default must be one of %s, got %q", strings.Join(locale.Supported, ", "), c.I18n.Default)
+	} else {
+		c.I18n.Default = l
 	}
 	if _, err := roles.Compile(c.Auth.Roles, roles.Options{MCPMatchEmail: c.Auth.MCP.MatchEmail}, c.Auth.Editors...); err != nil {
 		return err

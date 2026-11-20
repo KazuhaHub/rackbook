@@ -4,7 +4,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Checkbox } from '@/components/ui/checkbox'
-import { t } from '@/i18n/zh-CN'
+import { t } from '@/i18n'
 import type { TypeDef } from '@/lib/typedef'
 
 export function RulesTab({ draft, update }: { draft: TypeDef; update: (fn: (d: TypeDef) => TypeDef) => void }) {

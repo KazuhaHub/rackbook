@@ -1,15 +1,10 @@
-import { t } from '@/i18n/zh-CN'
+import { t } from '@/i18n'
+import { formatDateTime } from '@/i18n/format'
 import { countParts, type ModuleRun, type ModuleType } from '@/lib/modules'
 
 export function when(s?: string | null, timeZone?: string) {
   if (!s) return '—'
-  const d = new Date(s)
-  if (Number.isNaN(d.getTime())) return s
-  try {
-    return d.toLocaleString('zh-CN', { hour12: false, timeZone })
-  } catch {
-    return d.toLocaleString('zh-CN', { hour12: false })
-  }
+  return formatDateTime(s, timeZone)
 }
 
 export function took(r: ModuleRun) {

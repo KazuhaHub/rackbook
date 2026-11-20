@@ -1,8 +1,10 @@
+import { collator } from '../i18n/format.ts'
+import { t } from '../i18n/index.ts'
 import { objectItems } from './objectItems.ts'
 import { isSecretName } from './secretName.ts'
 
 // How the console treats a schema property in forms and in list cells.
-// Import-free so scripts/check-console-logic.mts can test it.
+// Imports only relative .ts files so scripts/check-console-logic.mts can test it.
 
 export type Prop = { [k: string]: unknown }
 
@@ -108,31 +110,30 @@ export function suggestValues(records: { data: Record<string, unknown> }[], fiel
     if (typeof v === 'string' && v.trim() !== '') counts.set(v, (counts.get(v) ?? 0) + 1)
   }
   return [...counts]
-    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .sort((a, b) => b[1] - a[1] || collator().compare(a[0], b[0]))
     .slice(0, limit)
     .map(([v]) => v)
 }
 
 /** The port / port range pattern of the ports field of the ledger schemas. */
 export const PORT_PATTERN = '^[0-9]{1,5}(-[0-9]{1,5})?$'
-export const PORT_HINT = '端口或范围，如 443、20000-20018'
 
 /** Error text for a port or range entry, undefined when it is fine. */
 export function portEntryError(s: string): string | undefined {
   const m = /^([0-9]{1,5})(?:-([0-9]{1,5}))?$/.exec(s)
-  if (!m) return PORT_HINT
+  if (!m) return t.validation.entry.portHint
   const lo = Number(m[1])
   const hi = m[2] === undefined ? lo : Number(m[2])
-  if (lo > 65535 || hi > 65535) return '端口不能超过 65535'
-  if (hi < lo) return '范围的起点不能大于终点'
+  if (lo > 65535 || hi > 65535) return t.validation.entry.portTooLarge
+  if (hi < lo) return t.validation.entry.rangeOrder
   return undefined
 }
 
 /** What an entry of a list field must look like: the schema's description, else a hint for known patterns. */
 export function listHint(items: Prop | undefined, description?: unknown): string | undefined {
   if (typeof description === 'string' && description) return description
-  if (items?.pattern === PORT_PATTERN) return PORT_HINT
-  if (typeof items?.pattern === 'string') return `需匹配 ${items.pattern}`
+  if (items?.pattern === PORT_PATTERN) return t.validation.entry.portHint
+  if (typeof items?.pattern === 'string') return t.validation.entry.matchPattern(items.pattern)
   return undefined
 }
 
@@ -147,7 +148,7 @@ export function listEntryError(
   formats: Record<string, (s: string) => boolean> = {},
   description?: unknown,
 ): string | undefined {
-  const hint = listHint(items, description) ?? '格式不正确'
+  const hint = listHint(items, description) ?? t.validation.entry.invalid
   if (typeof items?.pattern === 'string') {
     let re: RegExp | undefined
     try {
@@ -160,6 +161,6 @@ export function listEntryError(
   }
   const f = typeof items?.format === 'string' ? formats[items.format] : undefined
   if (f && !f(entry)) return hint
-  if (typeof items?.maxLength === 'number' && entry.length > items.maxLength) return `最多 ${items.maxLength} 个字符`
+  if (typeof items?.maxLength === 'number' && entry.length > items.maxLength) return t.validation.entry.maxLength(items.maxLength)
   return undefined
 }

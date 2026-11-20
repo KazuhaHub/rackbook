@@ -1,4 +1,4 @@
-import { t } from '@/i18n/zh-CN'
+import { t } from '@/i18n'
 
 /** Badge colours an enum value can have (stored by name in x-rackbook-enum-colors). */
 export const ENUM_COLORS = ['gray', 'red', 'orange', 'yellow', 'green', 'blue', 'purple'] as const

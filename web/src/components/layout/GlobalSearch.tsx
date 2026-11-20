@@ -11,7 +11,7 @@ import {
   CommandItem,
   CommandList,
 } from '@/components/ui/command'
-import { t } from '@/i18n/zh-CN'
+import { t } from '@/i18n'
 import { useAllRecords } from '@/lib/hooks'
 import { fieldTitle, recordHref, recordLabel, str } from '@/lib/ledger'
 import { useMeta } from '@/providers/meta'
@@ -95,7 +95,7 @@ export function GlobalSearch() {
                         <div className="flex min-w-0 flex-col">
                           <span className="truncate font-medium">{recordLabel(c, r)}</span>
                           <span className="truncate text-xs text-muted-foreground">
-                            {fieldTitle(c, field)}：<span className="font-mono">{value}</span>
+                            {fieldTitle(c, field)}{t.common.colon}<span className="font-mono">{value}</span>
                           </span>
                         </div>
                       </CommandItem>

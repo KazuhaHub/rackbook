@@ -19,14 +19,12 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { GrantsList } from '@/components/GrantsList'
 import { PageHeader } from '@/components/common'
 import { roleLabel } from '@/components/layout/UserMenu'
-import { t } from '@/i18n/zh-CN'
+import { t } from '@/i18n'
 import { apiFetch, errorMessage } from '@/lib/api'
 import { hasSession, logout, useAccount, type Passkey } from '@/lib/auth'
 import { relativeTime } from '@/lib/ledger'
 import { createCredential, isCancelled, passkeysSupported } from '@/lib/webauthn'
 import { useMeta } from '@/providers/meta'
-
-const A = t.auth.account
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -38,6 +36,7 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 }
 
 export default function Account() {
+  const A = t.auth.account
   const { meta } = useMeta()
   const u = meta.user
   const session = hasSession(u?.authMethod)

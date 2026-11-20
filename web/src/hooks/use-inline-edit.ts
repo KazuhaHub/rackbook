@@ -1,7 +1,7 @@
 import { useCallback, useState } from 'react'
 import { useInvalidate } from '@refinedev/core'
 import { toast } from 'sonner'
-import { t } from '@/i18n/zh-CN'
+import { t } from '@/i18n'
 import { ApiError, errorMessage } from '@/lib/api'
 import { fieldTitle, recordLabel } from '@/lib/ledger'
 import type { Collection, LedgerRecord } from '@/lib/types'

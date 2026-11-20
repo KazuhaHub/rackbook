@@ -1,6 +1,6 @@
 import { Loader2 } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
-import { t } from '@/i18n/zh-CN'
+import { t } from '@/i18n'
 import type { Plan } from '@/lib/typedef'
 import { DiffView } from './DiffView'
 
@@ -18,7 +18,7 @@ export function PreviewTab({ plan, planning }: { plan?: Plan; planning: boolean 
     <div className="space-y-5">
       {plan.subject && (
         <div className="text-sm">
-          <span className="text-muted-foreground">{t.types.preview.subject}：</span>
+          <span className="text-muted-foreground">{t.types.preview.subject}{t.common.colon}</span>
           <code className="font-mono">{plan.subject}</code>
         </div>
       )}

@@ -26,7 +26,9 @@ except the export endpoints. Errors always have the shape
   "writeMode": "push",
   "user": {"id": "a@example.com", "email": "a@example.com", "name": "a",
            "role": "editor", "authMethod": "cloudflare-access",
-           "canEdit": true, "canAdmin": false},
+           "canEdit": true, "canAdmin": false, "locale": "en-US"},
+  "locale": "zh-CN",
+  "defaultLocale": "zh-CN",
   "alert": {"kind": "history_rewritten", "lastGood": "<40 hex>", "remote": "<40 hex>"},
   "collections": [
     {
@@ -56,6 +58,35 @@ except the export endpoints. Errors always have the shape
   ]
 }
 ```
+
+`locale` is the console language for this request: the best match of the
+`Accept-Language` header among `zh-CN`, `zh-TW` and `en-US` (`zh-HK`, `zh-Hant` →
+`zh-TW`; `zh`, `zh-Hans` → `zh-CN`; any `en-*` → `en-US`), or `defaultLocale` when
+nothing matches. `defaultLocale` is `i18n.default` of `rackbook.yml` (`zh-CN` when
+unset). `user.locale` is the language the person saved with
+`PUT /api/account/preferences`; it is absent until they choose one, and the console
+prefers it over `locale`. The response carries `Vary: Accept-Language` and
+`Cache-Control: no-store`.
+
+### `PUT /api/account/preferences`
+
+`{"locale": "en-US"}` → `200 {"locale": "en-US"}`. The value is normalized the same
+way as above (`zh-HK` is stored as `zh-TW`); `{"locale": ""}` clears the preference and
+answers `200 {"locale": ""}`. It is stored per identity in `<state-dir>/preferences.json`
+(memory only without `--state-dir`), so it follows the person across browsers.
+
+- `400 invalid_locale` for a value that is not supported (nothing is stored), `400 bad_request`
+  for a body without `locale`.
+- `409 no_identity` when the server does not know who is calling (`--auth none` without
+  `--editor`: everyone shares one anonymous identity, which gets no server-side preference;
+  the console then keeps the choice in the browser).
+- `403 forbidden` for API tokens, OAuth access tokens and MCPHub credentials.
+- Same-origin and `Content-Type: application/json` are required, as for every write.
+- It works with `--read-only`: that mode protects the ledger, and a preference is
+  Rackbook's own state outside the data repository.
+- Works in every login mode (`oidc`, passkey sessions, `cloudflare-access`, and `none`
+  with `--editor`). The console calls it only for `oidc`, passkey and `cloudflare-access`:
+  under `none` everyone shares one identity, so it keeps the choice in the browser.
 
 - `user` is always present. `role` is `admin`, `editor` or `viewer` (the role
   after any scope narrowing, from `auth.roles` evaluated on this request).
@@ -235,7 +266,9 @@ Public endpoints (no session):
   `idp_unavailable`, `expired`, `bad_callback`, `claims`, `logged_out`). With a
   valid session and no `error` it redirects to `return`.
 - `GET /auth/config` → `{"oidc": true, "provider": "oidc", "passkeys": bool, "label": string,
-  "name": string, "logo": bool}`. `label` is `auth.oidc.label` (empty when unset),
+  "name": string, "logo": bool, "locale": string, "defaultLocale": string}`. `locale` is
+  the `Accept-Language` match (see `GET /api/meta`) and `defaultLocale` is `i18n.default`;
+  the response has `Vary: Accept-Language` and `Cache-Control: no-store`. `label` is `auth.oidc.label` (empty when unset),
   `name` is `branding.name` (empty when unset) and `logo` says whether
   `branding.logo` is configured. `provider` is kept for older consoles and is always
   `"oidc"`.
@@ -260,7 +293,7 @@ Public endpoints (no session):
 With a session:
 
 - `GET /api/account` → `{"id", "name", "email", "role", "authMethod", "passkeysEnabled",
-  "canEnrol", "enrolUntil", "passkeys": [{"id", "name", "created"}], "passkeyError"?}`.
+  "canEnrol", "enrolUntil", "locale"?, "passkeys": [{"id", "name", "created"}], "passkeyError"?}`.
 - `POST /api/account/passkeys/begin` `{"name": "MacBook"}` → `{"ceremony", "options": <creation options>}`;
   `POST /api/account/passkeys/finish?ceremony=<id>` with the attestation JSON →
   `201 {"passkeys": […]}`. `403 recent_login_required` unless the session's OIDC

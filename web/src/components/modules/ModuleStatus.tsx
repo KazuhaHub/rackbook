@@ -1,6 +1,6 @@
 import { CheckCircle2, CircleDashed, PauseCircle, SkipForward, XCircle } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
-import { t } from '@/i18n/zh-CN'
+import { t } from '@/i18n'
 import { tone, type ModuleView, type RunStatus, type Tone } from '@/lib/modules'
 
 const look: Record<Tone, { icon: typeof CheckCircle2; className: string; variant: 'secondary' | 'destructive' | 'outline' }> = {

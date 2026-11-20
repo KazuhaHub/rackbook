@@ -11,7 +11,7 @@ import { Label } from '@/components/ui/label'
 import { Skeleton } from '@/components/ui/skeleton'
 import { NotFound, PageHeader } from '@/components/common'
 import { RecordForm } from '@/components/RecordForm'
-import { t } from '@/i18n/zh-CN'
+import { t } from '@/i18n'
 import { ApiError, errorMessage } from '@/lib/api'
 import { canEdit, fieldTitle, idFromPath, moduleFor, pointerToPath, recordHref, recordLabel, schemaProps, str } from '@/lib/ledger'
 import type { CheckError, Collection, LedgerRecord } from '@/lib/types'
@@ -208,7 +208,7 @@ function Editor({
           <AlertTriangle />
           <AlertTitle>{t.expiryForm.moduleTitle}</AlertTitle>
           <AlertDescription>
-            {t.expiryForm.moduleBody(managedBy.name, managedBy.fields.map((f) => fieldTitle(col, f)).join('、'))}
+            {t.expiryForm.moduleBody(managedBy.name, managedBy.fields.map((f) => fieldTitle(col, f)).join(t.common.listSep))}
           </AlertDescription>
         </Alert>
       )}
@@ -260,10 +260,10 @@ function Editor({
                     {!own && (
                       <span className="font-medium">
                         {other?.title ?? e.collection}
-                        {e.id ? ` ${displayId(e.id)}` : ''}：
+                        {e.id ? ` ${displayId(e.id)}` : ''}{t.common.colon}
                       </span>
                     )}
-                    {f && <span className="font-medium">{fieldTitle(col, f)}：</span>}
+                    {f && <span className="font-medium">{fieldTitle(col, f)}{t.common.colon}</span>}
                     {e.message}
                   </li>
                 )

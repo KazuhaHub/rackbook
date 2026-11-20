@@ -2,7 +2,7 @@ import { Component, type ErrorInfo, type ReactNode } from 'react'
 import { Link } from 'react-router'
 import { TriangleAlert } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { t } from '@/i18n/zh-CN'
+import { t } from '@/i18n'
 import { isChunkLoadError, reloadForStaleChunk } from '@/lib/staleChunk'
 
 type State = { error: Error | null }

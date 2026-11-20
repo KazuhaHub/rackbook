@@ -22,7 +22,7 @@ import { CollectionIcon } from '@/components/CollectionIcon'
 import { CellValue } from '@/components/CellValue'
 import { NotFound, PageHeader } from '@/components/common'
 import { HistoryList } from '@/components/HistoryList'
-import { t } from '@/i18n/zh-CN'
+import { t } from '@/i18n'
 import { ApiError, errorMessage } from '@/lib/api'
 import { pickTab, splitGeneric, tabHash, type GenericRule } from '@/lib/backrefs'
 import { useRefLookups } from '@/lib/hooks'
@@ -289,7 +289,7 @@ function Show({ col, id }: { col: Collection; id: string }) {
                         <Link to={recordHref(r.collection, r.id)} className="font-mono text-brand hover:underline" onClick={() => setConfirm(false)}>
                           {byName.get(r.collection)?.title ?? r.collection} · {displayId(r.id)}
                         </Link>
-                        <span className="text-muted-foreground"> （{fieldTitle(byName.get(r.collection) ?? col, r.field)}）</span>
+                        <span className="text-muted-foreground"> {t.common.paren(fieldTitle(byName.get(r.collection) ?? col, r.field))}</span>
                       </li>
                     ))}
                   </ul>

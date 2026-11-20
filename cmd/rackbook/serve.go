@@ -31,6 +31,7 @@ import (
 	"github.com/kazuhahub/rackbook/internal/mcpserver"
 	"github.com/kazuhahub/rackbook/internal/modules"
 	"github.com/kazuhahub/rackbook/internal/oauthserver"
+	"github.com/kazuhahub/rackbook/internal/prefs"
 	"github.com/kazuhahub/rackbook/internal/tokens"
 	"github.com/kazuhahub/rackbook/web"
 )
@@ -141,10 +142,13 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	baseURL, _ := f.GetString("base-url")
 	readOnly, _ := f.GetBool("read-only")
 	var loginSvc *login.Service
+	// Per-person preferences; the file is set below once --state-dir is known
+	// (the store reads it on first use).
+	prefStore := &prefs.Store{}
 	acfg := auth.Config{Mode: mode, Team: team, Audience: aud, Editor: editor, Editors: editors, Config: store.Config, Degraded: func() bool { return store.ConfigProblem() != "" }}
 	if mode == auth.ModeOIDC {
 		caFile, _ := f.GetString("oidc-ca-file")
-		if loginSvc, err = newLogin(cfg, store, baseURL, caFile, f, readOnly, logger); err != nil {
+		if loginSvc, err = newLogin(cfg, store, prefStore, baseURL, caFile, f, readOnly, logger); err != nil {
 			return err
 		}
 		acfg.Sessions = loginSvc
@@ -208,6 +212,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		defer unlock()
 		registry.UsePath = filepath.Join(dir, "token-use.json")
 		modState.Path = filepath.Join(dir, "modules.json")
+		prefStore.Path = filepath.Join(dir, "preferences.json")
 	}
 	resource := &mcpauth.Resource{Config: store.Config, Auth: authn, Verifier: &oauth.Verifier{}, Tokens: registry, Limiter: &tokens.Limiter{}, TrustedProxies: proxies, Log: logger}
 	var oauthSrv api.OAuthServer
@@ -226,7 +231,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		Store: store, Auth: authn, ReadOnly: readOnly, BaseURL: baseURL, Web: dist, Logger: logger, RestrictHost: mode == auth.ModeNone, Login: loginMount,
 		MCP:    mcpauth.Handler(mcpserver.Handler(mcpSrv, mode != auth.ModeNone || baseURL != "" || cfg.Auth.MCP.Enabled())),
 		Public: map[string]http.Handler{mcpauth.MetadataPath: meta, mcpauth.MetadataPathMCP: meta},
-		Tokens: registry, Modules: modState, OAuth: oauthSrv,
+		Tokens: registry, Modules: modState, Prefs: prefStore, OAuth: oauthSrv,
 	})
 
 	addr, _ := f.GetString("listen")
@@ -321,7 +326,7 @@ func consoleBuilt(dist fs.FS) bool {
 // newLogin builds the built-in login for --auth oidc: the OIDC client secret
 // comes only from RACKBOOK_OIDC_CLIENT_SECRET, the session key from
 // RACKBOOK_SESSION_KEY or --session-key-file.
-func newLogin(cfg *config.Config, store *gitstore.Store, baseURL, caFile string, f *pflag.FlagSet, readOnly bool, logger *slog.Logger) (*login.Service, error) {
+func newLogin(cfg *config.Config, store *gitstore.Store, prefStore *prefs.Store, baseURL, caFile string, f *pflag.FlagSet, readOnly bool, logger *slog.Logger) (*login.Service, error) {
 	keyFile, _ := f.GetString("session-key-file")
 	key, err := login.LoadSessionKey(os.Getenv("RACKBOOK_SESSION_KEY"), keyFile)
 	if err != nil {
@@ -340,7 +345,7 @@ func newLogin(cfg *config.Config, store *gitstore.Store, baseURL, caFile string,
 	}
 	o := login.Options{
 		TrustedProxies: proxies, Login: cfg.Auth.Login, Config: store.Config, BaseURL: baseURL, Key: key, ClientSecret: secret, CAFile: caFile,
-		ReadOnly: readOnly, Logger: logger,
+		ReadOnly: readOnly, Logger: logger, Prefs: prefStore,
 	}
 	if cfg.Auth.Passkeys.Enabled {
 		o.Files = store

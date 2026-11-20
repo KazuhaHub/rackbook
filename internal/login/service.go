@@ -26,6 +26,8 @@ import (
 	"github.com/kazuhahub/rackbook/internal/auth"
 	"github.com/kazuhahub/rackbook/internal/config"
 	"github.com/kazuhahub/rackbook/internal/gitstore"
+	"github.com/kazuhahub/rackbook/internal/locale"
+	"github.com/kazuhahub/rackbook/internal/prefs"
 	"github.com/kazuhahub/rackbook/internal/roles"
 )
 
@@ -50,6 +52,7 @@ type Options struct {
 	ClientSecret   string // RACKBOOK_OIDC_CLIENT_SECRET
 	CAFile         string // extra root CAs for the IdP (private CA); optional
 	HTTPClient     *http.Client
+	Prefs          *prefs.Store   // per-person preferences (the language); nil = in memory only
 	Files          StateFiles     // nil = no passkeys
 	ReadOnly       bool           // refuse passkey changes
 	TrustedProxies []netip.Prefix // --trusted-proxy CIDRs
@@ -114,6 +117,9 @@ func New(o Options) (*Service, error) {
 	s.idle, s.absolute = o.Login.Session.IdleOrDefault(), o.Login.Session.AbsoluteOrDefault()
 	s.pending = newPendingStore(s.now)
 	s.users = newUserRegistry()
+	if s.o.Prefs == nil {
+		s.o.Prefs = &prefs.Store{}
+	}
 	s.limit = newLimiter(30, 10, s.now)
 	s.trusted = o.TrustedProxies
 	s.redirect = s.base.String() + "/auth/oidc/callback"
@@ -460,15 +466,18 @@ func (s *Service) loginPage(w http.ResponseWriter, r *http.Request, static http.
 }
 
 func (s *Service) publicConfig(w http.ResponseWriter, r *http.Request) {
-	label, name, logo := s.o.Login.OIDC.Label, "", false
+	label, name, logo, def := s.o.Login.OIDC.Label, "", false, locale.Default
 	if s.o.Config != nil {
 		cfg := s.o.Config()
-		label, name, logo = cfg.Auth.OIDC.Label, cfg.Branding.Name, cfg.BrandLogo() != nil
+		label, name, logo, def = cfg.Auth.OIDC.Label, cfg.Branding.Name, cfg.BrandLogo() != nil, cfg.DefaultLocale()
 	}
+	// The answer depends on the browser's language, so no cache may reuse it.
+	w.Header().Add("Vary", "Accept-Language")
 	// "provider" stays for older consoles; it no longer names the IdP.
 	writeJSON(w, http.StatusOK, map[string]any{
 		"oidc": true, "provider": "oidc", "passkeys": s.pk != nil,
 		"label": label, "name": name, "logo": logo,
+		"locale": locale.Match(r.Header.Get("Accept-Language"), def), "defaultLocale": def,
 	})
 }
 

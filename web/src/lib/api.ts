@@ -1,4 +1,4 @@
-import { t } from '@/i18n/zh-CN'
+import { t } from '@/i18n'
 import { loginUrl } from './loginurl'
 import type { CheckError, LedgerRecord } from './types'
 
@@ -100,8 +100,8 @@ export function errorMessage(e: unknown): string {
     }
     if (e.code === 'refused') return e.message
     if (e.statusCode === 422) {
-      const lines = e.errors.map((x) => x.message).join('；')
-      return lines ? `${t.errors.summaryTitle}：${lines}` : t.errors.summaryTitle
+      const lines = e.errors.map((x) => x.message).join(t.common.clauseSep)
+      return lines ? `${t.errors.summaryTitle}${t.common.colon}${lines}` : t.errors.summaryTitle
     }
     if (e.statusCode >= 500) return t.errors.server(e.message, e.requestId)
     return e.message

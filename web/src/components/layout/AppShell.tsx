@@ -18,7 +18,7 @@ import {
   SidebarTrigger,
   useSidebar,
 } from '@/components/ui/sidebar'
-import { t } from '@/i18n/zh-CN'
+import { t } from '@/i18n'
 import { BrandMark } from '@/components/BrandMark'
 import { CollectionIcon } from '@/components/CollectionIcon'
 import { hasExpiry } from '@/lib/ledger'

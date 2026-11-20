@@ -3,7 +3,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { NativeSelect } from '@/components/ui/native-select'
 import { Textarea } from '@/components/ui/textarea'
-import { t } from '@/i18n/zh-CN'
+import { t } from '@/i18n'
 import { iconChoices } from '@/lib/icons'
 import type { TypeDef } from '@/lib/typedef'
 import { cn } from 'cn'
@@ -33,8 +33,8 @@ export function BasicTab({
 }) {
   const set = (patch: Partial<TypeDef>) => update((d) => ({ ...d, ...patch }))
   const names = draft.fields.map((f) => f.name).filter(Boolean)
-  const defaultFile = `${dataDir}/${draft.name || '<名称>'}.yml`
-  const defaultSchema = `${schemaDir}/${draft.name || '<名称>'}.json`
+  const defaultFile = `${dataDir}/${draft.name || t.types.basic.namePlaceholder}.yml`
+  const defaultSchema = `${schemaDir}/${draft.name || t.types.basic.namePlaceholder}.json`
 
   return (
     <div className="grid gap-5 sm:grid-cols-2">
@@ -81,7 +81,7 @@ export function BasicTab({
         </div>
       </Field>
 
-      <Field label={t.types.basic.file} hint={creating ? `${t.types.basic.fileHint} 默认 ${defaultFile}` : t.types.basic.fileHint}>
+      <Field label={t.types.basic.file} hint={creating ? t.types.basic.fileHintDefault(t.types.basic.fileHint, defaultFile) : t.types.basic.fileHint}>
         <Input
           value={creating ? draft.file : draft.file}
           disabled={!creating}

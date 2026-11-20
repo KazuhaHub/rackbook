@@ -10,7 +10,7 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
 import { Button } from '@/components/ui/button'
-import { t } from '@/i18n/zh-CN'
+import { t } from '@/i18n'
 import { apiFetch, errorMessage } from '@/lib/api'
 import { useMeta } from '@/providers/meta'
 

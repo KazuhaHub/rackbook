@@ -52,6 +52,8 @@ export type MetaUser = {
   /** role is editor or higher and the server is not read-only */
   canEdit: boolean
   canAdmin?: boolean
+  /** the language this person chose (server-side preference); absent = none chosen */
+  locale?: string
 }
 /** Shown as a banner while the server pauses writes. */
 export type MetaAlert =
@@ -81,6 +83,10 @@ export type Meta = {
   modules?: ModuleInfo[]
   /** the built-in OAuth authorization server is on: grants can be listed and revoked */
   oauthServer?: boolean
+  /** the supported language that best matches the browser's Accept-Language (else defaultLocale) */
+  locale?: string
+  /** rackbook.yml i18n.default */
+  defaultLocale?: string
 }
 
 export type LedgerRecord = {
