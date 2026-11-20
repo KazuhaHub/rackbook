@@ -288,7 +288,7 @@ func TestOldWriteNamesKeepTheirArgumentsAndResultShape(t *testing.T) {
 	res, _ := cs.ListTools(t.Context(), nil)
 	for _, tool := range res.Tools {
 		want := map[string]string{"create_record": "records_create", "update_record": "records_update", "delete_record": "records_delete", "record_history": "history_list"}[tool.Name]
-		if want != "" && !strings.HasPrefix(tool.Description, "Deprecated: use "+want+"; removed in v0.7.0. ") {
+		if want != "" && !strings.HasPrefix(tool.Description, "Deprecated: use "+want+"; removed in v0.8.0. ") {
 			t.Errorf("%s: %q", tool.Name, tool.Description)
 		}
 	}

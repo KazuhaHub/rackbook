@@ -409,7 +409,7 @@ files: [{path, status, diff}], problems: [{error, message, details?}]}, record?}
 and writes nothing. `idempotency_key` makes a retry within 24 hours return the
 first result (`replayed: true`).
 
-Deprecated aliases (removed in v0.7.0, same arguments and results as in v0.2):
+Deprecated aliases (removed in v0.8.0, same arguments and results as in v0.2):
 `list_collections`, `get_schema`, `list_records`, `get_record`, `search`,
 `check`, `list_problems`, `export_markdown`, `record_history`, `create_record`,
 `update_record` and `delete_record`. Their results keep the v0.2 shapes
@@ -417,7 +417,7 @@ Deprecated aliases (removed in v0.7.0, same arguments and results as in v0.2):
 `{id, hash, data, commit | url, pullRequest}` with the flat
 `{"error","message","status",…}` errors), and `update_record` / `delete_record`
 take `hash` where the new tools take `expected_hash`. Each description starts
-with `Deprecated: use <new>; removed in v0.7.0`, and `ledger_info.deprecated`
+with `Deprecated: use <new>; removed in v0.8.0`, and `ledger_info.deprecated`
 lists them.
 
 ## Static console

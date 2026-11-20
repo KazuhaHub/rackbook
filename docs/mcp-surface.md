@@ -206,7 +206,7 @@ arguments and their result shapes are part of Rackbook's SemVer promise (README,
 
 ## 10. v0.2 tools → v0.6.0
 
-The renames ship in **v0.6.0** with deprecated aliases, removed in **v0.7.0**.
+The renames ship in **v0.6.0** with deprecated aliases, removed in **v0.8.0**.
 They aren't patch-released: aliases would double the tool list in clients,
 which costs more than waiting.
 
