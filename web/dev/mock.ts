@@ -171,6 +171,7 @@ export function mockApi(root: string): Plugin {
   const expiryFields: Record<string, { expiryField: string; revokedField: string }> = {
     credentials: { expiryField: 'expires', revokedField: 'revoked' },
   }
+  const infraHead = 'a1b2c3d4e5f60718293a4b5c6d7e8f9012345678'
   const modules = [
     { name: 'entra', collection: 'credentials', fields: ['kind', 'purpose', 'expires', 'revoked'], directPush: true },
   ]
@@ -294,8 +295,8 @@ export function mockApi(root: string): Plugin {
     { id: 'pk1', name: 'MacBook Pro', created: new Date(Date.now() - 3 * 86400000).toISOString() },
   ]
   const user = readOnly
-    ? { id: 'viewer@example.com', email: 'viewer@example.com', name: 'viewer', role: 'viewer', authMethod: 'none', canEdit: false, canAdmin: false }
-    : { id: 'editor@example.com', email: 'editor@example.com', name: 'Mock Editor', role: 'admin', authMethod: login ? 'oidc' : 'none', canEdit: true, canAdmin: true }
+    ? { id: 'viewer@example.com', email: 'viewer@example.com', name: 'viewer', role: 'viewer', authMethod: 'none', canEdit: false, canAdmin: false, canInfra: false }
+    : { id: 'editor@example.com', email: 'editor@example.com', name: 'Mock Editor', role: 'admin', authMethod: login ? 'oidc' : 'none', canEdit: true, canAdmin: true, canInfra: true }
   // MOCK_ALERT=1 shows the "history rewritten" banner until it is accepted.
   let alert: { kind: string; lastGood: string; remote: string } | undefined =
     process.env.MOCK_ALERT === '1'
@@ -428,6 +429,46 @@ export function mockApi(root: string): Plugin {
       if (!alert || body.commit !== alert.remote) return send(res, 409, { error: 'not_remote_tip', message: 'not the remote tip' }), true
       alert = undefined
       return send(res, 200, { ok: true }), true
+    }
+    if (head === 'infra' && method === 'GET' && user.canInfra) {
+      const ago = (s: number) => new Date(Date.now() - s * 1000).toISOString()
+      const hub = { state: 'ok', ageSeconds: 12, time: ago(12) }
+      const repo = { branch: 'main', head: infraHead, syncedAt: ago(40) }
+      const report = (applied: string, result: string, message: string) => ({
+        appliedCommit: applied, result, message, time: ago(300), receivedAt: ago(299),
+        features: [{ name: 'beszel-agent', result: 'ok' }],
+      })
+      const hosts = [
+        { name: 'alpha-host', groups: ['hub', 'managed'], hasVars: true, features: ['beszel-agent'], report: report(infraHead, 'ok', 'applied'), behind: false },
+        { name: 'beta-host', groups: ['managed'], hasVars: true, features: [], report: report('0123456789abcdef0123456789abcdef01234567', 'failed', 'feature beszel-agent failed'), behind: true },
+        { name: 'gamma-host', groups: [], hasVars: false, features: [], behind: false },
+      ]
+      if (cname === 'hosts' && rest[0] === undefined) return send(res, 200, { repo, hub, hosts }), true
+      if (cname === 'hosts') {
+        const h = hosts.find((x) => x.name === rest[0])
+        if (!h) return send(res, 404, { error: 'not_found', message: 'no such host' }), true
+        return send(res, 200, {
+          repo, hub, behind: h.behind, ...(h.report ? { report: h.report } : {}),
+          host: {
+            name: h.name, groups: h.groups, hasVars: h.hasVars,
+            vars: h.hasVars ? 'tailscale_ip: 100.64.0.1\nfeatures:\n  beszel-agent:\n    mode: websocket\n    token: (hidden)\n' : undefined,
+            hidden: h.hasVars ? 1 : 0,
+            features: h.features.map((n) => ({ name: n, enabled: true })).concat([{ name: 'old-feature', enabled: false }]),
+          },
+        }), true
+      }
+      if (cname === 'certs') return send(res, 200, { hub, certs: [
+        { name: 'alpha.example.org', owner: 'alpha-host', notAfter: ago(-86400 * 60), failing: false },
+        { name: 'beta.example.org', owner: 'beta-host', notAfter: ago(-86400 * 3), failing: true, lastError: 'DNS challenge failed' },
+      ] }), true
+      if (cname === 'iplists') return send(res, 200, { hub, lists: [
+        { name: 'cloudflare', version: 'v42', entries: 22, warnings: [] },
+        { name: 'office', version: 'v7', entries: 3, warnings: ['the list shrank by 40%'] },
+      ] }), true
+      if (cname === 'commits') return send(res, 200, { repo, commits: [
+        { hash: infraHead, author: 'Mock Editor', time: ago(3600), subject: 'hosts: enable the monitoring agent on alpha-host' },
+        { hash: '0123456789abcdef0123456789abcdef01234567', author: 'Mock Editor', time: ago(86400 * 2), subject: 'certs: add beta.example.org' },
+      ] }), true
     }
     if (head === 'expiring' && method === 'GET') {
       const days = Number(url.searchParams.get('days') ?? 30)

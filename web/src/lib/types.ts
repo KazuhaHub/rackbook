@@ -56,6 +56,8 @@ export type MetaUser = {
   /** role is editor or higher and the server is not read-only */
   canEdit: boolean
   canAdmin?: boolean
+  /** may see the read-only /infra pages (listed in --infra-admins, signed in with the console login) */
+  canInfra?: boolean
   /** the language this person chose (server-side preference); absent = none chosen */
   locale?: string
 }
