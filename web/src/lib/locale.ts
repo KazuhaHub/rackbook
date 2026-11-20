@@ -66,6 +66,8 @@ export async function syncLocale(src: Sources): Promise<void> {
   if (server) store(server)
   const want = resolveLocale(src)
   if (want !== locale) await activateLocale(want)
+  // scripts/check-i18n-dom.mts switches only after this, or the server's answer could undo its switch
+  if (import.meta.env.DEV) (window as unknown as Record<string, unknown>).__rbLocaleSynced = true
 }
 
 /** The chosen language could not be shown (its messages did not load); nothing changed. */

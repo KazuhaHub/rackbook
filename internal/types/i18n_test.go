@@ -103,7 +103,7 @@ func TestNoChangeIsByteForByte(t *testing.T) {
 }
 
 func TestEditLabelsKeepsOtherKeys(t *testing.T) {
-	cfg, dir := labelSetup(t)
+	_, dir := labelSetup(t)
 	// an unknown key in a locale object, an unsupported language, and unknown keys on the property
 	testutil.Replace(t, dir, "schemas/device.json", `"zh-TW": {"title": "IPv4 類型", "enum"`, `"fr-FR": {"title": "Type IPv4"}, "zh-TW": {"note": "keep me", "title": "IPv4 類型", "enum"`)
 	testutil.Replace(t, dir, "schemas/device.json", `"x-rackbook-type": "enum"
@@ -111,7 +111,7 @@ func TestEditLabelsKeepsOtherKeys(t *testing.T) {
     "status"`, `"x-rackbook-type": "enum", "x-extra": {"a": 1}
     },
     "status"`)
-	cfg = testutil.LoadConfig(t, dir)
+	cfg := testutil.LoadConfig(t, dir)
 	p := update(t, cfg, "devices", func(ty *Type) {
 		f := field(ty, "ipv4_type")
 		f.Enum[0].Labels["en-US"] = "Fixed"
@@ -425,9 +425,9 @@ func TestRefRuleTranslations(t *testing.T) {
 // An existing x-rackbook-i18n the console cannot read is kept, and a request
 // that would write translations next to it is refused, not silently dropped.
 func TestMalformedI18nRefusesNewTranslations(t *testing.T) {
-	cfg, dir := labelSetup(t)
+	_, dir := labelSetup(t)
 	testutil.Replace(t, dir, "schemas/device.json", `"x-rackbook-i18n": {"en-US": {"title": "Name"}}`, `"x-rackbook-i18n": {"en-US": {"title": 5}}`)
-	cfg = testutil.LoadConfig(t, dir)
+	cfg := testutil.LoadConfig(t, dir)
 	if f := field(current(t, cfg, "devices"), "name"); !hasExtra(f.Extras, kwI18n) || f.I18n != nil {
 		t.Fatalf("%+v", f)
 	}
@@ -457,10 +457,10 @@ func TestMalformedI18nRefusesNewTranslations(t *testing.T) {
 
 // x-rackbook-i18n keys the editor does not manage for a field type are never deleted.
 func TestHandWrittenEnumLabelsOnOtherTypesSurvive(t *testing.T) {
-	cfg, dir := labelSetup(t)
+	_, dir := labelSetup(t)
 	testutil.Replace(t, dir, "schemas/device.json", `"owner": {"type": "string"}`, `"owner": {"type": "string"},
     "legacy": {"type": "string", "oneOf": [{"const": "a", "description": "x"}], "x-rackbook-i18n": {"en-US": {"enum": {"a": "A"}, "title": "Old"}}}`)
-	cfg = testutil.LoadConfig(t, dir)
+	cfg := testutil.LoadConfig(t, dir)
 	p := update(t, cfg, "devices", func(ty *Type) {
 		f := field(ty, "legacy")
 		f.Title = "旧"
@@ -547,9 +547,9 @@ func TestPlanRefusesLabelClashesAndLongIcons(t *testing.T) {
 // A malformed x-rackbook-i18n on one field blocks only changes of that field's
 // translations, not other edits of the type, and the oneOf titles never count.
 func TestMalformedI18nDoesNotBlockOtherEdits(t *testing.T) {
-	cfg, dir := labelSetup(t)
+	_, dir := labelSetup(t)
 	testutil.Replace(t, dir, "schemas/device.json", `"zh-TW": {"title": "IPv4 類型", "enum": {"static": "靜態", "dynamic": "動態"}}`, `"zh-TW": 7`)
-	cfg = testutil.LoadConfig(t, dir)
+	cfg := testutil.LoadConfig(t, dir)
 	// the malformed field has oneOf titles; renaming another field, and editing that field's title, are fine
 	p := update(t, cfg, "devices", func(ty *Type) {
 		field(ty, "name").Title = "名字"
@@ -568,9 +568,9 @@ func TestMalformedI18nDoesNotBlockOtherEdits(t *testing.T) {
 
 // Label clashes are checked for fields whose choices changed, not for every field.
 func TestLabelClashesOnlyForChangedFields(t *testing.T) {
-	cfg, dir := labelSetup(t)
+	_, dir := labelSetup(t)
 	testutil.Replace(t, dir, "schemas/device.json", `{"const": "dynamic", "title": "动态"}`, `{"const": "dynamic", "title": "静态"}`)
-	cfg = testutil.LoadConfig(t, dir)
+	cfg := testutil.LoadConfig(t, dir)
 	p := update(t, cfg, "devices", func(ty *Type) { field(ty, "name").Title = "名字" })
 	if !p.Clean || !p.Changed {
 		t.Fatalf("an unrelated edit must not be blocked: %v", p.Refusals)
