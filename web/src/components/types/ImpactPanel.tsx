@@ -6,6 +6,8 @@ import { Input } from '@/components/ui/input'
 import { t } from '@/i18n'
 import { recordHref } from '@/lib/ledger'
 import type { Migration, Offer, Plan, PlanIssue } from '@/lib/typedef'
+import { issueText } from '@/lib/issues'
+import { useMeta } from '@/providers/meta'
 import { cn } from 'cn'
 
 function Section({ title, children, tone }: { title: string; children: React.ReactNode; tone?: 'bad' }) {
@@ -18,6 +20,7 @@ function Section({ title, children, tone }: { title: string; children: React.Rea
 }
 
 function Issues({ items }: { items: PlanIssue[] }) {
+  const { meta } = useMeta()
   return (
     <ul className="max-h-48 space-y-1 overflow-y-auto text-xs">
       {items.slice(0, 50).map((i, n) => (
@@ -31,7 +34,7 @@ function Issues({ items }: { items: PlanIssue[] }) {
           )}
           <span className="min-w-0 text-muted-foreground">
             {i.path && <span className="font-mono">{i.path} </span>}
-            {i.message}
+            {issueText(i, meta.collections)}
           </span>
         </li>
       ))}

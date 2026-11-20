@@ -24,6 +24,9 @@ func TestDecodeNormalizesAndKeepsOnlySetValues(t *testing.T) {
 	if len(n.SendAt) != 2 || n.SendAt[0] != "08:00" {
 		t.Errorf("send_at %v", n.SendAt)
 	}
+	if n.Language != "zh" {
+		t.Errorf("language %q: kept as written, so an older rackbook-notify still reads it", n.Language)
+	}
 	m := Map(s)
 	if _, ok := m["paused"]; ok {
 		t.Error("unset paused must not be in the map")
@@ -54,6 +57,7 @@ func TestDecodeRefusals(t *testing.T) {
 		{TypeNotify, map[string]any{"recipients": []any{"nobody"}}, "not an e-mail address"},
 		{TypeNotify, map[string]any{"recipients": []any{"A <a@example.org>"}}, "not an e-mail address"},
 		{TypeNotify, map[string]any{"language": "fr"}, "language"},
+		{TypeNotify, map[string]any{"language": "zh-HK"}, "language"},
 		{TypeEntra, map[string]any{"exclude_app_ids": []any{"not-a-uuid"}}, "not an application id"},
 		{TypeEntra, map[string]any{"name_prefix": "has space"}, "name_prefix"},
 		{TypeEntra, map[string]any{"purpose": "{app} {secret}"}, "not a placeholder"},

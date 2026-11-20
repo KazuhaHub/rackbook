@@ -110,7 +110,7 @@ export type TypeList = {
 export type Migration = { kind: 'remove-field' | 'fill-default'; field: string; value?: unknown }
 export type Offer = { kind: Migration['kind']; field: string; count: number; records: string[]; default?: unknown; applied: boolean }
 export type Refusal = { code: string; field?: string; message: string; records?: string[]; count?: number }
-export type PlanIssue = { collection: string; id: string; path: string; rule: string; message: string }
+export type PlanIssue = { collection: string; id: string; path: string; rule: string; message: string; keyword?: string; params?: Record<string, unknown> }
 export type PlanFile = { path: string; status: 'added' | 'modified' | 'removed'; diff: string }
 export type BackrefChange = { collection: string; from: string; change: 'gained' | 'lost' }
 

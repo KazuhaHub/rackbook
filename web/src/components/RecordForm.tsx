@@ -12,6 +12,7 @@ import { enumForm, fieldKind, suggestValues, type Prop } from '@/lib/fieldKind'
 import { enumChoices, fieldDescription, fieldTitle, propAt } from '@/lib/labels'
 import { pointerToPath, str } from '@/lib/ledger'
 import type { CheckError, Collection } from '@/lib/types'
+import { issueText } from '@/lib/issues'
 import { customFormats, formatHint } from '@/lib/formats'
 import { CountryWidget, DateWidget, EnumWidget, ListWidget, RefManyWidget, RowsWidget, RefWidget, SuggestWidget, SwitchWidget, TagsWidget, type RefItem } from './form-widgets'
 
@@ -51,7 +52,7 @@ export function toErrorSchema(errors: CheckError[], schema: RJSFSchema, collecti
     if (!path.length || !schema.properties?.[path[0]]) continue
     let node = root
     for (const seg of path) node = node[seg] ??= {}
-    ;(node.__errors ??= []).push(e.message)
+    ;(node.__errors ??= []).push(issueText(e, [{ name: collection, schema: schema as Prop }]))
   }
   return root
 }

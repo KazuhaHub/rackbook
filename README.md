@@ -697,7 +697,10 @@ as described next; record values you type (names, notes) are shown as written.
 To add a language: copy `web/src/i18n/en-US.ts` to `web/src/i18n/<tag>.ts` and translate it (the
 compiler rejects a missing or extra key, `npm run check:i18n` a key of the wrong kind), then list
 the tag in `LOCALES`, `LOCALE_NAMES` and the loaders in `web/src/i18n/index.ts` and in `Supported`
-in `internal/locale`, so that `Accept-Language` can match it. `npm run check:i18n-dom` loads every
+in `internal/locale`, so that `Accept-Language` can match it. Server-side text has its own short tables:
+the authorization error page (`pageLangs` in `internal/oauthserver/errorpage.go`) and
+`rackbook-notify` (`langs` in `cmd/rackbook-notify/message.go`, `NotifyLanguages` in `modsettings`,
+the list in `web/src/components/modules/SettingsForm.tsx`). `npm run check:i18n-dom` loads every
 page in each language, switches, and fails on text left in the old one.
 
 ### Ledger text in several languages
@@ -787,8 +790,22 @@ also accept the placeholder `tbd` for "not known yet"; the console shows it as �
 When a value is refused because it is not one of the choices, the message says what to do. If
 the value is a label in any language, or a code in other letters, it reads
 `"静态" is not allowed; use code "static"`; otherwise `"xyz" is not one of: static, dynamic, nat`.
-The console and `rackbook check` give the same message. Labels, translated text and icon names are
+`rackbook check` prints that message; the console words it in the viewer's language. Labels, translated text and icon names are
 scanned for secrets like titles and descriptions; the language tags and codes that key them are not.
+
+### Text the server writes
+
+- **Validation problems** (`/api/check`, a refused write, the type editor's plan) carry a `keyword`
+  and its `params` next to the English `message`; the console words them in the viewer's language
+  and names fields and codes by their labels. Other clients can do the same or show `message`
+  (docs/api.md, `GET /api/check`).
+- **The authorization error page** of the built-in OAuth server (an unknown client, a redirect URI
+  it did not register) is in the person's saved language, else the browser's, else `i18n.default`.
+- **Reminder mail and webhooks** from `rackbook-notify` use the module's own `language` setting
+  (`zh-CN`, `zh-TW` or `en-US`; the older `en` and `zh` still work; default `en-US`), never the
+  reader's: one message goes to every recipient. A stored `en` or `zh` is kept as written, so an older
+  `rackbook-notify` still reads it; upgrade the module before picking one of the new tags in the console.
+- Protocol errors meant for programs (OAuth `error_description`, the API's `message`) stay English.
 
 ## Branding and the sign-in button
 

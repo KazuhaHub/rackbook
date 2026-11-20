@@ -218,7 +218,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	var oauthSrv api.OAuthServer
 	if builtin {
 		srv, err := oauthserver.New(oauthserver.Options{Issuer: baseURL, Resource: cfg.Auth.MCP.Resource, StateDir: stateDir,
-			Config: store.Config, Auth: authn, Log: logger, TrustedProxies: proxies})
+			Config: store.Config, Auth: authn, Log: logger, TrustedProxies: proxies, Prefs: prefStore})
 		if err != nil {
 			return err
 		}

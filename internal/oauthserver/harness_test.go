@@ -31,6 +31,7 @@ import (
 	"github.com/kazuhahub/rackbook/internal/mcpauth"
 	"github.com/kazuhahub/rackbook/internal/mcpserver"
 	"github.com/kazuhahub/rackbook/internal/oauthserver"
+	"github.com/kazuhahub/rackbook/internal/prefs"
 	"github.com/kazuhahub/rackbook/internal/roles"
 	"github.com/kazuhahub/rackbook/internal/testutil"
 	"github.com/kazuhahub/rackbook/internal/tokens"
@@ -106,6 +107,7 @@ type env struct {
 	srv      *oauthserver.Server
 	res      *mcpauth.Resource
 	ts       *httptest.Server
+	prefs    *prefs.Store // the console languages people saved
 }
 
 func (e *env) config() *config.Config {
@@ -138,7 +140,7 @@ func newEnv(t *testing.T, o opts) *env {
 	if err != nil {
 		t.Fatal(err)
 	}
-	e := &env{t: t, o: o, clock: &clock{t: time.Now()}, addr: ln.Addr().String()}
+	e := &env{t: t, o: o, clock: &clock{t: time.Now()}, addr: ln.Addr().String(), prefs: &prefs.Store{}}
 	e.base = "http://" + e.addr
 	e.resource = e.base + "/mcp"
 	e.dir = o.stateDir
@@ -187,7 +189,7 @@ func (e *env) start(ln net.Listener) {
 		e.t.Fatal(err)
 	}
 	srv, err := oauthserver.New(oauthserver.Options{Issuer: e.base, Resource: e.resource, StateDir: e.dir, Config: e.config, Auth: authn,
-		Now: e.clock.now, CIMDClient: cimd, TrustedProxies: proxies, Getenv: func(string) string { return "" }})
+		Now: e.clock.now, CIMDClient: cimd, TrustedProxies: proxies, Getenv: func(string) string { return "" }, Prefs: e.prefs})
 	if err != nil {
 		e.t.Fatal(err)
 	}
@@ -201,6 +203,7 @@ func (e *env) start(ln net.Listener) {
 		MCP:    mcpauth.Handler(mcpserver.Handler(mcpSrv, true)),
 		Public: map[string]http.Handler{mcpauth.MetadataPath: meta, mcpauth.MetadataPathMCP: meta},
 		OAuth:  srv,
+		Prefs:  e.prefs,
 	})
 	e.ts = httptest.NewUnstartedServer(h)
 	e.ts.Listener.Close()
@@ -318,8 +321,8 @@ func (e *env) register(name string, redirects ...string) string {
 }
 
 // startAuth runs the authorization request as user and returns the response.
-func (e *env) startAuth(user string, p authParams) resp {
-	return e.get(user, "/oauth/authorize?"+p.query())
+func (e *env) startAuth(user string, p authParams, hdr ...string) resp {
+	return e.get(user, "/oauth/authorize?"+p.query(), hdr...)
 }
 
 // approve runs the authorization request and the consent page as user and

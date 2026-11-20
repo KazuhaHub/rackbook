@@ -29,6 +29,7 @@ import { collectionGroup, collectionTitle, collectionTitleOf, ledgerDescription,
 import type { CheckError, Commit } from '@/lib/types'
 import { cn } from '@/lib/utils'
 import { useCheck, useMeta } from '@/providers/meta'
+import { issueText } from '@/lib/issues'
 import { displayId } from '@/lib/recordId'
 
 const stagger = (i: number) => ({ '--i': i }) as CSSProperties
@@ -256,7 +257,7 @@ export default function Dashboard() {
                         to={problemHref(e, byName)}
                         className="block rounded-lg px-2 py-2 transition-colors duration-150 outline-none hover:bg-destructive/5 focus-visible:ring-2 focus-visible:ring-ring/60"
                       >
-                        <span className="block text-sm leading-snug break-words">{e.message}</span>
+                        <span className="block text-sm leading-snug break-words">{issueText(e, meta.collections)}</span>
                         <span className="mt-0.5 block truncate text-xs text-muted-foreground">
                           {[collectionTitleOf(byName.get(e.collection ?? ''), e.collection ?? ''), e.id && displayId(e.id)].filter(Boolean).join(' · ') || '—'}
                         </span>

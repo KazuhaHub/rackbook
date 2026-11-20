@@ -36,6 +36,8 @@ import {
   noteTitle,
 } from '../src/lib/labels.ts'
 import { displayText } from '../src/lib/display.ts'
+import { issueText } from '../src/lib/issues.ts'
+import { activateLocale } from '../src/i18n/index.ts'
 import { countryName, flagEmoji, subdivisionCountry } from '../src/lib/countryDisplay.ts'
 import { COUNTRY_CODES } from '../src/lib/countries.ts'
 
@@ -381,5 +383,37 @@ eq('allowed values en-US', enumChoices(ipv4Type, ['static', 'nat'], 'en-US'), ['
 eq('allowed values of a plain enum', enumChoices({ type: 'string', enum: ['a'] }, ['a'], 'en-US'), ['a'])
 eq('allowed values without a schema', enumChoices(undefined, ['a'], 'en-US'), ['a'])
 
+
+// server issues in the current language (keyword + params), the English message as the fallback
+{
+  const devices = {
+    name: 'devices',
+    title: '设备',
+    i18n: { 'en-US': { title: 'Devices' } },
+    schema: { type: 'object', properties: { name: { type: 'string', title: '名称', 'x-rackbook-i18n': { 'en-US': { title: 'Name' } } }, ipv4_type: ipv4Type, owner: { type: 'string' } } },
+  }
+  const people = { name: 'people', title: '人员', schema: { type: 'object', properties: { name: { type: 'string', title: '姓名' } } } }
+  const cols = [devices, people]
+  const at = (keyword: string, params: Record<string, unknown>, path = '') => ({ collection: 'devices', path, message: 'english fallback', keyword, params })
+  const cases: [string, ReturnType<typeof at>, Record<string, string>][] = [
+    ['enum hint', at('enum', { value: '静态', use: 'static' }, '/ipv4_type'), { 'zh-CN': '不能填写“静态”，请改用代码 static（静态）', 'en-US': '"静态" is not allowed; use code static (Static)', 'zh-TW': '不能填寫「静态」，請改用代碼 static（靜態）' }],
+    ['enum list', at('enum', { value: 'x', allowed: ['static', 'nat'] }, '/ipv4_type'), { 'zh-CN': '只能是：静态 (static)、nat', 'en-US': 'Must be one of: Static (static), NAT (nat)' }],
+    ['required', at('required', { missing: ['name', 'zzz'] }), { 'zh-CN': '缺少必填字段：名称、zzz', 'en-US': 'Missing required fields: Name, zzz' }],
+    ['unique key', at('unique', { fields: ['name'], values: ['gw'], key: true }), { 'zh-CN': '键重复：“gw”（名称）', 'en-US': 'Duplicate key "gw" (Name)' }],
+    ['ref with rule message', at('ref', { value: 'bob', target: 'people.name', ruleMessage: '负责人不存在', ruleMessageI18n: { 'en-US': 'Unknown owner' } }, '/owner'), { 'zh-CN': '负责人不存在：人员 · 姓名 中没有“bob”', 'en-US': 'Unknown owner: "bob" is not in 人员 · 姓名', 'zh-TW': '负责人不存在：人员 · 姓名 中沒有「bob」' }],
+    ['ref without rule message', at('ref', { value: 'bob', target: 'nowhere.x' }, '/owner'), { 'en-US': '"bob" is not in nowhere.x' }],
+    ['same_set right side', at('same_set', { value: 'v', side: 'right', left: 'devices.name', right: 'x.yml /a' }), { 'en-US': 'Devices · Name must equal x.yml /a: "v" in x.yml /a has no matching record' }],
+    ['format', at('format', { value: 'XX', format: 'country' }, '/c'), { 'en-US': 'Not a valid country code (ISO 3166-1, such as US or CN, or tbd)' }],
+    ['minimum', at('minimum', { limit: 1000.5, value: 1 }, '/n'), { 'en-US': 'Out of range (must be ≥ 1,000.5)', 'zh-CN': '超出范围（≥ 1,000.5）' }],
+    ['unknown keyword', at('if', {}), { 'en-US': 'english fallback', 'zh-CN': 'english fallback' }],
+    ['missing params', at('required', {}), { 'en-US': 'english fallback' }],
+    ['no keyword', { collection: 'devices', message: 'english fallback' } as any, { 'zh-TW': 'english fallback' }],
+  ]
+  for (const loc of ['zh-CN', 'en-US', 'zh-TW'] as const) {
+    await activateLocale(loc)
+    for (const [name, issue, want] of cases) if (want[loc] !== undefined) eq(`issue ${name} (${loc})`, issueText(issue, cols), want[loc])
+  }
+  await activateLocale('zh-CN')
+}
 if (failed) process.exit(1)
 console.log('console logic: ok')

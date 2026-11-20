@@ -107,6 +107,9 @@ export type CheckError = {
   path?: string
   rule?: string
   message: string
+  /** what failed and the values of the message (lib/issues.ts words them); message is the English fallback */
+  keyword?: string
+  params?: Record<string, unknown>
 }
 export type CheckResult = { ok: boolean; errors: CheckError[] }
 

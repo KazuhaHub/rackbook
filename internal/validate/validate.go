@@ -256,7 +256,7 @@ func schemaIssues(c *ledger.Collection) []ledger.Issue {
 			msg := leaf.msg
 			if key := path + "\x00" + msg; !seen[key] {
 				seen[key] = true
-				out = append(out, ledger.Issue{Collection: c.Name, ID: r.ID, Path: path, Rule: ledger.RuleSchema, Hash: r.Hash, Message: msg})
+				out = append(out, ledger.Issue{Collection: c.Name, ID: r.ID, Path: path, Rule: ledger.RuleSchema, Hash: r.Hash, Message: msg, Keyword: leaf.keyword, Params: leaf.params})
 			}
 		}
 	}
@@ -279,8 +279,10 @@ func compile(c *ledger.Collection) (*jsonschema.Schema, error) {
 
 // leaf is one reportable problem: where in the record and what is wrong.
 type leaf struct {
-	loc []string
-	msg string
+	loc     []string
+	msg     string
+	keyword string
+	params  map[string]any
 }
 
 // leaves flattens a validation error into its leaf problems. A failure of an
@@ -291,17 +293,18 @@ func leaves(e *jsonschema.ValidationError, root map[string]any, base string, dat
 	switch k := e.ErrorKind.(type) {
 	case *kind.Enum:
 		if en := enumAt(root, base, e, "enum"); en != nil {
-			return []leaf{{e.InstanceLocation, enumMessage(en, valueAt(data, e.InstanceLocation))}}
+			return []leaf{enumLeaf(e.InstanceLocation, en, valueAt(data, e.InstanceLocation))}
 		}
 	case *kind.OneOf:
 		if len(k.Subschemas) == 0 {
 			if en := enumAt(root, base, e, "oneOf"); en != nil {
-				return []leaf{{e.InstanceLocation, enumMessage(en, valueAt(data, e.InstanceLocation))}}
+				return []leaf{enumLeaf(e.InstanceLocation, en, valueAt(data, e.InstanceLocation))}
 			}
 		}
 	}
 	if len(e.Causes) == 0 {
-		return []leaf{{e.InstanceLocation, e.ErrorKind.LocalizedString(printer)}}
+		kw, params := structured(e.ErrorKind)
+		return []leaf{{e.InstanceLocation, e.ErrorKind.LocalizedString(printer), kw, params}}
 	}
 	var out []leaf
 	for _, c := range e.Causes {
@@ -391,20 +394,23 @@ func valueAt(data any, loc []string) any {
 	return cur
 }
 
-// enumMessage says what is wrong with v for an enum-like property: it names the
+// enumLeaf says what is wrong with v for an enum-like property: it names the
 // code to use when v is a label (in any language) or a code in other letters, and
 // otherwise lists the codes.
-func enumMessage(en *labels.Enum, v any) string {
+//
+// Both forms (enum and oneOf of consts) report keyword "enum": params carry
+// the value and either "use" (the code to write) or "allowed" (every code).
+func enumLeaf(loc []string, en *labels.Enum, v any) leaf {
 	shown := fmt.Sprintf("%v", v)
 	if s, ok := v.(string); ok {
 		shown = strconv.Quote(s)
 		if code, exact, found := en.Match(s); found && !exact {
-			return fmt.Sprintf("%s is not allowed; use code %s", shown, strconv.Quote(code))
+			return leaf{loc, fmt.Sprintf("%s is not allowed; use code %s", shown, strconv.Quote(code)), "enum", map[string]any{"value": v, "use": code}}
 		}
 	} else if b, err := json.Marshal(v); err == nil {
 		shown = string(b)
 	}
-	return fmt.Sprintf("%s is not one of: %s", shown, strings.Join(en.Codes(), ", "))
+	return leaf{loc, fmt.Sprintf("%s is not one of: %s", shown, strings.Join(en.Codes(), ", ")), "enum", map[string]any{"value": v, "allowed": en.Codes()}}
 }
 
 func escapeTokens(t []string) []string {
@@ -424,9 +430,10 @@ func uniqueIssues(c *ledger.Collection, fields []string, implicit bool) []ledger
 	seen := map[string]*ledger.Record{}
 	var out []ledger.Issue
 	for _, r := range c.Records {
-		parts := make([]string, len(fields))
+		parts, vals := make([]string, len(fields)), make([]string, len(fields))
 		for i, f := range fields {
-			parts[i] = strconv.Quote(ledger.Str(r.Data[f]))
+			vals[i] = ledger.Str(r.Data[f])
+			parts[i] = strconv.Quote(vals[i])
 		}
 		k := strings.Join(parts, "/")
 		if _, dup := seen[k]; dup {
@@ -437,6 +444,7 @@ func uniqueIssues(c *ledger.Collection, fields []string, implicit bool) []ledger
 			out = append(out, ledger.Issue{
 				Collection: c.Name, ID: r.ID, Path: "/" + fields[0], Rule: ledger.RuleUnique, Hash: r.Hash,
 				Message: fmt.Sprintf("duplicate %s %s (%s)", what, strings.Join(parts, " / "), strings.Join(fields, "+")),
+				Keyword: ledger.RuleUnique, Params: map[string]any{"fields": fields, "values": vals, "key": implicit},
 			})
 			continue
 		}
@@ -475,7 +483,8 @@ func refIssues(l *ledger.Ledger, rule *config.RefRule) []ledger.Issue {
 			if rule.Message != "" {
 				msg = rule.Message + ": " + msg
 			}
-			out = append(out, ledger.Issue{Collection: fc, ID: r.ID, Path: path, Rule: ledger.RuleRef, Hash: r.Hash, Message: msg})
+			out = append(out, ledger.Issue{Collection: fc, ID: r.ID, Path: path, Rule: ledger.RuleRef, Hash: r.Hash, Message: msg,
+				Keyword: ledger.RuleRef, Params: ruleText(map[string]any{"value": s, "target": tc + "." + tf}, rule.Message, rule.I18n)})
 		}
 		if list, isList := v.([]any); isList && rule.Many {
 			for i, x := range list {
@@ -496,6 +505,10 @@ func sameSetIssues(l *ledger.Ledger, rule *config.SameSetRule) []ledger.Issue {
 	msg := rule.Message
 	if msg == "" {
 		msg = fmt.Sprintf("%s.%s must equal %s %s", rule.Left.Collection, rule.Left.Field, rule.Right.File, rule.Right.Path)
+	}
+	// params of the rule: what must equal what, and the rule's own message
+	params := func(v, side string) map[string]any {
+		return ruleText(map[string]any{"value": v, "side": side, "left": rule.Left.Collection + "." + rule.Left.Field, "right": rule.Right.File + " " + rule.Right.Path}, rule.Message, rule.I18n)
 	}
 	leftSet := map[string]*ledger.Record{}
 	var leftOrder []string
@@ -518,7 +531,8 @@ func sameSetIssues(l *ledger.Ledger, rule *config.SameSetRule) []ledger.Issue {
 		if !right[v] {
 			r := leftSet[v]
 			out = append(out, ledger.Issue{Collection: left.Name, ID: r.ID, Path: "/" + rule.Left.Field, Rule: ledger.RuleSameSet, Hash: r.Hash,
-				Message: fmt.Sprintf("%s: %q is in %s but not in %s %s", msg, v, left.Name, rule.Right.File, rule.Right.Path)})
+				Message: fmt.Sprintf("%s: %q is in %s but not in %s %s", msg, v, left.Name, rule.Right.File, rule.Right.Path),
+				Keyword: ledger.RuleSameSet, Params: params(v, "left")})
 		}
 	}
 	var onlyRight []string
@@ -530,7 +544,8 @@ func sameSetIssues(l *ledger.Ledger, rule *config.SameSetRule) []ledger.Issue {
 	sort.Strings(onlyRight)
 	for _, v := range onlyRight {
 		out = append(out, ledger.Issue{Collection: left.Name, Rule: ledger.RuleSameSet,
-			Message: fmt.Sprintf("%s: %q is in %s %s but has no matching %s record", msg, v, rule.Right.File, rule.Right.Path, left.Name)})
+			Message: fmt.Sprintf("%s: %q is in %s %s but has no matching %s record", msg, v, rule.Right.File, rule.Right.Path, left.Name),
+			Keyword: ledger.RuleSameSet, Params: params(v, "right")})
 	}
 	return out
 }

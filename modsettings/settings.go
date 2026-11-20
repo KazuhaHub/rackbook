@@ -276,6 +276,8 @@ func normStrings(in []string, fold bool) []string {
 func (n *Notify) Normalize() {
 	n.SendAt = normTimes(n.SendAt)
 	n.Timezone = strings.TrimSpace(n.Timezone)
+	// kept as written (en, zh stay): a rackbook-notify older than these tags
+	// reads the stored value, and NotifyLanguage maps it when used
 	n.Language = strings.TrimSpace(n.Language)
 	n.Recipients = normStrings(n.Recipients, true)
 	n.Collections = normStrings(n.Collections, false)
@@ -315,10 +317,8 @@ func (n *Notify) Validate(collectionExists func(string) bool) error {
 			return fmt.Errorf("recipients: %v", err)
 		}
 	}
-	switch n.Language {
-	case "", "en", "zh":
-	default:
-		return fmt.Errorf("language: %q must be en or zh", n.Language)
+	if _, ok := NotifyLanguage(n.Language); !ok && n.Language != "" {
+		return fmt.Errorf("language: %q must be one of %s (en and zh also work)", n.Language, strings.Join(NotifyLanguages, ", "))
 	}
 	if len(n.Collections) > maxList {
 		return fmt.Errorf("collections: at most %d", maxList)
@@ -442,4 +442,22 @@ func DecodeAndValidate(typ string, raw map[string]any, collectionExists func(str
 		return nil, err
 	}
 	return s, nil
+}
+
+// NotifyLanguages are the languages rackbook-notify writes in.
+var NotifyLanguages = []string{"zh-CN", "zh-TW", "en-US"}
+
+// NotifyLanguage maps a language setting to one of NotifyLanguages, ignoring
+// case: the tags themselves, and the older values en (en-US) and zh (zh-CN).
+// ok is false for anything else, including "".
+func NotifyLanguage(s string) (string, bool) {
+	switch strings.ToLower(strings.ReplaceAll(strings.TrimSpace(s), "_", "-")) {
+	case "zh-cn", "zh":
+		return "zh-CN", true
+	case "zh-tw":
+		return "zh-TW", true
+	case "en-us", "en":
+		return "en-US", true
+	}
+	return "", false
 }

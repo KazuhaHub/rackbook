@@ -37,6 +37,11 @@ type Issue struct {
 	Path       string `json:"path"` // JSON pointer inside the record, may be empty
 	Rule       string `json:"rule"`
 	Message    string `json:"message"`
+	// Keyword names what failed (a JSON Schema keyword, or the rule for the
+	// Rackbook rules) and Params the values the message is made of, so a client
+	// can word it in its own language. Message stays the English fallback.
+	Keyword string         `json:"keyword,omitempty"`
+	Params  map[string]any `json:"params,omitempty"`
 	// Severity is "warning" for a heuristic finding (a confirm-tier secret); empty
 	// means an error.
 	Severity string `json:"severity,omitempty"`

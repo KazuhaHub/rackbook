@@ -131,25 +131,25 @@ func (s *Server) authorize(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	subject, ok := humanSubject(r)
 	if !ok {
-		errorPage(w, http.StatusForbidden, "Sign in to the console as a person to authorize a client. API tokens and access tokens cannot do this.")
+		s.errorPage(w, r, http.StatusForbidden, reasonNotPerson, nil)
 		return
 	}
 	q := r.URL.Query()
 	clientID := q.Get("client_id")
 	if clientID == "" {
-		errorPage(w, http.StatusBadRequest, "The request has no client_id.")
+		s.errorPage(w, r, http.StatusBadRequest, reasonNoClientID, nil)
 		return
 	}
 	client, err := s.lookupClient(r, clientID)
 	if err != nil {
 		s.log.Info("oauth authorize: client refused", "client", clientID, "err", err.Error())
-		errorPage(w, http.StatusBadRequest, "This client cannot be used: "+err.Error()+".")
+		s.errorPage(w, r, http.StatusBadRequest, reasonClient, err)
 		return
 	}
 	redirectURI := q.Get("redirect_uri")
 	if redirectURI == "" || !redirectAllowed(client.RedirectURIs, redirectURI) {
 		s.log.Info("oauth authorize: redirect_uri not registered", "client", clientID, "redirect_uri", redirectURI)
-		errorPage(w, http.StatusBadRequest, "The redirect_uri is not one the client has registered.")
+		s.errorPage(w, r, http.StatusBadRequest, reasonRedirect, nil)
 		return
 	}
 	// From here on the redirect target is known to be the client's own.

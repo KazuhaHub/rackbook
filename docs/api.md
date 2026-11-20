@@ -162,6 +162,39 @@ applies to every device). 404 `{"error":"not_found"}` if missing.
 `rule` ∈ `yaml`, `schema`, `unique`, `ref`, `same_set`, `config`.
 `path` is a JSON pointer inside the record (may be empty).
 
+Each error also carries `keyword` (what failed) and, for the keywords below,
+`params` (the values its message is made of), so a client can word it in the
+reader's language. `message` stays the English text and is the fallback: show
+it for a keyword you do not know or when a param you need is missing.
+
+```json
+{"collection": "devices", "id": "gw", "path": "/ipv4_type", "rule": "schema",
+ "message": "\"静态\" is not allowed; use code \"static\"",
+ "keyword": "enum", "params": {"value": "静态", "use": "static"}}
+```
+
+| `keyword` | `params` |
+|---|---|
+| `type` | `want` (list of types), `got` |
+| `required` | `missing` (field names; `path` is the object that lacks them) |
+| `dependentRequired`, `dependencies` | `property`, `missing` |
+| `enum` (also an enum written as `oneOf` of `const`s) | `allowed` (every code); for a field's own choices also `value`, and `use` instead of `allowed` when the value is one of the labels or a code in other letters (the code to write) |
+| `const` | `want` |
+| `format` | `value`, `format` |
+| `pattern` | `value`, `pattern` |
+| `minLength`, `maxLength`, `minItems`, `maxItems`, `minProperties`, `maxProperties` | `limit`, `got` |
+| `minimum`, `maximum`, `exclusiveMinimum`, `exclusiveMaximum`, `multipleOf` | `limit`, `value` (numbers) |
+| `uniqueItems` | `first`, `second` (indexes of two equal items) |
+| `additionalProperties` | `properties` (the fields that are not allowed) |
+| `unique` | `fields`, `values`, `key` (true when the uniqueness is the collection's key) |
+| `ref` | `value`, `target` (`collection.field`), and the rule's own text: `ruleMessage` (rackbook.yml `message`), `ruleMessageI18n` (`{locale: message}`) when set |
+| `same_set` | `value`, `side` (`left`: in the collection but not in the file; `right`: the other way), `left` (`collection.field`), `right` (`file path`), `ruleMessage`, `ruleMessageI18n` |
+
+Other schema keywords (`contains`, `propertyNames`, …) carry `keyword` without
+`params`; a failed `not` or `false` schema, and `yaml`, `config` and `secret`
+errors, carry neither. The same shape is
+used wherever check errors appear: the `422 invalid` write error, the type
+editor's plan (`invalid`, `dangling`, `other`) and the MCP tools.
 ### `GET /api/expiring?days=30[&collection=<name>…][&unknown=true]`
 
 ```json
@@ -331,7 +364,7 @@ cross-origin requests):
 
 With a session:
 
-- `GET /oauth/authorize?response_type=code&client_id&redirect_uri&code_challenge&code_challenge_method=S256&resource&scope&state` — checks the request. A client or redirect URI that cannot be trusted gets an HTML error page; other errors redirect to the client with `error`, `state` and `iss`; a good request redirects to `/oauth/consent?req=<id>`.
+- `GET /oauth/authorize?response_type=code&client_id&redirect_uri&code_challenge&code_challenge_method=S256&resource&scope&state` — checks the request. A client or redirect URI that cannot be trusted gets an HTML error page (in the person's saved console language, else the browser's `Accept-Language`, else `i18n.default`); other errors redirect to the client with `error`, `state` and `iss`; a good request redirects to `/oauth/consent?req=<id>`.
 - `GET /api/oauth/consent?req=<id>` → `{clientName, clientId, redirectUri, redirectHost, scopes, canWrite, user}` (`404` if the request expired or belongs to someone else).
 - `POST /api/oauth/consent` `{"req", "approve": true|false}` → `{"redirect": "<client redirect URI with code, state and iss, or error=access_denied>"}`. Same-origin only; the request is decided once.
 - `GET /api/account/grants` → `{"grants": [{id, clientId, clientName, scopes, canWrite, created, lastUsed}]}` and `DELETE /api/account/grants/{id}` (own grants; `404` otherwise).

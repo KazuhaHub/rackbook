@@ -351,6 +351,28 @@ const messages = {
       maxLength: (n: number) => `最多 ${n} 个字符`,
     },
   },
+  // the server's validation problems (keyword + params, see lib/issues.ts); the rest are under validation
+  issues: {
+    quote: (s: string) => `“${s}”`,
+    fieldOf: (collection: string, field: string) => `${collection} · ${field}`,
+    required: (fields: string[]) => `缺少必填字段：${fields.join('、')}`,
+    dependentRequired: (field: string, missing: string[]) => `填写了 ${field} 时还需要：${missing.join('、')}`,
+    useCode: (value: string, code: string, label: string) => (label === code ? `不能填写${value}，请改用代码 ${code}` : `不能填写${value}，请改用代码 ${code}（${label}）`),
+    const: (want: string) => `只能是 ${want}`,
+    minItems: (n: number) => `至少 ${n} 项`,
+    maxItems: (n: number) => `最多 ${n} 项`,
+    exclusiveMinimum: (n: string) => `超出范围（> ${n}）`,
+    exclusiveMaximum: (n: string) => `超出范围（< ${n}）`,
+    multipleOf: (n: string) => `应为 ${n} 的倍数`,
+    uniqueItems: (a: number, b: number) => `第 ${a} 项和第 ${b} 项重复`,
+    duplicateKey: (values: string, fields: string[]) => `键重复：${values}（${fields.join(' + ')}）`,
+    duplicateValues: (values: string, fields: string[]) => `与另一条记录重复：${values}（${fields.join(' + ')}）`,
+    unknownRef: (value: string, target: string) => `${target} 中没有${value}`,
+    sameSetRule: (left: string, right: string) => `${left} 应与 ${right} 一致`,
+    onlyLeft: (value: string, right: string) => `${value}不在 ${right} 中`,
+    onlyRight: (value: string, right: string) => `${right} 中的${value}没有对应的记录`,
+    withRule: (rule: string | undefined, detail: string) => (rule ? `${rule}：${detail}` : detail),
+  },
   // the built-in texts of the form library (react-jsonschema-form), by TranslatableString name
   rjsf: {
     arrayItemTitle: '项目',
@@ -955,7 +977,8 @@ const messages = {
       recipientsHint: '到期提醒的收件邮箱。改动后，模块会向新旧地址各发一封“收件人已变更”的通知。',
       recipientsPlaceholder: '输入邮箱后回车',
       language: '语言',
-      languages: { '': '默认（en）', en: 'English', zh: '中文' } as Record<string, string>,
+      // the module's own language setting (not the console's); the languages show under their own names
+      languageDefault: '默认（English）',
       collections: '提醒哪些集合',
       collectionsHint: '不选 = 所有有到期字段的集合。',
       servicePrincipals: '同时读取服务主体',
