@@ -1,6 +1,6 @@
 import { Suspense, useEffect } from 'react'
 import { Outlet, NavLink, useLocation } from 'react-router'
-import { CalendarClock, KeyRound, LayoutDashboard, PlugZap, Puzzle, Shapes } from 'lucide-react'
+import { CalendarClock, FileClock, KeyRound, LayoutDashboard, List, PlugZap, Puzzle, Server, Shapes, ShieldCheck } from 'lucide-react'
 import {
   Sidebar,
   SidebarContent,
@@ -159,6 +159,28 @@ function AppSidebar() {
                     </SidebarMenuButton>
                   </SidebarMenuItem>
                 )}
+              </SidebarMenu>
+            </SidebarGroupContent>
+          </SidebarGroup>
+        )}
+        {meta.user?.canInfra && (
+          <SidebarGroup>
+            <SidebarGroupLabel className="tracking-wide">{t.infra.nav}</SidebarGroupLabel>
+            <SidebarGroupContent>
+              <SidebarMenu>
+                {[
+                  { to: '/infra', icon: <Server />, label: t.infra.tabs.hosts, active: pathname === '/infra' || pathname.startsWith('/infra/hosts/') },
+                  { to: '/infra/certs', icon: <ShieldCheck />, label: t.infra.tabs.certs, active: pathname === '/infra/certs' },
+                  { to: '/infra/iplists', icon: <List />, label: t.infra.tabs.iplists, active: pathname === '/infra/iplists' },
+                  { to: '/infra/commits', icon: <FileClock />, label: t.infra.tabs.commits, active: pathname === '/infra/commits' },
+                ].map((i) => (
+                  <SidebarMenuItem key={i.to}>
+                    <SidebarMenuButton isActive={i.active} render={<NavLink to={i.to} />}>
+                      {i.icon}
+                      <span>{i.label}</span>
+                    </SidebarMenuButton>
+                  </SidebarMenuItem>
+                ))}
               </SidebarMenu>
             </SidebarGroupContent>
           </SidebarGroup>

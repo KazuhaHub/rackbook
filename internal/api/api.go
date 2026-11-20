@@ -72,6 +72,8 @@ type Options struct {
 	// Prefs keeps each person's console preferences (the language); nil = in
 	// memory only.
 	Prefs *prefs.Store
+	// Infra turns on the read-only /infra pages (nil = off, and /api/infra is a 404).
+	Infra *InfraOptions
 	// Now is the clock; nil = time.Now.
 	Now func() time.Time
 }
@@ -126,6 +128,7 @@ func New(o Options) http.Handler {
 	s.typesRoutes(mux)    // types.go
 	s.modulesRoutes(mux)  // modules.go
 	s.brandingRoutes(mux) // branding.go: public
+	s.infraRoutes(mux)    // infra.go: only with Options.Infra
 	public := map[string]http.Handler{}
 	for p, h := range o.Public {
 		public[p] = h
@@ -363,6 +366,9 @@ func (s *server) meta(w http.ResponseWriter, r *http.Request) {
 	l := s.o.Store.Ledger()
 	cfg := l.Config
 	user := map[string]any{"canEdit": s.canEdit(r), "canAdmin": auth.Can(r.Context(), roles.Manage)}
+	if s.canInfra(r) {
+		user["canInfra"] = true
+	}
 	if id := s.who(r); id != nil {
 		user["role"], user["authMethod"] = id.EffectiveRole().String(), id.Method
 		for k, v := range map[string]string{"id": id.ID, "email": id.Email, "name": id.Name} {

@@ -105,7 +105,8 @@ answers `200 {"locale": ""}`. It is stored per identity in `<state-dir>/preferen
   after any scope narrowing, from `auth.roles` evaluated on this request).
   `authMethod` is `none`, `cloudflare-access`, `oidc`, `passkey`, `mcphub` or
   `token`. `canEdit` is `role` ≥ editor and the server is not read-only;
-  `canAdmin` is `role` = admin. `id` (lowercased identity), `email` and `name`
+  `canAdmin` is `role` = admin. `canInfra: true` appears only for an infra
+  administrator (see Infra, below). `id` (lowercased identity), `email` and `name`
   are left out when unknown (auth `none` without `--editor`).
 - `alert` is present only while the remote Git history was rewritten (see
   [design.md](design.md), section 3): writes return `503` until an
@@ -441,6 +442,26 @@ forbidden`). A module uses its own token for the three calls marked *module*.
 | `POST /api/modules/{name}/run-request` | admin | stores one pending "run now" request → `{runRequest: {id, requested, by}}`. Asking again returns the same one. `409 paused` while the module is paused |
 | `POST /api/modules/{name}/runs` | module | body `{started, finished, status: ok\|failed\|skipped, counts: {created, updated, revoked, sent}, error?, run_request?}` (RFC 3339 times, `finished` more than 24 hours ahead of the server clock is refused; one that is merely ahead (a fast module clock) is accepted and stored exactly as reported, with a log line when more than 10 minutes ahead) → `201 {ok: true}`. Only the module's own token (`403` otherwise, an administrator included); `400` for an invalid body. `error` is cut to 300 characters on one line. A run that carries the pending request's id clears it; consecutive `skipped` runs replace each other. The server keeps the last 30 runs per module in `<state-dir>/modules.json` |
 | `GET /api/modules/status` | admin, notify module | `{modules: [{name, type, paused, lastRun}]}`: the last run of every module, for rackbook-notify's digest. `403` for any other token |
+
+## Infra (read-only, `--infra-repo`)
+
+Only with `--infra-repo` (README, *Infrastructure view*); without it every path below is `404`.
+Each call needs a person listed in `--infra-admins` who signed in with the OIDC login: any other
+caller, a token of the listed person included, gets `403 forbidden`. All of them are `GET` and
+change nothing; none is on `/mcp`. `/api/meta` tells such a person with `user.canInfra: true`.
+
+`hub` is `{state: ok|stale|missing|invalid, error?, time?, ageSeconds}`, the state of the hub's
+status file. Anything but `ok` means its data is not current: `report` is left out and `certs`
+and `lists` are empty. `repo` is `{branch, head?, syncedAt, error?}`: the commit the clone is at
+and the last successful and failed refresh.
+
+| Request | Answer |
+|---|---|
+| `GET /api/infra/hosts` | `{repo, hub, hosts: [{name, groups, hasVars, features, report?, behind}]}`. `features` are the enabled names under `features:`; `report` is the hub's latest `{appliedCommit?, result, message?, time, receivedAt?, features?}`; `behind` is true when the applied commit is not `repo.head` |
+| `GET /api/infra/hosts/{name}` | `{repo, hub, host: {name, groups, hasVars, vars?, features: [{name, enabled, settings?}], hidden}, report?, behind}`. `vars` is the host_vars file as YAML with secret-looking values replaced by `(hidden)` (`hidden` counts them). `404` for a name that is not in the inventory |
+| `GET /api/infra/certs` | `{hub, certs: [{name, owner, notAfter?, failing, lastError?}]}` |
+| `GET /api/infra/iplists` | `{hub, lists: [{name, version?, entries, warnings}]}` |
+| `GET /api/infra/commits` | `{repo, commits: [{hash, author, time, subject}]}`: the last 50, newest first |
 
 ## Data types (administrators only)
 

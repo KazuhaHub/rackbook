@@ -19,6 +19,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 
+	"github.com/kazuhahub/rackbook/internal/ansiblerepo"
 	"github.com/kazuhahub/rackbook/internal/api"
 	"github.com/kazuhahub/rackbook/internal/auth"
 	"github.com/kazuhahub/rackbook/internal/auth/oauth"
@@ -77,6 +78,11 @@ RACKBOOK_GITHUB_TOKEN.`,
 	f.Bool("insecure-no-auth", false, "allow --auth none on a non-loopback --listen address (anyone who can reach it can edit)")
 	f.String("github-repo", "", "owner/repo for pull requests (default: parsed from the origin URL)")
 	f.String("github-api", "", "GitHub REST API base URL (default: derived from the origin host)")
+	f.String("infra-repo", "", "directory of a git clone of an Ansible + SOPS repository to show read-only under /infra (needs --auth oidc and --infra-admins); Rackbook fetches and resets it to origin on --pull-interval and never writes to it or its remote")
+	f.String("infra-branch", "main", "branch of --infra-repo to follow")
+	f.String("infra-ssh-key", "", "private key (read-only deploy key) Rackbook uses to fetch --infra-repo; only for that clone (a known_hosts file beside it is used when present)")
+	f.StringSlice("infra-admins", nil, "exact identities (comma-separated) who may see /infra; they must sign in with --auth oidc (API tokens, MCP and OAuth tokens never count; not read from rackbook.yml)")
+	f.String("hub-status-file", "", "status.json of the infra hub (infra-hub status -o json), shown under /infra; kept fresh by a timer outside Rackbook (needs --infra-repo)")
 	f.StringSlice("trusted-proxy", nil, "CIDRs (or addresses) of reverse proxies whose CF-Connecting-IP header is believed when rate-limiting failed API-token attempts")
 	return cmd
 }
@@ -134,6 +140,10 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	}
 	if mode == "" {
 		mode = auth.ModeNone
+	}
+	infra, err := newInfra(ctx, f, cfg.Dir, mode, interval, logger)
+	if err != nil {
+		return err
 	}
 	team, _ := f.GetString("cf-team")
 	aud, _ := f.GetString("cf-aud")
@@ -231,7 +241,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		Store: store, Auth: authn, ReadOnly: readOnly, BaseURL: baseURL, Web: dist, Logger: logger, RestrictHost: mode == auth.ModeNone, Login: loginMount,
 		MCP:    mcpauth.Handler(mcpserver.Handler(mcpSrv, mode != auth.ModeNone || baseURL != "" || cfg.Auth.MCP.Enabled())),
 		Public: map[string]http.Handler{mcpauth.MetadataPath: meta, mcpauth.MetadataPathMCP: meta},
-		Tokens: registry, Modules: modState, Prefs: prefStore, OAuth: oauthSrv,
+		Tokens: registry, Modules: modState, Prefs: prefStore, OAuth: oauthSrv, Infra: infra,
 	})
 
 	addr, _ := f.GetString("listen")
@@ -351,4 +361,70 @@ func newLogin(cfg *config.Config, store *gitstore.Store, prefStore *prefs.Store,
 		o.Files = store
 	}
 	return login.New(o)
+}
+
+// newInfra sets up the read-only /infra pages from the --infra-* flags: nil
+// when --infra-repo is not given (and then none of the others may be).
+func newInfra(ctx context.Context, f *pflag.FlagSet, ledgerDir, mode string, interval time.Duration, logger *slog.Logger) (*api.InfraOptions, error) {
+	dir, _ := f.GetString("infra-repo")
+	admins, _ := f.GetStringSlice("infra-admins")
+	status, _ := f.GetString("hub-status-file")
+	key, _ := f.GetString("infra-ssh-key")
+	if dir == "" {
+		for _, name := range []string{"infra-admins", "hub-status-file", "infra-ssh-key"} {
+			if f.Changed(name) {
+				return nil, fmt.Errorf("--%s needs --infra-repo", name)
+			}
+		}
+		return nil, nil
+	}
+	if mode != auth.ModeOIDC {
+		return nil, errors.New("--infra-repo needs --auth oidc: /infra is open only to people who signed in with the console login")
+	}
+	ia, err := auth.NewInfraAdmins(admins)
+	if err != nil {
+		return nil, err
+	}
+	absDir, err := filepath.Abs(dir)
+	if err != nil {
+		return nil, fmt.Errorf("--infra-repo: %w", err)
+	}
+	if inside(ledgerDir, absDir) || inside(absDir, ledgerDir) {
+		return nil, fmt.Errorf("--infra-repo %s and the data repository %s must be separate directories", dir, ledgerDir)
+	}
+	branch, _ := f.GetString("infra-branch")
+	opts := ansiblerepo.Options{Dir: absDir, Branch: branch, Interval: interval, Logger: logger}
+	if key != "" {
+		opts.SSHKey = key
+		if kh := filepath.Join(filepath.Dir(key), "known_hosts"); fileExists(kh) {
+			opts.KnownHosts = kh
+		}
+	}
+	repo, err := ansiblerepo.New(opts)
+	if err != nil {
+		return nil, err
+	}
+	go func() {
+		if interval <= 0 { // --pull-interval 0: refreshed once, at start
+			if err := repo.Refresh(ctx); err != nil {
+				logger.Warn("infra repository refresh failed", "err", err)
+			}
+			return
+		}
+		repo.Run(ctx)
+	}()
+	logger.Info("infra pages on (read-only)", "repo", absDir, "branch", branch, "admins", len(admins), "hubStatus", status != "")
+	return &api.InfraOptions{Repo: repo, Admins: ia, StatusFile: status}, nil
+}
+
+// inside reports whether path is dir or below it.
+func inside(dir, path string) bool {
+	dir, _ = filepath.Abs(dir)
+	rel, err := filepath.Rel(dir, path)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+func fileExists(p string) bool {
+	st, err := os.Stat(p)
+	return err == nil && st.Mode().IsRegular()
 }

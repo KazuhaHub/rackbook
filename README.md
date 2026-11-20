@@ -518,6 +518,52 @@ touches your work tree). Accepting is refused unless a rewrite is active and the
 new tip's config loads. The server's clone must contain only tracked files:
 anything else makes writes fail with `repo_dirty` rather than risk overwriting it.
 
+## Infrastructure view (read-only)
+
+Rackbook can also show a repository of Ansible code with SOPS-encrypted secrets, and the status
+of the infra hub that applies it, on its own pages under `/infra`. This is a read-only view: it
+changes nothing in that repository or on any machine. It is off unless `--infra-repo` is given.
+
+```
+rackbook serve --auth oidc … \
+  --infra-repo /data/infra --infra-branch main \
+  --infra-ssh-key /data/ssh/infra_deploy_key \
+  --infra-admins me@example.org --hub-status-file /run/hub/status.json
+```
+
+| Flag | Meaning |
+|---|---|
+| `--infra-repo` | A git clone of the repository, made once by you (Rackbook does not clone). Every `--pull-interval` Rackbook runs `git fetch` and resets the clone to `origin/<branch>`; local changes in it are discarded. It never writes to it and never pushes anything. It must not be, or sit inside, the ledger clone |
+| `--infra-branch` | The branch followed (default `main`) |
+| `--infra-ssh-key` | The private key (give it a read-only deploy key) used to fetch this clone, and only this clone. It reaches git in `GIT_SSH_COMMAND` in the environment of the git process, not on a command line; a `known_hosts` file beside the key is used with strict host key checking when it exists |
+| `--infra-admins` | Comma-separated exact identities (no wildcards) who may see `/infra`. This is **not** `auth.roles`, and it is never read from `rackbook.yml`, so nobody can grant it by editing the ledger. Needs `--auth oidc`: only a person who signed in with the console's OIDC login counts. API tokens (also the token of a listed person), MCP clients, OAuth access tokens, passkey and Cloudflare Access identities are answered `403 forbidden` |
+| `--hub-status-file` | The hub's `infra-hub status -o json` document (`apiVersion: v1`), rewritten by a timer on the same machine; mount it read-only into the container |
+
+What the pages show:
+
+- **Hosts**: the hosts of `inventory/hosts.yml` with their groups (also through parent groups) and
+  whether `inventory/host_vars/<host>.yml` exists, joined with the hub's latest report per host
+  (result, applied commit, time, message). A host whose applied commit is not the commit of the
+  followed branch is marked *Behind main*. A host page adds that host's `host_vars` file, copied
+  as read-only YAML (comments kept; values under secret-looking keys such as `token` or
+  `password`, and private keys, are replaced by `(hidden)`; SOPS files are never opened), and the
+  switches under `features:`.
+- **Certificates** and **IP lists**: the hub's certificate names (owner, expiry, failing, last error) and
+  lists (version, entry count, warnings).
+- **Commits**: the last 50 commits of the followed branch.
+
+The status file's own `time` tells how old it is. When it is missing, unreadable or older than
+three minutes the pages say *Status unavailable* with the reason and show none of its data, so a
+stale report is never read as current. The repository's last sync time and error are shown too.
+`/infra` is not part of the ledger and is never offered on `/mcp`. The API is under `/api/infra`
+(docs/api.md). The Git runner is the ledger's guarded one (see *Rackbook never force-pushes*).
+
+One thing the flag cannot pin: who a person *is* still comes from the OIDC sign-in configured in
+`rackbook.yml` (`issuer`, `identity_claim`, `allowed_tenants`), which lives in the ledger repository.
+Whoever can change that file could point the sign-in at an identity provider they control and
+present a listed identity. Keep write access to the ledger repository (and so to `auth.oidc`) as
+tight as `--infra-admins`, and treat a change to `auth.oidc` in a review like a change to the list.
+
 ## Built-in login (OIDC, passkeys)
 
 Rackbook logs people in itself with OpenID Connect (the primary way to deploy
@@ -1170,3 +1216,10 @@ Rackbook 永远不会 force push，也不会改写或删除远端分支和标签
 并修改发送/同步时间、阈值、收件人、排除的应用等设置；每次保存是一次 Git 提交，写入 `rackbook.yml` 的
 `modules.<名称>.settings`。模块每小时由定时器启动一次，向服务器取设置，到点才运行，所以定时器要改成
 `OnCalendar=hourly`。运行记录保存在 `--state-dir`。详见 [docs/modules.md](docs/modules.md) 第 7 节。
+
+基础设施只读视图：给 `serve` 加 `--infra-repo`（一个 Ansible + SOPS 仓库的 git 克隆）后，管理员可在 `/infra`
+查看主机清单与各机器的 host_vars、功能开关、基础设施中心（infra-hub）上报的应用状态、证书、IP 列表和最近
+50 个提交。Rackbook 只定时 `git fetch` 并重置到 `origin/<分支>`，不写、不推送。能看 `/infra` 的人由
+`--infra-admins` 指定（不是 `auth.roles`，也不来自台账里的 `rackbook.yml`），并且必须是用控制台 OIDC 登录的
+会话；API 令牌、MCP、OAuth 令牌一律 `403`。状态文件（`--hub-status-file`）超过 3 分钟没更新时显示
+“状态不可用”。详见上面的 *Infrastructure view (read-only)*。

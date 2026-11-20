@@ -33,6 +33,12 @@ const Consent = lazy(retryImport(() => import('@/pages/Consent')))
 // modules panel (admin)
 const Modules = lazy(retryImport(() => import('@/pages/Modules')))
 const ModuleDetail = lazy(retryImport(() => import('@/pages/ModuleDetail')))
+// infra: read-only view of the Ansible + SOPS repository and the hub status (infra administrators)
+const InfraHosts = lazy(retryImport(() => import('@/pages/InfraHosts')))
+const InfraHost = lazy(retryImport(() => import('@/pages/InfraHost')))
+const InfraCerts = lazy(retryImport(() => import('@/pages/InfraCerts')))
+const InfraIPLists = lazy(retryImport(() => import('@/pages/InfraIPLists')))
+const InfraCommits = lazy(retryImport(() => import('@/pages/InfraCommits')))
 // data types (admin)
 const Types = lazy(retryImport(() => import('@/pages/Types')))
 const TypeEditor = lazy(retryImport(() => import('@/pages/TypeEditor')))
@@ -91,6 +97,11 @@ function RefineApp() {
           <Route path="admin/grants" element={<AdminGrants />} />
           <Route path="modules" element={<Modules />} />
           <Route path="modules/:name" element={<ModuleDetail />} />
+          <Route path="infra" element={<InfraHosts />} />
+          <Route path="infra/hosts/:name" element={<InfraHost />} />
+          <Route path="infra/certs" element={<InfraCerts />} />
+          <Route path="infra/iplists" element={<InfraIPLists />} />
+          <Route path="infra/commits" element={<InfraCommits />} />
           <Route path="types" element={<Types />} />
           <Route path="types/-/new" element={<TypeEditor mode="create" />} />
           <Route path="types/:name" element={<TypeEditor mode="edit" />} />
