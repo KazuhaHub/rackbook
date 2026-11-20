@@ -8,8 +8,9 @@ import { Toaster } from '@/components/ui/sonner'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { NotFound, PageFallback, Unreachable } from '@/components/common'
 import { AppShell } from '@/components/layout/AppShell'
+import { LocaleBoundary, LocaleSync } from '@/components/layout/LanguageMenu'
 import { ErrorBoundary } from '@/components/ErrorBoundary'
-import { t } from '@/i18n/zh-CN'
+import { t } from '@/i18n'
 import { dataProvider } from '@/providers/dataProvider'
 import { MetaProvider, useMeta } from '@/providers/meta'
 import { retryImport } from '@/lib/staleChunk'
@@ -61,6 +62,7 @@ function RefineApp() {
         reactQuery: { clientConfig: queryClient },
       }}
     >
+      <LocaleSync meta={meta} />
       <Routes>
         <Route
           path="oauth/consent"
@@ -103,8 +105,8 @@ function RefineApp() {
 function titleFor(ledger: string, label: unknown, action?: string) {
   const base = ledger || t.appName
   if (!label) return base
-  const verb = action === 'create' ? '新增 · ' : action === 'edit' ? '编辑 · ' : ''
-  return `${verb}${String(label)} · ${base}`
+  const d = t.form.docTitle
+  return (action === 'create' ? d.create : action === 'edit' ? d.edit : d.other)(String(label), base)
 }
 
 export default function App() {
@@ -112,32 +114,34 @@ export default function App() {
     <ThemeProvider attribute="class" defaultTheme="system" enableSystem disableTransitionOnChange>
       <QueryClientProvider client={queryClient}>
         <TooltipProvider delay={200}>
-          <BrowserRouter>
-            <Routes>
-              {/* the login page needs no session, so it lives outside MetaProvider */}
-              <Route
-                path="/auth/login"
-                element={
-                  <ErrorBoundary>
-                    <Suspense fallback={<div className="p-8"><PageFallback /></div>}>
-                      <Login />
-                    </Suspense>
-                  </ErrorBoundary>
-                }
-              />
-              <Route
-                path="*"
-                element={
-                  <MetaProvider
-                    loading={<div className="p-8"><PageFallback /></div>}
-                    failed={(e, retry) => <Unreachable error={e} onRetry={retry} />}
-                  >
-                    <RefineApp />
-                  </MetaProvider>
-                }
-              />
-            </Routes>
-          </BrowserRouter>
+          <LocaleBoundary>
+            <BrowserRouter>
+              <Routes>
+                {/* the login page needs no session, so it lives outside MetaProvider */}
+                <Route
+                  path="/auth/login"
+                  element={
+                    <ErrorBoundary>
+                      <Suspense fallback={<div className="p-8"><PageFallback /></div>}>
+                        <Login />
+                      </Suspense>
+                    </ErrorBoundary>
+                  }
+                />
+                <Route
+                  path="*"
+                  element={
+                    <MetaProvider
+                      loading={<div className="p-8"><PageFallback /></div>}
+                      failed={(e, retry) => <Unreachable error={e} onRetry={retry} />}
+                    >
+                      <RefineApp />
+                    </MetaProvider>
+                  }
+                />
+              </Routes>
+            </BrowserRouter>
+          </LocaleBoundary>
           <Toaster richColors position="bottom-right" />
         </TooltipProvider>
       </QueryClientProvider>

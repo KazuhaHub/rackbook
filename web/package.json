@@ -13,6 +13,8 @@
     "check:console-logic": "node --experimental-strip-types scripts/check-console-logic.mts",
     "check:stale-chunk": "node --experimental-strip-types scripts/check-stale-chunk.mts",
     "check:modules": "node --experimental-strip-types scripts/check-modules.mts",
+    "check:i18n": "node --experimental-strip-types scripts/check-i18n.mts",
+    "check:i18n-dom": "node --experimental-strip-types scripts/check-i18n-dom.mts",
     "lint": "eslint . && tsc -b",
     "preview": "vite preview"
   },
@@ -30,6 +32,7 @@
     "@tanstack/react-query": "^5.108.0",
     "@tanstack/react-table": "^8.21.3",
     "ajv": "^8.20.0",
+    "ajv-i18n": "^4.2.0",
     "class-variance-authority": "^0.7.1",
     "cmdk": "^1.1.1",
     "cn": "^0.5.2",

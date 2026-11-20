@@ -5,7 +5,7 @@ import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import { CollectionIcon } from '@/components/CollectionIcon'
 import { EmptyState, PageHeader } from '@/components/common'
-import { t } from '@/i18n/zh-CN'
+import { t } from '@/i18n'
 import { errorMessage } from '@/lib/api'
 import { useTypeList } from '@/lib/typesApi'
 import { useMeta } from '@/providers/meta'
@@ -42,7 +42,7 @@ export default function Types() {
           <table className="w-full border-collapse text-sm">
             <thead className="bg-muted/60 text-xs tracking-wide text-muted-foreground">
               <tr className="border-b">
-                {[t.types.basic.title, t.types.columns.group, t.types.columns.records, '字段', t.types.columns.file, t.types.columns.schema].map((h) => (
+                {[t.types.basic.title, t.types.columns.group, t.types.columns.records, t.types.tabs.fields, t.types.columns.file, t.types.columns.schema].map((h) => (
                   <th key={h} className="h-9 px-3 text-left font-semibold whitespace-nowrap">
                     {h}
                   </th>

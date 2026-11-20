@@ -29,7 +29,7 @@ import { RecordCell } from '@/components/RecordCell'
 import { EmptyState, NotFound, PageHeader } from '@/components/common'
 import { FacetFilter, type FacetOption } from '@/components/FacetFilter'
 import { NotesPanel } from '@/components/NotesPanel'
-import { t } from '@/i18n/zh-CN'
+import { t } from '@/i18n'
 import { errorMessage } from '@/lib/api'
 import { useInlineEdit } from '@/hooks/use-inline-edit'
 import { rowClass, useRowNav } from '@/hooks/use-row-nav'
@@ -38,9 +38,9 @@ import { CollectionIcon } from '@/components/CollectionIcon'
 import { canEdit, defaultColumns, fieldTitle, looksMono, recordHref, schemaProps, str } from '@/lib/ledger'
 import type { Collection, Facet, LedgerRecord } from '@/lib/types'
 import { cn } from '@/lib/utils'
+import { collator } from '@/i18n/format'
 import { useCollection, useMeta } from '@/providers/meta'
 
-const collator = new Intl.Collator(['zh-CN', 'en'], { numeric: true, sensitivity: 'base' })
 
 /** Values a row offers to a facet (arrays contribute each element). */
 function rowValues(v: unknown): string[] {
@@ -169,7 +169,7 @@ function CollectionTable({ col }: { col: Collection }) {
             const x = a.getValue(id)
             const y = b.getValue(id)
             if (typeof x === 'boolean' && typeof y === 'boolean') return Number(x) - Number(y)
-            return collator.compare(str(x), str(y))
+            return collator().compare(str(x), str(y))
           },
         } satisfies ColumnDef<LedgerRecord>
       }),
@@ -227,7 +227,7 @@ function CollectionTable({ col }: { col: Collection }) {
       const prop = col.schema.properties?.[f.field]
       const label = (v: string) => (prop?.type === 'boolean' ? (v === 'true' ? t.common.yes : t.common.no) : v)
       const opts = [...counts].map(([value, count]) => ({ value, label: label(value), count }))
-      if (!f.values?.length) opts.sort((a, b) => collator.compare(a.label, b.label))
+      if (!f.values?.length) opts.sort((a, b) => collator().compare(a.label, b.label))
       out.set(f.field, opts)
     }
     return out

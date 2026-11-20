@@ -87,6 +87,9 @@ jobs:
       - run: npm run check:console-logic
       - run: npm run check:stale-chunk
       - run: npm run check:modules
+      - run: npm run check:i18n
+      # loads each page in one language, switches, and compares with a fresh load (headless Chrome, mock API)
+      - run: npm run check:i18n-dom
       - run: npm run build
 
   govulncheck:

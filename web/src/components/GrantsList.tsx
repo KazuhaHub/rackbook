@@ -15,15 +15,14 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import { EmptyState } from '@/components/common'
-import { t } from '@/i18n/zh-CN'
+import { t } from '@/i18n'
 import { errorMessage } from '@/lib/api'
 import { grantsKey, revokeGrant, useGrants, type Grant, type GrantScope } from '@/lib/grants'
 import { relativeTime } from '@/lib/ledger'
 
-const G = t.oauth.grants
-
 /** The MCP clients a person authorized (account page) or everyone did (admin page), with a revoke button. */
 export function GrantsList({ scope }: { scope: GrantScope }) {
+  const G = t.oauth.grants
   const q = useGrants(scope)
   const qc = useQueryClient()
   const [revoking, setRevoking] = useState<Grant | null>(null)

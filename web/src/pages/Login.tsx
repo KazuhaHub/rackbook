@@ -6,11 +6,11 @@ import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { BrandMark } from '@/components/BrandMark'
 import { Skeleton } from '@/components/ui/skeleton'
-import { t } from '@/i18n/zh-CN'
+import { t } from '@/i18n'
 import type { LoginConfig } from '@/lib/auth'
 import { getCredential, isCancelled, passkeysSupported } from '@/lib/webauthn'
-
-const L = t.auth.login
+import { syncLocale } from '@/lib/locale'
+import { LanguageToggle } from '@/components/layout/LanguageMenu'
 
 async function loadConfig(): Promise<LoginConfig> {
   const res = await fetch('/auth/config', { headers: { Accept: 'application/json' } })
@@ -34,11 +34,14 @@ export default function Login() {
 
   const name = cfg?.name || t.appName
   useEffect(() => {
-    document.title = `${L.title} · ${name}`
+    if (cfg) void syncLocale({ detected: cfg.locale, fallback: cfg.defaultLocale }).catch(() => {})
+  }, [cfg])
+  useEffect(() => {
+    document.title = `${t.auth.login.title} · ${name}`
   }, [name])
 
   const start = '/auth/oidc/start' + (ret ? `?return=${encodeURIComponent(ret)}` : '')
-  const known = L.errors[code]
+  const known = t.auth.login.errors[code]
   const loggedOut = code === 'logged_out'
   const blocked = code === 'no_role' || code === 'tenant'
 
@@ -54,25 +57,28 @@ export default function Login() {
         assertion,
       )
       if (!fin.ok) {
-        setPasskeyError(fin.data?.error === 'no_role' ? L.passkeyNoRole : L.passkeyFailed)
+        setPasskeyError(fin.data?.error === 'no_role' ? t.auth.login.passkeyNoRole : t.auth.login.passkeyFailed)
         return
       }
       window.location.assign(fin.data?.return || '/')
     } catch (e) {
-      setPasskeyError(isCancelled(e) ? L.passkeyCancelled : L.passkeyFailed)
+      setPasskeyError(isCancelled(e) ? t.auth.login.passkeyCancelled : t.auth.login.passkeyFailed)
     } finally {
       setPasskeyState('idle')
     }
   }
 
   return (
-    <div className="flex min-h-svh items-center justify-center bg-muted/40 p-4">
+    <div className="relative flex min-h-svh items-center justify-center bg-muted/40 p-4">
+      <div className="absolute top-3 right-3">
+        <LanguageToggle />
+      </div>
       <div className="rb-page w-full max-w-sm">
         <div className="mb-6 flex flex-col items-center gap-3 text-center">
           <BrandMark logo={cfg?.logo} name={name} className="size-12 rounded-2xl" />
           <div>
             <h1 className="text-xl font-semibold tracking-tight">{name}</h1>
-            <p className="mt-1 text-sm text-muted-foreground">{L.subtitle}</p>
+            <p className="mt-1 text-sm text-muted-foreground">{t.auth.login.subtitle}</p>
           </div>
         </div>
 
@@ -80,8 +86,8 @@ export default function Login() {
           {loggedOut && (
             <Alert>
               <LogOut />
-              <AlertTitle>{L.loggedOutTitle}</AlertTitle>
-              <AlertDescription>{L.loggedOutBody}</AlertDescription>
+              <AlertTitle>{t.auth.login.loggedOutTitle}</AlertTitle>
+              <AlertDescription>{t.auth.login.loggedOutBody}</AlertDescription>
             </Alert>
           )}
           {known && (
@@ -94,8 +100,8 @@ export default function Login() {
           {!loggedOut && code && !known && (
             <Alert variant="destructive">
               <CircleAlert />
-              <AlertTitle>{L.errors.bad_callback.title}</AlertTitle>
-              <AlertDescription>{L.errors.bad_callback.body}</AlertDescription>
+              <AlertTitle>{t.auth.login.errors.bad_callback.title}</AlertTitle>
+              <AlertDescription>{t.auth.login.errors.bad_callback.body}</AlertDescription>
             </Alert>
           )}
 
@@ -109,7 +115,7 @@ export default function Login() {
               aria-busy={redirecting}
             >
               <KeyRound />
-              {redirecting ? L.redirecting : cfg?.label || L.oidc}
+              {redirecting ? t.auth.login.redirecting : cfg?.label || t.auth.login.oidc}
             </Button>
           )}
 
@@ -117,7 +123,7 @@ export default function Login() {
             <>
               <div className="flex items-center gap-3 text-xs text-muted-foreground">
                 <span className="h-px flex-1 bg-border" />
-                {L.or}
+                {t.auth.login.or}
                 <span className="h-px flex-1 bg-border" />
               </div>
               <Button
@@ -128,9 +134,9 @@ export default function Login() {
                 onClick={loginWithPasskey}
               >
                 <Fingerprint />
-                {passkeyState === 'working' ? L.passkeyWorking : L.passkey}
+                {passkeyState === 'working' ? t.auth.login.passkeyWorking : t.auth.login.passkey}
               </Button>
-              {!passkeysSupported() && <p className="text-center text-xs text-muted-foreground">{L.passkeyUnsupported}</p>}
+              {!passkeysSupported() && <p className="text-center text-xs text-muted-foreground">{t.auth.login.passkeyUnsupported}</p>}
               {passkeyError && (
                 <p role="alert" className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
                   {passkeyError}
@@ -139,7 +145,7 @@ export default function Login() {
             </>
           )}
         </div>
-        <p className="mt-4 text-center text-xs text-muted-foreground">{L.footer}</p>
+        <p className="mt-4 text-center text-xs text-muted-foreground">{t.auth.login.footer}</p>
       </div>
     </div>
   )

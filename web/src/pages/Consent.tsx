@@ -6,12 +6,10 @@ import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import { BrandMark } from '@/components/BrandMark'
-import { t } from '@/i18n/zh-CN'
+import { t } from '@/i18n'
 import { errorMessage } from '@/lib/api'
 import { consentInfo, decideConsent } from '@/lib/grants'
 import { useMeta } from '@/providers/meta'
-
-const C = t.oauth.consent
 
 function Row({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -27,6 +25,7 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
  * asks, as whom, and where the result goes, and asks every time: nothing is remembered.
  */
 export default function Consent() {
+  const C = t.oauth.consent
   const { meta } = useMeta()
   const [params] = useSearchParams()
   const req = params.get('req') ?? ''
@@ -37,7 +36,7 @@ export default function Consent() {
   const name = meta.branding?.name || meta.title || t.appName
 
   useEffect(() => {
-    document.title = `${C.title} · ${name}`
+    document.title = `${t.oauth.consent.title} · ${name}`
   }, [name])
 
   const decide = async (approve: boolean) => {

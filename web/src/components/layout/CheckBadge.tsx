@@ -1,6 +1,6 @@
 import { CheckCircle2, CircleAlert, Loader2 } from 'lucide-react'
 import { Link } from 'react-router'
-import { t } from '@/i18n/zh-CN'
+import { t } from '@/i18n'
 import { useCheck } from '@/providers/meta'
 import { cn } from '@/lib/utils'
 

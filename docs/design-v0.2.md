@@ -30,6 +30,7 @@ memory.
 | pending OIDC logins, passkey ceremony challenges | memory (bounded, 10 min / 5 min TTL) | a restart only makes someone mid-login click again; a replayed state fails because it is gone |
 | session signing key | `RACKBOOK_SESSION_KEY` env (or `--session-key-file`) | refused at startup if missing when a login mode is on |
 | token "last used" | memory, or `--state-dir`/token-use.json | reset on restart without a state dir |
+| console language preference | memory, or `--state-dir`/preferences.json | reset on restart without a state dir; keyed by identity, capped at 10 000 people |
 | failed-login counters | memory | reset on restart |
 | audit (logins, failures, logouts) | structured server log (stdout → docker / journald) | data, type, passkey and token changes are already Git commits |
 

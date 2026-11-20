@@ -19,7 +19,8 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Skeleton } from '@/components/ui/skeleton'
 import { EmptyState, PageHeader } from '@/components/common'
-import { t } from '@/i18n/zh-CN'
+import { t } from '@/i18n'
+import { formatDateTime } from '@/i18n/format'
 import { apiFetch, errorMessage } from '@/lib/api'
 import type { ApiToken, CreatedToken } from '@/lib/types'
 import { useMeta } from '@/providers/meta'
@@ -31,7 +32,7 @@ const field = 'h-9 w-full rounded-lg border border-input bg-transparent px-3 tex
 function when(s?: string) {
   if (!s) return '—'
   const d = new Date(s)
-  return Number.isNaN(d.getTime()) ? s : d.toLocaleString('zh-CN', { hour12: false })
+  return Number.isNaN(d.getTime()) ? s : formatDateTime(d)
 }
 
 function CopyBox({ label, value }: { label: string; value: string }) {
@@ -243,7 +244,7 @@ export default function Tokens() {
             <thead className="bg-muted/60">
               <tr className="border-b text-left text-xs text-muted-foreground">
                 {[t.tokens.name, t.tokens.scope, t.tokens.limits, t.tokens.createdBy, t.tokens.expiresAt, t.tokens.lastUsed, ''].map((h, i) => (
-                  <th key={i} className="h-10 px-4 font-semibold tracking-wide whitespace-nowrap" title={h === t.tokens.lastUsed ? t.tokens.lastUsedHint : undefined}>
+                  <th key={i} className="h-10 px-4 font-semibold tracking-wide whitespace-nowrap" title={i === 5 ? t.tokens.lastUsedHint : undefined}>
                     {h}
                   </th>
                 ))}
@@ -259,7 +260,7 @@ export default function Tokens() {
                       <Badge variant={k.status === 'active' ? 'secondary' : 'outline'}>{t.tokens.status[k.status]}</Badge>
                       {k.module && (
                         <Badge variant="outline" title={t.tokens.moduleHint(k.module)} render={<Link to={`/modules/${encodeURIComponent(k.module)}`} />}>
-                          <Puzzle /> {t.tokens.module}：{k.module}
+                          <Puzzle /> {t.tokens.module}{t.common.colon}{k.module}
                         </Badge>
                       )}
                     </div>
@@ -273,11 +274,11 @@ export default function Tokens() {
                   <td className="px-4 py-2.5 text-xs">
                     {k.scope === 'write' ? (
                       <>
-                        <div>{k.collections?.length ? k.collections.map((c) => byName.get(c)?.title ?? c).join('、') : t.tokens.allCollections}</div>
+                        <div>{k.collections?.length ? k.collections.map((c) => byName.get(c)?.title ?? c).join(t.common.listSep) : t.tokens.allCollections}</div>
                         <div className="text-muted-foreground">
                           {(k.actions?.length ? k.actions : ['create', 'update', 'delete']).map((a) => t.tokens.actionNames[a] ?? a).join(' / ')}
                           {' · '}
-                          {k.writeMode === 'push' ? t.tokens.writeModes.push.split('（')[0] : t.tokens.writeModes.pr.split('（')[0]}
+                          {k.writeMode === 'push' ? t.tokens.writeModesShort.push : t.tokens.writeModesShort.pr}
                         </div>
                       </>
                     ) : (

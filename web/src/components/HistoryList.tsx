@@ -1,6 +1,6 @@
 import { GitCommitHorizontal } from 'lucide-react'
 import { Skeleton } from '@/components/ui/skeleton'
-import { t } from '@/i18n/zh-CN'
+import { t } from '@/i18n'
 import { useHistory } from '@/lib/hooks'
 import { relativeTime } from '@/lib/ledger'
 

@@ -3,7 +3,7 @@ import { Link } from 'react-router'
 import { FileQuestion, ServerCrash } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
-import { t } from '@/i18n/zh-CN'
+import { t } from '@/i18n'
 import { errorMessage } from '@/lib/api'
 
 export function PageFallback() {

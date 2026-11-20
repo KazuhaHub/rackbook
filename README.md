@@ -494,6 +494,7 @@ only its SHA-256 (committed as `rackbook(auth): create token <name>` /
   work on the file directly. "Last used" is kept in memory, or across restarts
   in `<state-dir>/token-use.json` when `serve --state-dir` (`RACKBOOK_STATE_DIR`)
   names a writable directory outside the data repository (e.g. `/data/state`).
+  The same directory keeps `preferences.json` (each person's console language).
 
 ### Rackbook never force-pushes
 
@@ -671,6 +672,33 @@ modules:
   `OnCalendar=hourly`); they act only when a configured time has passed. Run
   history is kept in `--state-dir`. See [docs/modules.md](docs/modules.md),
   section 7.
+
+## Console language
+
+The console speaks `zh-CN`, `zh-TW` and `en-US`; switch it from the user menu (or the language
+button on the sign-in page). A person's language is, in order: the one they saved while signed in
+(kept per identity in `<state-dir>/preferences.json`), the one chosen in this browser (kept in its
+local storage), the best match of the browser's `Accept-Language`, then `i18n.default`:
+
+```yaml
+i18n:
+  default: zh-CN   # zh-CN (default), zh-TW or en-US; used when the browser matches none
+```
+
+The block is optional; an unsupported value is a config error. Without `--state-dir` saved choices
+live in memory until a restart. With `--auth none` everyone shares one identity (or none), so the
+console keeps the choice in each browser and does not save it on the server. Saving a language also works with `--read-only`.
+If `preferences.json` does not parse, it is logged and treated as empty; the file is moved to
+`preferences.json.corrupt` before the next save.
+
+Only the console's own words are translated. What the ledger says (collection titles, field
+names, notes, record values) is shown as written in `rackbook.yml` and the schemas.
+
+To add a language: copy `web/src/i18n/en-US.ts` to `web/src/i18n/<tag>.ts` and translate it (the
+compiler rejects a missing or extra key, `npm run check:i18n` a key of the wrong kind), then list
+the tag in `LOCALES`, `LOCALE_NAMES` and the loaders in `web/src/i18n/index.ts` and in `Supported`
+in `internal/locale`, so that `Accept-Language` can match it. `npm run check:i18n-dom` loads every
+page in each language, switches, and fails on text left in the old one.
 
 ## Branding and the sign-in button
 

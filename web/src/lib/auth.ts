@@ -16,6 +16,8 @@ export type Account = {
   enrolUntil?: string
   passkeys: Passkey[]
   passkeyError?: string
+  /** the language this person chose; absent = none chosen */
+  locale?: string
 }
 
 export type ManagedUser = {
@@ -40,6 +42,9 @@ export type LoginConfig = {
   name: string
   /** a custom logo is served at /branding/logo */
   logo: boolean
+  /** the supported language that best matches the browser's Accept-Language (else defaultLocale) */
+  locale?: string
+  defaultLocale?: string
 }
 
 /** Methods that have a server-side session (and so a logout and an account page). */

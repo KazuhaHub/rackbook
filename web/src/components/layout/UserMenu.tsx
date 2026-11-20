@@ -10,11 +10,10 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
-import { t } from '@/i18n/zh-CN'
+import { t } from '@/i18n'
 import { hasSession, logout } from '@/lib/auth'
 import { useMeta } from '@/providers/meta'
-
-const M = t.auth.menu
+import { LanguageSubmenu, LanguageToggle } from './LanguageMenu'
 
 export function roleLabel(role?: string) {
   return role ? (t.auth.role[role] ?? role) : ''
@@ -47,6 +46,7 @@ export function UserMenu() {
         <span className="min-w-0 flex-1 truncate text-muted-foreground" title={u?.email}>
           {u?.email || u?.name || t.user.anonymous}
         </span>
+        <LanguageToggle user={u} />
         {!u?.canEdit && (
           <Badge variant="secondary" title={t.user.readOnlyHint}>
             <Lock />
@@ -60,7 +60,7 @@ export function UserMenu() {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger
-        aria-label={M.open}
+        aria-label={t.auth.menu.open}
         className="flex w-full items-center gap-2.5 rounded-lg p-1.5 text-left outline-none transition-colors hover:bg-sidebar-accent focus-visible:ring-3 focus-visible:ring-ring/50 aria-expanded:bg-sidebar-accent"
       >
         {identity}
@@ -75,16 +75,17 @@ export function UserMenu() {
         </DropdownMenuGroup>
         <DropdownMenuSeparator />
         <DropdownMenuItem render={<Link to="/account" />}>
-          <UserRound /> {M.account}
+          <UserRound /> {t.auth.menu.account}
         </DropdownMenuItem>
         {u?.canAdmin && (
           <DropdownMenuItem render={<Link to="/admin/users" />}>
-            <Users /> {M.users}
+            <Users /> {t.auth.menu.users}
           </DropdownMenuItem>
         )}
+        <LanguageSubmenu user={u} />
         <DropdownMenuSeparator />
         <DropdownMenuItem variant="destructive" onClick={() => void logout()}>
-          <LogOut /> {M.logout}
+          <LogOut /> {t.auth.menu.logout}
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>

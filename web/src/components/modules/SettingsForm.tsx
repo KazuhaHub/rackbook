@@ -6,7 +6,7 @@ import { NativeSelect } from '@/components/ui/native-select'
 import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
 import { TagInput } from '@/components/types/TagInput'
-import { t } from '@/i18n/zh-CN'
+import { t } from '@/i18n'
 import {
   cleanSettings,
   defaultsToText,
@@ -22,8 +22,6 @@ import {
   type ModuleView,
 } from '@/lib/modules'
 import { useMeta } from '@/providers/meta'
-
-const s = t.modules.settings
 
 /** What the form edits, in the shapes the inputs use (text, not numbers). */
 type Draft = {
@@ -61,6 +59,7 @@ function toDraft(type: string, st: ModuleSettings): Draft {
 type Errors = Partial<Record<'times' | 'timezone' | 'thresholds' | 'recipients' | 'exclude' | 'defaults', string>>
 
 function check(type: string, d: Draft): Errors {
+  const s = t.modules.settings
   const e: Errors = {}
   const badTime = firstBad(d.times, isTime)
   if (badTime) e.times = s.errors.time(badTime)
@@ -132,6 +131,7 @@ export function SettingsForm({
   /** called when unsaved edits appear or go away */
   onDirtyChange?: (dirty: boolean) => void
 }) {
+  const s = t.modules.settings
   const { meta } = useMeta()
   const [draft, setDraft] = useState<Draft>(() => toDraft(m.type, m.settings))
   const set = (p: Partial<Draft>) => setDraft((d) => ({ ...d, ...p }))

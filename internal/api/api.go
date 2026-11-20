@@ -29,7 +29,9 @@ import (
 	"github.com/kazuhahub/rackbook/internal/export"
 	"github.com/kazuhahub/rackbook/internal/gitstore"
 	"github.com/kazuhahub/rackbook/internal/ledger"
+	"github.com/kazuhahub/rackbook/internal/locale"
 	"github.com/kazuhahub/rackbook/internal/modules"
+	"github.com/kazuhahub/rackbook/internal/prefs"
 	"github.com/kazuhahub/rackbook/internal/roles"
 	"github.com/kazuhahub/rackbook/internal/tokens"
 	"github.com/kazuhahub/rackbook/internal/validate"
@@ -67,6 +69,9 @@ type Options struct {
 	// Modules keeps the run history and run requests of the modules panel; nil
 	// = in memory only.
 	Modules *modules.State
+	// Prefs keeps each person's console preferences (the language); nil = in
+	// memory only.
+	Prefs *prefs.Store
 	// Now is the clock; nil = time.Now.
 	Now func() time.Time
 }
@@ -101,6 +106,9 @@ func New(o Options) http.Handler {
 	if s.o.Modules == nil {
 		s.o.Modules = &modules.State{}
 	}
+	if s.o.Prefs == nil {
+		s.o.Prefs = &prefs.Store{}
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, "ok\n") })
 	mux.HandleFunc("GET /api/meta", s.meta)
@@ -113,6 +121,7 @@ func New(o Options) http.Handler {
 	mux.HandleFunc("PUT /api/c/{collection}/{id}", s.put)
 	mux.HandleFunc("DELETE /api/c/{collection}/{id}", s.del)
 	mux.HandleFunc("POST /api/admin/accept-remote", s.acceptRemote)
+	s.accountRoutes(mux)  // account.go
 	s.tokenRoutes(mux)    // tokens.go
 	s.typesRoutes(mux)    // types.go
 	s.modulesRoutes(mux)  // modules.go
@@ -358,6 +367,9 @@ func (s *server) meta(w http.ResponseWriter, r *http.Request) {
 				user[k] = v
 			}
 		}
+		if l := s.o.Prefs.Locale(id.ID); l != "" && personal(id) {
+			user["locale"] = l
+		}
 	}
 	cols := make([]collectionOut, 0, len(l.Collections))
 	for _, c := range l.Collections {
@@ -393,6 +405,11 @@ func (s *server) meta(w http.ResponseWriter, r *http.Request) {
 	if s.o.OAuth != nil {
 		meta["oauthServer"] = true // the console shows the authorized-clients lists
 	}
+	// The Accept-Language match and the configured default let the console pick
+	// its language at boot; user.locale (a saved choice) wins over both.
+	w.Header().Add("Vary", "Accept-Language")
+	meta["defaultLocale"] = cfg.DefaultLocale()
+	meta["locale"] = locale.Match(r.Header.Get("Accept-Language"), cfg.DefaultLocale())
 	meta["branding"] = map[string]any{"name": cfg.Branding.Name, "logo": cfg.BrandLogo() != nil}
 	if a := s.o.Store.Alert(); a != nil {
 		meta["alert"] = a

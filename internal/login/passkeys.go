@@ -508,6 +508,9 @@ func (s *Service) account(w http.ResponseWriter, r *http.Request) {
 		"id": who.ID, "name": who.Name, "email": who.Email, "role": who.EffectiveRole().String(),
 		"authMethod": who.Method, "passkeysEnabled": s.pk != nil, "canEnrol": false, "passkeys": []passkeyOut{},
 	}
+	if l := s.o.Prefs.Locale(who.ID); l != "" {
+		out["locale"] = l
+	}
 	if s.pk != nil {
 		if sess, err := s.readSession(r); err == nil && sess.Method == auth.MethodOIDC && sess.OIDCAt != 0 {
 			until := time.Unix(sess.OIDCAt, 0).Add(enrolWindow)

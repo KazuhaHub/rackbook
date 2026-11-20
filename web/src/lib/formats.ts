@@ -1,5 +1,6 @@
 // The string formats the console validates itself. They mirror
 // internal/validate/formats.go rule for rule, so the form and the server agree.
+import { t } from '../i18n/index.ts'
 
 const IPV4 = /^(?:0|[1-9][0-9]{0,2})(?:\.(?:0|[1-9][0-9]{0,2})){3}$/
 
@@ -85,14 +86,7 @@ export const customFormats: Record<string, (s: string) => boolean> = {
   uri: isURI,
 }
 
-/** Shown under a field whose value fails a format. */
-export const formatHints: Record<string, string> = {
-  ip: '不是有效的 IP 地址',
-  ipv4: '不是有效的 IPv4 地址',
-  ipv6: '不是有效的 IPv6 地址',
-  cidr: '不是有效的网段（形如 10.0.0.0/24）',
-  'port-spec': '不是有效的端口（形如 TCP 443、UDP 41641、TCP 8000-8010）',
-  date: '不是有效的日期（YYYY-MM-DD）',
-  hostname: '不是有效的域名',
-  uri: '不是有效的 URL（形如 https://example.com）',
+/** Shown under a field whose value fails a format (current language), undefined for an unknown format. */
+export function formatHint(format: string): string | undefined {
+  return t.validation.formats[format]
 }

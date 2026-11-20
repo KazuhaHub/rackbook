@@ -202,13 +202,28 @@ export function mockApi(root: string): Plugin {
       ? { kind: 'history_rewritten', lastGood: 'a1b2c3d4e5f60718293a4b5c6d7e8f9012345678', remote: '9f8e7d6c5b4a39281706f5e4d3c2b1a098765432' }
       : undefined
 
-  function meta() {
+  // The language preference of the mock user (PUT /api/account/preferences), and a
+  // rough Accept-Language match like the server's (internal/locale).
+  let userLocale: string | undefined
+  const matchLocale = (h: string | undefined) => {
+    for (const part of (h ?? '').split(',')) {
+      const tag = part.split(';')[0].trim().toLowerCase()
+      if (tag === 'zh-tw' || tag === 'zh-hk' || tag === 'zh-mo' || tag.startsWith('zh-hant')) return 'zh-TW'
+      if (tag.startsWith('zh')) return 'zh-CN'
+      if (tag.startsWith('en')) return 'en-US'
+    }
+    return 'zh-CN'
+  }
+
+  function meta(req: IncomingMessage) {
     return {
+      locale: matchLocale(req.headers['accept-language']),
+      defaultLocale: 'zh-CN',
       title: cfg.title,
       description: cfg.description ?? '',
       readOnly,
       writeMode: cfg.write?.mode ?? 'push',
-      user,
+      user: { ...user, ...(userLocale ? { locale: userLocale } : {}) },
       ...(alert ? { alert } : {}),
       modules,
       collections: [...colls.values()].map((c) => ({
@@ -269,16 +284,25 @@ export function mockApi(root: string): Plugin {
       send(res, 200, { title: cfg.title, collections: Object.fromEntries([...colls.values()].map((c) => [c.name, c.rows])), notes: [] })
       return true
     }
-    if (p === '/auth/config') return send(res, 200, { oidc: true, provider: 'microsoft', passkeys: true }), true
+    if (p === '/auth/config') {
+      return send(res, 200, { oidc: true, provider: 'microsoft', passkeys: true, locale: matchLocale(req.headers['accept-language']), defaultLocale: 'zh-CN' }), true
+    }
     if (p === '/auth/logout') return send(res, 200, { login: '/auth/login?error=logged_out' }), true
     if (!p.startsWith('/api/')) return false
     const parts = p.slice(5).split('/').filter(Boolean).map(decodeURIComponent)
     // decodeURIComponent above turns %2F inside an id into "/" after splitting, which is what the id is.
     const [head, cname, ...rest] = parts
     const rid = rest.length ? rest.join('/') : undefined
-    if (head === 'meta' && method === 'GET') return send(res, 200, meta()), true
+    if (head === 'meta' && method === 'GET') return send(res, 200, meta(req)), true
+    if (head === 'account' && cname === 'preferences' && method === 'PUT') {
+      const body = await readBody(req)
+      const l = String(body.locale ?? '')
+      if (l && !['zh-CN', 'zh-TW', 'en-US'].includes(l)) return send(res, 400, { error: 'invalid_locale', message: 'unsupported locale' }), true
+      userLocale = l || undefined
+      return send(res, 200, { locale: l }), true
+    }
     if (login && head === 'account' && !cname && method === 'GET') {
-      return send(res, 200, { id: user.id, name: user.name, email: user.email, role: user.role, authMethod: 'oidc', passkeysEnabled: true, canEnrol: true, enrolUntil: new Date(Date.now() + 600000).toISOString(), passkeys }), true
+      return send(res, 200, { id: user.id, name: user.name, email: user.email, role: user.role, authMethod: 'oidc', ...(userLocale ? { locale: userLocale } : {}), passkeysEnabled: true, canEnrol: true, enrolUntil: new Date(Date.now() + 600000).toISOString(), passkeys }), true
     }
     if (login && head === 'account' && cname === 'passkeys' && method === 'DELETE') {
       const i = passkeys.findIndex((k) => k.id === rest[0])

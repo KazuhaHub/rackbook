@@ -3,7 +3,7 @@ import { AlertTriangle, ArrowDownLeft, ArrowUpRight, CheckCircle2, FileDiff, Loa
 import { Badge } from '@/components/ui/badge'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
-import { t } from '@/i18n/zh-CN'
+import { t } from '@/i18n'
 import { recordHref } from '@/lib/ledger'
 import type { Migration, Offer, Plan, PlanIssue } from '@/lib/typedef'
 import { cn } from 'cn'
@@ -123,8 +123,8 @@ export function ImpactPanel({
                     <p className="mt-1.5 text-foreground/90">{r.message}</p>
                     {r.records && r.records.length > 0 && (
                       <p className="mt-1.5 text-muted-foreground">
-                        {t.types.impact.records}（{r.count ?? r.records.length}）：
-                        {r.records.map((id) => id).join('、')}
+                        {t.types.impact.recordsLabel(r.count ?? r.records.length)}
+                        {r.records.join(t.common.listSep)}
                         {(r.count ?? 0) > r.records.length && ' …'}
                       </p>
                     )}
@@ -159,7 +159,7 @@ export function ImpactPanel({
                         </div>
                       )}
                       <p className="mt-1.5 pl-6 text-muted-foreground">
-                        {o.records.join('、')}
+                        {o.records.join(t.common.listSep)}
                         {o.count > o.records.length && ' …'}
                       </p>
                     </li>

@@ -9,9 +9,9 @@ import { Label } from '@/components/ui/label'
 import { NativeSelect } from '@/components/ui/native-select'
 import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
-import { t } from '@/i18n/zh-CN'
+import { t } from '@/i18n'
 import { ENUM_COLORS, enumColorClass, enumColorLabel } from '@/lib/enumColors'
-import { FIELD_TYPES, type FieldDef, type FieldType, type TypeDef } from '@/lib/typedef'
+import { fieldTypes, type FieldDef, type FieldType, type TypeDef } from '@/lib/typedef'
 import { useMeta } from '@/providers/meta'
 import { TagInput } from './TagInput'
 
@@ -157,14 +157,14 @@ export function FieldDialog({
           <Row label={t.types.dialog.title}>
             <Input value={f.title ?? ''} onChange={(e) => set({ title: e.target.value })} />
           </Row>
-          <Row label={t.types.dialog.type} hint={FIELD_TYPES.find((x) => x.type === f.type)?.hint}>
+          <Row label={t.types.dialog.type} hint={fieldTypes().find((x) => x.type === f.type)?.hint}>
             {advanced ? (
               <div className="flex h-8 items-center">
                 <Badge variant="outline">{t.types.fields.advanced}</Badge>
               </div>
             ) : (
               <NativeSelect value={f.type} onChange={(e) => setF(reshape(f, e.target.value as FieldType, draft))}>
-                {FIELD_TYPES.map((x) => (
+                {fieldTypes().map((x) => (
                   <option key={x.type} value={x.type}>
                     {x.label}
                   </option>
@@ -265,7 +265,8 @@ export function FieldDialog({
                 </option>
                 {targets.map((x) => (
                   <option key={x.name} value={x.name}>
-                    {x.title}（{x.name}）
+                    {x.title}
+                    {t.common.paren(x.name)}
                   </option>
                 ))}
               </NativeSelect>

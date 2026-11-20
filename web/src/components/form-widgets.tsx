@@ -20,7 +20,7 @@ import {
 import { Input } from '@/components/ui/input'
 import { NativeSelect } from '@/components/ui/native-select'
 import { Switch } from '@/components/ui/switch'
-import { t } from '@/i18n/zh-CN'
+import { t } from '@/i18n'
 import { enumValues, itemEnum, listEntryError, listHint, type Prop } from '@/lib/fieldKind'
 import { customFormats } from '@/lib/formats'
 import { objectItems } from '@/lib/objectItems'

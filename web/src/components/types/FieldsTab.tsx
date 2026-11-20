@@ -2,7 +2,7 @@ import { ArrowDown, ArrowUp, KeyRound, Pencil, Plus, Trash2 } from 'lucide-react
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { EmptyState } from '@/components/common'
-import { t } from '@/i18n/zh-CN'
+import { t } from '@/i18n'
 import { fieldTypeLabel, type TypeDef } from '@/lib/typedef'
 
 const dot = <span className="text-primary">●</span>

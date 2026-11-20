@@ -11,7 +11,7 @@ import { ModuleStatus, RunStatusBadge } from '@/components/modules/ModuleStatus'
 import { SettingsForm } from '@/components/modules/SettingsForm'
 import { doneText, took, when } from '@/components/modules/format'
 import { EmptyState, PageHeader } from '@/components/common'
-import { t } from '@/i18n/zh-CN'
+import { t } from '@/i18n'
 import { ApiError, errorMessage } from '@/lib/api'
 import { changedElsewhere, cleanSettings, editBase, isRiskyChange, pinAfterLoadLatest, pinAfterSave, type EditBase, type Impact, type ModuleSettings, type ModuleView } from '@/lib/modules'
 import { modulesKey, previewSettings, saveSettings, useModules, useRequestRun } from '@/lib/modulesApi'
@@ -175,7 +175,7 @@ function ModuleDetailPage({ name }: { name: string }) {
       )}
       {m.status === 'failed' && m.lastRun && (
         <p role="alert" className="mb-4 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-          {t.modules.statusHint.failed}：{m.lastRun.error || '—'}
+          {t.modules.statusHint.failed}{t.common.colon}{m.lastRun.error || '—'}
         </p>
       )}
 

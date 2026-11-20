@@ -16,14 +16,13 @@ import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import { EmptyState, PageHeader } from '@/components/common'
 import { roleLabel } from '@/components/layout/UserMenu'
-import { t } from '@/i18n/zh-CN'
+import { t } from '@/i18n'
 import { apiFetch, errorMessage } from '@/lib/api'
 import { useUsers, type ManagedUser, type Passkey } from '@/lib/auth'
 import { relativeTime } from '@/lib/ledger'
 
-const U = t.auth.users
-
 export default function Users() {
+  const U = t.auth.users
   const q = useUsers()
   const qc = useQueryClient()
   const [removing, setRemoving] = useState<{ user: ManagedUser; key: Passkey } | null>(null)
@@ -97,7 +96,7 @@ export default function Users() {
                               <Button
                                 variant="ghost"
                                 size="icon-xs"
-                                aria-label={`${U.deleteKey}：${k.name}`}
+                                aria-label={`${U.deleteKey}${t.common.colon}${k.name}`}
                                 title={U.deleteKey}
                                 onClick={() => setRemoving({ user: u, key: k })}
                               >

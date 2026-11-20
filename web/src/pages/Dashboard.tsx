@@ -21,7 +21,7 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
 import { PageHeader } from '@/components/common'
-import { t } from '@/i18n/zh-CN'
+import { t } from '@/i18n'
 import { useExpiring, useHistory } from '@/lib/hooks'
 import { CollectionIcon } from '@/components/CollectionIcon'
 import { hasExpiry, recordHref, relativeTime } from '@/lib/ledger'
@@ -116,7 +116,7 @@ export default function Dashboard() {
         actions={
           meta.writeMode && (
             <Badge variant="outline">
-              {t.dashboard.writeMode}：{t.dashboard.writeModes[meta.writeMode] ?? meta.writeMode}
+              {t.dashboard.writeMode}{t.common.colon}{t.dashboard.writeModes[meta.writeMode] ?? meta.writeMode}
             </Badge>
           )
         }
