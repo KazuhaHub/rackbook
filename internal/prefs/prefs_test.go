@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"testing"
 )
@@ -67,7 +68,12 @@ func TestRoundTrip(t *testing.T) {
 	if string(b) != want {
 		t.Fatalf("file = %s", b)
 	}
-	if fi, _ := os.Stat(p); fi.Mode().Perm() != 0o600 {
+	fi, err := os.Stat(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Windows has no Unix modes
+	if runtime.GOOS != "windows" && fi.Mode().Perm() != 0o600 {
 		t.Errorf("mode %v", fi.Mode().Perm())
 	}
 	s2 := &Store{Path: p}
