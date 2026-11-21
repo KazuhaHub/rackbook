@@ -68,11 +68,33 @@ jobs:
             dist/*.tar.gz
             dist/*.zip
             dist/checksums.txt
+      # The exact archives, for the native test below (not published from here).
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-archives
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/checksums.txt
+            dist/metadata.json
+          if-no-files-found: error
+          retention-days: 7
 
-  # Publish the draft only after both the archives and the image are built,
-  # attested and signed. With immutable releases nothing can change afterwards.
+  # The published archives are cross-compiled; run each one on its own platform
+  # before anything is published.
+  archives:
+    needs: binaries
+    permissions:
+      contents: read
+    uses: ./.github/workflows/archive-smoke.yml
+    with:
+      artifact: release-archives
+
+  # Publish the draft only after the archives are built and tested natively and
+  # the image is built, attested and signed. With immutable releases nothing can
+  # change afterwards.
   publish:
-    needs: [binaries, image]
+    needs: [binaries, archives, image]
     runs-on: ubuntu-latest
     permissions:
       contents: write # publish the draft release
@@ -83,10 +105,10 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false
 
-  # Pushed only after the draft release with every archive exists, so a failed
-  # archive build never leaves an image behind.
+  # Pushed only after the draft release with every archive exists and the archives
+  # passed natively, so a failed archive never leaves an image behind.
   image:
-    needs: [verify, binaries]
+    needs: [verify, binaries, archives]
     runs-on: ubuntu-latest
     permissions:
       contents: read
