@@ -38,6 +38,10 @@ type Identity struct {
 	// last signed in. /infra checks them against its own pinned values.
 	OIDCIssuer string
 	OIDCClient string
+	// OIDCClaim is the claim the identity was taken from ("sub" for a subject
+	// identity) and OIDCTenant the ID token's tid, as the login established them.
+	OIDCClaim  string
+	OIDCTenant string
 	OIDCAt     time.Time
 
 	// Scopes are the OAuth scopes (or token scopes) the credential carries;

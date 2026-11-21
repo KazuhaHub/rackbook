@@ -1,6 +1,10 @@
 package ansiblerepo
 
 import (
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"regexp"
 	"strings"
@@ -38,7 +42,7 @@ func unifiedDiff(path string, before, after []byte) FileDiff {
 	case before != nil && after == nil:
 		d.Status = "removed"
 	}
-	a, b := splitLines(before), splitLines(after)
+	a, b := redactLines(splitLines(before)), redactLines(splitLines(after))
 	ops := diffOps(a, b)
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "--- %s\n+++ %s\n", pathOrNull(before, "a/"+path), pathOrNull(after, "b/"+path))
@@ -78,7 +82,7 @@ func unifiedDiff(path string, before, after []byte) FileDiff {
 		fmt.Fprintf(&sb, "@@ -%d,%d +%d,%d @@\n", oldStart, oldN, newStart, newN)
 		for _, o := range ops[h.lo:h.hi] {
 			sb.WriteByte(o.kind)
-			sb.WriteString(redactLine(o.line))
+			sb.WriteString(o.line)
 			sb.WriteByte('\n')
 		}
 	}
@@ -95,20 +99,62 @@ func pathOrNull(b []byte, p string) string {
 
 var keyedLineRe = regexp.MustCompile(`^(\s*(?:-\s+)?[^\s#:][^:#]*:\s+)(\S.*)$`)
 
+// hideSalt makes the marker of a hidden line stable inside one process and
+// useless outside it: two different secrets show as a change, an unchanged one
+// as unchanged, and no value can be guessed from the marker.
+var hideSalt = func() []byte {
+	b := make([]byte, 16)
+	_, _ = rand.Read(b)
+	return b
+}()
+
+func hideMark(l string) string {
+	m := hmac.New(sha256.New, hideSalt)
+	m.Write([]byte(l))
+	return Hidden + ":" + hex.EncodeToString(m.Sum(nil))[:6]
+}
+
+var pemBegin = regexp.MustCompile(`-----BEGIN [A-Z0-9 ]*-----`)
+var pemEnd = regexp.MustCompile(`-----END [A-Z0-9 ]*-----`)
+
+// redactLines hides what looks like a secret in the lines of a YAML file: a
+// whole PEM block (the BEGIN line, everything up to the END line, and the END
+// line), a value under a secret-looking key, a token-looking value and a comment
+// that carries one. Each hidden line keeps a marker that differs when the line differs.
+func redactLines(lines []string) []string {
+	out := make([]string, len(lines))
+	inPEM := false
+	for i, l := range lines {
+		switch {
+		case inPEM:
+			out[i] = leadingSpace(l) + hideMark(l)
+			if pemEnd.MatchString(l) {
+				inPEM = false
+			}
+		case pemBegin.MatchString(l) && strings.Contains(strings.ToUpper(l), "PRIVATE KEY"):
+			out[i] = leadingSpace(l) + hideMark(l)
+			inPEM = !pemEnd.MatchString(l)
+		default:
+			out[i] = redactLine(l)
+		}
+	}
+	return out
+}
+
 // redactLine hides what looks like a secret in one line of YAML.
 func redactLine(l string) string {
 	t := strings.TrimSpace(l)
 	if strings.HasPrefix(t, "#") {
 		if commentSecret(t) {
-			return leadingSpace(l) + "# " + Hidden
+			return leadingSpace(l) + "# " + hideMark(l)
 		}
 		return l
 	}
 	if m := keyedLineRe.FindStringSubmatch(l); m != nil && secretKeyRe.MatchString(m[1]) {
-		return m[1] + Hidden
+		return m[1] + hideMark(m[2])
 	}
 	if secretValueRe.MatchString(l) {
-		return leadingSpace(l) + Hidden
+		return leadingSpace(l) + hideMark(l)
 	}
 	return l
 }

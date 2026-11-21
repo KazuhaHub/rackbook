@@ -586,6 +586,7 @@ rackbook serve --auth oidc … \
   --infra-admins me@example.org \
   --infra-oidc-issuer https://login.microsoftonline.com/<tenant>/v2.0 \
   --infra-oidc-client-id <the console's application ID> \
+  --infra-oidc-tenant <the Entra tenant ID> \
   --hub-status-file /run/hub/status.json
 ```
 
@@ -595,7 +596,9 @@ rackbook serve --auth oidc … \
 | `--infra-branch` | The branch followed, and the branch the editors commit to (default `main`) |
 | `--infra-ssh-key` | (Or use the [GitHub App](#github-app-instead-of-deploy-keys): its token for this clone is `contents: read`, and `contents: write` only for an edit.) The private key (give it a read-only deploy key) used to fetch this clone, and only this clone. It cannot be combined with `--infra-write`. It reaches git in `GIT_SSH_COMMAND` in the environment of the git process, not on a command line; a `known_hosts` file beside the key is used with strict host key checking when it exists |
 | `--infra-admins` | Comma-separated exact identities (no wildcards) who may use `/infra`. This is **not** `auth.roles`, and it is never read from `rackbook.yml`, so nobody can grant it by editing the ledger. Needs `--auth oidc`: only a person who signed in with the console's OIDC login counts. API tokens (also the token of a listed person), MCP clients, OAuth access tokens, passkey and Cloudflare Access identities are answered `403 forbidden` |
-| `--infra-oidc-issuer`, `--infra-oidc-client-id` | **Required** with `--infra-repo`. The identity provider (issuer URL) and the application (client ID) that infra administrators sign in with. A session counts only if it was issued under exactly this issuer **and** this client ID; anything else is `403`, however it was obtained. See *Why the identity provider is pinned* |
+| `--infra-oidc-issuer`, `--infra-oidc-client-id` | **Required** with `--infra-repo`. The identity provider (issuer URL) and the application (client ID) that infra administrators sign in with. A session counts only if it was issued under exactly this issuer **and** this client ID (and the claim and tenant below); anything else is `403`, however it was obtained. See *Why the identity provider is pinned* |
+| `--infra-oidc-identity-claim` | The ID token claim the administrators' identities are taken from (default `preferred_username`; `sub` for subject identities, which are then listed as `oidc:<sub>`). A session whose identity came from another claim is refused, so `auth.oidc.identity_claim` in the ledger cannot change who counts as an administrator |
+| `--infra-oidc-tenant` | The tenant (the `tid` claim) the administrators sign in from. **Required for an Entra issuer**, and a tenant GUID in `--infra-oidc-issuer` must equal it; optional for other providers (then a session without a tenant is expected). A session from another tenant is refused; `allowed_tenants` in the ledger is not trusted |
 | `--infra-write` | Turn on the editors. Needs `--github-app-id` (the App must have `Contents: read and write` on the infra repository) and cannot be combined with `--infra-ssh-key`; on a `--read-only` server the editors stay off |
 | `--infra-write-max-age` | How recent a person's sign-in must be for a write (default `12h`). An older session can still read; a write answers `403 reauth_required` and the console offers *Sign in again* |
 | `--infra-managed-group`, `--infra-agent-group` | The inventory group whose hosts must each have host_vars and a SOPS file and that must contain every host of every group (default `managed`), and the group that must list exactly the managed hosts (default `infra_agent`). A group the inventory does not have switches its rule off; `""` disables the rule |
@@ -626,11 +629,13 @@ Who a person *is* comes from the OIDC sign-in, whose settings (`auth.oidc`: issu
 `identity_claim`, `allowed_tenants`) live in `rackbook.yml` in the ledger repository. Anyone who can
 edit the ledger could therefore point the sign-in at an identity provider they control and present
 a listed identity. For `/infra` that is not acceptable, so the provider is not taken from the
-ledger: `--infra-oidc-issuer` and `--infra-oidc-client-id` come from the command line, and
-every session records the issuer and client ID it was issued under. A session issued under
-anything else (for example after `auth.oidc` was edited and Rackbook restarted) is refused with
-`403` on every `/infra` path, and Rackbook logs a warning at start when the two do not match. Keep
-the two values equal to the console's own `auth.oidc.issuer` and `auth.oidc.client_id`. Sessions
+ledger: the issuer, client ID, identity claim and tenant (`--infra-oidc-issuer`,
+`--infra-oidc-client-id`, `--infra-oidc-identity-claim`, `--infra-oidc-tenant`) come from the command
+line, and every session records what it was issued under: the issuer, the client ID, the claim the
+identity was taken from, and the ID token's tenant. A session issued under anything else (for example
+after `auth.oidc` was edited and Rackbook restarted) is refused with `403` on every `/infra` path, and
+Rackbook logs a warning at start when the ledger's settings do not match. Keep the values equal to the
+console's own `auth.oidc` (`issuer`, `client_id`, `identity_claim`, `allowed_tenants`). Sessions
 made by an older version carry no client ID and need one new sign-in after the upgrade.
 
 ### Editing the infra repository
@@ -652,7 +657,9 @@ so Rackbook checks the change itself first (below). No CI gate is assumed.
   commits those files back to how they were before it. It is refused (`409`) when a later commit
   touched any of the same files, for merge and first commits, and for commits that touched anything else.
 
-Only `inventory/hosts.yml`, `inventory/host_vars/*.yml` and `inventory/group_vars/*.yml` can be written.
+Only `inventory/hosts.yml` and `inventory/host_vars/*.yml` can be written. `group_vars` are shown but never
+edited here: they legitimately hold templating and connection variables (`ansible_connection`), which the
+rules below refuse in a file Rackbook writes.
 
 Who may write: the same people as the pages, plus a recent sign-in (`--infra-write-max-age`). The
 Rackbook role in the ledger is irrelevant, and an API token, OAuth or MCP credential is always
@@ -679,12 +686,19 @@ console in the current language and nothing is committed):
 - every host in a group is also in the managed group (`--infra-managed-group`);
 - if the inventory has an `infra_agent` group, it equals the managed group;
 - every managed host has a `host_vars` file and `secrets/<host>.sops.yaml`;
+- **host_vars are evaluated by Ansible as root on every machine, so**: no key or string value at any depth
+  (block scalars included) contains `{{`, `{%` or `{#`, and no top-level key starts with `ansible_`
+  (connection, privilege and interpreter variables);
+- no anchors, aliases, merge keys (`<<`) or explicit YAML tags in a file Rackbook writes (they would hide
+  values from the checks below);
 - each `features.<name>` entry exists in `features/` and its settings fit `feature.yml`: known keys,
   types, enum values, whole-string patterns, `min`/`max`, 512 characters at most, no control
   characters, no `{{`, `{%` or `{#`, required settings (also `required_when`), no secret settings;
 - Rackbook's secret scan on `host_vars` and `group_vars` (a heuristic finding may be confirmed by the editor).
 
-Problems the repository already had are shown as warnings and do not block an unrelated edit.
+What an edit writes must pass every check, whatever state the file was in. Problems the repository
+already had in files the edit does not write are shown as warnings and do not block it. Diffs and revert
+previews hide secret-looking values and whole PEM blocks, and a revert is refused for files that hold such values.
 
 **Conflicts.** The editor sends the version of each file it loaded. Rackbook fetches, resets its
 clone to the branch, and refuses the edit with `409 conflict` and a diff when a file changed since.
@@ -1363,9 +1377,9 @@ Rackbook 永远不会 force push，也不会改写或删除远端分支和标签
 查看主机清单与各机器的 host_vars、功能开关、基础设施中心（infra-hub）上报的应用状态、证书、IP 列表和最近
 50 个提交。能用 `/infra` 的人由 `--infra-admins` 指定（不是 `auth.roles`，也不来自台账里的 `rackbook.yml`），
 必须是用控制台 OIDC 登录的会话，并且登录所用的身份提供方必须正是 `--infra-oidc-issuer` 与 `--infra-oidc-client-id`
-固定的那一个（这两个值来自命令行，不来自台账里可被改动的 `auth.oidc`）；API 令牌、MCP、OAuth 令牌一律 `403`。
+固定的那一个（签发方、客户端 ID、身份声明 `--infra-oidc-identity-claim` 和租户 `--infra-oidc-tenant` 都来自命令行，不来自台账里可被改动的 `auth.oidc`）；API 令牌、MCP、OAuth 令牌一律 `403`。
 加上 `--infra-write` 后，管理员还能编辑 host_vars、按 `feature.yml` 生成的功能开关表单和主机分组，并在提交历史里还原某次提交：
 每次保存就是一个直接提交到主分支的提交（作者是登录的人，带 `Edited-by`、`Edited-via`、`Files` 尾注），提交前由
-Rackbook 自己检查（YAML、重复键、清单形状、受管主机的 host_vars 与 SOPS 文件、功能设置、密钥扫描），写入需要最近
+Rackbook 自己检查（YAML、重复键、清单形状、受管主机的 host_vars 与 SOPS 文件、功能设置、密钥扫描；host_vars 里不许有模板语法和 `ansible_*` 变量，不许有锚点、别名、合并键；group_vars 不可编辑），写入需要最近
 `--infra-write-max-age`（默认 12 小时）内登录过。密钥（SOPS）的编辑留给以后。状态文件（`--hub-status-file`）超过 3 分钟
 没更新时显示“状态不可用”。详见上面的 *Infrastructure view and editors*。

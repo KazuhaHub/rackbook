@@ -2,6 +2,8 @@ package auth
 
 import (
 	"fmt"
+	"net/url"
+	"regexp"
 	"strings"
 	"time"
 
@@ -25,18 +27,29 @@ type InfraAdmins struct {
 	ids      map[string]bool
 	issuer   string
 	clientID string
+	claim    string // the claim the identity is taken from
+	tenant   string // the tid of the sign-in (lower case; "" = none)
 	maxAge   time.Duration
 }
 
 // DefaultInfraWriteAge is how recent the sign-in must be for a write.
 const DefaultInfraWriteAge = 12 * time.Hour
 
-// Pin sets the issuer and client ID a session must carry, and how recent the
-// sign-in must be for a write (0 = DefaultInfraWriteAge). Both pins are required.
-func (a *InfraAdmins) Pin(issuer, clientID string, writeAge time.Duration) error {
-	issuer, clientID = strings.TrimSpace(issuer), strings.TrimSpace(clientID)
+var guidRe = regexp.MustCompile(`(?i)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}`)
+
+// Pin sets what a session must carry: the issuer, the client ID, the claim the
+// identity came from (empty = preferred_username) and the tenant (tid). It also
+// sets how recent the sign-in must be for a write (0 = DefaultInfraWriteAge).
+// The issuer and client ID are required. For an Entra issuer the tenant is
+// required too, and a tenant GUID in the issuer URL must equal it. Nothing here
+// comes from the ledger's rackbook.yml, which others can edit.
+func (a *InfraAdmins) Pin(issuer, clientID, claim, tenant string, writeAge time.Duration) error {
+	issuer, clientID, claim, tenant = strings.TrimSpace(issuer), strings.TrimSpace(clientID), strings.TrimSpace(claim), roles.FoldASCII(strings.TrimSpace(tenant))
 	if issuer == "" || clientID == "" {
 		return fmt.Errorf("the infra pages need --infra-oidc-issuer and --infra-oidc-client-id (the identity provider is not taken from the ledger's rackbook.yml)")
+	}
+	if claim == "" {
+		claim = "preferred_username"
 	}
 	if writeAge < 0 {
 		return fmt.Errorf("--infra-write-max-age must not be negative")
@@ -44,7 +57,16 @@ func (a *InfraAdmins) Pin(issuer, clientID string, writeAge time.Duration) error
 	if writeAge == 0 {
 		writeAge = DefaultInfraWriteAge
 	}
-	a.issuer, a.clientID, a.maxAge = issuer, clientID, writeAge
+	if u, err := url.Parse(issuer); err == nil {
+		entra := u.Host == "login.microsoftonline.com" || u.Host == "sts.windows.net" || strings.HasSuffix(u.Host, ".b2clogin.com")
+		if entra && tenant == "" {
+			return fmt.Errorf("--infra-oidc-tenant is required for an Entra issuer (the tid of the sign-in)")
+		}
+		if g := guidRe.FindString(u.Path); g != "" && tenant != "" && roles.FoldASCII(g) != tenant {
+			return fmt.Errorf("--infra-oidc-tenant %s is not the tenant in --infra-oidc-issuer (%s)", tenant, roles.FoldASCII(g))
+		}
+	}
+	a.issuer, a.clientID, a.claim, a.tenant, a.maxAge = issuer, clientID, claim, tenant, writeAge
 	return nil
 }
 
@@ -86,7 +108,7 @@ func (a *InfraAdmins) Allows(id *Identity) bool {
 	// Signed in under the pinned provider and client only; a session issued
 	// under any other (for example after auth.oidc was edited in the ledger)
 	// is refused. Unpinned = nobody.
-	if a.issuer == "" || id.OIDCIssuer != a.issuer || id.OIDCClient != a.clientID {
+	if a.issuer == "" || id.OIDCIssuer != a.issuer || id.OIDCClient != a.clientID || id.OIDCClaim != a.claim || id.OIDCTenant != a.tenant {
 		return false
 	}
 	// The identity the login derived from the IdP's identity claim, not the

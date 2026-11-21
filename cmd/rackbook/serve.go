@@ -86,6 +86,8 @@ RACKBOOK_GITHUB_TOKEN.`,
 	f.String("infra-ssh-key", "", "private key (read-only deploy key) Rackbook uses to fetch --infra-repo; only for that clone (a known_hosts file beside it is used when present)")
 	f.String("infra-oidc-issuer", "", "issuer URL of the identity provider the infra administrators sign in with; /infra refuses a session issued under any other (pinned here because auth.oidc in rackbook.yml lives in the ledger, which other people can edit); needs --infra-repo")
 	f.String("infra-oidc-client-id", "", "client ID of the sign-in application, pinned like --infra-oidc-issuer; needs --infra-repo")
+	f.String("infra-oidc-identity-claim", "preferred_username", "the ID token claim the administrators' identities are taken from (\"sub\" for subject identities); /infra refuses a session whose identity came from another claim, so auth.oidc.identity_claim in rackbook.yml cannot change who is an administrator; needs --infra-repo")
+	f.String("infra-oidc-tenant", "", "the tenant (tid claim) the administrators sign in from; required for an Entra issuer, and a tenant GUID in --infra-oidc-issuer must equal it; /infra refuses a session from another tenant (allowed_tenants in rackbook.yml is not trusted); needs --infra-repo")
 	f.Bool("infra-write", false, "turn on the infra editors: one commit per edit on --infra-branch (needs --github-app-id with Contents: write on that repository, and --infra-repo)")
 	f.Duration("infra-write-max-age", auth.DefaultInfraWriteAge, "how recent an administrator's sign-in must be for an infra write (older: sign in again)")
 	f.String("infra-managed-group", "managed", `inventory group whose hosts must each have host_vars and a SOPS file, and that holds every host of every group ("" = no such check)`)
@@ -395,7 +397,7 @@ func newInfra(ctx context.Context, f *pflag.FlagSet, cfg *config.Config, mode st
 	status, _ := f.GetString("hub-status-file")
 	key, _ := f.GetString("infra-ssh-key")
 	if dir == "" {
-		for _, name := range []string{"infra-admins", "hub-status-file", "infra-ssh-key", "infra-oidc-issuer", "infra-oidc-client-id", "infra-write", "infra-write-max-age", "infra-managed-group", "infra-agent-group"} {
+		for _, name := range []string{"infra-admins", "hub-status-file", "infra-ssh-key", "infra-oidc-issuer", "infra-oidc-client-id", "infra-oidc-identity-claim", "infra-oidc-tenant", "infra-write", "infra-write-max-age", "infra-managed-group", "infra-agent-group"} {
 			if f.Changed(name) {
 				return nil, fmt.Errorf("--%s needs --infra-repo", name)
 			}
@@ -412,12 +414,19 @@ func newInfra(ctx context.Context, f *pflag.FlagSet, cfg *config.Config, mode st
 	issuer, _ := f.GetString("infra-oidc-issuer")
 	clientID, _ := f.GetString("infra-oidc-client-id")
 	maxAge, _ := f.GetDuration("infra-write-max-age")
-	if err := ia.Pin(issuer, clientID, maxAge); err != nil {
+	claim, _ := f.GetString("infra-oidc-identity-claim")
+	tenant, _ := f.GetString("infra-oidc-tenant")
+	if err := ia.Pin(issuer, clientID, claim, tenant, maxAge); err != nil {
 		return nil, err
 	}
-	if li := cfg.Auth.Login.OIDC; li.Issuer != issuer || li.ClientID != clientID {
+	li := cfg.Auth.Login.OIDC
+	liClaim, _ := li.ClaimsOrDefault()
+	if li.BySubject() {
+		liClaim = "sub"
+	}
+	if li.Issuer != issuer || li.ClientID != clientID || liClaim != claim {
 		logger.Warn("the console login (auth.oidc in rackbook.yml) is not the identity provider pinned for /infra: nobody can open /infra until they match",
-			"login_issuer", li.Issuer, "login_client_id", li.ClientID, "pinned_issuer", issuer, "pinned_client_id", clientID)
+			"login_issuer", li.Issuer, "login_client_id", li.ClientID, "login_identity_claim", liClaim, "pinned_issuer", issuer, "pinned_client_id", clientID, "pinned_identity_claim", claim)
 	}
 	write, _ := f.GetBool("infra-write")
 	absDir, err := filepath.Abs(dir)

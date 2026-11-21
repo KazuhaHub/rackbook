@@ -184,7 +184,8 @@ func (s *Service) identityFromSubject(claims map[string]json.RawMessage, str fun
 	if err != nil {
 		return nil, "", err
 	}
-	return &auth.Identity{ID: roles.FoldASCII(SubjectPrefix + sub), Name: cleanName(name), Method: auth.MethodOIDC, Groups: groupsClaim(claims)}, tid, nil
+	return &auth.Identity{ID: roles.FoldASCII(SubjectPrefix + sub), Name: cleanName(name), Method: auth.MethodOIDC, Groups: groupsClaim(claims),
+		OIDCClaim: "sub", OIDCTenant: roles.FoldASCII(strings.TrimSpace(tid))}, tid, nil
 }
 
 // identityFromClaims decodes the verified ID token's claims with an explicit
@@ -243,7 +244,8 @@ func (s *Service) identityFromClaims(a *authoidc.Assertion) (*auth.Identity, str
 	if err != nil {
 		return nil, "", err
 	}
-	id := &auth.Identity{ID: roles.FoldASCII(ident), Name: name, Method: auth.MethodOIDC, Groups: groupsClaim(claims)}
+	id := &auth.Identity{ID: roles.FoldASCII(ident), Name: name, Method: auth.MethodOIDC, Groups: groupsClaim(claims),
+		OIDCClaim: idClaim, OIDCTenant: roles.FoldASCII(strings.TrimSpace(tid))}
 	if strings.Contains(ident, "@") {
 		id.Email = id.ID
 	}

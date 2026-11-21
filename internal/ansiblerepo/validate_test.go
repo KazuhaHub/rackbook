@@ -142,7 +142,7 @@ func TestValidateTable(t *testing.T) {
 		}, []string{"feature.bad_value"}, ""},
 		{"template marker", func(m memTree) {
 			m["inventory/host_vars/b.yaml"] = "features:\n  demo: {name: '{{ x }}', hub_url: 'https://h.example'}\n"
-		}, []string{"feature.bad_value"}, ""},
+		}, []string{"feature.bad_value", "vars.template"}, ""},
 		{"control character", func(m memTree) {
 			m["inventory/host_vars/b.yaml"] = "features:\n  demo: {name: \"a\\nb\", hub_url: 'https://h.example'}\n"
 		}, []string{"feature.bad_value"}, ""},
@@ -167,13 +167,33 @@ func TestValidateTable(t *testing.T) {
 		{"private key in group_vars", func(m memTree) {
 			m["inventory/group_vars/all.yml"] = "k: |\n  -----BEGIN RSA PRIVATE KEY-----\n  MIIBOgIBAAJBAKj34GkxFhD90vcNLYLInFEX6Ppy1tPf9Cnzj4p4WGeKLs1Pt8Qu\n  -----END RSA PRIVATE KEY-----\n"
 		}, []string{"secret.found"}, ""},
+		// host_vars are evaluated by Ansible as root: no templating, no ansible_* variables
+		{"lookup pipe", func(m memTree) { m["inventory/host_vars/b.yaml"] = "x: \"{{ lookup('pipe', 'id') }}\"\n" }, []string{"vars.template"}, ""},
+		{"statement block", func(m memTree) { m["inventory/host_vars/b.yaml"] = "x: '{% if true %}a{% endif %}'\n" }, []string{"vars.template"}, ""},
+		{"comment marker", func(m memTree) { m["inventory/host_vars/b.yaml"] = "x: 'a{# b #}'\n" }, []string{"vars.template"}, ""},
+		{"templated nested value", func(m memTree) { m["inventory/host_vars/b.yaml"] = "a:\n  b:\n    - c: '{{ x }}'\n" }, []string{"vars.template"}, ""},
+		{"templated block scalar", func(m memTree) { m["inventory/host_vars/b.yaml"] = "a: |\n  line\n  {{ lookup('env','X') }}\n" }, []string{"vars.template"}, ""},
+		{"templated key", func(m memTree) { m["inventory/host_vars/b.yaml"] = "'{{ k }}': 1\n" }, []string{"vars.template"}, ""},
+		{"ansible_ssh_common_args", func(m memTree) { m["inventory/host_vars/b.yaml"] = "ansible_ssh_common_args: -o ProxyCommand=x\n" }, []string{"vars.ansible_key"}, ""},
+		{"ansible_python_interpreter", func(m memTree) { m["inventory/host_vars/b.yaml"] = "ansible_python_interpreter: /tmp/x\n" }, []string{"vars.ansible_key"}, ""},
+		{"ansible_become upper case", func(m memTree) { m["inventory/host_vars/b.yaml"] = "ANSIBLE_become: true\n" }, []string{"vars.ansible_key"}, ""},
+		{"ansible_ nested is only text", func(m memTree) { m["inventory/host_vars/b.yaml"] = "x:\n  ansible_foo: 1\n" }, nil, ""},
+		{"group_vars may template (not edited here)", func(m memTree) { m["inventory/group_vars/all.yml"] = "x: '{{ y }}'\nansible_connection: local\n" }, nil, ""},
+		// anchors, aliases, merge keys and tags hide values from the other checks
+		{"merge key", func(m memTree) { m["inventory/host_vars/b.yaml"] = "base: &b {x: 1}\nfeatures:\n  demo:\n    <<: *b\n" }, []string{"feature.missing_required", "feature.missing_required", "feature.unknown_setting", "yaml.anchor", "yaml.anchor"}, ""},
+		{"anchor only", func(m memTree) { m["inventory/host_vars/b.yaml"] = "a: &x 1\n" }, []string{"yaml.anchor"}, ""},
+		{"alias only", func(m memTree) { m["inventory/host_vars/b.yaml"] = "a: &x 1\nb: *x\n" }, []string{"yaml.anchor", "yaml.anchor"}, ""},
+		{"inventory with a merge key", func(m memTree) {
+			m["inventory/hosts.yml"] = strings.Replace(goodInv, "    derp:\n      hosts:\n        a:\n", "    derp:\n      <<: {hosts: {a: }}\n", 1)
+		}, nil, ""}, // asserted loosely below
+		{"custom tag", func(m memTree) { m["inventory/host_vars/b.yaml"] = "a: !vault |\n  $ANSIBLE_VAULT;1.1;AES256\n" }, []string{"yaml.tag"}, ""},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			m := goodTree()
 			c.edit(m)
 			got := codes(Validate(m, DefaultRules(), nil))
-			if c.name == "inventory hosts a list" {
+			if c.name == "inventory hosts a list" || c.name == "inventory with a merge key" {
 				if len(got) == 0 {
 					t.Fatal("a hosts list must be refused")
 				}
@@ -303,9 +323,29 @@ func TestUnifiedDiff(t *testing.T) {
 	if d := unifiedDiff("n.yml", []byte("x\n"), nil); d.Status != "removed" || !strings.Contains(d.Diff, "-x") {
 		t.Fatalf("%+v", d)
 	}
+	// whole PEM blocks are hidden, and a changed block still shows as changed
+	pemA := "k: |\n  -----BEGIN OPENSSH PRIVATE KEY-----\n  AAAAB3NzaC1yc2EAAAADAQABAAAB\n  -----END OPENSSH PRIVATE KEY-----\nip: 1\n"
+	pemB := strings.Replace(pemA, "AAAAB3Nz", "BBBBZZZZ", 1)
+	d = unifiedDiff("p.yml", []byte(pemA), []byte(pemB))
+	if strings.Contains(d.Diff, "AAAAB3") || strings.Contains(d.Diff, "BBBBZZ") || strings.Contains(d.Diff, "BEGIN") || strings.Contains(d.Diff, "END OPENSSH") || !strings.Contains(d.Diff, "-  (hidden):") || !strings.Contains(d.Diff, "+  (hidden):") {
+		t.Fatalf("%s", d.Diff)
+	}
 	// secret-looking values never appear in a diff
 	d = unifiedDiff("v.yml", []byte("api_token: abc123secret\nip: 1\n"), []byte("api_token: zzz999other\nip: 2\n"))
-	if strings.Contains(d.Diff, "abc123") || strings.Contains(d.Diff, "zzz999") || !strings.Contains(d.Diff, "api_token: (hidden)") {
+	if strings.Contains(d.Diff, "abc123") || strings.Contains(d.Diff, "zzz999") || !strings.Contains(d.Diff, "-api_token: (hidden):") || !strings.Contains(d.Diff, "+api_token: (hidden):") {
 		t.Fatalf("%s", d.Diff)
+	}
+}
+
+// A file that is already broken must not let the rest of its content through
+// unchecked: everything in the result of an edit is checked.
+func TestBrokenFileStillGetsEveryCheck(t *testing.T) {
+	m := goodTree()
+	m["inventory/host_vars/b.yaml"] = "a: 1\na: 2\nx: '{{ lookup(\"pipe\", \"id\") }}'\nfeatures:\n  demo: {name: x, hub_url: 'http://x'}\n"
+	got := strings.Join(codes(Validate(m, DefaultRules(), nil)), ",")
+	for _, want := range []string{"yaml.duplicate_key", "vars.template", "feature.bad_value"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("%s not reported: %s", want, got)
+		}
 	}
 }

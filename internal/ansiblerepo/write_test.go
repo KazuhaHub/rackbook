@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/kazuhahub/rackbook/internal/auth"
 	"github.com/kazuhahub/rackbook/internal/githubapp"
@@ -651,5 +652,113 @@ func TestEditDoesNotAddAnAuthorFromNowhere(t *testing.T) {
 	w := newWFix(t, true)
 	if _, err := w.repo.Apply(context.Background(), Edit{Scope: "host_vars/a", Action: "edit", Who: &auth.Identity{Method: auth.MethodOIDC}, Files: w.rawEdit(aPath, "x: 1\n").Files}, false); !errors.Is(err, ErrNoAuthor) {
 		t.Fatalf("%v", err)
+	}
+}
+
+func TestHostVarsTemplatingAndConnectionVarsAreRefusedOnWrite(t *testing.T) {
+	w := newWFix(t, true)
+	head := w.log(t, "%H")
+	for name, content := range map[string]string{
+		"lookup pipe":   wVarsA + "x: \"{{ lookup('pipe', 'id') }}\"\n",
+		"ssh args":      wVarsA + "ansible_ssh_common_args: -o ProxyCommand=x\n",
+		"interpreter":   wVarsA + "ansible_python_interpreter: /tmp/x\n",
+		"nested":        wVarsA + "a:\n  b: '{% if x %}y{% endif %}'\n",
+		"templated key": wVarsA + "'{{ k }}': 1\n",
+		"merge key":     wVarsA + "base: &b {x: 1}\nc:\n  <<: *b\n",
+	} {
+		_, err := w.repo.Apply(context.Background(), w.rawEdit(aPath, content), false)
+		var ve *ValidationError
+		if !errors.As(err, &ve) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	if w.log(t, "%H") != head || len(w.hook.pushes()) != 0 {
+		t.Fatal("nothing may be pushed")
+	}
+}
+
+func TestResultOfAnEditIsCheckedEvenWhenTheFileWasAlreadyBroken(t *testing.T) {
+	w := newWFix(t, true)
+	// b already has a duplicate key and a template upstream (an old problem)
+	w.upstream(t, "broken", map[string]string{"inventory/host_vars/b.yml": "a: 1\na: 2\nx: '{{ y }}'\n"})
+	if err := w.repo.Refresh(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	b := "inventory/host_vars/b.yml"
+	// an edit that keeps the problems is still refused: the result must pass
+	_, err := w.repo.Apply(context.Background(), w.rawEdit(b, "a: 1\na: 2\nx: '{{ y }}'\nz: 1\n"), false)
+	var ve *ValidationError
+	if !errors.As(err, &ve) {
+		t.Fatalf("%v", err)
+	}
+	// one that fixes them is accepted
+	if _, err := w.repo.Apply(context.Background(), w.rawEdit(b, "a: 1\nz: 1\n"), false); err != nil {
+		t.Fatal(err)
+	}
+	// old problems in files the edit does not write stay warnings
+	w.upstream(t, "broken again", map[string]string{"inventory/host_vars/b.yml": "x: '{{ y }}'\n"})
+	if err := w.repo.Refresh(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	out, err := w.repo.Apply(context.Background(), w.rawEdit(aPath, wVarsA+"n: 1\n"), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Issues) == 0 || out.Issues[0].Severity != SevWarning {
+		t.Fatalf("%+v", out.Issues)
+	}
+}
+
+func TestGroupVarsAreNotEditableOrRevertable(t *testing.T) {
+	w := newWFix(t, true)
+	gv := "inventory/group_vars/all.yml"
+	w.upstream(t, "group vars", map[string]string{gv: "ansible_connection: local\nx: '{{ y }}'\n"})
+	if err := w.repo.Refresh(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	e := w.rawEdit(aPath, "x: 1\n")
+	e.Files[0].Path = gv
+	if _, err := w.repo.Apply(context.Background(), e, false); err == nil || errors.Is(err, ErrNoChange) {
+		t.Fatalf("%v", err)
+	}
+	var rf *RefusedError
+	if _, err := w.repo.Revert(context.Background(), w.log(t, "%H"), alice, false); !errors.As(err, &rf) || rf.Code != "not_editable" {
+		t.Fatalf("%v", err)
+	}
+	hist, _ := w.repo.History(context.Background(), 3)
+	if hist[0].Revertible || hist[0].Reason != "not_editable" {
+		t.Fatalf("%+v", hist[0])
+	}
+}
+
+func TestRevertRefusesFilesWithSecretLookingValues(t *testing.T) {
+	w := newWFix(t, true)
+	// a commit that changes a file holding a secret-looking value
+	w.upstream(t, "secret-ish", map[string]string{"inventory/host_vars/b.yml": "api_token: abc123secret\nip: 1\n"})
+	if err := w.repo.Refresh(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	var ee *EditError
+	if _, err := w.repo.Revert(context.Background(), w.log(t, "%H"), alice, false); !errors.As(err, &ee) {
+		t.Fatalf("%v", err)
+	}
+	if _, err := w.repo.Revert(context.Background(), w.log(t, "%H"), alice, true); !errors.As(err, &ee) {
+		t.Fatalf("a preview must refuse too: %v", err)
+	}
+}
+
+func TestRevertSubjectIsTruncatedByRunesNotBytes(t *testing.T) {
+	w := newWFix(t, true)
+	subj := strings.Repeat("改", 150)
+	w.upstream(t, subj, map[string]string{"inventory/host_vars/b.yml": "ip: 7\n"})
+	if err := w.repo.Refresh(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.repo.Revert(context.Background(), w.log(t, "%H"), alice, false); err != nil {
+		t.Fatal(err)
+	}
+	got := w.log(t, "%s")
+	if !utf8.ValidString(got) || strings.Contains(got, "\ufffd") || strings.Count(got, "改") != 120-len([]rune(" ")) && strings.Count(got, "改") < 100 {
+		t.Fatalf("%q", got)
 	}
 }

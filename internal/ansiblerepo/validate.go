@@ -265,6 +265,9 @@ func Validate(t Tree, rules Rules, scan *secretscan.Scanner) []Issue {
 		var iss []Issue
 		inv, iss = parseInventoryShape(invBytes)
 		out = append(out, iss...)
+		if root, _ := parseMapFile(inventoryFile, invBytes); root != nil {
+			out = append(out, indirectionIssues(inventoryFile, root)...)
+		}
 	}
 
 	specs := map[string]*FeatureSpec{}
@@ -287,6 +290,15 @@ func Validate(t Tree, rules Rules, scan *secretscan.Scanner) []Issue {
 			b, _ := t.Read(file)
 			root, iss := parseMapFile(file, b)
 			out = append(out, iss...)
+			if root != nil {
+				// every check runs on whatever parsed: a file that is already broken
+				// elsewhere must not let the rest through unchecked
+				out = append(out, indirectionIssues(file, root)...)
+				if dir == hostVarsDir {
+					out = append(out, hostVarsIssues(file, root)...)
+				}
+				out = append(out, featureIssues(file, root, spec)...)
+			}
 			if len(iss) > 0 {
 				continue
 			}
@@ -298,7 +310,6 @@ func Validate(t Tree, rules Rules, scan *secretscan.Scanner) []Issue {
 				out = append(out, newIssue("secret.found", sev, file, strings.TrimPrefix(strings.ReplaceAll(f.Path, "/", "."), "."),
 					"possible secret ("+f.Rule+"): keep secrets in the SOPS files", "rule", f.Rule))
 			}
-			out = append(out, featureIssues(file, root, spec)...)
 		}
 	}
 
@@ -445,5 +456,81 @@ func blocking(issues []Issue, confirmed bool) []Issue {
 			out = append(out, i)
 		}
 	}
+	return out
+}
+
+// indirectionIssues refuses anchors, aliases, merge keys (`<<`) and explicit
+// tags: they let a value reach a place the other checks do not look at (a merged
+// mapping hides settings from the feature and template checks).
+func indirectionIssues(file string, root *yaml.Node) []Issue {
+	var out []Issue
+	var walk func(n *yaml.Node, at string)
+	walk = func(n *yaml.Node, at string) {
+		switch {
+		case n.Kind == yaml.AliasNode:
+			out = append(out, newIssue("yaml.anchor", SevError, file, at, "aliases, anchors and merge keys are not allowed in files edited here"))
+			return
+		case n.Anchor != "":
+			out = append(out, newIssue("yaml.anchor", SevError, file, at, "aliases, anchors and merge keys are not allowed in files edited here"))
+		}
+		if strings.HasPrefix(n.Tag, "!") && !strings.HasPrefix(n.Tag, "!!") {
+			out = append(out, newIssue("yaml.tag", SevError, file, at, "explicit YAML tags are not allowed in files edited here", "name", n.Tag))
+		}
+		if n.Kind == yaml.MappingNode {
+			for i := 0; i+1 < len(n.Content); i += 2 {
+				k := n.Content[i]
+				if k.Kind == yaml.ScalarNode && k.Value == "<<" {
+					out = append(out, newIssue("yaml.anchor", SevError, file, join(at, "<<"), "aliases, anchors and merge keys are not allowed in files edited here"))
+					continue
+				}
+				walk(k, at)
+				walk(n.Content[i+1], join(at, k.Value))
+			}
+			return
+		}
+		for _, c := range n.Content {
+			walk(c, at)
+		}
+	}
+	walk(root, "")
+	return out
+}
+
+func hasTemplate(s string) bool {
+	return strings.Contains(s, "{{") || strings.Contains(s, "{%") || strings.Contains(s, "{#")
+}
+
+// hostVarsIssues applies what only a host's own variables must satisfy: no
+// templating anywhere (a key or a value, any depth, block scalars included: the
+// target runs Ansible as root and would evaluate it) and no ansible_* connection,
+// privilege or interpreter variables at the top level.
+func hostVarsIssues(file string, root *yaml.Node) []Issue {
+	var out []Issue
+	for i := 0; i+1 < len(root.Content); i += 2 {
+		if k := root.Content[i].Value; strings.HasPrefix(strings.ToLower(k), "ansible_") {
+			out = append(out, newIssue("vars.ansible_key", SevError, file, k, "ansible_* variables (connection, privilege, interpreter) are not edited here", "name", k))
+		}
+	}
+	var walk func(n *yaml.Node, at string)
+	walk = func(n *yaml.Node, at string) {
+		if n.Kind == yaml.ScalarNode && hasTemplate(n.Value) {
+			out = append(out, newIssue("vars.template", SevError, file, at, "templating ({{, {% or {#) is not allowed in host variables edited here"))
+			return
+		}
+		if n.Kind == yaml.MappingNode {
+			for i := 0; i+1 < len(n.Content); i += 2 {
+				k := n.Content[i]
+				if hasTemplate(k.Value) {
+					out = append(out, newIssue("vars.template", SevError, file, join(at, "(key)"), "templating ({{, {% or {#) is not allowed in host variables edited here"))
+				}
+				walk(n.Content[i+1], join(at, k.Value))
+			}
+			return
+		}
+		for _, c := range n.Content {
+			walk(c, at)
+		}
+	}
+	walk(root, "")
 	return out
 }

@@ -447,7 +447,7 @@ forbidden`). A module uses its own token for the three calls marked *module*.
 
 Only with `--infra-repo` (README, *Infrastructure view and editors*); without it every path below is `404`.
 Each call needs a person listed in `--infra-admins` who signed in with the OIDC login **under the issuer and
-client ID pinned by `--infra-oidc-issuer` and `--infra-oidc-client-id`**: any other caller, a token of the
+client ID pinned by `--infra-oidc-issuer` and `--infra-oidc-client-id`, with the identity claim and tenant of `--infra-oidc-identity-claim` and `--infra-oidc-tenant`**: any other caller, a token of the
 listed person included, gets `403 forbidden`. None is on `/mcp`. `/api/meta` tells such a person with
 `user.canInfra: true`, and with `user.canInfraWrite: true` when the editors are on (`--infra-write`, not `--read-only`).
 
@@ -493,7 +493,7 @@ attempts); `422 invalid` `{issues: [{code, severity: error|confirm|warning, file
 anyone else. Issues with severity `confirm` (a heuristic secret finding) are let through when
 `confirmSecretScan` is true. Issue codes: `yaml.invalid`, `yaml.multi_document`, `yaml.not_mapping`,
 `yaml.duplicate_key`, `inventory.missing`, `inventory.shape`, `inventory.not_managed`,
-`inventory.no_host_vars`, `inventory.no_secrets`, `inventory.agent_missing`, `inventory.agent_extra`,
+`inventory.no_host_vars`, `inventory.no_secrets`, `inventory.agent_missing`, `inventory.agent_extra`, `yaml.anchor`, `yaml.tag`, `vars.template`, `vars.ansible_key`,
 `feature.unknown`, `feature.not_mapping`, `feature.settings_not_mapping`, `feature.unknown_setting`,
 `feature.secret_in_vars`, `feature.secret_refused`, `feature.hidden_value`, `feature.bad_value`,
 `feature.missing_required`, `secret.found`.

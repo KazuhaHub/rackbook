@@ -132,7 +132,7 @@ func newWEnv(t *testing.T, mut func(o *api.Options, io *api.InfraOptions), admin
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := ia.Pin(testIssuer, testClient, 12*time.Hour); err != nil {
+	if err := ia.Pin(testIssuer, testClient, "", testTenant, 12*time.Hour); err != nil {
 		t.Fatal(err)
 	}
 	e.fixture = newFixture(t, func(o *api.Options) {

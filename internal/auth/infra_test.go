@@ -12,33 +12,36 @@ func TestInfraAdminsOnlyOIDCSessionsOfListedPeople(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := a.Pin("https://idp.test", "client-1", 0); err != nil {
+	if err := a.Pin("https://idp.test", "client-1", "", "tenant-1", 0); err != nil {
 		t.Fatal(err)
 	}
 	admin := roles.Admin
-	const iss, cli = "https://idp.test", "client-1"
+	const iss, cli, tid = "https://idp.test", "client-1", "tenant-1"
 	cases := []struct {
 		name string
 		id   *Identity
 		want bool
 	}{
-		{"listed, oidc session", &Identity{ID: "me@kazuha.org", Method: MethodOIDC, OIDCIssuer: iss, OIDCClient: cli, Role: admin}, true},
-		{"case folded", &Identity{ID: "ME@kazuha.ORG", Method: MethodOIDC, OIDCIssuer: iss, OIDCClient: cli, Role: admin}, true},
-		{"admin role but not listed", &Identity{ID: "other@kazuha.org", Method: MethodOIDC, OIDCIssuer: iss, OIDCClient: cli, Role: admin}, false},
-		{"viewer not listed", &Identity{ID: "v@kazuha.org", Method: MethodOIDC, OIDCIssuer: iss, OIDCClient: cli, Role: roles.Viewer}, false},
-		{"listed, editor role in rackbook is irrelevant", &Identity{ID: "me@kazuha.org", Method: MethodOIDC, OIDCIssuer: iss, OIDCClient: cli, Role: roles.Editor}, true},
+		{"listed, oidc session", &Identity{ID: "me@kazuha.org", Method: MethodOIDC, OIDCIssuer: iss, OIDCClient: cli, OIDCClaim: "preferred_username", OIDCTenant: tid, Role: admin}, true},
+		{"case folded", &Identity{ID: "ME@kazuha.ORG", Method: MethodOIDC, OIDCIssuer: iss, OIDCClient: cli, OIDCClaim: "preferred_username", OIDCTenant: tid, Role: admin}, true},
+		{"admin role but not listed", &Identity{ID: "other@kazuha.org", Method: MethodOIDC, OIDCIssuer: iss, OIDCClient: cli, OIDCClaim: "preferred_username", OIDCTenant: tid, Role: admin}, false},
+		{"viewer not listed", &Identity{ID: "v@kazuha.org", Method: MethodOIDC, OIDCIssuer: iss, OIDCClient: cli, OIDCClaim: "preferred_username", OIDCTenant: tid, Role: roles.Viewer}, false},
+		{"listed, editor role in rackbook is irrelevant", &Identity{ID: "me@kazuha.org", Method: MethodOIDC, OIDCIssuer: iss, OIDCClient: cli, OIDCClaim: "preferred_username", OIDCTenant: tid, Role: roles.Editor}, true},
 		{"API token of the listed person", &Identity{ID: "me@kazuha.org", Method: MethodToken, Token: "t", Role: admin}, false},
-		{"token field set", &Identity{ID: "me@kazuha.org", Method: MethodOIDC, OIDCIssuer: iss, OIDCClient: cli, Token: "t", Role: admin}, false},
+		{"token field set", &Identity{ID: "me@kazuha.org", Method: MethodOIDC, OIDCIssuer: iss, OIDCClient: cli, OIDCClaim: "preferred_username", OIDCTenant: tid, Token: "t", Role: admin}, false},
 		{"OAuth access token", &Identity{ID: "me@kazuha.org", Method: MethodOAuth, Role: admin}, false},
 		{"MCPHub", &Identity{ID: "me@kazuha.org", Method: MethodMCPHub, Role: admin}, false},
 		{"passkey", &Identity{ID: "me@kazuha.org", Method: MethodPasskey, Role: admin}, false},
 		{"cloudflare access", &Identity{ID: "me@kazuha.org", Method: MethodCloudflareAccess, Role: admin}, false},
 		{"auth none", &Identity{ID: "me@kazuha.org", Method: MethodNone, Role: admin}, false},
-		{"anonymous", &Identity{Method: MethodOIDC, OIDCIssuer: iss, OIDCClient: cli, Role: admin}, false},
-		{"only the e-mail field matches", &Identity{ID: "x@kazuha.org", Email: "me@kazuha.org", Method: MethodOIDC, OIDCIssuer: iss, OIDCClient: cli, Role: admin}, false},
+		{"anonymous", &Identity{Method: MethodOIDC, OIDCIssuer: iss, OIDCClient: cli, OIDCClaim: "preferred_username", OIDCTenant: tid, Role: admin}, false},
+		{"only the e-mail field matches", &Identity{ID: "x@kazuha.org", Email: "me@kazuha.org", Method: MethodOIDC, OIDCIssuer: iss, OIDCClient: cli, OIDCClaim: "preferred_username", OIDCTenant: tid, Role: admin}, false},
 		{"nil", nil, false},
 		{"issued under another issuer", &Identity{ID: "me@kazuha.org", Method: MethodOIDC, OIDCIssuer: "https://evil.test", OIDCClient: cli}, false},
 		{"issued under another client", &Identity{ID: "me@kazuha.org", Method: MethodOIDC, OIDCIssuer: iss, OIDCClient: "other"}, false},
+		{"identity from another claim", &Identity{ID: "me@kazuha.org", Method: MethodOIDC, OIDCIssuer: iss, OIDCClient: cli, OIDCClaim: "email", OIDCTenant: tid}, false},
+		{"another tenant", &Identity{ID: "me@kazuha.org", Method: MethodOIDC, OIDCIssuer: iss, OIDCClient: cli, OIDCClaim: "preferred_username", OIDCTenant: "other"}, false},
+		{"no tenant recorded", &Identity{ID: "me@kazuha.org", Method: MethodOIDC, OIDCIssuer: iss, OIDCClient: cli, OIDCClaim: "preferred_username"}, false},
 		{"session without issuer (older cookie)", &Identity{ID: "me@kazuha.org", Method: MethodOIDC}, false},
 	}
 	for _, c := range cases {
@@ -65,17 +68,17 @@ func TestInfraAdminsUnpinnedAllowsNobody(t *testing.T) {
 	if a.Allows(&Identity{ID: "me@kazuha.org", Method: MethodOIDC}) || a.Allows(&Identity{ID: "me@kazuha.org", Method: MethodOIDC, OIDCIssuer: "", OIDCClient: ""}) {
 		t.Fatal("without a pin nobody is admitted")
 	}
-	if err := a.Pin("", "c", 0); err == nil {
+	if err := a.Pin("", "c", "", "", 0); err == nil {
 		t.Fatal("an empty issuer is refused")
 	}
-	if err := a.Pin("https://i", "", 0); err == nil {
+	if err := a.Pin("https://i", "", "", "", 0); err == nil {
 		t.Fatal("an empty client is refused")
 	}
 }
 
 func TestInfraAdminsFresh(t *testing.T) {
 	a, _ := NewInfraAdmins([]string{"me@kazuha.org"})
-	if err := a.Pin("https://i", "c", 0); err != nil {
+	if err := a.Pin("https://i", "c", "", "", 0); err != nil {
 		t.Fatal(err)
 	}
 	now := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
@@ -95,5 +98,27 @@ func TestInfraAdminsFresh(t *testing.T) {
 	}
 	if a.Fresh(nil, now) {
 		t.Error("nil identity")
+	}
+}
+
+func TestInfraPinTenantRules(t *testing.T) {
+	const g = "e72914d3-3d19-486e-be11-15c69540e02a"
+	entra := "https://login.microsoftonline.com/" + g + "/v2.0"
+	for name, c := range map[string]struct {
+		issuer, tenant string
+		ok             bool
+	}{
+		"entra needs a tenant":     {entra, "", false},
+		"entra tenant matches":     {entra, g, true},
+		"entra tenant, other case": {entra, "E72914D3-3D19-486E-BE11-15C69540E02A", true},
+		"entra tenant differs":     {entra, "11111111-1111-1111-1111-111111111111", false},
+		"guid in a non-entra path": {"https://idp.example/" + g, "other", false},
+		"other idp without tenant": {"https://idp.example", "", true},
+		"other idp with a tenant":  {"https://idp.example", "t1", true},
+	} {
+		a, _ := NewInfraAdmins([]string{"me@kazuha.org"})
+		if err := a.Pin(c.issuer, "c", "", c.tenant, 0); (err == nil) != c.ok {
+			t.Errorf("%s: %v", name, err)
+		}
 	}
 }

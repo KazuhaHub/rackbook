@@ -278,7 +278,7 @@ func TestServeInfraFlagsAreChecked(t *testing.T) {
 	dir := testutil.CopyExample(t)
 	cfg := filepath.Join(dir, "rackbook.yml")
 	other := t.TempDir()
-	pin := []string{"--infra-oidc-issuer", "https://idp.example", "--infra-oidc-client-id", "console"}
+	pin := []string{"--infra-oidc-issuer", "https://idp.example", "--infra-oidc-client-id", "console", "--infra-oidc-tenant", "t1"}
 	for name, c := range map[string]struct {
 		args []string
 		want string
@@ -292,6 +292,9 @@ func TestServeInfraFlagsAreChecked(t *testing.T) {
 		"repo is the ledger itself":        {append([]string{"--auth", "oidc", "--infra-repo", dir, "--infra-admins", "a@x.org"}, pin...), "separate directories"},
 		"repo without the pinned provider": {[]string{"--auth", "oidc", "--infra-repo", other, "--infra-admins", "a@x.org"}, "--infra-oidc-issuer and --infra-oidc-client-id"},
 		"issuer without the client":        {[]string{"--auth", "oidc", "--infra-repo", other, "--infra-admins", "a@x.org", "--infra-oidc-issuer", "https://i"}, "--infra-oidc-issuer and --infra-oidc-client-id"},
+		"entra issuer without a tenant":    {[]string{"--auth", "oidc", "--infra-repo", other, "--infra-admins", "a@x.org", "--infra-oidc-issuer", "https://login.microsoftonline.com/e72914d3-3d19-486e-be11-15c69540e02a/v2.0", "--infra-oidc-client-id", "c"}, "--infra-oidc-tenant is required"},
+		"tenant that is not the issuer's":  {[]string{"--auth", "oidc", "--infra-repo", other, "--infra-admins", "a@x.org", "--infra-oidc-issuer", "https://login.microsoftonline.com/e72914d3-3d19-486e-be11-15c69540e02a/v2.0", "--infra-oidc-client-id", "c", "--infra-oidc-tenant", "11111111-1111-1111-1111-111111111111"}, "not the tenant in"},
+		"claim without a repo":             {[]string{"--infra-oidc-identity-claim", "email"}, "needs --infra-repo"},
 		"pins without a repo":              {pin, "needs --infra-repo"},
 		"write without a repo":             {[]string{"--infra-write"}, "--infra-write needs --infra-repo"},
 		"write without the App":            {append([]string{"--auth", "oidc", "--infra-repo", other, "--infra-admins", "a@x.org", "--infra-write"}, pin...), "--infra-write needs --github-app-id"},

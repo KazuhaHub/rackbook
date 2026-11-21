@@ -1023,15 +1023,22 @@ shown as 4 characters plus 8 hex digits of a hash (not a secure hash; it only te
     no CI gate, so Rackbook validates before it commits. The reasons decision 13
     gave still hold, which is why the write path is narrow:
     - **The identity provider is pinned** by flags (`--infra-oidc-issuer`,
-      `--infra-oidc-client-id`) and every session records the issuer and client it
-      was issued under, because `auth.oidc` lives in the ledger, which other people
-      can edit. A write also needs a sign-in younger than `--infra-write-max-age`
+      `--infra-oidc-client-id`, `--infra-oidc-identity-claim`, `--infra-oidc-tenant`)
+      and every session records the issuer, client, identity claim and tenant it
+      was issued under, because `auth.oidc` (including `identity_claim` and
+      `allowed_tenants`) lives in the ledger, which other people can edit. A write also needs a sign-in younger than `--infra-write-max-age`
       (default 12 h).
     - **Writes are opt-in** (`--infra-write`) and use an installation token narrowed
       to the infra repository with `contents: write`; reads keep `contents: read`.
     - **One edit, one commit**, authored by the person, with `Edited-by`,
       `Edited-via` and `Files` trailers; a revert is a new commit. Only
-      `inventory/hosts.yml`, `host_vars` and `group_vars` can be written.
+      `inventory/hosts.yml` and `host_vars` can be written; `group_vars` are not
+      (they legitimately hold templating and `ansible_connection`).
+    - **host_vars are code**: Ansible evaluates them as root, so a file Rackbook
+      writes may contain no templating (`{{`, `{%`, `{#`, in keys or values), no
+      top-level `ansible_*` variables, and no anchors, aliases, merge keys or tags.
+      What an edit writes must pass every check even if the file was already
+      broken.
     - **Nothing is forced.** Conflicts are detected by the object ID of each file
       the editor loaded; a push rejected because the branch moved is replayed on the
       new tip (three tries) only when none of the files changed.

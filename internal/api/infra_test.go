@@ -21,6 +21,7 @@ import (
 const (
 	testIssuer = "https://idp.test"
 	testClient = "rackbook-console"
+	testTenant = "tenant-1"
 )
 
 // testSessions signs a caller in from headers: X-User names the identity and
@@ -40,7 +41,13 @@ func (ts testSessions) Identify(w http.ResponseWriter, r *http.Request) (*auth.I
 	}
 	id := &auth.Identity{ID: u, Email: u, Name: u, Method: m}
 	if m == auth.MethodOIDC {
-		id.OIDCIssuer, id.OIDCClient = testIssuer, testClient
+		id.OIDCIssuer, id.OIDCClient, id.OIDCClaim, id.OIDCTenant = testIssuer, testClient, "preferred_username", testTenant
+		if v := r.Header.Get("X-Claim"); v != "" {
+			id.OIDCClaim = v
+		}
+		if v := r.Header.Get("X-Tenant"); v != "" {
+			id.OIDCTenant = v
+		}
 		if v := r.Header.Get("X-Issuer"); v != "" {
 			id.OIDCIssuer = v
 		}
@@ -135,7 +142,7 @@ func newInfraEnv(t *testing.T, admins ...string) *infraEnv {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := ia.Pin(testIssuer, testClient, 0); err != nil {
+	if err := ia.Pin(testIssuer, testClient, "", testTenant, 0); err != nil {
 		t.Fatal(err)
 	}
 	e.repo = repo

@@ -101,7 +101,9 @@ func editable(p string) bool {
 	}
 	dir, name := path.Split(p)
 	dir = strings.TrimSuffix(dir, "/")
-	return (dir == hostVarsDir || dir == groupVarsDir) && isYAMLName(name) && hostNameRe.MatchString(strings.TrimSuffix(strings.TrimSuffix(name, ".yml"), ".yaml"))
+	// group_vars are not editable: they legitimately hold templating and
+	// connection variables, which the checks for edited files refuse
+	return dir == hostVarsDir && isYAMLName(name) && hostNameRe.MatchString(strings.TrimSuffix(strings.TrimSuffix(name, ".yml"), ".yaml"))
 }
 
 // CanWrite reports whether edits can be committed.
@@ -299,6 +301,17 @@ func (r *Repo) evaluate(p *plan) *Outcome {
 	before := Validate(cur, r.o.Rules, r.o.Scanner)
 	after := Validate(overlay{cur, p.files}, r.o.Rules, r.o.Scanner)
 	out.Issues = newIssues(before, after)
+	// What is being written must pass every check, whatever state the file was in:
+	// an old problem in a file this edit rewrites is not a warning.
+	for i := range out.Issues {
+		if _, touched := p.files[out.Issues[i].File]; touched {
+			for _, a := range after {
+				if a.key() == out.Issues[i].key() {
+					out.Issues[i].Severity = a.Severity
+				}
+			}
+		}
+	}
 	return out
 }
 
@@ -357,8 +370,8 @@ func (r *Repo) planRevert(ctx context.Context, commit string) (*plan, error) {
 	p := &plan{scope: rv.scope, action: "revert " + shortRev(commit), files: map[string][]byte{}, extra: []string{"Reverts: " + commit}}
 	if subj, err := r.mirror.Subject(ctx, commit); err == nil && subj != "" {
 		p.action += " " + subj
-		if len(p.action) > 120 {
-			p.action = p.action[:120]
+		if r := []rune(p.action); len(r) > 120 {
+			p.action = string(r[:120])
 		}
 	}
 	cur := dirTree{r}
@@ -371,6 +384,9 @@ func (r *Repo) planRevert(ctx context.Context, commit string) (*plan, error) {
 			}
 		}
 		old, _ := cur.Read(c.Path)
+		if HiddenIn(content) > 0 || HiddenIn(old) > 0 {
+			return nil, &EditError{Err: errors.New(c.Path + " holds values that look like secrets and is not reverted here")}
+		}
 		if string(content) == string(old) && (content == nil) == (old == nil) {
 			continue
 		}
