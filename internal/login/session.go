@@ -72,6 +72,7 @@ type session struct {
 	Seen   int64    `json:"seen"`
 	OIDCAt int64    `json:"oidc,omitempty"` // when the user last logged in with OIDC (passkey enrolment)
 	Iss    string   `json:"iss,omitempty"`  // oidc sessions: the issuer that authenticated the login; a session from another issuer is refused
+	Cli    string   `json:"cli,omitempty"`  // oidc sessions: the client ID of that login (checked by /infra, which pins it)
 	Groups []string `json:"grp,omitempty"`  // oidc sessions: the ID token's groups claim (bounded), for group: role entries
 	Cred   string   `json:"cred,omitempty"` // passkey sessions: the credential id used, so deleting it ends the session
 }

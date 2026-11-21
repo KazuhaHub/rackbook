@@ -26,7 +26,16 @@ export type HostPage = { repo: RepoState; hub: Hub; host: HostDetail; report?: R
 
 export type Cert = { name: string; owner: string; notAfter?: string; failing: boolean; lastError?: string }
 export type IPList = { name: string; version?: string; entries: number; warnings: string[] }
-export type Commit = { hash: string; author: string; time: string; subject: string }
+export type Commit = {
+  hash: string
+  author: string
+  time: string
+  subject: string
+  files?: string[]
+  revertible?: boolean
+  reason?: string
+  later?: string[]
+}
 
 const seg = (s: string) => encodeURIComponent(s)
 const REFRESH = 30_000
@@ -39,7 +48,7 @@ export const useInfraHosts = (enabled: boolean) => useInfra<HostList>(['hosts'],
 export const useInfraHost = (name: string, enabled: boolean) => useInfra<HostPage>(['host', name], `/infra/hosts/${seg(name)}`, enabled)
 export const useInfraCerts = (enabled: boolean) => useInfra<{ hub: Hub; certs: Cert[] }>(['certs'], '/infra/certs', enabled)
 export const useInfraIPLists = (enabled: boolean) => useInfra<{ hub: Hub; lists: IPList[] }>(['iplists'], '/infra/iplists', enabled)
-export const useInfraCommits = (enabled: boolean) => useInfra<{ repo: RepoState; commits: Commit[] }>(['commits'], '/infra/commits', enabled)
+export const useInfraCommits = (enabled: boolean) => useInfra<{ repo: RepoState; commits: Commit[]; canRevert?: boolean }>(['commits'], '/infra/commits', enabled)
 
 /** "30 seconds ago", "5 minutes ago", ... in the current language. */
 export function agoText(seconds: number): string {

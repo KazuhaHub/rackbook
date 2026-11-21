@@ -113,6 +113,10 @@ type Runner interface {
 
 type execRunner struct{}
 
+// RealRunner is the Runner that runs the real git, with the guards of safegit.go.
+// A test wraps it to watch or interfere with the commands.
+func RealRunner() Runner { return defaultRunner }
+
 // defaultRunner runs the real git. Tests may replace it.
 var defaultRunner Runner = execRunner{}
 
@@ -150,6 +154,12 @@ func (execRunner) Run(ctx context.Context, c Cmd) (string, string, error) {
 
 // run executes git with the given extra environment and stdin.
 func (r *Repo) run(ctx context.Context, env []string, stdin string, args ...string) (string, error) {
+	out, err := r.runRaw(ctx, env, stdin, args...)
+	return strings.TrimRight(out, "\n"), err
+}
+
+// runRaw is run without trimming the output (file contents).
+func (r *Repo) runRaw(ctx context.Context, env []string, stdin string, args ...string) (string, error) {
 	rn := r.Runner
 	if rn == nil {
 		rn = defaultRunner
@@ -166,7 +176,7 @@ func (r *Repo) run(ctx context.Context, env []string, stdin string, args ...stri
 	if err != nil {
 		return "", &GitError{Args: args, Stderr: errOut, Err: err}
 	}
-	return strings.TrimRight(out, "\n"), nil
+	return out, nil
 }
 
 func (r *Repo) git(ctx context.Context, args ...string) (string, error) {

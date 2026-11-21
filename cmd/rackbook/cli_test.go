@@ -278,17 +278,23 @@ func TestServeInfraFlagsAreChecked(t *testing.T) {
 	dir := testutil.CopyExample(t)
 	cfg := filepath.Join(dir, "rackbook.yml")
 	other := t.TempDir()
+	pin := []string{"--infra-oidc-issuer", "https://idp.example", "--infra-oidc-client-id", "console"}
 	for name, c := range map[string]struct {
 		args []string
 		want string
 	}{
-		"admins without a repo":     {[]string{"--infra-admins", "a@x.org"}, "--infra-admins needs --infra-repo"},
-		"status file without repo":  {[]string{"--hub-status-file", "/run/hub/status.json"}, "--hub-status-file needs --infra-repo"},
-		"repo without oidc":         {[]string{"--infra-repo", other, "--infra-admins", "a@x.org"}, "needs --auth oidc"},
-		"oidc without admins":       {[]string{"--auth", "oidc", "--infra-repo", other}, "names nobody"},
-		"wildcard admin":            {[]string{"--auth", "oidc", "--infra-repo", other, "--infra-admins", "*"}, "no wildcards"},
-		"repo inside the ledger":    {[]string{"--auth", "oidc", "--infra-repo", filepath.Join(dir, "infra"), "--infra-admins", "a@x.org"}, "separate directories"},
-		"repo is the ledger itself": {[]string{"--auth", "oidc", "--infra-repo", dir, "--infra-admins", "a@x.org"}, "separate directories"},
+		"admins without a repo":            {[]string{"--infra-admins", "a@x.org"}, "--infra-admins needs --infra-repo"},
+		"status file without repo":         {[]string{"--hub-status-file", "/run/hub/status.json"}, "--hub-status-file needs --infra-repo"},
+		"repo without oidc":                {[]string{"--infra-repo", other, "--infra-admins", "a@x.org"}, "needs --auth oidc"},
+		"oidc without admins":              {[]string{"--auth", "oidc", "--infra-repo", other}, "names nobody"},
+		"wildcard admin":                   {[]string{"--auth", "oidc", "--infra-repo", other, "--infra-admins", "*"}, "no wildcards"},
+		"repo inside the ledger":           {append([]string{"--auth", "oidc", "--infra-repo", filepath.Join(dir, "infra"), "--infra-admins", "a@x.org"}, pin...), "separate directories"},
+		"repo is the ledger itself":        {append([]string{"--auth", "oidc", "--infra-repo", dir, "--infra-admins", "a@x.org"}, pin...), "separate directories"},
+		"repo without the pinned provider": {[]string{"--auth", "oidc", "--infra-repo", other, "--infra-admins", "a@x.org"}, "--infra-oidc-issuer and --infra-oidc-client-id"},
+		"issuer without the client":        {[]string{"--auth", "oidc", "--infra-repo", other, "--infra-admins", "a@x.org", "--infra-oidc-issuer", "https://i"}, "--infra-oidc-issuer and --infra-oidc-client-id"},
+		"pins without a repo":              {pin, "needs --infra-repo"},
+		"write without a repo":             {[]string{"--infra-write"}, "--infra-write needs --infra-repo"},
+		"write without the App":            {append([]string{"--auth", "oidc", "--infra-repo", other, "--infra-admins", "a@x.org", "--infra-write"}, pin...), "--infra-write needs --github-app-id"},
 	} {
 		args := append([]string{"serve", "--listen", "127.0.0.1:0", "--config", cfg, "--no-git"}, c.args...)
 		if _, err := run(t, args...); err == nil || !strings.Contains(err.Error(), c.want) {

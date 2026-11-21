@@ -18,11 +18,18 @@ import (
 	"github.com/kazuhahub/rackbook/internal/roles"
 )
 
-// testSessions signs a caller in from headers: X-User names the identity and
-// X-Method the login method (default oidc).
-type testSessions struct{}
+const (
+	testIssuer = "https://idp.test"
+	testClient = "rackbook-console"
+)
 
-func (testSessions) Identify(w http.ResponseWriter, r *http.Request) (*auth.Identity, error) {
+// testSessions signs a caller in from headers: X-User names the identity and
+// X-Method the login method (default oidc). An oidc session was issued under
+// testIssuer and testClient, X-Issuer and X-Client change that, and
+// X-Signed-In-Age is how many seconds ago the person signed in (default 60).
+type testSessions struct{ now func() time.Time }
+
+func (ts testSessions) Identify(w http.ResponseWriter, r *http.Request) (*auth.Identity, error) {
 	u := r.Header.Get("X-User")
 	if u == "" {
 		return nil, auth.ErrUnauthenticated
@@ -31,7 +38,22 @@ func (testSessions) Identify(w http.ResponseWriter, r *http.Request) (*auth.Iden
 	if m == "" {
 		m = auth.MethodOIDC
 	}
-	return &auth.Identity{ID: u, Email: u, Name: u, Method: m}, nil
+	id := &auth.Identity{ID: u, Email: u, Name: u, Method: m}
+	if m == auth.MethodOIDC {
+		id.OIDCIssuer, id.OIDCClient = testIssuer, testClient
+		if v := r.Header.Get("X-Issuer"); v != "" {
+			id.OIDCIssuer = v
+		}
+		if v := r.Header.Get("X-Client"); v != "" {
+			id.OIDCClient = v
+		}
+		age := 60
+		if v := r.Header.Get("X-Signed-In-Age"); v != "" {
+			fmt.Sscan(v, &age)
+		}
+		id.OIDCAt = ts.now().Add(-time.Duration(age) * time.Second)
+	}
+	return id, nil
 }
 func (testSessions) Public(r *http.Request) bool { return false }
 func (testSessions) Reject(w http.ResponseWriter, r *http.Request, err error) {
@@ -113,9 +135,12 @@ func newInfraEnv(t *testing.T, admins ...string) *infraEnv {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := ia.Pin(testIssuer, testClient, 0); err != nil {
+		t.Fatal(err)
+	}
 	e.repo = repo
 	e.fixture = newFixture(t, func(o *api.Options) {
-		a, err := auth.New(context.Background(), auth.Config{Mode: auth.ModeOIDC, Sessions: testSessions{}, Config: o.Store.Config})
+		a, err := auth.New(context.Background(), auth.Config{Mode: auth.ModeOIDC, Sessions: testSessions{now: func() time.Time { return e.now }}, Config: o.Store.Config})
 		if err != nil {
 			t.Fatal(err)
 		}

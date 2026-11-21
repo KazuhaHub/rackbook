@@ -9,6 +9,7 @@ import { useMeta } from '@/providers/meta'
 
 const tabs = [
   { to: '/infra', end: true, label: () => t.infra.tabs.hosts },
+  { to: '/infra/groups', end: false, label: () => t.infra.tabs.groups, write: true },
   { to: '/infra/certs', end: false, label: () => t.infra.tabs.certs },
   { to: '/infra/iplists', end: false, label: () => t.infra.tabs.iplists },
   { to: '/infra/commits', end: false, label: () => t.infra.tabs.commits },
@@ -59,9 +60,9 @@ export function InfraFrame({ children, header = true }: { children: React.ReactN
   if (!meta.user?.canInfra) return <EmptyState icon={<ShieldAlert />} title={t.infra.adminOnly} body={t.infra.adminOnlyBody} />
   return (
     <div>
-      {header && <PageHeader icon={<Server />} title={t.infra.title} description={t.infra.subtitle} />}
+      {header && <PageHeader icon={<Server />} title={t.infra.title} description={meta.user?.canInfraWrite ? t.infra.subtitleWrite : t.infra.subtitle} />}
       <nav className="mb-6 flex flex-wrap gap-1 border-b" aria-label={t.infra.title}>
-        {tabs.map((tab) => (
+        {tabs.filter((tab) => !tab.write || meta.user?.canInfraWrite).map((tab) => (
           <NavLink
             key={tab.to}
             to={tab.to}

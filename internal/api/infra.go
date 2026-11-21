@@ -24,6 +24,12 @@ type InfraOptions struct {
 	// StatusFile is the hub's status.json (`infra-hub status -o json`), kept
 	// fresh by a timer outside Rackbook. Empty = no hub status.
 	StatusFile string
+	// Write turns the editors on (the Repo must have a write credential). They
+	// are open to the same people as the pages, and only to a session younger
+	// than Admins.WriteAge().
+	Write bool
+	// Audit receives the actions that did not end in a commit (nil = none).
+	Audit ansiblerepo.Auditor
 }
 
 func (s *server) infraRoutes(mux *http.ServeMux) {
@@ -35,6 +41,7 @@ func (s *server) infraRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/infra/certs", s.infraCerts)
 	mux.HandleFunc("GET /api/infra/iplists", s.infraIPLists)
 	mux.HandleFunc("GET /api/infra/commits", s.infraCommits)
+	s.infraWriteRoutes(mux)
 }
 
 // canInfra reports whether the caller may use the infra pages.
@@ -188,10 +195,10 @@ func (s *server) infraCommits(w http.ResponseWriter, r *http.Request) {
 	if !s.infraAdmin(w, r) {
 		return
 	}
-	commits, err := s.o.Infra.Repo.Commits(r.Context(), 50)
+	history, err := s.o.Infra.Repo.History(r.Context(), 50)
 	if err != nil {
 		s.internal(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"repo": s.o.Infra.Repo.State(), "commits": commits})
+	writeJSON(w, http.StatusOK, map[string]any{"repo": s.o.Infra.Repo.State(), "commits": history, "canRevert": s.writesOn()})
 }

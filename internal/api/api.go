@@ -368,6 +368,9 @@ func (s *server) meta(w http.ResponseWriter, r *http.Request) {
 	user := map[string]any{"canEdit": s.canEdit(r), "canAdmin": auth.Can(r.Context(), roles.Manage)}
 	if s.canInfra(r) {
 		user["canInfra"] = true
+		if s.writesOn() {
+			user["canInfraWrite"] = true
+		}
 	}
 	if id := s.who(r); id != nil {
 		user["role"], user["authMethod"] = id.EffectiveRole().String(), id.Method

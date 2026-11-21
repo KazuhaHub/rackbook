@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"time"
 
 	"github.com/kazuhahub/rackbook/internal/roles"
 )
@@ -31,6 +32,13 @@ type Identity struct {
 	Client string // e.g. the MCPHub OAuth client_id
 	Issuer string // method oauth: alias of the trusted issuer
 	Groups []string
+
+	// OIDC sessions only: the issuer and client ID the login was made under
+	// (the values of the running server at that moment) and when the person
+	// last signed in. /infra checks them against its own pinned values.
+	OIDCIssuer string
+	OIDCClient string
+	OIDCAt     time.Time
 
 	// Scopes are the OAuth scopes (or token scopes) the credential carries;
 	// ScopeLimited says the credential can be narrower than the user's role,

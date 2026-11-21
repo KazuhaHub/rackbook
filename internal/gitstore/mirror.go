@@ -27,6 +27,10 @@ type Mirror struct {
 	Runner     Runner // nil = the real git
 	// Auth, when set, fetches over https with a GitHub App token instead of SSH.
 	Auth *GitAuth
+	// WriteAuth, when set, makes the mirror writable: commits are pushed (a
+	// plain push of the branch, see mirrorwrite.go) and the fetches of a write
+	// use this credential too. It carries contents: write. Nil = read only.
+	WriteAuth *GitAuth
 }
 
 // MirrorCommit is one commit of the log.
