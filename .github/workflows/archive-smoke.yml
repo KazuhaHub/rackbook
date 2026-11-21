@@ -70,7 +70,8 @@ jobs:
           for cmd in rackbook rackbook-entra rackbook-notify; do
             out=$("./x/$cmd$EXE" --version | head -n 1 | tr -d '\r')
             echo "$out"
-            test "$out" = "$cmd $VERSION"
+            # rackbook and rackbook-entra print "<name> <version>", rackbook-notify only the version.
+            test "${out##* }" = "$VERSION"
           done
       - name: Smoke test of the archived rackbook
         env:
