@@ -24,16 +24,19 @@ import {
   collectionGroup,
   collectionTitle,
   enumChoices,
+  enumItemLabel,
   enumLabel,
   enumMatches,
   propAt,
   enumOption,
   enumOptions,
+  fieldDefTitle,
   fieldDescription,
   fieldTitle,
   isEnumLike,
   ledgerTitle,
   noteTitle,
+  refBackrefTitle,
 } from '../src/lib/labels.ts'
 import { displayText } from '../src/lib/display.ts'
 import { issueText } from '../src/lib/issues.ts'
@@ -333,6 +336,29 @@ eq('collection title falls back to the name', collectionTitle({ name: 'x', title
 eq('ledger title', [ledgerTitle({ title: '台账', i18n: { 'en-US': { title: 'Ledger' } } }, 'en-US'), ledgerTitle({ title: '台账' }, 'en-US')], ['Ledger', '台账'])
 eq('note title', [noteTitle({ title: '规则', i18n: { 'en-US': { title: 'Rule' } } }, 'en-US'), noteTitle({ title: '规则' }, 'zh-TW')], ['Rule', '规则'])
 eq('backref title', [backrefTitle({ title: '服务', i18n: { 'en-US': { title: 'Services' } } }, 'en-US'), backrefTitle({}, 'en-US')], ['Services', undefined])
+
+// type editor: a draft read from /api/types/{name} keeps the default language (zh-CN) in the
+// standard fields and the others under i18n; the header and the field list show the reader's.
+const draft = {
+  name: 'devices',
+  title: '设备',
+  i18n: { 'en-US': { title: 'Devices' }, 'zh-TW': { title: '' } },
+  fields: [
+    { name: 'name', title: '设备名', i18n: { 'en-US': { title: 'Device name' }, 'zh-TW': { title: '' } } },
+    { name: 'os', title: '操作系统' },
+    { name: 'notes' },
+  ],
+  ref: { backrefTitle: '地址', i18n: { 'en-US': { backref_title: 'Addresses' }, 'zh-TW': { backref_title: '' } } },
+  enum: { value: 'router', label: '路由器', labels: { 'en-US': 'Router', 'zh-TW': '' } },
+}
+eq('type editor header en-US', collectionTitle(draft, 'en-US'), 'Devices')
+eq('type editor header: empty translation falls back', collectionTitle(draft, 'zh-TW'), '设备')
+eq('type editor header: no title shows the name', collectionTitle({ ...draft, title: '', i18n: undefined }, 'en-US'), 'devices')
+eq('type editor field list en-US', draft.fields.map((f) => fieldDefTitle(f, 'en-US')), ['Device name', '操作系统', undefined])
+eq('type editor field list: empty translation falls back', fieldDefTitle(draft.fields[0], 'zh-TW'), '设备名')
+eq('type editor field list zh-CN', draft.fields.map((f) => fieldDefTitle(f, 'zh-CN')), ['设备名', '操作系统', undefined])
+eq('type editor backref title', [refBackrefTitle(draft.ref, 'en-US'), refBackrefTitle(draft.ref, 'zh-TW'), refBackrefTitle({}, 'en-US')], ['Addresses', '地址', undefined])
+eq('type editor enum label', [enumItemLabel(draft.enum, 'en-US'), enumItemLabel(draft.enum, 'zh-TW'), enumItemLabel({}, 'en-US')], ['Router', '路由器', undefined])
 
 // placeholders and countries as shown
 eq('tbd reads as the placeholder word', displayText({ type: 'string' }, 'tbd'), '待补')

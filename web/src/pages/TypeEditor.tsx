@@ -23,6 +23,7 @@ import { PreviewTab } from '@/components/types/PreviewTab'
 import { RelationsTab } from '@/components/types/RelationsTab'
 import { RulesTab } from '@/components/types/RulesTab'
 import { t } from '@/i18n'
+import { collectionTitle } from '@/lib/labels'
 import { ApiError, errorMessage } from '@/lib/api'
 import { emptyType, stable, type FieldDef, type FieldType, type Migration, type Plan, type TypeDef } from '@/lib/typedef'
 import { createType, deleteType, planType, updateType, useRefreshAll, useTypeDetail, useTypeList, type TypeDetail } from '@/lib/typesApi'
@@ -185,7 +186,7 @@ function Editor({ detail, dataDir, schemaDir }: { detail?: TypeDetail; dataDir: 
           <ChevronRight className="size-3" />
         </span>
       }
-      title={creating ? t.types.wizard.title : draft.title || draft.name}
+      title={creating ? t.types.wizard.title : collectionTitle(draft)}
       description={creating ? undefined : <span className="font-mono text-xs">{draft.name} · {draft.file}{draft.path ? `:${draft.path}` : ''}</span>}
       actions={
         !creating && (

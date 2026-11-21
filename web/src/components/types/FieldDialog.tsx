@@ -19,7 +19,7 @@ import { EnumIcon } from '@/components/EnumIcon'
 import { useIconNames } from '@/lib/iconTable'
 import { LOCALE_NAMES } from '@/i18n'
 import { useDefaultLocale, useOtherLocales } from '@/lib/defaultLocale'
-import { collectionTitle } from '@/lib/labels'
+import { collectionTitle, enumItemLabel } from '@/lib/labels'
 
 const NAME_RE = /^[A-Za-z_][A-Za-z0-9_-]{0,63}$/
 
@@ -93,6 +93,8 @@ export function FieldDialog({
   const [f, setF] = useState<FieldDef>(() => initial ?? reshape({ name: '', type: 'text', required: false, unique: false }, presetType ?? 'text', draft))
   const [fl, setFl] = useState<FieldFlags>(flags)
   const set = (patch: Partial<FieldDef>) => setF((x) => ({ ...x, ...patch }))
+  const def = useDefaultLocale()
+  const inDefault = (label: string) => t.types.i18n.inDefault(label, LOCALE_NAMES[def])
   const advanced = f.type === 'advanced'
   const iconNames = useIconNames(f.type === 'enum')
   const withIcon = f.type === 'enum' ? (f.enum ?? []).filter((e) => e.icon) : []
@@ -106,7 +108,7 @@ export function FieldDialog({
 
   const targets = useMemo(() => {
     const out = meta.collections.filter((c) => c.name !== draft.name).map((c) => ({ name: c.name, title: collectionTitle(c), fields: Object.keys(c.schema.properties ?? {}), key: c.key ?? [] }))
-    if (draft.name) out.unshift({ name: draft.name, title: draft.title || draft.name, fields: draft.fields.map((x) => x.name).filter(Boolean), key: draft.key })
+    if (draft.name) out.unshift({ name: draft.name, title: collectionTitle(draft), fields: draft.fields.map((x) => x.name).filter(Boolean), key: draft.key })
     return out
   }, [meta.collections, draft])
 
@@ -141,11 +143,14 @@ export function FieldDialog({
       return (
         <NativeSelect value={f.default === undefined ? '' : String(f.default)} onChange={(e) => set({ default: e.target.value === '' ? undefined : e.target.value })}>
           <option value="">{t.types.dialog.noDefault}</option>
-          {(f.enum ?? []).filter((x) => x.value).map((x) => (
-            <option key={x.value} value={x.value}>
-              {x.label ? `${x.label}${t.common.paren(x.value)}` : x.value}
-            </option>
-          ))}
+          {(f.enum ?? []).filter((x) => x.value).map((x) => {
+            const label = enumItemLabel(x)
+            return (
+              <option key={x.value} value={x.value}>
+                {label ? `${label}${t.common.paren(x.value)}` : x.value}
+              </option>
+            )
+          })}
         </NativeSelect>
       )
     const numeric = f.type === 'integer' || f.type === 'number' || f.type === 'port'
@@ -170,8 +175,8 @@ export function FieldDialog({
             <Input value={f.name} disabled={locked} aria-invalid={!!nameErr} className="font-mono" onChange={(e) => set({ name: e.target.value })} />
             {nameErr && <p className="text-xs text-destructive">{nameErr}</p>}
           </Row>
-          <Row label={t.types.dialog.title}>
-            <Input value={f.title ?? ''} onChange={(e) => set({ title: e.target.value })} />
+          <Row label={inDefault(t.types.dialog.title)}>
+            <Input lang={def} value={f.title ?? ''} onChange={(e) => set({ title: e.target.value })} />
           </Row>
           <Row label={t.types.dialog.type} hint={fieldTypes().find((x) => x.type === f.type)?.hint}>
             {advanced ? (
@@ -189,8 +194,8 @@ export function FieldDialog({
             )}
             {locked && !advanced && <p className="text-xs text-muted-foreground">{t.types.dialog.typeChangeHint}</p>}
           </Row>
-          <Row label={t.types.dialog.description}>
-            <Input value={f.description ?? ''} onChange={(e) => set({ description: e.target.value })} />
+          <Row label={inDefault(t.types.dialog.description)}>
+            <Input lang={def} value={f.description ?? ''} onChange={(e) => set({ description: e.target.value })} />
           </Row>
         </div>
 
@@ -311,14 +316,14 @@ export function FieldDialog({
               <Label htmlFor="ref-many">{t.types.dialog.refMany}</Label>
             </div>
             <Row label={t.types.dialog.refBackTitle} hint={t.types.dialog.refBackTitleHint}>
-              <Input value={f.ref?.backrefTitle ?? ''} onChange={(e) => setRef({ backrefTitle: e.target.value || undefined })} />
+              <Input lang={def} value={f.ref?.backrefTitle ?? ''} onChange={(e) => setRef({ backrefTitle: e.target.value || undefined })} />
             </Row>
             <Row label={t.types.dialog.refBackColumns} hint={t.types.dialog.refBackColumnsHint}>
               <TagInput mono value={f.ref?.backrefColumns ?? []} onChange={(v) => setRef({ backrefColumns: v.length ? v : undefined })} />
             </Row>
             <div className="sm:col-span-2">
               <Row label={t.types.dialog.refMessage}>
-                <Input value={f.ref?.message ?? ''} onChange={(e) => setRef({ message: e.target.value || undefined })} />
+                <Input lang={def} value={f.ref?.message ?? ''} onChange={(e) => setRef({ message: e.target.value || undefined })} />
               </Row>
             </div>
           </div>
@@ -392,8 +397,8 @@ function EnumRow({ item, onChange, onRemove }: { item: EnumItem; onChange: (next
         <Input
           value={item.label ?? ''}
           lang={def}
-          placeholder={t.types.dialog.enumLabelDefault(LOCALE_NAMES[def])}
-          aria-label={t.types.dialog.enumLabelDefault(LOCALE_NAMES[def])}
+          placeholder={t.types.i18n.inLanguage(t.types.dialog.enumLabel, LOCALE_NAMES[def])}
+          aria-label={t.types.i18n.inDefault(t.types.dialog.enumLabel, LOCALE_NAMES[def])}
           onChange={(e) => onChange({ ...item, label: e.target.value || undefined })}
         />
         <NativeSelect
@@ -434,8 +439,8 @@ function EnumRow({ item, onChange, onRemove }: { item: EnumItem; onChange: (next
             key={loc}
             lang={loc}
             value={item.labels?.[loc] ?? ''}
-            placeholder={t.types.dialog.enumLabelDefault(LOCALE_NAMES[loc])}
-            aria-label={t.types.dialog.enumLabelDefault(LOCALE_NAMES[loc])}
+            placeholder={t.types.i18n.inLanguage(t.types.dialog.enumLabel, LOCALE_NAMES[loc])}
+            aria-label={t.types.i18n.inLanguage(t.types.dialog.enumLabel, LOCALE_NAMES[loc])}
             className="min-w-40 flex-1"
             onChange={(e) => onChange({ ...item, labels: withLabel(item.labels, loc, e.target.value) })}
           />
