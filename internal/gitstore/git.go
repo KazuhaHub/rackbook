@@ -63,6 +63,9 @@ type Repo struct {
 	// server: its behaviour must not depend on whoever's ~/.gitconfig it finds).
 	// The CLI keeps it.
 	IgnoreUserConfig bool
+	// Auth, when set, attaches a GitHub App installation token to fetches and
+	// pushes (see gitauth.go).
+	Auth *GitAuth
 }
 
 // GitError is a failed git command.
@@ -117,6 +120,9 @@ func (execRunner) Run(ctx context.Context, c Cmd) (string, string, error) {
 	if err := refuseDestructive(c.Args); err != nil {
 		return "", "", err
 	}
+	if err := refuseEnv(c.Env); err != nil {
+		return "", "", err
+	}
 	// Hooks never run (not even pre-push). The server (IgnoreUserConfig) also
 	// ignores the system and global config and trusts its own directory; the CLI
 	// keeps the user's config, so credential helpers keep working.
@@ -147,6 +153,14 @@ func (r *Repo) run(ctx context.Context, env []string, stdin string, args ...stri
 	rn := r.Runner
 	if rn == nil {
 		rn = defaultRunner
+	}
+	if r.Auth != nil && networkCommand(args) {
+		remote := r.RemoteURL(ctx)
+		aenv, err := r.Auth.env(ctx, remote)
+		if err != nil {
+			return "", err
+		}
+		env = append(append([]string{}, env...), aenv...)
 	}
 	out, errOut, err := rn.Run(ctx, Cmd{Dir: r.Dir, Args: args, Env: env, Stdin: stdin, IgnoreUserConfig: r.IgnoreUserConfig})
 	if err != nil {

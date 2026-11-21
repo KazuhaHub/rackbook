@@ -10,6 +10,8 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+
+	"github.com/kazuhahub/rackbook/internal/githubapp"
 )
 
 var scpLike = regexp.MustCompile(`^(?:[^@/]+@)?([^:/]+):(.+)$`)
@@ -42,6 +44,9 @@ func ParseRemote(raw string) (host, owner, repo string, err error) {
 // createPR opens a pull request and returns its URL.
 func (s *Store) createPR(ctx context.Context, head, base, title, body string) (string, error) {
 	owner, repo, api := s.ghOwner, s.ghRepo, s.ghAPI
+	if api == "" && s.app != nil {
+		api = s.app.API() // the App's own API endpoint (github.com unless --github-api)
+	}
 	if owner == "" || api == "" {
 		host, o, r, err := ParseRemote(s.remote)
 		if err != nil {
@@ -57,15 +62,23 @@ func (s *Store) createPR(ctx context.Context, head, base, title, body string) (s
 			if host != "github.com" && host != "www.github.com" {
 				return "", fmt.Errorf("refusing to send RACKBOOK_GITHUB_TOKEN to %s: set --github-api to its REST API URL to allow it", host)
 			}
-			api = "https://api.github.com"
+			api = githubapp.DefaultAPI
 		}
+	}
+	token := s.token
+	if s.app != nil {
+		t, err := s.app.Token(ctx, owner, repo, githubapp.Permissions{PullRequests: "write"})
+		if err != nil {
+			return "", err
+		}
+		token = t
 	}
 	payload, _ := json.Marshal(map[string]string{"title": title, "head": head, "base": base, "body": body})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, fmt.Sprintf("%s/repos/%s/%s/pulls", strings.TrimRight(api, "/"), owner, repo), bytes.NewReader(payload))
 	if err != nil {
 		return "", err
 	}
-	req.Header.Set("Authorization", "Bearer "+s.token)
+	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 	req.Header.Set("Content-Type", "application/json")

@@ -133,3 +133,40 @@ func refuseDestructive(args []string) error {
 	}
 	return nil
 }
+
+// networkCommand reports whether args is a command that talks to the remote
+// (fetch or the single push shape), which is where a GitHub App credential is
+// attached.
+func networkCommand(args []string) bool {
+	sub, _ := subcommand(args)
+	return sub == "fetch" || sub == "push"
+}
+
+var envKeyRe = regexp.MustCompile(`^GIT_CONFIG_(KEY|VALUE)_[0-9]+$`)
+
+// refuseEnv is the allow-list for the extra environment a command may carry:
+// the commit identity, GIT_SSH_COMMAND, and the GIT_CONFIG_COUNT/KEY/VALUE
+// triples that attach a GitHub App token (an http.<url>.extraheader) or point
+// an ssh remote at https (url.<base>.insteadOf). Nothing else can inject
+// configuration (hooks, proxies, helpers, ...).
+func refuseEnv(env []string) error {
+	for _, kv := range env {
+		name, val, _ := strings.Cut(kv, "=")
+		switch {
+		case name == "GIT_SSH_COMMAND", name == "GIT_CONFIG_COUNT",
+			name == "GIT_AUTHOR_NAME", name == "GIT_AUTHOR_EMAIL", name == "GIT_COMMITTER_NAME", name == "GIT_COMMITTER_EMAIL":
+		case envKeyRe.MatchString(name):
+			if strings.HasPrefix(name, "GIT_CONFIG_KEY_") {
+				k := strings.ToLower(val)
+				ok := (strings.HasPrefix(k, "http.") && strings.HasSuffix(k, ".extraheader")) ||
+					(strings.HasPrefix(k, "url.") && strings.HasSuffix(k, ".insteadof"))
+				if !ok {
+					return fmt.Errorf("%w: environment config key %q", errDestructive, val)
+				}
+			}
+		default:
+			return fmt.Errorf("%w: environment variable %s", errDestructive, name)
+		}
+	}
+	return nil
+}

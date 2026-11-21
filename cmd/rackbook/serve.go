@@ -26,6 +26,7 @@ import (
 	"github.com/kazuhahub/rackbook/internal/clientip"
 	"github.com/kazuhahub/rackbook/internal/config"
 	"github.com/kazuhahub/rackbook/internal/fsutil"
+	"github.com/kazuhahub/rackbook/internal/githubapp"
 	"github.com/kazuhahub/rackbook/internal/gitstore"
 	"github.com/kazuhahub/rackbook/internal/login"
 	"github.com/kazuhahub/rackbook/internal/mcpauth"
@@ -78,6 +79,8 @@ RACKBOOK_GITHUB_TOKEN.`,
 	f.Bool("insecure-no-auth", false, "allow --auth none on a non-loopback --listen address (anyone who can reach it can edit)")
 	f.String("github-repo", "", "owner/repo for pull requests (default: parsed from the origin URL)")
 	f.String("github-api", "", "GitHub REST API base URL (default: derived from the origin host)")
+	f.String("github-app-id", "", "GitHub App ID (or "+appIDEnv+"): fetch and push over https with installation tokens narrowed to each repository, for the data repository and --infra-repo, instead of SSH deploy keys; needs the private key from --github-app-key-file, "+appKeyEnv+" or a systemd credential (see README, Creating the GitHub App)")
+	f.String("github-app-key-file", "", "private key (PEM) of the GitHub App; never put the key itself on the command line")
 	f.String("infra-repo", "", "directory of a git clone of an Ansible + SOPS repository to show read-only under /infra (needs --auth oidc and --infra-admins); Rackbook fetches and resets it to origin on --pull-interval and never writes to it or its remote")
 	f.String("infra-branch", "main", "branch of --infra-repo to follow")
 	f.String("infra-ssh-key", "", "private key (read-only deploy key) Rackbook uses to fetch --infra-repo; only for that clone (a known_hosts file beside it is used when present)")
@@ -116,7 +119,16 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	interval, _ := f.GetDuration("pull-interval")
 	ghRepo, _ := f.GetString("github-repo")
 	ghAPI, _ := f.GetString("github-api")
-	store, err := gitstore.Open(ctx, gitstore.Options{
+	app, err := newGitHubApp(f, ghAPI)
+	if err != nil {
+		return err
+	}
+	var appSource gitstore.TokenSource
+	if app != nil {
+		appSource = app
+		logger.Info("GitHub App credentials on", "api", app.API())
+	}
+	store, err := gitstore.Open(ctx, gitstore.Options{GitHubApp: appSource,
 		ConfigPath: path, NoGit: noGit, Committer: committer, PullInterval: interval,
 		GitHubToken: os.Getenv("RACKBOOK_GITHUB_TOKEN"), GitHubRepo: ghRepo, GitHubAPI: ghAPI, Logger: logger,
 	})
@@ -141,7 +153,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	if mode == "" {
 		mode = auth.ModeNone
 	}
-	infra, err := newInfra(ctx, f, cfg.Dir, mode, interval, logger)
+	infra, err := newInfra(ctx, f, cfg.Dir, mode, interval, appSource, ghAPI != "", logger)
 	if err != nil {
 		return err
 	}
@@ -365,7 +377,7 @@ func newLogin(cfg *config.Config, store *gitstore.Store, prefStore *prefs.Store,
 
 // newInfra sets up the read-only /infra pages from the --infra-* flags: nil
 // when --infra-repo is not given (and then none of the others may be).
-func newInfra(ctx context.Context, f *pflag.FlagSet, ledgerDir, mode string, interval time.Duration, logger *slog.Logger) (*api.InfraOptions, error) {
+func newInfra(ctx context.Context, f *pflag.FlagSet, ledgerDir, mode string, interval time.Duration, app gitstore.TokenSource, trustHost bool, logger *slog.Logger) (*api.InfraOptions, error) {
 	dir, _ := f.GetString("infra-repo")
 	admins, _ := f.GetStringSlice("infra-admins")
 	status, _ := f.GetString("hub-status-file")
@@ -394,6 +406,13 @@ func newInfra(ctx context.Context, f *pflag.FlagSet, ledgerDir, mode string, int
 	}
 	branch, _ := f.GetString("infra-branch")
 	opts := ansiblerepo.Options{Dir: absDir, Branch: branch, Interval: interval, Logger: logger}
+	if app != nil {
+		if key != "" {
+			return nil, errors.New("--infra-ssh-key and --github-app-id are two ways to fetch --infra-repo: use one")
+		}
+		// Rackbook only reads this clone: the token carries contents: read.
+		opts.Auth = &gitstore.GitAuth{Source: app, Perms: githubapp.Permissions{Contents: "read"}, TrustHost: trustHost}
+	}
 	if key != "" {
 		opts.SSHKey = key
 		if kh := filepath.Join(filepath.Dir(key), "known_hosts"); fileExists(kh) {

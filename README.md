@@ -101,6 +101,7 @@ Cloudflare in front provides TLS.
 1. **Deploy key.** Create an SSH key and add it to the data repository as a
    deploy key *with write access*. Clone the repository on the server with
    that key into a directory the container can write, e.g. `/srv/rackbook/repo`.
+   (Or use a [GitHub App](#github-app-instead-of-deploy-keys) from v0.7.2 on.)
 2. **Register the app with your IdP** as a confidential web client. The redirect
    URI is `<base-url>/auth/oidc/callback`, e.g.
    `https://ledger.example.com/auth/oidc/callback`. Note the issuer URL, the
@@ -496,6 +497,58 @@ only its SHA-256 (committed as `rackbook(auth): create token <name>` /
   names a writable directory outside the data repository (e.g. `/data/state`).
   The same directory keeps `preferences.json` (each person's console language).
 
+### GitHub App instead of deploy keys
+
+Instead of SSH deploy keys (and `RACKBOOK_GITHUB_TOKEN`), one GitHub App can
+serve both repositories Rackbook uses: the data repository and, with
+`--infra-repo`, the infra repository. Rackbook then fetches and pushes over
+HTTPS with short-lived installation tokens, each requested for one repository
+and the permissions that use needs (`contents: write` to push the ledger,
+`pull_requests: write` only to open a pull request, `contents: read` for the
+infra clone, which Rackbook only reads). Without the flags below nothing changes.
+
+| Flag / environment | Meaning |
+|---|---|
+| `--github-app-id`, `RACKBOOK_GITHUB_APP_ID` | The App ID (a number, on the App's settings page) |
+| `--github-app-key-file` | The App's private key (PEM). Instead: `RACKBOOK_GITHUB_APP_KEY` holds the PEM itself, or a systemd credential named `github-app-key` (`LoadCredential=github-app-key:/path/key.pem`). Never put the key in a flag value, in `rackbook.yml` or in Git |
+| `--github-api` | REST base URL, only for GitHub Enterprise Server (default `https://api.github.com`) |
+
+The installation id is looked up from each repository and cached; tokens live in
+memory only and are renewed 5 minutes before they expire. The token reaches git
+through the environment of that one command, never in a command line, a log, the
+remote URL or `.git/config`. An ssh-style `origin` is used over https for these
+commands only. In compose, mount the key read-only and drop `GIT_SSH_COMMAND`:
+
+```yaml
+    command: >
+      serve --listen 0.0.0.0:8080 --config /data/repo/rackbook.yml
+      --github-app-id 1234567 --github-app-key-file /run/secrets/rackbook_app.pem
+    secrets: [rackbook_app]
+```
+
+`--infra-ssh-key` and an App are two ways to fetch the infra clone; give only one.
+
+#### Creating the GitHub App
+
+1. In the organization: **Settings → Developer settings → GitHub Apps → New
+   GitHub App**.
+2. **GitHub App name**: e.g. `rackbook-<org>` (names are global). **Homepage
+   URL**: any page you control, e.g. the repository URL.
+3. **Webhook**: untick *Active*. Rackbook needs no webhook. Leave the callback
+   URL and user authorization options empty.
+4. **Repository permissions**: **Contents: Read & write**. Add **Pull requests:
+   Read & write** only if you use pull-request mode (`write.mode: pr`) or
+   contributor-level MCP writes. *Metadata: Read* is added automatically. No
+   organization or account permissions.
+5. **Where can this GitHub App be installed?** *Only on this account*.
+6. Create it, note the **App ID**, then **Generate a private key**: a `.pem`
+   file downloads once. Store it with mode `0600` (or as a secret), never in a
+   repository.
+7. **Install App** on the organization, choose **Only select repositories** and
+   pick the ledger repository and the infra repository, nothing else.
+8. Start Rackbook with `--github-app-id <App ID>` and the key. Remove the old
+   deploy keys from both repositories once it works.
+
 ### Rackbook never force-pushes
 
 Rackbook never runs `git push --force`, `--force-with-lease`, a `+refspec`,
@@ -535,7 +588,7 @@ rackbook serve --auth oidc … \
 |---|---|
 | `--infra-repo` | A git clone of the repository, made once by you (Rackbook does not clone). Every `--pull-interval` Rackbook runs `git fetch` and resets the clone to `origin/<branch>`; local changes in it are discarded. It never writes to it and never pushes anything. It must not be, or sit inside, the ledger clone |
 | `--infra-branch` | The branch followed (default `main`) |
-| `--infra-ssh-key` | The private key (give it a read-only deploy key) used to fetch this clone, and only this clone. It reaches git in `GIT_SSH_COMMAND` in the environment of the git process, not on a command line; a `known_hosts` file beside the key is used with strict host key checking when it exists |
+| `--infra-ssh-key` | (Or use the [GitHub App](#github-app-instead-of-deploy-keys): its token for this clone is `contents: read`.) The private key (give it a read-only deploy key) used to fetch this clone, and only this clone. It reaches git in `GIT_SSH_COMMAND` in the environment of the git process, not on a command line; a `known_hosts` file beside the key is used with strict host key checking when it exists |
 | `--infra-admins` | Comma-separated exact identities (no wildcards) who may see `/infra`. This is **not** `auth.roles`, and it is never read from `rackbook.yml`, so nobody can grant it by editing the ledger. Needs `--auth oidc`: only a person who signed in with the console's OIDC login counts. API tokens (also the token of a listed person), MCP clients, OAuth access tokens, passkey and Cloudflare Access identities are answered `403 forbidden` |
 | `--hub-status-file` | The hub's `infra-hub status -o json` document (`apiVersion: v1`), rewritten by a timer on the same machine; mount it read-only into the container |
 
@@ -1102,12 +1155,15 @@ Release plan (details in `docs/design-v0.2.md`, "Versioning"):
 - **v0.5.0**: the modules panel. Merged to `main`, not tagged yet.
 - **v0.6.0**: the built-in authorization server (`docs/oauth-server.md`) and
   the MCP surface (`docs/mcp-surface.md`).
-- **v0.6.1**: GitHub App authentication and record documents. Both were
-  planned for v0.6.0 and moved here (owner, 2026-11-18).
+- **v0.6.1**: record documents. It and GitHub App authentication were
+  planned for v0.6.0 and moved here (owner, 2026-11-18); the App moved on to v0.7.2.
 - **v0.7.0**: the console, configured text and server-side text in zh-CN, zh-TW and
   en-US, with English codes in the data.
 - **v0.7.1**: read-only `/infra` pages for an Ansible + SOPS repository and its
   infra hub status (`--infra-*` flags, OIDC admins only, never on MCP).
+- **v0.7.2**: GitHub App authentication for the ledger and the infra repository
+  (`--github-app-id`, `--github-app-key-file`; replaces the SSH deploy keys, which
+  keep working when no App is configured).
 - **v0.8.0**: one record per file storage; the deprecated MCP tool names are
   removed. Both were planned for v0.7.0 and moved here (owner, 2026-11-20).
 

@@ -18,6 +18,7 @@ import (
 	"github.com/kazuhahub/rackbook/internal/auth"
 	"github.com/kazuhahub/rackbook/internal/config"
 	"github.com/kazuhahub/rackbook/internal/edit"
+	"github.com/kazuhahub/rackbook/internal/githubapp"
 	"github.com/kazuhahub/rackbook/internal/ledger"
 )
 
@@ -36,6 +37,11 @@ type Options struct {
 	Via          string        // product name in the Edited-via trailer, default "rackbook"
 	Runner       Runner        // runs git; nil = the real git
 
+	// GitHubApp, when set, replaces SSH deploy keys and RACKBOOK_GITHUB_TOKEN:
+	// git talks https with installation tokens narrowed to this repository
+	// (contents: write to fetch and push, pull_requests: write to open pull
+	// requests). Needs an https (or ssh, rewritten) GitHub origin.
+	GitHubApp   TokenSource
 	GitHubToken string       // pr mode: token for the REST API
 	GitHubRepo  string       // "owner/repo"; default parsed from the origin URL
 	GitHubAPI   string       // REST base URL; default derived from the origin host
@@ -76,6 +82,7 @@ type Store struct {
 	log    *slog.Logger
 	http   *http.Client
 	token  string
+	app    TokenSource
 	via    string
 
 	ghOwner, ghRepo, ghAPI string
@@ -95,7 +102,7 @@ func Open(ctx context.Context, o Options) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &Store{opts: o, log: o.Logger, http: o.HTTPClient, token: o.GitHubToken, via: o.Via}
+	s := &Store{opts: o, log: o.Logger, http: o.HTTPClient, token: o.GitHubToken, app: o.GitHubApp, via: o.Via}
 	if s.log == nil {
 		s.log = slog.New(slog.DiscardHandler)
 	}
@@ -117,6 +124,9 @@ func Open(ctx context.Context, o Options) (*Store, error) {
 	}
 	s.ghAPI = o.GitHubAPI
 	s.repo = &Repo{Dir: cfg.Dir, Runner: o.Runner, IgnoreUserConfig: true}
+	if o.GitHubApp != nil {
+		s.repo.Auth = &GitAuth{Source: o.GitHubApp, Perms: githubapp.Permissions{Contents: "write"}, Repo: o.GitHubRepo, TrustHost: o.GitHubAPI != ""}
+	}
 	if !o.NoGit && s.repo.IsRepo(ctx) {
 		s.git = true
 		s.remote = s.repo.RemoteURL(ctx)
@@ -408,8 +418,8 @@ func (s *Store) DryRunFunc(ctx context.Context, apply ApplyFunc, opts WriteOptio
 		return res, false, err
 	}
 	pr = !opts.Direct && (opts.ForcePR || s.cur.Load().Config.Write.Mode == "pr")
-	if pr && s.token == "" {
-		return nil, false, fmt.Errorf("%w: write.mode is pr or this write must be a pull request, but RACKBOOK_GITHUB_TOKEN is not set", ErrPRUnavailable)
+	if pr && !s.canPR() {
+		return nil, false, fmt.Errorf("%w: write.mode is pr or this write must be a pull request, but neither a GitHub App nor RACKBOOK_GITHUB_TOKEN is set", ErrPRUnavailable)
 	}
 	if pr && !s.HasRemote() {
 		if opts.ForcePR {
@@ -423,6 +433,9 @@ func (s *Store) DryRunFunc(ctx context.Context, apply ApplyFunc, opts WriteOptio
 	res, err = apply(s.cur.Load().Config)
 	return res, pr, err
 }
+
+// canPR reports whether a credential for opening pull requests is configured.
+func (s *Store) canPR() bool { return s.token != "" || s.app != nil }
 
 // ErrPRUnavailable is matched by errors.Is when a write must go through a pull
 // request but the server cannot open one (no Git remote, or no GitHub token).
@@ -445,8 +458,8 @@ type change struct {
 // It returns the short commit hash, or the pull request URL with pr set.
 func (s *Store) commitLoop(ctx context.Context, who *auth.Identity, opts WriteOptions, apply func() (*change, error)) (commit string, pr bool, err error) {
 	pr = !opts.Direct && (opts.ForcePR || s.cur.Load().Config.Write.Mode == "pr")
-	if pr && s.token == "" {
-		return "", false, fmt.Errorf("%w: write.mode is pr or this write must be a pull request, but RACKBOOK_GITHUB_TOKEN is not set", ErrPRUnavailable)
+	if pr && !s.canPR() {
+		return "", false, fmt.Errorf("%w: write.mode is pr or this write must be a pull request, but neither a GitHub App nor RACKBOOK_GITHUB_TOKEN is set", ErrPRUnavailable)
 	}
 	if pr && !s.HasRemote() {
 		if opts.ForcePR {

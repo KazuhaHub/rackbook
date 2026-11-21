@@ -25,6 +25,8 @@ type Mirror struct {
 	SSHKey     string
 	KnownHosts string
 	Runner     Runner // nil = the real git
+	// Auth, when set, fetches over https with a GitHub App token instead of SSH.
+	Auth *GitAuth
 }
 
 // MirrorCommit is one commit of the log.
@@ -36,7 +38,7 @@ type MirrorCommit struct {
 }
 
 func (m *Mirror) repo() *Repo {
-	return &Repo{Dir: m.Dir, Runner: m.Runner, IgnoreUserConfig: true}
+	return &Repo{Dir: m.Dir, Runner: m.Runner, IgnoreUserConfig: true, Auth: m.Auth}
 }
 
 func shellQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }
