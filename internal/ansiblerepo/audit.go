@@ -1,6 +1,7 @@
 package ansiblerepo
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"os"
@@ -10,13 +11,13 @@ import (
 )
 
 // AuditEntry is one action that did not end in a commit: an edit refused by
-// the checks, a conflict, a push that failed, a refused revert. (Commits are
+// the checks, a conflict, a push that failed, a refused revert, a secret revealed. (Commits are
 // the history of the repository itself.)
 type AuditEntry struct {
 	Time    time.Time `json:"time"`
 	Who     string    `json:"who"`
 	Action  string    `json:"action"`  // what was tried, e.g. "infra(host_vars/alpha): edit"
-	Outcome string    `json:"outcome"` // validation_failed, conflict, no_change, push_failed, busy, revert_refused, reauth_required, forbidden
+	Outcome string    `json:"outcome"` // validation_failed, conflict, no_change, push_failed, busy, revert_refused, reauth_required, forbidden, revealed, reveal_failed, rate_limited, no_such_key
 	Files   []string  `json:"files,omitempty"`
 	Detail  []string  `json:"detail,omitempty"` // issue codes or conflicting commits; never values
 }
@@ -41,7 +42,11 @@ func (a *AuditLog) Record(e AuditEntry) {
 		e.Time = time.Now().UTC()
 	}
 	if a.Log != nil {
-		a.Log.Warn("infra edit not committed", "who", e.Who, "action", e.Action, "outcome", e.Outcome, "files", e.Files, "detail", e.Detail)
+		level, msg := slog.LevelWarn, "infra edit not committed"
+		if e.Outcome == "revealed" {
+			level, msg = slog.LevelInfo, "infra secret revealed"
+		}
+		a.Log.Log(context.Background(), level, msg, "who", e.Who, "action", e.Action, "outcome", e.Outcome, "files", e.Files, "detail", e.Detail)
 	}
 	if a.Path == "" {
 		return

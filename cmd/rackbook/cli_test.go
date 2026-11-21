@@ -297,6 +297,8 @@ func TestServeInfraFlagsAreChecked(t *testing.T) {
 		"claim without a repo":             {[]string{"--infra-oidc-identity-claim", "email"}, "needs --infra-repo"},
 		"pins without a repo":              {pin, "needs --infra-repo"},
 		"write without a repo":             {[]string{"--infra-write"}, "--infra-write needs --infra-repo"},
+		"age key without a repo":           {[]string{"--sops-age-key-file", "/run/k"}, "--sops-age-key-file needs --infra-repo"},
+		"age key without write":            {append([]string{"--auth", "oidc", "--infra-repo", other, "--infra-admins", "a@x.org", "--sops-age-key-file", "/run/k"}, pin...), "--sops-age-key-file needs --infra-write"},
 		"write without the App":            {append([]string{"--auth", "oidc", "--infra-repo", other, "--infra-admins", "a@x.org", "--infra-write"}, pin...), "--infra-write needs --github-app-id"},
 	} {
 		args := append([]string{"serve", "--listen", "127.0.0.1:0", "--config", cfg, "--no-git"}, c.args...)

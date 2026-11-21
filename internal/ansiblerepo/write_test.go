@@ -502,7 +502,7 @@ func TestFeatureAndGroupEditsThroughTheRepo(t *testing.T) {
 	w := newWFix(t, true)
 	// features: change one setting, comments elsewhere stay
 	spec, _ := w.repo.Feature("demo")
-	settings, known, iss := spec.SettingsFromInput(map[string]any{"name": "second", "hub_url": "https://hub.example", "port": float64(8080)})
+	settings, known, _, iss := spec.SettingsFromInput(map[string]any{"name": "second", "hub_url": "https://hub.example", "port": float64(8080)})
 	if len(iss) != 0 {
 		t.Fatal(iss)
 	}
@@ -516,7 +516,7 @@ func TestFeatureAndGroupEditsThroughTheRepo(t *testing.T) {
 		t.Fatalf("%s", got)
 	}
 	// an invalid setting value is refused by the checks
-	settings, known, _ = spec.SettingsFromInput(map[string]any{"name": "x", "hub_url": "https://hub.example", "port": float64(0)})
+	settings, known, _, _ = spec.SettingsFromInput(map[string]any{"name": "x", "hub_url": "https://hub.example", "port": float64(0)})
 	e.Files[0].Base = w.baseOf(aPath)
 	e.Files[0].Make = func(old []byte) ([]byte, error) { return SetFeature(old, "demo", true, settings, known) }
 	var ve *ValidationError

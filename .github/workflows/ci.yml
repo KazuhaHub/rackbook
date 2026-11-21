@@ -56,7 +56,16 @@ jobs:
       # Checks the workflow files themselves: expressions, job wiring, inputs.
       - name: actionlint
         run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+      # The infra secrets editor is tested against the real sops and age: the
+      # tests skip without them, so CI installs the pinned ones (checksummed) and
+      # fails when they are missing.
+      - name: Install sops and age
+        run: |
+          scripts/install-sops-age.sh "$RUNNER_TEMP/bin"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
       - name: go test -race
+        env:
+          RACKBOOK_REQUIRE_SOPS: "1"
         run: go test -race -count=1 ./...
 
   web:

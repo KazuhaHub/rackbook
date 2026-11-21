@@ -31,7 +31,22 @@ export type SettingSpec = {
 export type FeatureSpec = { name: string; description?: string; type?: string; settings: SettingSpec[] }
 export type Membership = { groups: string[]; hosts: string[]; direct: Record<string, string[]> }
 export type InventoryFile = { base: string; membership: Membership }
-export type WriteState = { enabled: boolean; fresh: boolean; signedInAt?: string; maxAgeSeconds: number }
+export type WriteState = { enabled: boolean; secrets?: boolean; fresh: boolean; signedInAt?: string; maxAgeSeconds: number }
+export type SecretKey = { name: string; editable: boolean }
+export type SecretsFile = {
+  host: string
+  path: string
+  exists: boolean
+  base: string
+  keys: SecretKey[]
+  recipients: string[]
+  /** the recipients of the file's creation rule in .sops.yaml (null = no rule) */
+  rule: string[] | null
+  canDecrypt: boolean
+  lastModified?: string
+  problem?: string
+}
+export type SecretsPage = { file?: SecretsFile; enabled: boolean; canWrite: boolean; publicKey: string }
 
 const quiet = { staleTime: 0, refetchOnWindowFocus: false, refetchInterval: false as const, retry: false }
 
@@ -39,6 +54,8 @@ export const useWriteState = (enabled: boolean) =>
   useQuery({ queryKey: ['rb', 'infra', 'write'], queryFn: () => apiFetch<WriteState>('/infra/write'), enabled, ...quiet })
 export const useHostVars = (host: string, enabled: boolean) =>
   useQuery({ queryKey: ['rb', 'infra', 'vars', host], queryFn: () => apiFetch<FileState>(`/infra/hosts/${encodeURIComponent(host)}/vars`), enabled, ...quiet })
+export const useSecrets = (host: string, enabled: boolean) =>
+  useQuery({ queryKey: ['rb', 'infra', 'secrets', host], queryFn: () => apiFetch<SecretsPage>(`/infra/hosts/${encodeURIComponent(host)}/secrets`), enabled, ...quiet })
 export const useFeatureSpecs = (enabled: boolean) =>
   useQuery({ queryKey: ['rb', 'infra', 'features'], queryFn: () => apiFetch<{ features: FeatureSpec[]; invalid: string[] }>('/infra/features'), enabled, ...quiet })
 export const useInfraGroups = (enabled: boolean) =>
@@ -62,7 +79,7 @@ export type EditProblem =
   | { kind: 'invalid'; issues: Issue[] }
   | { kind: 'message'; message: string }
 
-function problemOf(e: unknown): EditProblem {
+export function problemOf(e: unknown): EditProblem {
   if (e instanceof ApiError) {
     const b = e.body ?? {}
     if (e.statusCode === 403 && e.code === 'reauth_required') return { kind: 'reauth', maxAgeSeconds: b.maxAgeSeconds ?? 43200 }
@@ -70,6 +87,7 @@ function problemOf(e: unknown): EditProblem {
     if (e.code === 'invalid') return { kind: 'invalid', issues: b.issues ?? [] }
     if (e.code === 'busy') return { kind: 'message', message: t.infra.edit.busy }
     if (e.code === 'no_change') return { kind: 'message', message: t.infra.edit.noChange }
+    if (e.code === 'rate_limited') return { kind: 'message', message: t.infra.secrets.rateLimited }
     if (e.code === 'revert_refused') return { kind: 'message', message: t.infra.commits.reasons[b.reason] ?? e.message }
     if (e.statusCode === 403) return { kind: 'message', message: e.message }
     return { kind: 'message', message: e.message }

@@ -30,6 +30,9 @@ type InfraOptions struct {
 	Write bool
 	// Audit receives the actions that did not end in a commit (nil = none).
 	Audit ansiblerepo.Auditor
+	// RevealStatePath keeps the counts of revealed secrets across restarts
+	// (a file in --state-dir; empty = memory only).
+	RevealStatePath string
 }
 
 func (s *server) infraRoutes(mux *http.ServeMux) {
@@ -42,6 +45,7 @@ func (s *server) infraRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/infra/iplists", s.infraIPLists)
 	mux.HandleFunc("GET /api/infra/commits", s.infraCommits)
 	s.infraWriteRoutes(mux)
+	s.infraSecretsRoutes(mux)
 }
 
 // canInfra reports whether the caller may use the infra pages.

@@ -73,7 +73,7 @@ func (s *server) infraWriteState(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	who := s.who(r)
-	out := map[string]any{"enabled": s.writesOn(), "fresh": s.o.Infra.Admins.Fresh(who, s.now()), "maxAgeSeconds": int64(s.o.Infra.Admins.WriteAge() / time.Second)}
+	out := map[string]any{"enabled": s.writesOn(), "secrets": s.secretsOn(), "fresh": s.o.Infra.Admins.Fresh(who, s.now()), "maxAgeSeconds": int64(s.o.Infra.Admins.WriteAge() / time.Second)}
 	if !who.OIDCAt.IsZero() {
 		out["signedInAt"] = who.OIDCAt.UTC().Format(time.RFC3339)
 	}
@@ -112,6 +112,10 @@ func (s *server) writeInfraError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusForbidden, "forbidden", err.Error())
 	case errors.Is(err, ansiblerepo.ErrNoHost):
 		writeError(w, http.StatusNotFound, "not_found", "no such host")
+	case errors.Is(err, ansiblerepo.ErrNoSecret):
+		writeError(w, http.StatusNotFound, "no_such_key", "no such key")
+	case errors.Is(err, ansiblerepo.ErrSecretsOff):
+		writeError(w, http.StatusForbidden, "secrets_off", err.Error())
 	default:
 		s.internal(w, err)
 	}
@@ -219,7 +223,11 @@ func (s *server) finishEdit(w http.ResponseWriter, r *http.Request, e ansiblerep
 func hasHidden(content []byte) bool { return ansiblerepo.HiddenIn(content) > 0 }
 
 type featureBody struct {
-	Base              string         `json:"base"`
+	Base string `json:"base"`
+	// SecretsBase is the object ID of the host's SOPS file as the editor saw
+	// it; left out, the current one is used (a key is set on its own, so there
+	// is nothing to overwrite).
+	SecretsBase       string         `json:"secretsBase"`
 	Enabled           bool           `json:"enabled"`
 	Settings          map[string]any `json:"settings"`
 	Preview           bool           `json:"preview"`
@@ -247,6 +255,7 @@ func (s *server) infraSetFeature(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var settings []ansiblerepo.Setting
+	var secrets []ansiblerepo.SecretValue
 	var known []string
 	action := "disable " + feature
 	if b.Enabled {
@@ -256,7 +265,12 @@ func (s *server) infraSetFeature(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		var issues []ansiblerepo.Issue
-		if settings, known, issues = spec.SettingsFromInput(b.Settings); len(issues) > 0 {
+		if settings, known, secrets, issues = spec.SettingsFromInput(b.Settings); len(issues) == 0 && len(secrets) > 0 && !repo.SecretsEnabled() {
+			issues = []ansiblerepo.Issue{{Code: "feature.secret_unavailable", Severity: ansiblerepo.SevError, Path: "features." + feature + "." + secrets[0].Setting,
+				Params:  map[string]string{"feature": feature, "setting": secrets[0].Setting},
+				Message: feature + ": " + secrets[0].Setting + " is a secret setting and editing secrets is not set up here"}}
+		}
+		if len(issues) > 0 {
 			s.infraAudit(who, "infra("+scopeOf(cur.Path)+"): features "+feature, "validation_failed")
 			writeError(w, http.StatusUnprocessableEntity, "invalid", "the settings were refused", "issues", issues)
 			return
@@ -273,6 +287,28 @@ func (s *server) infraSetFeature(w http.ResponseWriter, r *http.Request) {
 			}
 			return ansiblerepo.SetFeature(old, feature, b.Enabled, settings, known)
 		}}}}
+	if b.Enabled && len(secrets) > 0 {
+		// the secret settings go to the host's SOPS file, in the same commit
+		sf, err := repo.SecretsFile(r.Context(), host)
+		if err != nil {
+			s.writeInfraError(w, err)
+			return
+		}
+		base := b.SecretsBase
+		if base == "" {
+			base = sf.Base
+		}
+		ops := make([]ansiblerepo.SecretOp, len(secrets))
+		for i, sv := range secrets {
+			ops[i] = ansiblerepo.SecretOp{Key: sv.Key, Value: sv.Value}
+		}
+		fe, err := repo.SecretsFileEdit(host, base, ops)
+		if err != nil {
+			s.writeInfraError(w, err)
+			return
+		}
+		e.Files = append(e.Files, fe)
+	}
 	s.finishEdit(w, r, e, b.Preview)
 }
 

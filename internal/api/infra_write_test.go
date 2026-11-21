@@ -69,6 +69,18 @@ type wEnv struct {
 
 func newWEnv(t *testing.T, mut func(o *api.Options, io *api.InfraOptions), admins ...string) *wEnv {
 	t.Helper()
+	return newWEnvX(t, wExtra{}, mut, admins...)
+}
+
+// wExtra changes what newWEnv seeds: files replaced or added (an empty body
+// leaves the file out) and the sops runner of the repository.
+type wExtra struct {
+	seed map[string]string
+	sops ansiblerepo.Sopser
+}
+
+func newWEnvX(t *testing.T, x wExtra, mut func(o *api.Options, io *api.InfraOptions), admins ...string) *wEnv {
+	t.Helper()
 	out, err := exec.Command("git", "--exec-path").Output()
 	if err != nil {
 		t.Skip("git not installed")
@@ -88,14 +100,21 @@ func newWEnv(t *testing.T, mut func(o *api.Options, io *api.InfraOptions), admin
 	}
 	e := &wEnv{bare: bare, seed: filepath.Join(root, "seed"), work: filepath.Join(root, "work"), audit: &wAudit{}, now: time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)}
 	sh(t, root, "clone", bare, e.seed)
-	for rel, body := range map[string]string{
+	files := map[string]string{
 		"inventory/hosts.yml":           wInventory,
 		"inventory/host_vars/alpha.yml": wAlpha,
 		"inventory/host_vars/beta.yml":  "tailscale_ip: 100.64.0.2\n",
 		"secrets/alpha.sops.yaml":       "sops: {}\n",
 		"secrets/beta.sops.yaml":        "sops: {}\n",
 		"features/demo/feature.yml":     wFeature,
-	} {
+	}
+	for rel, body := range x.seed {
+		files[rel] = body
+	}
+	for rel, body := range files {
+		if body == "" {
+			continue
+		}
 		p := filepath.Join(e.seed, rel)
 		_ = os.MkdirAll(filepath.Dir(p), 0o755)
 		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
@@ -118,7 +137,7 @@ func newWEnv(t *testing.T, mut func(o *api.Options, io *api.InfraOptions), admin
 	e.repo, err = ansiblerepo.New(ansiblerepo.Options{Dir: e.work, Branch: "main", Audit: e.audit,
 		Committer: gitstore.Identity{Name: "Rackbook", Email: "rackbook@kazuha.org"},
 		Auth:      &gitstore.GitAuth{Source: app, Perms: githubapp.Permissions{Contents: "read"}},
-		WriteAuth: &gitstore.GitAuth{Source: app, Perms: githubapp.Permissions{Contents: "write"}}})
+		WriteAuth: &gitstore.GitAuth{Source: app, Perms: githubapp.Permissions{Contents: "write"}}, Sops: x.sops})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -391,12 +410,12 @@ func TestInfraFeaturesFormEdits(t *testing.T) {
 	if e.remote(t, "%s") != "infra(host_vars/alpha): update demo" {
 		t.Fatalf("%s", e.remote(t, "%s"))
 	}
-	// a secret setting is refused (a later phase), nothing is committed
+	// a secret setting is refused while no age key is configured, nothing is committed
 	head := e.remote(t, "%H")
 	base = e.base(t, "/api/infra/hosts/alpha/vars")
 	code, res, _ = e.do(t, "POST", path, map[string]any{"base": base, "enabled": true, "settings": map[string]any{"name": "two", "token": "supersecret"}}, me)
 	iss := arr(t, res["issues"])
-	if code != http.StatusUnprocessableEntity || iss[0].(map[string]any)["code"] != "feature.secret_refused" || e.remote(t, "%H") != head {
+	if code != http.StatusUnprocessableEntity || iss[0].(map[string]any)["code"] != "feature.secret_unavailable" || e.remote(t, "%H") != head {
 		t.Fatalf("%d %v", code, res)
 	}
 	// a bad value is refused by the checks (pattern: lowercase letters)

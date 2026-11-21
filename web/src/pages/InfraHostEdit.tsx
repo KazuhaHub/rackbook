@@ -14,7 +14,7 @@ import { EditResult, ReauthNotice } from '@/components/infra/EditReview'
 import { t } from '@/i18n'
 import { ApiError } from '@/lib/api'
 import { useInfraHost } from '@/lib/infra'
-import { useEditFlow, useFeatureSpecs, useHostVars, useWriteState, type FeatureSpec, type SettingSpec } from '@/lib/infraEdit'
+import { useEditFlow, useFeatureSpecs, useHostVars, useSecrets, useWriteState, type FeatureSpec, type SettingSpec } from '@/lib/infraEdit'
 import { useMeta } from '@/providers/meta'
 
 function Section({ title, hint, children }: { title: string; hint?: string; children: React.ReactNode }) {
@@ -31,8 +31,25 @@ function Section({ title, hint, children }: { title: string; hint?: string; chil
 
 const asText = (v: unknown) => (v === undefined || v === null ? '' : String(v))
 
-function FieldInput({ spec, value, onChange, id }: { spec: SettingSpec; value: string; onChange: (v: string) => void; id: string }) {
-  if (spec.secret) return <p className="text-xs text-muted-foreground">{t.infra.edit.features.secret}</p>
+/** What the form knows of the host's SOPS file: whether the secrets editor is on and which keys it holds. */
+type Secrets = { enabled: boolean; stored: Set<string> }
+
+function FieldInput({ spec, value, onChange, id, stored }: { spec: SettingSpec; value: string; onChange: (v: string) => void; id: string; stored?: boolean | null }) {
+  if (spec.secret) {
+    if (stored === null || stored === undefined) return <p className="text-xs text-muted-foreground">{t.infra.edit.features.secret}</p>
+    return (
+      <Textarea
+        id={id}
+        autoComplete="off"
+        spellCheck={false}
+        rows={2}
+        value={value}
+        placeholder={stored ? t.infra.edit.features.secretStored : t.infra.edit.features.secretUnset}
+        onChange={(e) => onChange(e.target.value)}
+        className="font-mono text-xs"
+      />
+    )
+  }
   if (spec.type === 'enum' || spec.type === 'bool') {
     const opts = spec.type === 'bool' ? ['true', 'false'] : (spec.enum ?? [])
     return (
@@ -65,12 +82,14 @@ function FeatureCard({
   present,
   initial,
   busy,
+  secrets,
   onReview,
 }: {
   spec: FeatureSpec
   present: boolean
   initial: Record<string, unknown>
   busy: boolean
+  secrets: Secrets
   onReview: (enabled: boolean, settings: Record<string, unknown>) => void
 }) {
   const [enabled, setEnabled] = useState(present)
@@ -79,7 +98,7 @@ function FeatureCard({
     const out: Record<string, unknown> = {}
     for (const s of spec.settings) {
       const v = vals[s.name]
-      if (s.secret || v === '') continue
+      if (v === '') continue // an empty secret box keeps the stored value
       out[s.name] = s.type === 'int' ? Number(v) : s.type === 'bool' ? v === 'true' : v
     }
     onReview(enabled, out)
@@ -102,7 +121,12 @@ function FeatureCard({
                 <span className="font-mono text-xs">{s.name}</span>
                 {s.required && <span className="text-xs text-destructive">{t.infra.edit.features.required}</span>}
               </Label>
-              <FieldInput spec={s} id={`${spec.name}-${s.name}`} value={vals[s.name] ?? ''} onChange={(v) => setVals((o) => ({ ...o, [s.name]: v }))} />
+              <FieldInput
+                spec={s}
+                id={`${spec.name}-${s.name}`}
+                stored={secrets.enabled ? secrets.stored.has(`feature_${spec.name}_${s.name}`) : null}
+                value={vals[s.name] ?? ''}
+                onChange={(v) => setVals((o) => ({ ...o, [s.name]: v }))} />
               {s.description && <p className="text-xs text-muted-foreground">{s.description}</p>}
               {s.default !== undefined && s.default !== null && !s.secret && <p className="text-xs text-muted-foreground">{t.infra.edit.features.defaultIs(String(s.default))}</p>}
             </div>
@@ -124,6 +148,8 @@ export default function InfraHostEdit() {
   const vars = useHostVars(name, canWrite)
   const specs = useFeatureSpecs(canWrite)
   const host = useInfraHost(name, canWrite)
+  const secretsQ = useSecrets(name, canWrite)
+  const secrets: Secrets = { enabled: !!secretsQ.data?.enabled, stored: new Set(secretsQ.data?.file?.keys.map((k) => k.name)) }
   const flow = useEditFlow()
   const [text, setText] = useState<string | null>(null)
   const busy = flow.state.phase === 'checking' || flow.state.phase === 'committing'
@@ -195,11 +221,12 @@ export default function InfraHostEdit() {
                   return (
                     <div key={f.name}>
                       <FeatureCard
-                        key={JSON.stringify([f.name, !!cur, cur?.settings ?? null])}
+                        key={JSON.stringify([f.name, !!cur, cur?.settings ?? null, flow.state.phase === 'done' && flow.state.key === `feature:${f.name}` ? flow.state.outcome?.commit : null])}
                         spec={f}
                         present={!!cur}
                         initial={cur?.settings ?? {}}
                         busy={busy}
+                        secrets={secrets}
                         onReview={(enabled, settings) => flow.review(`feature:${f.name}`, `${path}/features/${encodeURIComponent(f.name)}`, { base, enabled, settings })}
                       />
                       <EditResult flow={flow.state} mine={flow.state.key === `feature:${f.name}`} onCommit={flow.commit} onReload={reload} onCancel={flow.reset} />

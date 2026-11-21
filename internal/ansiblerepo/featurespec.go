@@ -29,7 +29,7 @@ type SettingSpec struct {
 	Default      any            `json:"default,omitempty"`
 	Required     bool           `json:"required,omitempty"`
 	RequiredWhen map[string]any `json:"requiredWhen,omitempty"`
-	// Secret settings come from SOPS only; the editor refuses them.
+	// Secret settings live in the host's SOPS file (feature_<feature>_<name>), never in host_vars.
 	Secret  bool   `json:"secret,omitempty"`
 	Pattern string `json:"pattern,omitempty"`
 	Min     *int   `json:"min,omitempty"`
@@ -146,7 +146,11 @@ func parseSetting(name string, n *yaml.Node) (*SettingSpec, error) {
 // settingProblem checks one value against its definition; "" = fine. The
 // problem is a short code (type, enum, pattern, range, length, control,
 // template).
-func (s *SettingSpec) problem(v any) string {
+func (s *SettingSpec) problem(v any) string { return s.problemIn(v, false) }
+
+// problemIn is problem; with multiline a secret's line breaks (and tabs) are
+// let through, so a PEM key can be stored.
+func (s *SettingSpec) problemIn(v any, multiline bool) string {
 	switch s.Type {
 	case TypeBool:
 		if _, ok := v.(bool); !ok {
@@ -180,10 +184,13 @@ func (s *SettingSpec) problem(v any) string {
 		if !ok {
 			return "type"
 		}
-		if len(str) > maxSettingLen {
+		if limit := map[bool]int{false: maxSettingLen, true: MaxSecretValue}[multiline]; len(str) > limit {
 			return "length"
 		}
 		for _, r := range str {
+			if multiline && (r == '\n' || r == '\t') {
+				continue
+			}
 			if r < 0x20 || r == 0x7f {
 				return "control"
 			}
@@ -277,43 +284,68 @@ func (f *FeatureSpec) checkSettings(settings map[string]any) []Issue {
 	return out
 }
 
+// SecretValue is a value for the SOPS key of a secret setting.
+type SecretValue struct {
+	Setting string
+	Key     string // feature_<feature>_<setting>
+	Value   string
+}
+
 // SettingsFromInput turns the values of a form (JSON) into the settings to
-// write, in the order of the feature's definition, and the names the form
-// controls (every non-secret setting of the definition: the ones left out are
-// reset to their default). A secret or unknown setting is refused: secret
-// values come only from SOPS (a later phase), and an unknown one is a typing
-// mistake. The values themselves are checked after the edit, with the rest.
-func (f *FeatureSpec) SettingsFromInput(input map[string]any) (settings []Setting, known []string, issues []Issue) {
+// write, in the order of the feature's definition, the names the form controls
+// (every non-secret setting of the definition: the ones left out are reset to
+// their default) and the values of secret settings to store in the host's SOPS
+// file. A secret setting left out or empty is left as it is (the console never
+// shows a stored secret, so an empty box means "unchanged"). An unknown setting
+// is refused: it is a typing mistake. The values of ordinary settings are
+// checked after the edit, with the rest; a secret value is checked here against
+// its definition.
+func (f *FeatureSpec) SettingsFromInput(input map[string]any) (settings []Setting, known []string, secrets []SecretValue, issues []Issue) {
 	names := make([]string, 0, len(input))
 	for k := range input {
 		names = append(names, k)
 	}
 	sort.Strings(names)
 	for _, k := range names {
-		s := f.setting(k)
-		switch {
-		case s == nil:
+		if f.setting(k) == nil {
 			issues = append(issues, Issue{Code: "feature.unknown_setting", Severity: SevError, Path: "features." + f.Name + "." + k,
 				Params: map[string]string{"feature": f.Name, "setting": k}, Message: fmt.Sprintf("%s: %s is not a setting of this feature", f.Name, k)})
-		case s.Secret:
-			issues = append(issues, Issue{Code: "feature.secret_refused", Severity: SevError, Path: "features." + f.Name + "." + k,
-				Params: map[string]string{"feature": f.Name, "setting": k}, Message: fmt.Sprintf("%s: %s is a secret setting; secrets are edited in the SOPS file, not here", f.Name, k)})
 		}
 	}
 	if len(issues) > 0 {
-		return nil, nil, issues
+		return nil, nil, nil, issues
 	}
 	for _, s := range f.Settings {
+		v, ok := input[s.Name]
 		if s.Secret {
+			str, isStr := v.(string)
+			switch {
+			case !ok || v == nil || (isStr && str == ""):
+			case !isStr || s.Type != TypeString || s.problemIn(v, true) != "" || ValidSecretValue(str) != "" || !ValidSecretKey(SecretKeyOf(f.Name, s.Name)):
+				p := "type"
+				if isStr {
+					p = s.problemIn(v, true)
+					if p == "" && ValidSecretValue(str) == "pem_one_line" {
+						p = "pem"
+					}
+				}
+				if p == "" {
+					p = "type"
+				}
+				issues = append(issues, Issue{Code: "feature.bad_value", Severity: SevError, Path: "features." + f.Name + "." + s.Name,
+					Params:  map[string]string{"feature": f.Name, "setting": s.Name, "problem": p, "type": s.Type},
+					Message: fmt.Sprintf("%s: the value of %s does not fit its definition (%s: %s)", f.Name, s.Name, s.Type, p)})
+			default:
+				secrets = append(secrets, SecretValue{Setting: s.Name, Key: SecretKeyOf(f.Name, s.Name), Value: str})
+			}
 			continue
 		}
 		known = append(known, s.Name)
-		v, ok := input[s.Name]
 		if !ok || v == nil {
 			continue
 		}
 		if str, isStr := v.(string); isStr && str == Hidden {
-			return nil, nil, []Issue{{Code: "feature.hidden_value", Severity: SevError, Path: "features." + f.Name + "." + s.Name,
+			return nil, nil, nil, []Issue{{Code: "feature.hidden_value", Severity: SevError, Path: "features." + f.Name + "." + s.Name,
 				Params: map[string]string{"feature": f.Name, "setting": s.Name}, Message: fmt.Sprintf("%s: %s is hidden in the console and cannot be saved from it", f.Name, s.Name)}}
 		}
 		if n, isInt := asInt(v); isInt && s.Type == TypeInt {
@@ -324,5 +356,8 @@ func (f *FeatureSpec) SettingsFromInput(input map[string]any) (settings []Settin
 		}
 		settings = append(settings, Setting{Name: s.Name, Value: v})
 	}
-	return settings, known, nil
+	if len(issues) > 0 {
+		return nil, nil, nil, issues
+	}
+	return settings, known, secrets, nil
 }

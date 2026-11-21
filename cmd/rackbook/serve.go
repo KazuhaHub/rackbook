@@ -34,6 +34,7 @@ import (
 	"github.com/kazuhahub/rackbook/internal/modules"
 	"github.com/kazuhahub/rackbook/internal/oauthserver"
 	"github.com/kazuhahub/rackbook/internal/prefs"
+	"github.com/kazuhahub/rackbook/internal/sops"
 	"github.com/kazuhahub/rackbook/internal/tokens"
 	"github.com/kazuhahub/rackbook/web"
 )
@@ -89,6 +90,7 @@ RACKBOOK_GITHUB_TOKEN.`,
 	f.String("infra-oidc-identity-claim", "preferred_username", "the ID token claim the administrators' identities are taken from (\"sub\" for subject identities); /infra refuses a session whose identity came from another claim, so auth.oidc.identity_claim in rackbook.yml cannot change who is an administrator; needs --infra-repo")
 	f.String("infra-oidc-tenant", "", "the tenant (tid claim) the administrators sign in from; required for an Entra issuer, and a tenant GUID in --infra-oidc-issuer must equal it; /infra refuses a session from another tenant (allowed_tenants in rackbook.yml is not trusted); needs --infra-repo")
 	f.Bool("infra-write", false, "turn on the infra editors: one commit per edit on --infra-branch (needs --github-app-id with Contents: write on that repository, and --infra-repo)")
+	f.String("sops-age-key-file", "", "age identity file Rackbook edits the SOPS secrets of --infra-repo with (its own key, a recipient of every file; needs --infra-write, and the sops and age-keygen binaries); empty = the secrets editor is off")
 	f.Duration("infra-write-max-age", auth.DefaultInfraWriteAge, "how recent an administrator's sign-in must be for an infra write (older: sign in again)")
 	f.String("infra-managed-group", "managed", `inventory group whose hosts must each have host_vars and a SOPS file, and that holds every host of every group ("" = no such check)`)
 	f.String("infra-agent-group", "infra_agent", `inventory group that must list exactly the managed hosts, checked only when the inventory has it ("" = no such check)`)
@@ -248,6 +250,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		if al, ok := infra.Audit.(*ansiblerepo.AuditLog); ok {
 			al.Path = filepath.Join(stateDir, "infra-audit.jsonl")
 		}
+		infra.RevealStatePath = filepath.Join(stateDir, "infra-reveals.json")
 	}
 	resource := &mcpauth.Resource{Config: store.Config, Auth: authn, Verifier: &oauth.Verifier{}, Tokens: registry, Limiter: &tokens.Limiter{}, TrustedProxies: proxies, Log: logger}
 	var oauthSrv api.OAuthServer
@@ -397,7 +400,7 @@ func newInfra(ctx context.Context, f *pflag.FlagSet, cfg *config.Config, mode st
 	status, _ := f.GetString("hub-status-file")
 	key, _ := f.GetString("infra-ssh-key")
 	if dir == "" {
-		for _, name := range []string{"infra-admins", "hub-status-file", "infra-ssh-key", "infra-oidc-issuer", "infra-oidc-client-id", "infra-oidc-identity-claim", "infra-oidc-tenant", "infra-write", "infra-write-max-age", "infra-managed-group", "infra-agent-group"} {
+		for _, name := range []string{"infra-admins", "hub-status-file", "infra-ssh-key", "infra-oidc-issuer", "infra-oidc-client-id", "infra-oidc-identity-claim", "infra-oidc-tenant", "infra-write", "sops-age-key-file", "infra-write-max-age", "infra-managed-group", "infra-agent-group"} {
 			if f.Changed(name) {
 				return nil, fmt.Errorf("--%s needs --infra-repo", name)
 			}
@@ -461,6 +464,20 @@ func newInfra(ctx context.Context, f *pflag.FlagSet, cfg *config.Config, mode st
 		if kh := filepath.Join(filepath.Dir(key), "known_hosts"); fileExists(kh) {
 			opts.KnownHosts = kh
 		}
+	}
+	if keyFile, _ := f.GetString("sops-age-key-file"); keyFile != "" {
+		if !write {
+			return nil, errors.New("--sops-age-key-file needs --infra-write: a secret is edited by a commit")
+		}
+		if sd, _ := f.GetString("state-dir"); sd == "" {
+			return nil, errors.New("--sops-age-key-file needs --state-dir: the limits on revealing secrets are kept there across restarts")
+		}
+		runner, err := sops.New(ctx, sops.Options{KeyFile: keyFile})
+		if err != nil {
+			return nil, fmt.Errorf("--sops-age-key-file: %w", err)
+		}
+		opts.Sops = runner
+		logger.Info("secrets editor on", "recipient", runner.PublicKey())
 	}
 	repo, err := ansiblerepo.New(opts)
 	if err != nil {

@@ -37,6 +37,7 @@ export default function InfraHost() {
       <div className="mb-4 flex flex-wrap items-baseline gap-x-4 gap-y-1">
         <h1 className="text-xl font-semibold break-all">{name}</h1>
         {meta.user?.canInfraWrite && !notFound && <EditLink to={`/infra/hosts/${encodeURIComponent(name)}/edit`}>{t.infra.edit.editLink}</EditLink>}
+        {meta.user?.canInfraWrite && !notFound && <EditLink to={`/infra/hosts/${encodeURIComponent(name)}/secrets`}>{t.infra.secrets.link}</EditLink>}
       </div>
       {q.isPending ? (
         <Skeleton className="h-40 w-full" />

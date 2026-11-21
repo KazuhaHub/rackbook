@@ -297,21 +297,29 @@ func TestParseFeatureSpec(t *testing.T) {
 func TestSettingsFromInput(t *testing.T) {
 	f, _ := ParseFeatureSpec([]byte(featSpec))
 	f.Name = "demo"
-	s, known, iss := f.SettingsFromInput(map[string]any{"name": "x", "port": float64(80), "mode": "", "verbose": true})
+	s, known, sec, iss := f.SettingsFromInput(map[string]any{"name": "x", "port": float64(80), "mode": "", "verbose": true, "token": "abc"})
 	if len(iss) != 0 || len(s) != 3 || s[0].Name != "name" && s[0].Name != "port" {
 		t.Fatalf("%+v %+v", s, iss)
 	}
 	if strings.Join(known, ",") != "mode,hub_url,port,verbose,name" {
 		t.Fatalf("secret settings are not controlled by the form: %v", known)
 	}
+	if len(sec) != 1 || sec[0].Key != "feature_demo_token" || sec[0].Value != "abc" {
+		t.Fatalf("a secret setting goes to its SOPS key: %+v", sec)
+	}
+	// an empty secret box means "unchanged"
+	if _, _, sec, iss := f.SettingsFromInput(map[string]any{"name": "x", "token": ""}); len(sec) != 0 || len(iss) != 0 {
+		t.Fatalf("%+v %+v", sec, iss)
+	}
 	for _, c := range []struct {
 		in   map[string]any
 		code string
 	}{
-		{map[string]any{"token": "abc"}, "feature.secret_refused"},
+		{map[string]any{"token": float64(5)}, "feature.bad_value"},
+		{map[string]any{"token": "{{ x }}"}, "feature.bad_value"},
 		{map[string]any{"color": "red"}, "feature.unknown_setting"},
 	} {
-		if _, _, iss := f.SettingsFromInput(c.in); len(iss) != 1 || iss[0].Code != c.code {
+		if _, _, _, iss := f.SettingsFromInput(c.in); len(iss) != 1 || iss[0].Code != c.code {
 			t.Errorf("%v: %+v", c.in, iss)
 		}
 	}
