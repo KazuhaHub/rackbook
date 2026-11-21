@@ -134,7 +134,7 @@ func (execRunner) Run(ctx context.Context, c Cmd) (string, string, error) {
 		full = append(full, "-c", "safe.directory=*")
 	}
 	cmd := exec.CommandContext(ctx, "git", append(full, c.Args...)...)
-	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "LC_ALL=C")
+	cmd.Env = append(inheritedEnv(os.Environ()), "GIT_TERMINAL_PROMPT=0", "LC_ALL=C")
 	if c.IgnoreUserConfig {
 		cmd.Env = append(cmd.Env, "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL="+os.DevNull)
 	}

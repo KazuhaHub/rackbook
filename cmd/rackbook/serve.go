@@ -153,7 +153,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	if mode == "" {
 		mode = auth.ModeNone
 	}
-	infra, err := newInfra(ctx, f, cfg.Dir, mode, interval, appSource, ghAPI != "", logger)
+	infra, err := newInfra(ctx, f, cfg.Dir, mode, interval, appSource, logger)
 	if err != nil {
 		return err
 	}
@@ -377,7 +377,7 @@ func newLogin(cfg *config.Config, store *gitstore.Store, prefStore *prefs.Store,
 
 // newInfra sets up the read-only /infra pages from the --infra-* flags: nil
 // when --infra-repo is not given (and then none of the others may be).
-func newInfra(ctx context.Context, f *pflag.FlagSet, ledgerDir, mode string, interval time.Duration, app gitstore.TokenSource, trustHost bool, logger *slog.Logger) (*api.InfraOptions, error) {
+func newInfra(ctx context.Context, f *pflag.FlagSet, ledgerDir, mode string, interval time.Duration, app gitstore.TokenSource, logger *slog.Logger) (*api.InfraOptions, error) {
 	dir, _ := f.GetString("infra-repo")
 	admins, _ := f.GetStringSlice("infra-admins")
 	status, _ := f.GetString("hub-status-file")
@@ -411,7 +411,7 @@ func newInfra(ctx context.Context, f *pflag.FlagSet, ledgerDir, mode string, int
 			return nil, errors.New("--infra-ssh-key and --github-app-id are two ways to fetch --infra-repo: use one")
 		}
 		// Rackbook only reads this clone: the token carries contents: read.
-		opts.Auth = &gitstore.GitAuth{Source: app, Perms: githubapp.Permissions{Contents: "read"}, TrustHost: trustHost}
+		opts.Auth = &gitstore.GitAuth{Source: app, Perms: githubapp.Permissions{Contents: "read"}}
 	}
 	if key != "" {
 		opts.SSHKey = key

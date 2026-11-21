@@ -146,9 +146,12 @@ var envKeyRe = regexp.MustCompile(`^GIT_CONFIG_(KEY|VALUE)_[0-9]+$`)
 
 // refuseEnv is the allow-list for the extra environment a command may carry:
 // the commit identity, GIT_SSH_COMMAND, and the GIT_CONFIG_COUNT/KEY/VALUE
-// triples that attach a GitHub App token (an http.<url>.extraheader) or point
-// an ssh remote at https (url.<base>.insteadOf). Nothing else can inject
-// configuration (hooks, proxies, helpers, ...).
+// triples that attach a GitHub App token (an http.<url>.extraheader), turn off
+// redirects (http.followRedirects) or point an ssh remote at https
+// (url.<base>.insteadOf). Any other variable or config key in that extra
+// environment is refused. (The environment the process itself inherits is
+// separate: execRunner removes the variables that could trace, weaken or
+// redirect a command that carries a token, see inheritedEnv.)
 func refuseEnv(env []string) error {
 	for _, kv := range env {
 		name, val, _ := strings.Cut(kv, "=")
@@ -158,7 +161,7 @@ func refuseEnv(env []string) error {
 		case envKeyRe.MatchString(name):
 			if strings.HasPrefix(name, "GIT_CONFIG_KEY_") {
 				k := strings.ToLower(val)
-				ok := (strings.HasPrefix(k, "http.") && strings.HasSuffix(k, ".extraheader")) ||
+				ok := (strings.HasPrefix(k, "http.") && strings.HasSuffix(k, ".extraheader")) || k == "http.followredirects" ||
 					(strings.HasPrefix(k, "url.") && strings.HasSuffix(k, ".insteadof"))
 				if !ok {
 					return fmt.Errorf("%w: environment config key %q", errDestructive, val)
@@ -169,4 +172,34 @@ func refuseEnv(env []string) error {
 		}
 	}
 	return nil
+}
+
+// scrubbedEnv lists the inherited variables that are dropped from every git
+// command: they could print the Authorization header (GIT_TRACE*, curl
+// verbose), weaken TLS, add configuration behind the allow-list
+// (GIT_CONFIG_PARAMETERS, GIT_CONFIG_COUNT and its keys are re-set by us when
+// needed) or run a program to ask for credentials.
+func scrubbedEnv(name string) bool {
+	switch {
+	case strings.HasPrefix(name, "GIT_TRACE"), strings.HasPrefix(name, "GIT_CONFIG_KEY_"), strings.HasPrefix(name, "GIT_CONFIG_VALUE_"):
+		return true
+	}
+	switch name {
+	case "GIT_CURL_VERBOSE", "GIT_SSL_NO_VERIFY", "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT",
+		"GIT_ASKPASS", "SSH_ASKPASS":
+		return true
+	}
+	return false
+}
+
+// inheritedEnv is the process environment without the scrubbedEnv variables.
+func inheritedEnv(environ []string) []string {
+	out := make([]string, 0, len(environ))
+	for _, kv := range environ {
+		name, _, _ := strings.Cut(kv, "=")
+		if !scrubbedEnv(name) {
+			out = append(out, kv)
+		}
+	}
+	return out
 }

@@ -134,3 +134,51 @@ func TestRejectsBadInput(t *testing.T) {
 		t.Fatal("accepted empty options")
 	}
 }
+
+func TestConcurrentTokenCallsShareOneRequest(t *testing.T) {
+	api, app, _ := setup(t)
+	api.Install("org/ledger")
+	var wg sync.WaitGroup
+	toks := make([]string, 16)
+	for i := range toks {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			tok, err := app.Token(context.Background(), "org", "ledger", write)
+			if err != nil {
+				t.Error(err)
+			}
+			toks[i] = tok
+		}()
+	}
+	wg.Wait()
+	for _, tk := range toks {
+		if tk == "" || tk != toks[0] {
+			t.Fatalf("callers got different tokens: %v", toks)
+		}
+	}
+	if n := len(api.Issued()); n > 2 { // a late caller may start a second flight only after the first finished and cached: never
+		t.Fatalf("issued %d tokens for 16 concurrent callers", n)
+	}
+	// Different repositories do not wait for each other.
+	api.Install("org/infra")
+	if _, err := app.Token(context.Background(), "org", "infra", githubapp.Permissions{Contents: "read"}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRefusesAPIURLsThatAreNotHTTPS(t *testing.T) {
+	key, _ := githubapp.ParseKey(githubapptest.NewAPI(t, "1", nil).KeyPEM())
+	if _, err := githubapp.New(githubapp.Options{AppID: "1", Key: key, API: "http://ghe.example.org/api/v3"}); err == nil {
+		t.Fatal("accepted plain http")
+	}
+	if _, err := githubapp.New(githubapp.Options{AppID: "1", Key: key, API: "https://ghe.example.org/api/v3"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := githubapp.New(githubapp.Options{AppID: "1", Key: key, API: "http://127.0.0.1:9"}); err != nil {
+		t.Fatalf("loopback http is for tests: %v", err)
+	}
+	if githubapp.GitHost("https://api.github.com") != "github.com" || githubapp.GitHost("https://ghe.example.org/api/v3") != "ghe.example.org" {
+		t.Fatal("GitHost")
+	}
+}

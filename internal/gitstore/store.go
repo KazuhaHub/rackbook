@@ -125,11 +125,18 @@ func Open(ctx context.Context, o Options) (*Store, error) {
 	s.ghAPI = o.GitHubAPI
 	s.repo = &Repo{Dir: cfg.Dir, Runner: o.Runner, IgnoreUserConfig: true}
 	if o.GitHubApp != nil {
-		s.repo.Auth = &GitAuth{Source: o.GitHubApp, Perms: githubapp.Permissions{Contents: "write"}, Repo: o.GitHubRepo, TrustHost: o.GitHubAPI != ""}
+		s.repo.Auth = &GitAuth{Source: o.GitHubApp, Perms: githubapp.Permissions{Contents: "write"}}
 	}
 	if !o.NoGit && s.repo.IsRepo(ctx) {
 		s.git = true
 		s.remote = s.repo.RemoteURL(ctx)
+		if o.GitHubApp != nil && o.GitHubRepo != "" && s.remote != "" {
+			// The App's token and the https rewrite follow the origin URL alone;
+			// --github-repo must not point them somewhere else.
+			if _, ow, rp, perr := ParseRemote(s.remote); perr == nil && !strings.EqualFold(ow+"/"+rp, o.GitHubRepo) {
+				return nil, fmt.Errorf("--github-repo %s does not match the origin %s (%s/%s): with a GitHub App the repository comes from origin; fix one of them", o.GitHubRepo, s.remote, ow, rp)
+			}
+		}
 		s.branch = cfg.Write.Branch
 		cur, err := s.repo.Branch(ctx)
 		if err != nil {

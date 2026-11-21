@@ -250,7 +250,7 @@ func TestMirrorFetchesOverHTTPSWithAReadOnlyToken(t *testing.T) {
 	sh(t, filepath.Dir(work), "clone", infra, work)
 	sh(t, work, "remote", "set-url", "origin", w.git.URL("org/infra"))
 
-	m := &Mirror{Dir: work, Branch: "main", Runner: w.spy, Auth: &GitAuth{Source: w.app, Perms: githubapp.Permissions{Contents: "read"}, TrustHost: true}}
+	m := &Mirror{Dir: work, Branch: "main", Runner: w.spy, Auth: &GitAuth{Source: w.app, Perms: githubapp.Permissions{Contents: "read"}}}
 	head, err := m.Sync(context.Background())
 	if err != nil || head != sh(t, seed, "rev-parse", "HEAD") {
 		t.Fatalf("sync: %v %s", err, head)
@@ -275,10 +275,18 @@ func TestMirrorFetchesOverHTTPSWithAReadOnlyToken(t *testing.T) {
 	}
 }
 
+// stubSource is an App for github.com that never touches the network.
+type stubSource struct{}
+
+func (stubSource) Token(context.Context, string, string, githubapp.Permissions) (string, error) {
+	return "ghs_stub", nil
+}
+func (stubSource) API() string { return githubapp.DefaultAPI }
+
 func TestGitAuthEnvScopesTheHeaderAndRefusesUnsafeRemotes(t *testing.T) {
 	w := newAppWorld(t)
 	w.api.Install("org/ledger")
-	a := &GitAuth{Source: w.app, Perms: githubapp.Permissions{Contents: "write"}}
+	a := &GitAuth{Source: stubSource{}, Perms: githubapp.Permissions{Contents: "write"}}
 	ctx := context.Background()
 
 	// An ssh origin is spoken to over https for these commands only.
@@ -287,8 +295,8 @@ func TestGitAuthEnvScopesTheHeaderAndRefusesUnsafeRemotes(t *testing.T) {
 		t.Fatal(err)
 	}
 	joined := strings.Join(env, "\n")
-	for _, want := range []string{"GIT_CONFIG_COUNT=2", "GIT_CONFIG_KEY_0=http.https://github.com/org/ledger.git.extraheader",
-		"GIT_CONFIG_KEY_1=url.https://github.com/org/ledger.git.insteadOf", "GIT_CONFIG_VALUE_1=git@github.com:org/ledger.git"} {
+	for _, want := range []string{"GIT_CONFIG_COUNT=3", "GIT_CONFIG_KEY_0=http.https://github.com/org/ledger.git.extraheader",
+		"GIT_CONFIG_KEY_2=url.https://github.com/org/ledger.git.insteadOf", "GIT_CONFIG_VALUE_2=git@github.com:org/ledger.git"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("missing %q in\n%s", want, joined)
 		}
@@ -296,28 +304,40 @@ func TestGitAuthEnvScopesTheHeaderAndRefusesUnsafeRemotes(t *testing.T) {
 	if err := refuseEnv(env); err != nil {
 		t.Fatalf("the allow-list refuses its own environment: %v", err)
 	}
-	// Not github.com without --github-api, plain http to a remote host, no parse.
+	// A host other than the API's, plain http to a remote host, a local path.
 	if _, err := a.env(ctx, "https://git.example.org/org/ledger.git"); err == nil {
-		t.Error("sent a token to a foreign host")
+		t.Error("sent a token to a host the API does not serve")
 	}
-	b := &GitAuth{Source: w.app, Perms: a.Perms, TrustHost: true}
-	if _, err := b.env(ctx, "http://git.example.org/org/ledger.git"); err == nil {
-		t.Error("sent a token over plain http")
-	}
-	if _, err := b.env(ctx, "/some/local/path"); err == nil {
+	if _, err := a.env(ctx, "/some/local/path"); err == nil {
 		t.Error("accepted a local path")
 	}
-	// Userinfo in the remote never reaches the header scope.
-	env, err = b.env(ctx, "https://user:pw@github.example.org/org/ledger.git")
-	if err == nil && strings.Contains(strings.Join(env, "\n"), "pw") {
-		t.Error("remote userinfo leaked into the config")
+	// Redirects are off in the same environment.
+	if !strings.Contains(joined, "http.followRedirects") {
+		t.Error("followRedirects not set")
+	}
+}
+
+func TestGitHubRepoMustMatchOrigin(t *testing.T) {
+	w := newAppWorld(t)
+	_, err := Open(context.Background(), Options{ConfigPath: filepath.Join(w.server, "rackbook.yml"), GitHubApp: w.app, GitHubRepo: "org/other", Runner: w.spy})
+	if err == nil || !strings.Contains(err.Error(), "does not match the origin") {
+		t.Fatalf("want a clear refusal, got %v", err)
+	}
+}
+
+func TestInheritedEnvIsScrubbed(t *testing.T) {
+	in := []string{"PATH=/bin", "GIT_TRACE=1", "GIT_TRACE_CURL=/x", "GIT_CURL_VERBOSE=1", "GIT_SSL_NO_VERIFY=1", "GIT_CONFIG_PARAMETERS='a'",
+		"GIT_ASKPASS=/x", "SSH_ASKPASS=/x", "GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=a", "GIT_TRACE_REDACT=0", "HOME=/h"}
+	got := inheritedEnv(in)
+	if len(got) != 2 || got[0] != "PATH=/bin" || got[1] != "HOME=/h" {
+		t.Fatalf("%v", got)
 	}
 }
 
 func TestEnvAllowList(t *testing.T) {
 	ok := [][]string{
 		{"GIT_SSH_COMMAND=ssh -i k", "GIT_AUTHOR_NAME=x"},
-		{"GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=http.https://h/o/r.git.extraheader", "GIT_CONFIG_VALUE_0=Authorization: Basic eA=="},
+		{"GIT_CONFIG_COUNT=2", "GIT_CONFIG_KEY_0=http.https://h/o/r.git.extraheader", "GIT_CONFIG_VALUE_0=Authorization: Basic eA==", "GIT_CONFIG_KEY_1=http.followRedirects", "GIT_CONFIG_VALUE_1=false"},
 	}
 	for _, e := range ok {
 		if err := refuseEnv(e); err != nil {

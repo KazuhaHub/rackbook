@@ -31,7 +31,7 @@ func TestRefreshOverHTTPSWithAReadOnlyAppToken(t *testing.T) {
 		t.Fatal(err)
 	}
 	r, err := New(Options{Dir: f.work, Branch: "main",
-		Auth: &gitstore.GitAuth{Source: app, Perms: githubapp.Permissions{Contents: "read"}, TrustHost: true}})
+		Auth: &gitstore.GitAuth{Source: app, Perms: githubapp.Permissions{Contents: "read"}}})
 	if err != nil {
 		t.Fatal(err)
 	}

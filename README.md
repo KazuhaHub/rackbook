@@ -511,7 +511,7 @@ infra clone, which Rackbook only reads). Without the flags below nothing changes
 |---|---|
 | `--github-app-id`, `RACKBOOK_GITHUB_APP_ID` | The App ID (a number, on the App's settings page) |
 | `--github-app-key-file` | The App's private key (PEM). Instead: `RACKBOOK_GITHUB_APP_KEY` holds the PEM itself, or a systemd credential named `github-app-key` (`LoadCredential=github-app-key:/path/key.pem`). Never put the key in a flag value, in `rackbook.yml` or in Git |
-| `--github-api` | REST base URL, only for GitHub Enterprise Server (default `https://api.github.com`) |
+| `--github-api` | REST base URL, only for GitHub Enterprise Server (default `https://api.github.com`; must be https). Tokens go only to `origin` URLs on that API's host (`github.com` for the default); `--github-repo` must match `origin` when an App is used |
 
 The installation id is looked up from each repository and cached; tokens live in
 memory only and are renewed 5 minutes before they expire. The token reaches git

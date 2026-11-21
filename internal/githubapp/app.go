@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -70,10 +71,11 @@ type cached struct {
 // App is one GitHub App credential. It is safe for concurrent use.
 type App struct {
 	o  Options
-	mu sync.Mutex // also serialises refreshes, so a burst makes one request
+	mu sync.Mutex // guards the maps only; never held across network I/O
 	// installs maps "owner/repo" to the installation id.
 	installs map[string]int64
 	tokens   map[string]cached
+	flights  map[string]*flight
 }
 
 // ParseKey reads the App's private key (PEM, PKCS#1 or PKCS#8 RSA).
@@ -108,13 +110,44 @@ func New(o Options) (*App, error) {
 		o.API = DefaultAPI
 	}
 	o.API = strings.TrimRight(o.API, "/")
+	u, err := url.Parse(o.API)
+	if err != nil || u.Host == "" || u.User != nil {
+		return nil, errors.New("the GitHub API URL is unusable")
+	}
+	if u.Scheme != "https" && !(u.Scheme == "http" && IsLoopback(u.Hostname())) {
+		return nil, errors.New("refusing a GitHub API URL that is not https (the App's tokens would cross the network in clear)")
+	}
 	if o.HTTP == nil {
 		o.HTTP = &http.Client{Timeout: 30 * time.Second}
 	}
 	if o.Now == nil {
 		o.Now = time.Now
 	}
-	return &App{o: o, installs: map[string]int64{}, tokens: map[string]cached{}}, nil
+	return &App{o: o, installs: map[string]int64{}, tokens: map[string]cached{}, flights: map[string]*flight{}}, nil
+}
+
+// IsLoopback reports whether host is localhost or a loopback address (plain
+// http is allowed only there, which is what tests use).
+func IsLoopback(host string) bool {
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+// GitHost is the only host an installation token may be sent to for git:
+// github.com for api.github.com, otherwise the host of the API URL (GitHub
+// Enterprise Server serves both on one host).
+func GitHost(api string) string {
+	u, err := url.Parse(api)
+	if err != nil {
+		return ""
+	}
+	if h := u.Hostname(); h != "api.github.com" {
+		return h
+	}
+	return "github.com"
 }
 
 // API is the REST base URL the App talks to.
@@ -189,8 +222,17 @@ func validName(s string) bool {
 	return s != "" && !strings.ContainsAny(s, "/\\ ?#%") && s != "." && s != ".."
 }
 
+type flight struct {
+	done    chan struct{}
+	token   string
+	expires time.Time
+	err     error
+}
+
 // Token returns an installation access token for owner/repo carrying exactly
-// the given permissions. It is cached until RefreshBefore its expiry.
+// the given permissions. It is cached until RefreshBefore its expiry. Callers
+// asking for the same token at once share one request; no lock is held while
+// the network is used.
 func (a *App) Token(ctx context.Context, owner, repo string, p Permissions) (string, error) {
 	if !validName(owner) || !validName(repo) {
 		return "", fmt.Errorf("github app: unusable repository %q/%q", owner, repo)
@@ -201,16 +243,45 @@ func (a *App) Token(ctx context.Context, owner, repo string, p Permissions) (str
 	full := owner + "/" + repo
 	ck := full + "|" + p.key()
 	a.mu.Lock()
-	defer a.mu.Unlock()
 	if c, ok := a.tokens[ck]; ok && a.o.Now().Add(RefreshBefore).Before(c.expires) {
+		a.mu.Unlock()
 		return c.token, nil
 	}
+	if f, ok := a.flights[ck]; ok {
+		a.mu.Unlock()
+		select {
+		case <-f.done:
+			return f.token, f.err
+		case <-ctx.Done():
+			return "", ctx.Err()
+		}
+	}
+	f := &flight{done: make(chan struct{})}
+	a.flights[ck] = f
 	delete(a.tokens, ck)
+	a.mu.Unlock()
+
+	f.token, f.expires, f.err = a.fetch(ctx, owner, repo, p)
+
+	a.mu.Lock()
+	if f.err == nil {
+		a.tokens[ck] = cached{token: f.token, expires: f.expires}
+	}
+	delete(a.flights, ck)
+	a.mu.Unlock()
+	close(f.done)
+	return f.token, f.err
+}
+
+func (a *App) fetch(ctx context.Context, owner, repo string, p Permissions) (string, time.Time, error) {
+	full := owner + "/" + repo
 	jwt, err := a.jwt()
 	if err != nil {
-		return "", fmt.Errorf("github app: sign the app JWT: %w", err)
+		return "", time.Time{}, fmt.Errorf("github app: sign the app JWT: %w", err)
 	}
+	a.mu.Lock()
 	id, ok := a.installs[full]
+	a.mu.Unlock()
 	if !ok {
 		var inst struct {
 			ID int64 `json:"id"`
@@ -218,15 +289,17 @@ func (a *App) Token(ctx context.Context, owner, repo string, p Permissions) (str
 		if err := a.call(ctx, http.MethodGet, "/repos/"+owner+"/"+repo+"/installation", jwt, nil, &inst); err != nil {
 			var se *StatusError
 			if errors.As(err, &se) && se.Status == http.StatusNotFound {
-				return "", fmt.Errorf("%w (is the GitHub App installed on %s?)", err, full)
+				return "", time.Time{}, fmt.Errorf("%w (is the GitHub App installed on %s?)", err, full)
 			}
-			return "", err
+			return "", time.Time{}, err
 		}
 		if inst.ID == 0 {
-			return "", errors.New("github app: no installation id in the answer")
+			return "", time.Time{}, errors.New("github app: no installation id in the answer")
 		}
 		id = inst.ID
+		a.mu.Lock()
 		a.installs[full] = id
+		a.mu.Unlock()
 	}
 	var tok struct {
 		Token   string    `json:"token"`
@@ -237,13 +310,14 @@ func (a *App) Token(ctx context.Context, owner, repo string, p Permissions) (str
 	if err != nil {
 		var se *StatusError
 		if errors.As(err, &se) && se.Status == http.StatusNotFound {
+			a.mu.Lock()
 			delete(a.installs, full) // the installation moved or was removed: look it up again next time
+			a.mu.Unlock()
 		}
-		return "", err
+		return "", time.Time{}, err
 	}
 	if tok.Token == "" || tok.Expires.IsZero() {
-		return "", errors.New("github app: the access token answer is incomplete")
+		return "", time.Time{}, errors.New("github app: the access token answer is incomplete")
 	}
-	a.tokens[ck] = cached{token: tok.Token, expires: tok.Expires}
-	return tok.Token, nil
+	return tok.Token, tok.Expires, nil
 }

@@ -9,7 +9,6 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
-	"net"
 	"net/url"
 	"strings"
 
@@ -28,19 +27,6 @@ type GitAuth struct {
 	// Perms is what the token may do: contents write for the ledger, contents
 	// read for a clone Rackbook only reads.
 	Perms githubapp.Permissions
-	// Repo is "owner/repo"; default parsed from the origin URL.
-	Repo string
-	// TrustHost allows a remote that is not on github.com (GitHub Enterprise
-	// Server, set together with --github-api).
-	TrustHost bool
-}
-
-func isLoopback(host string) bool {
-	if host == "localhost" {
-		return true
-	}
-	ip := net.ParseIP(host)
-	return ip != nil && ip.IsLoopback()
 }
 
 // env returns the environment for one network command against remote.
@@ -49,15 +35,10 @@ func (a *GitAuth) env(ctx context.Context, remote string) ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("github app: %w", err)
 	}
-	if a.Repo != "" {
-		o, r, ok := strings.Cut(a.Repo, "/")
-		if !ok {
-			return nil, fmt.Errorf("github app: repository %q must be owner/repo", a.Repo)
-		}
-		owner, repo = o, r
-	}
-	if !a.TrustHost && host != "github.com" && host != "www.github.com" {
-		return nil, fmt.Errorf("github app: refusing to send an installation token to %s: set --github-api to its REST API URL to allow it", host)
+	// The token's repository and the rewrite target come from the origin URL
+	// alone, and the token goes only to the host that belongs to the App's API.
+	if want := githubapp.GitHost(a.Source.API()); host != want {
+		return nil, fmt.Errorf("github app: refusing to send an installation token to %s: the App's API (%s) serves git on %s", host, a.Source.API(), want)
 	}
 	var match string // the URL the header is scoped to
 	var extra [][2]string
@@ -66,7 +47,7 @@ func (a *GitAuth) env(ctx context.Context, remote string) ([]string, error) {
 		if perr != nil {
 			return nil, fmt.Errorf("github app: cannot parse the remote URL")
 		}
-		if u.Scheme != "https" && !isLoopback(u.Hostname()) {
+		if u.Scheme != "https" && !githubapp.IsLoopback(u.Hostname()) {
 			return nil, fmt.Errorf("github app: refusing to send an installation token over plain http to %s", u.Host)
 		}
 		u.User, u.RawQuery, u.Fragment = nil, "", ""
@@ -82,7 +63,8 @@ func (a *GitAuth) env(ctx context.Context, remote string) ([]string, error) {
 		return nil, err
 	}
 	hdr := "Authorization: Basic " + base64.StdEncoding.EncodeToString([]byte("x-access-token:"+tok))
-	pairs := append([][2]string{{"http." + match + ".extraheader", hdr}}, extra...)
+	// Redirects are refused, so the request (and its header) cannot be sent on.
+	pairs := append([][2]string{{"http." + match + ".extraheader", hdr}, {"http.followRedirects", "false"}}, extra...)
 	env := []string{fmt.Sprintf("GIT_CONFIG_COUNT=%d", len(pairs))}
 	for i, p := range pairs {
 		env = append(env, fmt.Sprintf("GIT_CONFIG_KEY_%d=%s", i, p[0]), fmt.Sprintf("GIT_CONFIG_VALUE_%d=%s", i, p[1]))

@@ -704,11 +704,20 @@ See README, "Versioning and compatibility".
       remote URL, or in `.git/config`. An ssh or scp-style origin is rewritten to
       https for those commands only (`url.<base>.insteadOf` in the same
       environment); `.git/config` keeps the original. A token is never sent over
-      plain http (except to a loopback address, for tests) and, without
-      `--github-api`, never to a host other than github.com. The git runner's
-      allow-lists gain exactly this: the only environment configuration it
-      accepts is an `http.*.extraheader` or `url.*.insteadOf` triple, and the
-      never-force rules are unchanged.
+      plain http (loopback excepted, for tests), and the App's API URL must be
+      https too. The git host is derived from the API URL (api.github.com means
+      github.com; a GitHub Enterprise Server API means its own host), and a token
+      goes only to an origin on exactly that host. The token's repository and the
+      https rewrite come from the origin URL alone; `--github-repo` (pull
+      requests) that disagrees with origin is refused at start. Git runs with
+      `http.followRedirects=false`, and the inherited `GIT_TRACE*`,
+      `GIT_CURL_VERBOSE`, `GIT_SSL_NO_VERIFY`, `GIT_CONFIG_PARAMETERS`,
+      `GIT_CONFIG_COUNT/KEY/VALUE`, `GIT_ASKPASS` and `SSH_ASKPASS` are removed
+      from every git command's environment. Concurrent requests for the same
+      token share one API call; no lock is held during network I/O. The git
+      runner's allow-lists gain exactly this: the only extra environment
+      configuration it accepts is `http.*.extraheader`, `http.followRedirects` or
+      `url.*.insteadOf`, and the never-force rules are unchanged.
     - Without an App nothing changes: deploy keys (`GIT_SSH_COMMAND`,
       `--infra-ssh-key`) and `RACKBOOK_GITHUB_TOKEN` keep working. Setting both
       an App and `--infra-ssh-key` is refused as ambiguous.
