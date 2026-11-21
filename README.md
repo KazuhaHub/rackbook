@@ -1106,6 +1106,8 @@ Release plan (details in `docs/design-v0.2.md`, "Versioning"):
   planned for v0.6.0 and moved here (owner, 2026-11-18).
 - **v0.7.0**: the console, configured text and server-side text in zh-CN, zh-TW and
   en-US, with English codes in the data.
+- **v0.7.1**: read-only `/infra` pages for an Ansible + SOPS repository and its
+  infra hub status (`--infra-*` flags, OIDC admins only, never on MCP).
 - **v0.8.0**: one record per file storage; the deprecated MCP tool names are
   removed. Both were planned for v0.7.0 and moved here (owner, 2026-11-20).
 
