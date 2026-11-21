@@ -462,6 +462,10 @@ func blocking(issues []Issue, confirmed bool) []Issue {
 // indirectionIssues refuses anchors, aliases, merge keys (`<<`) and explicit
 // tags: they let a value reach a place the other checks do not look at (a merged
 // mapping hides settings from the feature and template checks).
+// coreTags are the tags yaml.v3 resolves for plain YAML data (YAML 1.2 core schema plus merge, refused separately).
+var coreTags = map[string]bool{"!!str": true, "!!int": true, "!!bool": true, "!!null": true, "!!float": true,
+	"!!map": true, "!!seq": true, "!!merge": true, "!!timestamp": true, "": true}
+
 func indirectionIssues(file string, root *yaml.Node) []Issue {
 	var out []Issue
 	var walk func(n *yaml.Node, at string)
@@ -473,7 +477,9 @@ func indirectionIssues(file string, root *yaml.Node) []Issue {
 		case n.Anchor != "":
 			out = append(out, newIssue("yaml.anchor", SevError, file, at, "aliases, anchors and merge keys are not allowed in files edited here"))
 		}
-		if strings.HasPrefix(n.Tag, "!") && !strings.HasPrefix(n.Tag, "!!") {
+		// Any tag written in the file is refused (TaggedStyle), and any resolved tag outside the core schema too
+		// (!unsafe, !vault, !!python/..., full URIs, %TAG shorthands).
+		if n.Style&yaml.TaggedStyle != 0 || !coreTags[n.ShortTag()] {
 			out = append(out, newIssue("yaml.tag", SevError, file, at, "explicit YAML tags are not allowed in files edited here", "name", n.Tag))
 		}
 		if n.Kind == yaml.MappingNode {

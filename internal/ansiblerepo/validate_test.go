@@ -187,6 +187,13 @@ func TestValidateTable(t *testing.T) {
 			m["inventory/hosts.yml"] = strings.Replace(goodInv, "    derp:\n      hosts:\n        a:\n", "    derp:\n      <<: {hosts: {a: }}\n", 1)
 		}, nil, ""}, // asserted loosely below
 		{"custom tag", func(m memTree) { m["inventory/host_vars/b.yaml"] = "a: !vault |\n  $ANSIBLE_VAULT;1.1;AES256\n" }, []string{"yaml.tag"}, ""},
+		{"python tag", func(m memTree) { m["inventory/host_vars/b.yaml"] = "a: !!python/object/apply:os.system [id]\n" }, []string{"yaml.tag"}, ""},
+		{"full uri tag", func(m memTree) { m["inventory/host_vars/b.yaml"] = "a: !<tag:yaml.org,2002:python/object> x\n" }, []string{"yaml.tag"}, ""},
+		{"binary tag", func(m memTree) { m["inventory/host_vars/b.yaml"] = "a: !!binary aGk=\n" }, []string{"yaml.tag"}, ""},
+		{"core tag written out", func(m memTree) { m["inventory/host_vars/b.yaml"] = "a: !!str x\n" }, []string{"yaml.tag"}, ""},
+		{"TAG directive", func(m memTree) {
+			m["inventory/host_vars/b.yaml"] = "%TAG !e! tag:example.com,2000:\n---\na: !e!foo x\n"
+		}, []string{"yaml.tag"}, ""},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
