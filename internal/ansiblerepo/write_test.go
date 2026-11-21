@@ -165,15 +165,6 @@ func (w *wfix) upstream(t *testing.T, msg string, files map[string]string) {
 	git(t, w.seed, "push", "origin", "HEAD:refs/heads/main")
 }
 
-func (w *wfix) blob(t *testing.T, path string) string {
-	t.Helper()
-	id, err := w.repo.mirror.BlobID(context.Background(), "HEAD", path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return id
-}
-
 func (w *wfix) rawEdit(path, content string) Edit {
 	return Edit{Scope: scopeFor(path), Action: "edit", Who: alice, Files: []FileEdit{{Path: path, Base: w.baseOf(path), Make: func([]byte) ([]byte, error) { return []byte(content), nil }}}}
 }
@@ -645,12 +636,11 @@ func TestRevertOfAnAddedFileRemovesItAndOtherCommitsAreRefused(t *testing.T) {
 		t.Fatal("unknown commit")
 	}
 	// preview of a revert changes nothing
-	head := w.log(t, "%H")
 	w.upstream(t, "vars", map[string]string{"inventory/host_vars/b.yml": "ip: 5\n"})
 	if err := w.repo.Refresh(ctx); err != nil {
 		t.Fatal(err)
 	}
-	head = w.log(t, "%H")
+	head := w.log(t, "%H")
 	pv, err := w.repo.Revert(ctx, head, alice, true)
 	if err != nil || pv.Commit != "" || len(pv.Diffs) != 1 || w.log(t, "%H") != head {
 		t.Fatalf("%v %+v", err, pv)
