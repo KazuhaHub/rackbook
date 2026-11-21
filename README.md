@@ -600,7 +600,7 @@ rackbook serve --auth oidc … \
 | `--infra-oidc-identity-claim` | The ID token claim the administrators' identities are taken from (default `preferred_username`; `sub` for subject identities, which are then listed as `oidc:<sub>`). A session whose identity came from another claim is refused, so `auth.oidc.identity_claim` in the ledger cannot change who counts as an administrator |
 | `--infra-oidc-tenant` | The tenant (the `tid` claim) the administrators sign in from. **Required for an Entra issuer**, and a tenant GUID in `--infra-oidc-issuer` must equal it; optional for other providers (then a session without a tenant is expected). A session from another tenant is refused; `allowed_tenants` in the ledger is not trusted |
 | `--infra-write` | Turn on the editors. Needs `--github-app-id` (the App must have `Contents: read and write` on the infra repository) and cannot be combined with `--infra-ssh-key`; on a `--read-only` server the editors stay off |
-| `--sops-age-key-file` | The age identity file Rackbook edits the infra repository's SOPS secrets with (see *Editing secrets*); empty = the secrets editor is off. Needs `--infra-write` and the `sops` and `age-keygen` binaries (the container image has them, pinned and checksummed). Mount the file read-only; it is Rackbook's own key, generated on the host, never an administrator's key. Rackbook shows its public key on the secrets page, to be added as a recipient of every rule in `.sops.yaml` |
+| `--sops-age-key-file` | The age identity file Rackbook edits the infra repository's SOPS secrets with (see *Editing secrets*); empty = the secrets editor is off. Needs `--infra-write`, `--state-dir` (the reveal limits are kept there) and the `sops` and `age-keygen` binaries (the container image has them, pinned and checksummed). Mount the file read-only; it is Rackbook's own key, generated on the host, never an administrator's key. Rackbook shows its public key on the secrets page, to be added as a recipient of every **host** rule in `.sops.yaml` (never the `secrets/admin.sops.yaml` rule) |
 | `--infra-write-max-age` | How recent a person's sign-in must be for a write (default `12h`). An older session can still read; a write answers `403 reauth_required` and the console offers *Sign in again* |
 | `--infra-managed-group`, `--infra-agent-group` | The inventory group whose hosts must each have host_vars and a SOPS file and that must contain every host of every group (default `managed`), and the group that must list exactly the managed hosts (default `infra_agent`). A group the inventory does not have switches its rule off; `""` disables the rule |
 | `--hub-status-file` | The hub's `infra-hub status -o json` document (`apiVersion: v1`), rewritten by a timer on the same machine; mount it read-only into the container |
@@ -674,19 +674,26 @@ identity provider: a fresh sign-in is the second factor.
 With `--sops-age-key-file` the infra administrators also get a **Secrets** page per host
 (`/infra/hosts/<host>/secrets`), which edits `secrets/<host>.sops.yaml` with SOPS. Rackbook has **its own
 age key**, generated on the host and mounted read-only; it is not the administrators' key. The
-coordinator adds the public key (shown on the page, and logged at start) as a recipient of every rule
-of `.sops.yaml` and runs `sops updatekeys` on the files; until then the page says the file cannot be
+coordinator adds the public key (shown on the page, and logged at start) as a recipient of every
+**host** rule of `.sops.yaml` and runs `sops updatekeys` on those files. It never goes into the
+`secrets/admin.sops.yaml` rule: that file (the CI signing key backup) is admin-only, and Rackbook refuses
+the name `admin` outright; until then the page says the file cannot be
 decrypted and offers nothing but the key names.
 
+- **Which files.** Only `secrets/<host>.sops.yaml` of a host that is in the inventory **and** in the managed
+  group, and only when `.sops.yaml` has a rule of its own for it (`path_regex: ^secrets/<host>\.sops\.yaml$`,
+  the first rule that matches the path). Any other path, a broader rule only, and the host name `admin` are refused.
 - **The list** shows key names only. It is read from the YAML itself and decrypts nothing.
 - **Reveal** is a separate request for one key, answered with `Cache-Control: no-store`. It needs a recent
-  sign-in like every write, is limited to 10 a minute per person, and is recorded in the audit log (who,
-  which key, when; never the value). The page shows the value for 30 seconds and keeps it out of any cache.
+  sign-in like every write, is limited per person to 10 a minute, 30 an hour and 100 a day (counted in `--state-dir`, so a restart does
+  not reset them; a refusal is audited and logged as a warning with the identity), is refused on a `--read-only` server, and is recorded in the audit log (who,
+  which key, when; never the value). The value is returned exactly as stored, trailing newline included. The page shows it for 30 seconds and keeps it out of any cache.
 - **Set / replace** and **delete** are one commit each, through the same write path as the other
   editors (conflict rules, author, trailers). The value is sent in the request body and reaches `sops
   set --value-stdin` on its standard input, never as an argument; the commit subject names the key,
   never the value. Key names are `^[a-z0-9_-]+$` (not `sops`, not ending in `_unencrypted`), values
-  non-empty UTF-8 text of at most 16 KiB.
+  non-empty UTF-8 text of at most 16 KiB, entered in a multi-line box with line breaks kept exactly; a
+  PEM block whose BEGIN and END are on one line (lost line breaks) is refused.
 - **Feature secrets**: a `secret: true` setting of a feature is stored under the key
   `feature_<feature>_<setting>` in the host's SOPS file, in the same commit as the feature's other
   settings. Leaving its box empty keeps the stored value.

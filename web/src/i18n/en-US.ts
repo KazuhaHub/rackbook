@@ -1218,6 +1218,7 @@ const messages = {
           length: 'it is longer than 512 characters',
           control: 'it contains a control character or a line break',
           template: 'it contains a template marker ({{, {% or {#)',
+          pem: 'it is a PEM block whose line breaks were lost',
         } as Record<string, string>,
         codes: {
           'yaml.invalid': () => 'Not valid YAML.',

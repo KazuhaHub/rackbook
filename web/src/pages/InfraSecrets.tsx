@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Skeleton } from '@/components/ui/skeleton'
+import { Textarea } from '@/components/ui/textarea'
 import { EmptyState } from '@/components/common'
 import { InfraFrame, LoadError } from '@/components/infra/InfraFrame'
 import { EditResult, ReauthNotice } from '@/components/infra/EditReview'
@@ -133,7 +134,7 @@ export default function InfraSecrets() {
               void change('set', k.name, value)
             }}
           >
-            <Input type="password" autoComplete="new-password" aria-label={t.infra.secrets.newValueFor(k.name)} value={value} onChange={(e) => setValue(e.target.value)} className="max-w-sm font-mono" />
+            <Textarea autoComplete="off" spellCheck={false} rows={4} aria-label={t.infra.secrets.newValueFor(k.name)} value={value} onChange={(e) => setValue(e.target.value)} className="w-full max-w-md font-mono text-xs" />
             <Button size="xs" type="submit" disabled={busy || value === ''}>
               {t.infra.secrets.save}
             </Button>
@@ -265,7 +266,7 @@ export default function InfraSecrets() {
                 </div>
                 <div className="space-y-1">
                   <Label htmlFor="secret-value">{t.infra.secrets.columns.value}</Label>
-                  <Input id="secret-value" type="password" autoComplete="new-password" value={newValue} onChange={(e) => setNewValue(e.target.value)} className="font-mono" />
+                  <Textarea id="secret-value" autoComplete="off" spellCheck={false} rows={4} value={newValue} onChange={(e) => setNewValue(e.target.value)} className="font-mono text-xs" />
                 </div>
                 <div>
                   <Button type="submit" disabled={busy || !!stale || !keyOk(newKey) || newValue === ''}>

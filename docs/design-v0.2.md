@@ -1085,6 +1085,13 @@ shown as 4 characters plus 8 hex digits of a hash (not a secure hash; it only te
       `ENC[...]` (so no `_unencrypted` key), and exactly the recipients of the
       creation rule for that path. A file whose recipients do not match its rule
       (an `updatekeys` that was not run) is refused, not repaired.
+    - **Only host files, only with their own rule.** `secrets/<host>.sops.yaml` of a managed
+      inventory host whose first matching `.sops.yaml` rule is the exact one for that
+      path; `admin` is refused by name (`secrets/admin.sops.yaml` holds the CI signing
+      key backup and is admin-only, so Rackbook's key is never added to its rule).
+    - **Reveal limits** are 10 a minute, 30 an hour and 100 a day per person, kept in the
+      state directory so a restart does not reset them; a refusal is audited and
+      logged. Reveal is off on a `--read-only` server, the emergency switch.
     - **Not reverted.** A commit that touched a SOPS file is not revertible from the
       console: restoring old ciphertext would also restore a recipient list and
       values the person did not look at.

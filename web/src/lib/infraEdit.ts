@@ -46,7 +46,7 @@ export type SecretsFile = {
   lastModified?: string
   problem?: string
 }
-export type SecretsPage = { file: SecretsFile; enabled: boolean; canWrite: boolean; publicKey: string }
+export type SecretsPage = { file?: SecretsFile; enabled: boolean; canWrite: boolean; publicKey: string }
 
 const quiet = { staleTime: 0, refetchOnWindowFocus: false, refetchInterval: false as const, retry: false }
 

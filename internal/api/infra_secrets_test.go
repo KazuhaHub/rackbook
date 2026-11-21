@@ -144,7 +144,9 @@ func TestSecretsRevealIsAuditedNoStoreAndRateLimited(t *testing.T) {
 	var logBuf bytes.Buffer
 	auditFile := filepath.Join(t.TempDir(), "audit.jsonl")
 	s := newSEnv(t, func(o *api.Options, io *api.InfraOptions) {
-		io.Audit = &ansiblerepo.AuditLog{Path: auditFile, Log: slog.New(slog.NewTextHandler(&logBuf, nil))}
+		lg := slog.New(slog.NewTextHandler(&logBuf, nil))
+		o.Logger = lg
+		io.Audit = &ansiblerepo.AuditLog{Path: auditFile, Log: lg}
 	}, nil)
 	code, body, hdr := s.reveal(t, "alpha", "cloudflare_dns_token", me)
 	if code != 200 || body["value"] != sAlphaToken {
@@ -192,6 +194,9 @@ func TestSecretsRevealIsAuditedNoStoreAndRateLimited(t *testing.T) {
 	raw, _ = os.ReadFile(auditFile)
 	if !strings.Contains(string(raw), `"outcome":"rate_limited"`) || strings.Contains(string(raw), "old-demo-token") {
 		t.Fatalf("%s", raw)
+	}
+	if !strings.Contains(logBuf.String(), "reveal limit reached") || !strings.Contains(logBuf.String(), "me@kazuha.org") {
+		t.Fatalf("no warning with the identity: %s", logBuf.String())
 	}
 	if s.remote(t, "%s") != "seed" {
 		t.Fatal("a reveal committed something")
@@ -500,9 +505,99 @@ func TestSecretsOffWithoutAKeyFile(t *testing.T) {
 			t.Errorf("%s: %d %v", p, code, body)
 		}
 	}
-	// and on a read-only server the commits are off but a reveal still needs the key
+	// on a server with the editors off the commits are off
 	s := newSEnv(t, func(o *api.Options, io *api.InfraOptions) { io.Write = false }, nil)
 	if code, body, _ := s.do(t, "POST", s.secretsPath("alpha", "/set"), map[string]any{"key": "k", "value": "v", "base": ""}, me); code != http.StatusForbidden || body["error"] != "read_only" {
 		t.Fatalf("%d %v", code, body)
+	}
+}
+
+func TestSecretsRevealRefusedOnAReadOnlyServer(t *testing.T) {
+	s := newSEnv(t, func(o *api.Options, io *api.InfraOptions) { o.ReadOnly = true }, nil)
+	code, body, _ := s.reveal(t, "alpha", "cloudflare_dns_token", me)
+	if code != http.StatusForbidden || body["error"] != "read_only" {
+		t.Fatalf("%d %v", code, body)
+	}
+	if raw, _ := json.Marshal(body); strings.Contains(string(raw), sAlphaToken) {
+		t.Fatal("value leaked")
+	}
+}
+
+func TestSecretsOnlyManagedHostsWithTheirOwnRule(t *testing.T) {
+	inv := wInventory + "    extra:\n      hosts:\n        admin:\n        gamma:\n"
+	inv = strings.Replace(inv, "        beta:\n", "        beta:\n        admin:\n        gamma:\n", 1)
+	inv = strings.Replace(inv, "    extra:\n      hosts:\n        admin:\n        gamma:\n", "    solo:\n      hosts:\n        solo:\n", 1)
+	s := newSEnv(t, nil, func(s *sEnv, seed map[string]string) {
+		seed["inventory/hosts.yml"] = inv
+		// admin has a rule and a file; gamma is managed with a file but no rule of its own; a broad rule covers it
+		conf := s.sx.Config(map[string][]string{"secrets/alpha.sops.yaml": {"admin", "server", "host"}, "secrets/beta.sops.yaml": {"admin", "server", "host"}, "secrets/admin.sops.yaml": {"admin", "server"}})
+		conf += "  - path_regex: ^secrets/.*$\n    age: \"" + s.sx.Pub("admin") + "," + s.sx.Pub("server") + "\"\n"
+		seed[".sops.yaml"] = conf
+		seed["secrets/alpha.sops.yaml"] = s.sx.Encrypt(t, conf, "secrets/alpha.sops.yaml", `{"cloudflare_dns_token":"`+sAlphaToken+`"}`)
+		seed["secrets/admin.sops.yaml"] = s.sx.Encrypt(t, conf, "secrets/admin.sops.yaml", `{"ci_signing_key":"ADMIN-ONLY"}`)
+		seed["secrets/gamma.sops.yaml"] = s.sx.Encrypt(t, conf, "secrets/gamma.sops.yaml", `{"k":"v"}`)
+		seed["secrets/solo.sops.yaml"] = s.sx.Encrypt(t, conf, "secrets/solo.sops.yaml", `{"k":"v"}`)
+	})
+	head := s.remote(t, "%H")
+	for _, host := range []string{"admin", "gamma", "solo"} {
+		for name, req := range map[string]struct {
+			path string
+			body map[string]any
+		}{
+			"list":   {s.secretsPath(host, ""), nil},
+			"reveal": {s.secretsPath(host, "/reveal"), map[string]any{"key": "k"}},
+			"set":    {s.secretsPath(host, "/set"), map[string]any{"base": "", "key": "k", "value": sNewValue}},
+			"unset":  {s.secretsPath(host, "/unset"), map[string]any{"base": "", "key": "k"}},
+		} {
+			method := "POST"
+			if req.body == nil {
+				method = "GET"
+			}
+			code, body, _ := s.do(t, method, req.path, req.body, me)
+			if code != http.StatusUnprocessableEntity {
+				t.Errorf("%s %s: %d %v", name, host, code, body)
+			}
+			if raw, _ := json.Marshal(body); strings.Contains(string(raw), "ADMIN-ONLY") {
+				t.Errorf("%s %s: leaked", name, host)
+			}
+		}
+	}
+	if s.remote(t, "%H") != head {
+		t.Fatal("something was committed")
+	}
+}
+
+func TestSecretsMultilineValuesAreKeptExactly(t *testing.T) {
+	s := newSEnv(t, nil, nil)
+	pem := "-----BEGIN PRIVATE KEY-----\nAAAA\nBBBB\n-----END PRIVATE KEY-----\n"
+	for _, v := range []string{pem, "no trailing newline\nsecond", "  leading and trailing space \n\n"} {
+		code, res, _ := s.do(t, "POST", s.secretsPath("alpha", "/set"), map[string]any{"base": s.base(t, "alpha"), "key": "pem_key", "value": v}, me)
+		if code != 200 {
+			t.Fatalf("%d %v", code, res)
+		}
+		if _, b, _ := s.reveal(t, "alpha", "pem_key", me); b["value"] != v {
+			t.Fatalf("got %q, want %q", b["value"], v)
+		}
+	}
+	// a PEM block whose line breaks were lost is refused
+	head := s.remote(t, "%H")
+	flat := "-----BEGIN PRIVATE KEY----- AAAA BBBB -----END PRIVATE KEY-----"
+	code, res, _ := s.do(t, "POST", s.secretsPath("alpha", "/set"), map[string]any{"base": s.base(t, "alpha"), "key": "pem_key", "value": flat}, me)
+	if code != http.StatusUnprocessableEntity || s.remote(t, "%H") != head {
+		t.Fatalf("%d %v", code, res)
+	}
+	// the same through a feature's secret setting (multi-line allowed there too)
+	path := "/api/infra/hosts/alpha/features/demo"
+	base := s.wEnv.base(t, "/api/infra/hosts/alpha/vars")
+	code, res, _ = s.do(t, "POST", path, map[string]any{"base": base, "enabled": true, "settings": map[string]any{"name": "two", "token": flat}}, me)
+	if code != http.StatusUnprocessableEntity {
+		t.Fatalf("%d %v", code, res)
+	}
+	code, res, _ = s.do(t, "POST", path, map[string]any{"base": base, "enabled": true, "settings": map[string]any{"name": "two", "token": pem}}, me)
+	if code != 200 {
+		t.Fatalf("%d %v", code, res)
+	}
+	if _, b, _ := s.reveal(t, "alpha", "feature_demo_token", me); b["value"] != pem {
+		t.Fatalf("%q", b["value"])
 	}
 }

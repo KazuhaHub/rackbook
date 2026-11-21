@@ -38,14 +38,15 @@ function FieldInput({ spec, value, onChange, id, stored }: { spec: SettingSpec; 
   if (spec.secret) {
     if (stored === null || stored === undefined) return <p className="text-xs text-muted-foreground">{t.infra.edit.features.secret}</p>
     return (
-      <Input
+      <Textarea
         id={id}
-        type="password"
-        autoComplete="new-password"
+        autoComplete="off"
+        spellCheck={false}
+        rows={2}
         value={value}
         placeholder={stored ? t.infra.edit.features.secretStored : t.infra.edit.features.secretUnset}
         onChange={(e) => onChange(e.target.value)}
-        className="font-mono"
+        className="font-mono text-xs"
       />
     )
   }
@@ -148,7 +149,7 @@ export default function InfraHostEdit() {
   const specs = useFeatureSpecs(canWrite)
   const host = useInfraHost(name, canWrite)
   const secretsQ = useSecrets(name, canWrite)
-  const secrets: Secrets = { enabled: !!secretsQ.data?.enabled, stored: new Set(secretsQ.data?.file.keys.map((k) => k.name)) }
+  const secrets: Secrets = { enabled: !!secretsQ.data?.enabled, stored: new Set(secretsQ.data?.file?.keys.map((k) => k.name)) }
   const flow = useEditFlow()
   const [text, setText] = useState<string | null>(null)
   const busy = flow.state.phase === 'checking' || flow.state.phase === 'committing'

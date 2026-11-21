@@ -146,7 +146,11 @@ func parseSetting(name string, n *yaml.Node) (*SettingSpec, error) {
 // settingProblem checks one value against its definition; "" = fine. The
 // problem is a short code (type, enum, pattern, range, length, control,
 // template).
-func (s *SettingSpec) problem(v any) string {
+func (s *SettingSpec) problem(v any) string { return s.problemIn(v, false) }
+
+// problemIn is problem; with multiline a secret's line breaks (and tabs) are
+// let through, so a PEM key can be stored.
+func (s *SettingSpec) problemIn(v any, multiline bool) string {
 	switch s.Type {
 	case TypeBool:
 		if _, ok := v.(bool); !ok {
@@ -180,10 +184,13 @@ func (s *SettingSpec) problem(v any) string {
 		if !ok {
 			return "type"
 		}
-		if len(str) > maxSettingLen {
+		if limit := map[bool]int{false: maxSettingLen, true: MaxSecretValue}[multiline]; len(str) > limit {
 			return "length"
 		}
 		for _, r := range str {
+			if multiline && (r == '\n' || r == '\t') {
+				continue
+			}
 			if r < 0x20 || r == 0x7f {
 				return "control"
 			}
@@ -314,10 +321,13 @@ func (f *FeatureSpec) SettingsFromInput(input map[string]any) (settings []Settin
 			str, isStr := v.(string)
 			switch {
 			case !ok || v == nil || (isStr && str == ""):
-			case !isStr || s.Type != TypeString || s.problem(v) != "" || !ValidSecretKey(SecretKeyOf(f.Name, s.Name)):
+			case !isStr || s.Type != TypeString || s.problemIn(v, true) != "" || ValidSecretValue(str) != "" || !ValidSecretKey(SecretKeyOf(f.Name, s.Name)):
 				p := "type"
 				if isStr {
-					p = s.problem(v)
+					p = s.problemIn(v, true)
+					if p == "" && ValidSecretValue(str) == "pem_one_line" {
+						p = "pem"
+					}
 				}
 				if p == "" {
 					p = "type"

@@ -54,6 +54,8 @@ func ValidSecretKey(k string) bool {
 	return sopsKeyNameRe.MatchString(k) && k != "sops" && !strings.HasSuffix(k, "_unencrypted")
 }
 
+var pemOneLineRe = regexp.MustCompile(`-----BEGIN [A-Z0-9 ]+-----[^\n]*-----END [A-Z0-9 ]+-----`)
+
 // ValidSecretValue returns "" or the reason a value is refused: empty, too
 // large, not UTF-8, or holding a NUL.
 func ValidSecretValue(v string) string {
@@ -64,6 +66,8 @@ func ValidSecretValue(v string) string {
 		return "too_large"
 	case !utf8.ValidString(v) || strings.ContainsRune(v, 0):
 		return "not_text"
+	case pemOneLineRe.MatchString(v):
+		return "pem_one_line" // a PEM block whose line breaks were lost
 	}
 	return ""
 }
@@ -76,7 +80,44 @@ func isSecretsPath(p string) bool {
 	if strings.TrimSuffix(dir, "/") != "secrets" || !strings.HasSuffix(name, ".sops.yaml") {
 		return false
 	}
-	return hostNameRe.MatchString(strings.TrimSuffix(name, ".sops.yaml"))
+	host := strings.TrimSuffix(name, ".sops.yaml")
+	// secrets/admin.sops.yaml holds the administrators' own secrets and is never reachable here
+	return hostNameRe.MatchString(host) && host != reservedSecretsHost
+}
+
+const reservedSecretsHost = "admin"
+
+// hasExactRule reports whether the first creation rule of .sops.yaml that
+// matches file is the one whose path_regex is exactly ^<file>$ (escaped): a
+// host's file is reachable only when it has a rule of its own, never through
+// a broader one.
+func hasExactRule(t Tree, file string) bool {
+	b, ok := t.Read(".sops.yaml")
+	if !ok {
+		return false
+	}
+	_, root, err := parseDoc(b)
+	if err != nil || root == nil {
+		return false
+	}
+	rules := mapGet(root, "creation_rules")
+	if rules == nil || rules.Kind != yaml.SequenceNode {
+		return false
+	}
+	want := "^" + regexp.QuoteMeta(file) + "$"
+	for _, rule := range rules.Content {
+		re := mapGet(rule, "path_regex")
+		if re == nil || re.Value == "" {
+			return false // a catch-all rule matches first
+		}
+		if re.Value == want {
+			return true
+		}
+		if rx, err := regexp.Compile(re.Value); err == nil && rx.MatchString(file) {
+			return false // another rule matches first
+		}
+	}
+	return false
 }
 
 // SecretsEnabled reports whether this server has an age key to edit with.
@@ -106,14 +147,29 @@ func (r *Repo) secretsPathLocked(host string) (string, error) {
 	}
 	found := false
 	for _, h := range hosts {
-		found = found || h.Name == host
+		if h.Name != host {
+			continue
+		}
+		found = true
+		if g := r.o.Rules.ManagedGroup; g != "" {
+			managed := false
+			for _, hg := range h.Groups {
+				managed = managed || hg == g
+			}
+			if !managed {
+				return "", &EditError{Err: errors.New(host + " is not a managed host")}
+			}
+		}
 	}
 	if !found {
 		return "", ErrNoHost
 	}
 	p := r.secretsRel(host)
-	if !isSecretsPath(p) {
-		return "", fmt.Errorf("%s is not a file the secrets editor may change", p)
+	if !isSecretsPath(p) || p != "secrets/"+host+".sops.yaml" {
+		return "", &EditError{Err: fmt.Errorf("%s is not a file the secrets editor may change", p)}
+	}
+	if !hasExactRule(dirTree{r}, p) {
+		return "", &EditError{Err: errors.New(".sops.yaml has no rule of its own for " + p)}
 	}
 	return p, nil
 }
@@ -279,7 +335,7 @@ func (r *Repo) RevealSecret(ctx context.Context, host, key string) (string, erro
 	if err != nil {
 		return "", secretsError(p, err)
 	}
-	return strings.TrimSuffix(string(out), "\n"), nil
+	return string(out), nil
 }
 
 // secretsError turns a runner failure into an error the editors show.

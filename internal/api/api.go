@@ -90,7 +90,7 @@ type server struct {
 	// public are the exact paths served without authentication.
 	public map[string]http.Handler
 	// reveals limits how often one administrator may reveal a stored secret.
-	reveals revealLimiter
+	reveals *revealLimiter
 }
 
 // New returns the full handler: API, exports, MCP and console.
@@ -98,6 +98,10 @@ func New(o Options) http.Handler {
 	s := &server{o: o, log: o.Logger}
 	if s.log == nil {
 		s.log = slog.New(slog.DiscardHandler)
+	}
+	s.reveals = &revealLimiter{log: s.log}
+	if o.Infra != nil {
+		s.reveals.Path = o.Infra.RevealStatePath
 	}
 	if s.o.Auth == nil {
 		// No authentication, but roles (and the v0.1 editors list) still apply.

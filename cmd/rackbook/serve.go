@@ -250,6 +250,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		if al, ok := infra.Audit.(*ansiblerepo.AuditLog); ok {
 			al.Path = filepath.Join(stateDir, "infra-audit.jsonl")
 		}
+		infra.RevealStatePath = filepath.Join(stateDir, "infra-reveals.json")
 	}
 	resource := &mcpauth.Resource{Config: store.Config, Auth: authn, Verifier: &oauth.Verifier{}, Tokens: registry, Limiter: &tokens.Limiter{}, TrustedProxies: proxies, Log: logger}
 	var oauthSrv api.OAuthServer
@@ -467,6 +468,9 @@ func newInfra(ctx context.Context, f *pflag.FlagSet, cfg *config.Config, mode st
 	if keyFile, _ := f.GetString("sops-age-key-file"); keyFile != "" {
 		if !write {
 			return nil, errors.New("--sops-age-key-file needs --infra-write: a secret is edited by a commit")
+		}
+		if sd, _ := f.GetString("state-dir"); sd == "" {
+			return nil, errors.New("--sops-age-key-file needs --state-dir: the limits on revealing secrets are kept there across restarts")
 		}
 		runner, err := sops.New(ctx, sops.Options{KeyFile: keyFile})
 		if err != nil {

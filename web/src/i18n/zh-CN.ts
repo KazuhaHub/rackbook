@@ -1213,6 +1213,7 @@ const messages = {
           length: '超过 512 个字符',
           control: '含有控制字符或换行',
           template: '含有模板标记（{{、{% 或 {#）',
+          pem: '它是丢失了换行的 PEM 块',
         } as Record<string, string>,
         codes: {
           'yaml.invalid': () => '不是有效的 YAML。',
