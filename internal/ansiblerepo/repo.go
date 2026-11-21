@@ -27,6 +27,8 @@ type Options struct {
 	Branch     string
 	SSHKey     string
 	KnownHosts string
+	// Auth fetches over https with a GitHub App token (read-only) instead of SSH.
+	Auth *gitstore.GitAuth
 	// Interval is how often the clone is refreshed (0 = every minute).
 	Interval time.Duration
 	Logger   *slog.Logger
@@ -60,7 +62,7 @@ func New(o Options) (*Repo, error) {
 	if o.Now == nil {
 		o.Now = time.Now
 	}
-	return &Repo{o: o, log: o.Logger, mirror: &gitstore.Mirror{Dir: o.Dir, Branch: o.Branch, SSHKey: o.SSHKey, KnownHosts: o.KnownHosts, Runner: o.Runner}}, nil
+	return &Repo{o: o, log: o.Logger, mirror: &gitstore.Mirror{Dir: o.Dir, Branch: o.Branch, SSHKey: o.SSHKey, KnownHosts: o.KnownHosts, Auth: o.Auth, Runner: o.Runner}}, nil
 }
 
 // State is how fresh the clone is.

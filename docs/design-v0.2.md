@@ -642,8 +642,8 @@ Rackbook uses SemVer (Go modules require SemVer tags). Release plan:
   `idempotency_key`, history tools, the v0.2 names as deprecated aliases).
   Planned as v0.4.0, then v0.5.0, until console usability and the modules panel
   took those numbers; nothing in them changed.
-- **v0.6.1** — GitHub App authentication (decision 14) and record
-  documents (decision 15). Both were planned for v0.6.0 but are not in it: the
+- **v0.6.1** — record documents (decision 15); GitHub App authentication
+  (decision 14) was planned here and moved to v0.7.2. Both were planned for v0.6.0 but are not in it: the
   authorization server and the MCP surface were finished and reviewed first,
   and neither of these two is needed by them. They keep their designs; only the
   version changes. v0.6.1 so they land before the storage work (owner
@@ -652,6 +652,8 @@ Rackbook uses SemVer (Go modules require SemVer tags). Release plan:
   zh-TW and en-US, with English codes in the data (owner decision,
   2026-11-20: this release took the number; the storage work and the removal of
   the deprecated MCP tool names moved to v0.8.0).
+- **v0.7.2** — GitHub App authentication (decision 14), for the ledger and the
+  infra repository (owner decision, 2026-11-20; it moved from v0.6.1).
 - **v0.8.0** — storage: one record per file (design in
   `design-v0.4-storage.md`; the file keeps its name); the deprecated MCP tool
   names are removed.
@@ -666,32 +668,72 @@ See README, "Versioning and compatibility".
     the infra repo's `main` is applied as root on every host, so a write
     credential for it would amount to root. Infra may *read* the ledger;
     Rackbook never holds a credential for infra.
-14. **GitHub App authentication (v0.6.1; planned for v0.6.0)**, as an alternative to deploy key +
-    PAT. One credential replaces both.
-    - An org-owned GitHub App, installed **only** on the data repository, with
-      repository permissions `contents: write` and `pull_requests: write`.
-      Nothing else.
-    - Configuration:
-      `write.github_app: {app_id, installation_id (optional, looked up from
-      the repo), private_key_file}`. The key can also come from env
-      `RACKBOOK_GITHUB_APP_KEY` or a systemd `LoadCredential` path. It never
-      goes into Git.
-    - Token flow: an RS256 app JWT (≤ 10 min) is exchanged for an installation
-      access token. That token is narrowed in the request to the data repository
-      and the two permissions, and lasts about 1 h. It is cached in memory only,
-      refreshed 5 min before expiry, and never logged.
-    - Git over **HTTPS** with the installation token. The token is passed to git
-      through the environment (`GIT_CONFIG_COUNT`/`KEY`/`VALUE` for an
-      `http.<url>.extraheader`), never on the command line, in the remote URL,
-      or in `.git/config`. The git runner's allow-lists gain exactly this, and
-      the never-force rules are unchanged.
-    - PR mode uses the same token for the REST API. `RACKBOOK_GITHUB_TOKEN`
-      stays supported for non-App setups.
+14. **GitHub App authentication (v0.7.2; planned for v0.6.0, then v0.6.1)**, as an
+    alternative to deploy key + PAT. One credential replaces both.
+    - An org-owned GitHub App, installed on **both repositories Rackbook uses**
+      (owner, 2026-11-20): the ledger data repository and the infra repository
+      (the `--infra-repo` clone of v0.7.1). Repository permissions: `contents:
+      write`, and `pull_requests: write` only if pull requests are used (PR mode
+      or contributor-level MCP writes). Nothing else; Metadata (read) is
+      automatic. Installed on selected repositories only, never on all.
+    - Every installation token request is narrowed to **the one repository it is
+      for** and to the permissions that use needs: the ledger's git token is
+      `contents: write`, the token for opening a pull request is `pull_requests:
+      write` alone, and the infra clone's token is `contents: read` (the infra
+      store is read-only in v0.7.2; writes to it come in a later phase and will
+      ask for `contents: write` on that repository only).
+    - Configuration: `--github-app-id` (or `RACKBOOK_GITHUB_APP_ID`) and the
+      private key from `--github-app-key-file` (PEM), else
+      `RACKBOOK_GITHUB_APP_KEY`, else a systemd credential named
+      `github-app-key`. The installation id is **not** configured: it is looked
+      up from each repository (`GET /repos/{owner}/{repo}/installation`) and
+      cached. `--github-api` points everything at a GitHub Enterprise Server.
+      The key never goes into Git, a command line, a log, a remote URL or
+      `.git/config`. (The design first had a `write.github_app` block in
+      `rackbook.yml`; it is flags and environment only, because the ledger's own
+      config must not decide what credential the server holds, and the same App
+      serves the infra clone, which has no `rackbook.yml`.)
+    - Token flow: an RS256 app JWT (iat one minute back, exp nine minutes ahead)
+      is exchanged for an installation access token (about 1 h). It is cached in
+      memory only, per repository and permission set, refreshed 5 min before
+      expiry, and never logged or included in an error.
+    - Git over **HTTPS** with the installation token, for fetch and push of both
+      stores. The token is passed to git through the environment of that one
+      command (`GIT_CONFIG_COUNT`/`KEY`/`VALUE` for an `http.<url>.extraheader`
+      scoped to the repository's own URL), never on the command line, in the
+      remote URL, or in `.git/config`. An ssh or scp-style origin is rewritten to
+      https for those commands only (`url.<base>.insteadOf` in the same
+      environment); `.git/config` keeps the original. A token is never sent over
+      plain http (loopback excepted, for tests), and the App's API URL must be
+      https too. The git host is derived from the API URL (api.github.com means
+      github.com; a GitHub Enterprise Server API means its own host), and a token
+      goes only to an origin on exactly that host. The token's repository and the
+      https rewrite come from the origin URL alone; `--github-repo` (pull
+      requests) that disagrees with origin is refused at start. Git runs with
+      `http.followRedirects=false`, and the inherited `GIT_TRACE*`,
+      `GIT_CURL_VERBOSE`, `GIT_SSL_NO_VERIFY`, `GIT_CONFIG_PARAMETERS`,
+      `GIT_CONFIG_COUNT/KEY/VALUE`, `GIT_ASKPASS` and `SSH_ASKPASS` are removed
+      from every git command's environment. Concurrent requests for the same
+      token share one API call; no lock is held during network I/O. The git
+      runner's allow-lists gain exactly this: the only extra environment
+      configuration it accepts is `http.*.extraheader`, `http.followRedirects` or
+      `url.*.insteadOf`, and the never-force rules are unchanged.
+    - Without an App nothing changes: deploy keys (`GIT_SSH_COMMAND`,
+      `--infra-ssh-key`) and `RACKBOOK_GITHUB_TOKEN` keep working. Setting both
+      an App and `--infra-ssh-key` is refused as ambiguous.
+    - PR mode uses a `pull_requests: write` installation token for the REST API.
+      `RACKBOOK_GITHUB_TOKEN` stays supported for non-App setups.
     - Commit authorship is unchanged (author = the user; committer = the
       configured identity).
-    - Tests: a fake GitHub API issues installation tokens. They cover expiry and
-      refresh, a token that must not appear in argv or logs, push over HTTPS to
-      a local smart-HTTP test server, and PRs.
+    - Decision 13 is relaxed accordingly (owner, 2026-11-20): the App is
+      installed on the infra repository too. In v0.7.2 Rackbook uses it there
+      to read only.
+    - Tests: a fake GitHub (`internal/githubapp/githubapptest`) issues
+      installation tokens to a verified app JWT and serves a smart-HTTP git
+      server that accepts only a currently valid token. They cover narrowing,
+      expiry and refresh, a token that must not appear in argv, logs or
+      `.git/config`, push and fetch over HTTPS for the ledger and fetch for the
+      infra clone, and pull requests.
 
 ### Decisions, round 7 (2026-11-18): built-in authorization server details (v0.6.0)
 
