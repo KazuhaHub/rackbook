@@ -81,9 +81,17 @@ RACKBOOK_GITHUB_TOKEN.`,
 	f.String("github-api", "", "GitHub REST API base URL (default: derived from the origin host)")
 	f.String("github-app-id", "", "GitHub App ID (or "+appIDEnv+"): fetch and push over https with installation tokens narrowed to each repository, for the data repository and --infra-repo, instead of SSH deploy keys; needs the private key from --github-app-key-file, "+appKeyEnv+" or a systemd credential (see README, Creating the GitHub App)")
 	f.String("github-app-key-file", "", "private key (PEM) of the GitHub App; never put the key itself on the command line")
-	f.String("infra-repo", "", "directory of a git clone of an Ansible + SOPS repository to show read-only under /infra (needs --auth oidc and --infra-admins); Rackbook fetches and resets it to origin on --pull-interval and never writes to it or its remote")
+	f.String("infra-repo", "", "directory of a git clone of an Ansible + SOPS repository shown under /infra (needs --auth oidc, --infra-admins, --infra-oidc-issuer and --infra-oidc-client-id); Rackbook fetches and resets it to origin on --pull-interval, and writes to it only with --infra-write")
 	f.String("infra-branch", "main", "branch of --infra-repo to follow")
 	f.String("infra-ssh-key", "", "private key (read-only deploy key) Rackbook uses to fetch --infra-repo; only for that clone (a known_hosts file beside it is used when present)")
+	f.String("infra-oidc-issuer", "", "issuer URL of the identity provider the infra administrators sign in with; /infra refuses a session issued under any other (pinned here because auth.oidc in rackbook.yml lives in the ledger, which other people can edit); needs --infra-repo")
+	f.String("infra-oidc-client-id", "", "client ID of the sign-in application, pinned like --infra-oidc-issuer; needs --infra-repo")
+	f.String("infra-oidc-identity-claim", "preferred_username", "the ID token claim the administrators' identities are taken from (\"sub\" for subject identities); /infra refuses a session whose identity came from another claim, so auth.oidc.identity_claim in rackbook.yml cannot change who is an administrator; needs --infra-repo")
+	f.String("infra-oidc-tenant", "", "the tenant (tid claim) the administrators sign in from; required for an Entra issuer, and a tenant GUID in --infra-oidc-issuer must equal it; /infra refuses a session from another tenant (allowed_tenants in rackbook.yml is not trusted); needs --infra-repo")
+	f.Bool("infra-write", false, "turn on the infra editors: one commit per edit on --infra-branch (needs --github-app-id with Contents: write on that repository, and --infra-repo)")
+	f.Duration("infra-write-max-age", auth.DefaultInfraWriteAge, "how recent an administrator's sign-in must be for an infra write (older: sign in again)")
+	f.String("infra-managed-group", "managed", `inventory group whose hosts must each have host_vars and a SOPS file, and that holds every host of every group ("" = no such check)`)
+	f.String("infra-agent-group", "infra_agent", `inventory group that must list exactly the managed hosts, checked only when the inventory has it ("" = no such check)`)
 	f.StringSlice("infra-admins", nil, "exact identities (comma-separated) who may see /infra; they must sign in with --auth oidc (API tokens, MCP and OAuth tokens never count; not read from rackbook.yml)")
 	f.String("hub-status-file", "", "status.json of the infra hub (infra-hub status -o json), shown under /infra; kept fresh by a timer outside Rackbook (needs --infra-repo)")
 	f.StringSlice("trusted-proxy", nil, "CIDRs (or addresses) of reverse proxies whose CF-Connecting-IP header is believed when rate-limiting failed API-token attempts")
@@ -153,7 +161,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	if mode == "" {
 		mode = auth.ModeNone
 	}
-	infra, err := newInfra(ctx, f, cfg.Dir, mode, interval, appSource, logger)
+	infra, err := newInfra(ctx, f, cfg, mode, interval, appSource, committer, readOnlyFlag(f), logger)
 	if err != nil {
 		return err
 	}
@@ -235,6 +243,11 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		registry.UsePath = filepath.Join(dir, "token-use.json")
 		modState.Path = filepath.Join(dir, "modules.json")
 		prefStore.Path = filepath.Join(dir, "preferences.json")
+	}
+	if infra != nil && stateDir != "" {
+		if al, ok := infra.Audit.(*ansiblerepo.AuditLog); ok {
+			al.Path = filepath.Join(stateDir, "infra-audit.jsonl")
+		}
 	}
 	resource := &mcpauth.Resource{Config: store.Config, Auth: authn, Verifier: &oauth.Verifier{}, Tokens: registry, Limiter: &tokens.Limiter{}, TrustedProxies: proxies, Log: logger}
 	var oauthSrv api.OAuthServer
@@ -377,13 +390,14 @@ func newLogin(cfg *config.Config, store *gitstore.Store, prefStore *prefs.Store,
 
 // newInfra sets up the read-only /infra pages from the --infra-* flags: nil
 // when --infra-repo is not given (and then none of the others may be).
-func newInfra(ctx context.Context, f *pflag.FlagSet, ledgerDir, mode string, interval time.Duration, app gitstore.TokenSource, logger *slog.Logger) (*api.InfraOptions, error) {
+func newInfra(ctx context.Context, f *pflag.FlagSet, cfg *config.Config, mode string, interval time.Duration, app gitstore.TokenSource, committer gitstore.Identity, readOnly bool, logger *slog.Logger) (*api.InfraOptions, error) {
+	ledgerDir := cfg.Dir
 	dir, _ := f.GetString("infra-repo")
 	admins, _ := f.GetStringSlice("infra-admins")
 	status, _ := f.GetString("hub-status-file")
 	key, _ := f.GetString("infra-ssh-key")
 	if dir == "" {
-		for _, name := range []string{"infra-admins", "hub-status-file", "infra-ssh-key"} {
+		for _, name := range []string{"infra-admins", "hub-status-file", "infra-ssh-key", "infra-oidc-issuer", "infra-oidc-client-id", "infra-oidc-identity-claim", "infra-oidc-tenant", "infra-write", "infra-write-max-age", "infra-managed-group", "infra-agent-group"} {
 			if f.Changed(name) {
 				return nil, fmt.Errorf("--%s needs --infra-repo", name)
 			}
@@ -397,6 +411,24 @@ func newInfra(ctx context.Context, f *pflag.FlagSet, ledgerDir, mode string, int
 	if err != nil {
 		return nil, err
 	}
+	issuer, _ := f.GetString("infra-oidc-issuer")
+	clientID, _ := f.GetString("infra-oidc-client-id")
+	maxAge, _ := f.GetDuration("infra-write-max-age")
+	claim, _ := f.GetString("infra-oidc-identity-claim")
+	tenant, _ := f.GetString("infra-oidc-tenant")
+	if err := ia.Pin(issuer, clientID, claim, tenant, maxAge); err != nil {
+		return nil, err
+	}
+	li := cfg.Auth.Login.OIDC
+	liClaim, _ := li.ClaimsOrDefault()
+	if li.BySubject() {
+		liClaim = "sub"
+	}
+	if li.Issuer != issuer || li.ClientID != clientID || liClaim != claim {
+		logger.Warn("the console login (auth.oidc in rackbook.yml) is not the identity provider pinned for /infra: nobody can open /infra until they match",
+			"login_issuer", li.Issuer, "login_client_id", li.ClientID, "login_identity_claim", liClaim, "pinned_issuer", issuer, "pinned_client_id", clientID, "pinned_identity_claim", claim)
+	}
+	write, _ := f.GetBool("infra-write")
 	absDir, err := filepath.Abs(dir)
 	if err != nil {
 		return nil, fmt.Errorf("--infra-repo: %w", err)
@@ -405,13 +437,24 @@ func newInfra(ctx context.Context, f *pflag.FlagSet, ledgerDir, mode string, int
 		return nil, fmt.Errorf("--infra-repo %s and the data repository %s must be separate directories", dir, ledgerDir)
 	}
 	branch, _ := f.GetString("infra-branch")
-	opts := ansiblerepo.Options{Dir: absDir, Branch: branch, Interval: interval, Logger: logger}
+	managed, _ := f.GetString("infra-managed-group")
+	agentGroup, _ := f.GetString("infra-agent-group")
+	rules := ansiblerepo.DefaultRules()
+	rules.ManagedGroup, rules.AgentGroup = managed, agentGroup
+	audit := &ansiblerepo.AuditLog{Log: logger}
+	opts := ansiblerepo.Options{Dir: absDir, Branch: branch, Interval: interval, Logger: logger, Committer: committer, Rules: rules, Audit: audit}
+	if write && app == nil {
+		return nil, errors.New("--infra-write needs --github-app-id: the editors push with an installation token that has Contents: write")
+	}
 	if app != nil {
 		if key != "" {
 			return nil, errors.New("--infra-ssh-key and --github-app-id are two ways to fetch --infra-repo: use one")
 		}
-		// Rackbook only reads this clone: the token carries contents: read.
+		// Reading uses a token with contents: read. Only the editors (--infra-write) ever ask for contents: write.
 		opts.Auth = &gitstore.GitAuth{Source: app, Perms: githubapp.Permissions{Contents: "read"}}
+		if write {
+			opts.WriteAuth = &gitstore.GitAuth{Source: app, Perms: githubapp.Permissions{Contents: "write"}}
+		}
 	}
 	if key != "" {
 		opts.SSHKey = key
@@ -432,8 +475,8 @@ func newInfra(ctx context.Context, f *pflag.FlagSet, ledgerDir, mode string, int
 		}
 		repo.Run(ctx)
 	}()
-	logger.Info("infra pages on (read-only)", "repo", absDir, "branch", branch, "admins", len(admins), "hubStatus", status != "")
-	return &api.InfraOptions{Repo: repo, Admins: ia, StatusFile: status}, nil
+	logger.Info("infra pages on", "repo", absDir, "branch", branch, "admins", len(admins), "hubStatus", status != "", "editors", write && !readOnly, "issuer", issuer, "writeMaxAge", ia.WriteAge().String())
+	return &api.InfraOptions{Repo: repo, Admins: ia, StatusFile: status, Write: write, Audit: audit}, nil
 }
 
 // inside reports whether path is dir or below it.
@@ -446,4 +489,9 @@ func inside(dir, path string) bool {
 func fileExists(p string) bool {
 	st, err := os.Stat(p)
 	return err == nil && st.Mode().IsRegular()
+}
+
+func readOnlyFlag(f *pflag.FlagSet) bool {
+	v, _ := f.GetBool("read-only")
+	return v
 }

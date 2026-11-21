@@ -297,6 +297,12 @@ func identityOf(sess session) *auth.Identity {
 	if strings.Contains(sess.ID, "@") {
 		id.Email = sess.ID
 	}
+	if sess.Method == auth.MethodOIDC {
+		id.OIDCIssuer, id.OIDCClient, id.OIDCClaim, id.OIDCTenant = sess.Iss, sess.Cli, sess.Clm, sess.Tid
+		if sess.OIDCAt > 0 {
+			id.OIDCAt = time.Unix(sess.OIDCAt, 0)
+		}
+	}
 	return id
 }
 
@@ -317,6 +323,8 @@ func (s *Service) issue(w http.ResponseWriter, id *auth.Identity, method, cred s
 	if method == auth.MethodOIDC {
 		sess.OIDCAt = now
 		sess.Iss = s.o.Login.OIDC.Issuer
+		sess.Cli = s.o.Login.OIDC.ClientID
+		sess.Clm, sess.Tid = id.OIDCClaim, id.OIDCTenant
 		var cut bool
 		if sess.Groups, cut = boundGroups(id.Groups); cut {
 			s.log.Warn("the ID token has more groups than fit the session cookie; the rest are ignored", "identity", id.ID)

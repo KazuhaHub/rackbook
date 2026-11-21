@@ -17,6 +17,7 @@ import (
 	"go.yaml.in/yaml/v3"
 
 	"github.com/kazuhahub/rackbook/internal/gitstore"
+	"github.com/kazuhahub/rackbook/internal/secretscan"
 )
 
 const maxFile = 1 << 20
@@ -34,6 +35,19 @@ type Options struct {
 	Logger   *slog.Logger
 	Runner   gitstore.Runner // nil = the real git; for tests
 	Now      func() time.Time
+
+	// WriteAuth makes the repository writable: commits go to Branch with this
+	// credential (a GitHub App token with contents: write). Nil = read only.
+	WriteAuth *gitstore.GitAuth
+	// Committer is the committer identity of every commit (the author is the
+	// person who made the edit).
+	Committer gitstore.Identity
+	// Rules are the repository conventions the checks apply (zero = DefaultRules).
+	Rules Rules
+	// Scanner is the secret scan for host and group variables (nil = built-in rules).
+	Scanner *secretscan.Scanner
+	// Audit receives the actions that did not end in a commit (nil = none).
+	Audit Auditor
 }
 
 // Repo is the read-only clone.
@@ -42,7 +56,8 @@ type Repo struct {
 	mirror *gitstore.Mirror
 	log    *slog.Logger
 
-	mu       sync.RWMutex // held for writing while the work tree is reset
+	writeMu  sync.Mutex   // one edit at a time
+	mu       sync.RWMutex // held for writing while the work tree is reset or committed to
 	syncedAt time.Time
 	syncErr  string
 	head     string
@@ -62,7 +77,10 @@ func New(o Options) (*Repo, error) {
 	if o.Now == nil {
 		o.Now = time.Now
 	}
-	return &Repo{o: o, log: o.Logger, mirror: &gitstore.Mirror{Dir: o.Dir, Branch: o.Branch, SSHKey: o.SSHKey, KnownHosts: o.KnownHosts, Auth: o.Auth, Runner: o.Runner}}, nil
+	if o.Rules == (Rules{}) {
+		o.Rules = DefaultRules()
+	}
+	return &Repo{o: o, log: o.Logger, mirror: &gitstore.Mirror{Dir: o.Dir, Branch: o.Branch, SSHKey: o.SSHKey, KnownHosts: o.KnownHosts, Auth: o.Auth, WriteAuth: o.WriteAuth, Runner: o.Runner}}, nil
 }
 
 // State is how fresh the clone is.

@@ -106,7 +106,7 @@ answers `200 {"locale": ""}`. It is stored per identity in `<state-dir>/preferen
   `authMethod` is `none`, `cloudflare-access`, `oidc`, `passkey`, `mcphub` or
   `token`. `canEdit` is `role` ≥ editor and the server is not read-only;
   `canAdmin` is `role` = admin. `canInfra: true` appears only for an infra
-  administrator (see Infra, below). `id` (lowercased identity), `email` and `name`
+  administrator, and `canInfraWrite: true` when the infra editors are on (see Infra, below). `id` (lowercased identity), `email` and `name`
   are left out when unknown (auth `none` without `--editor`).
 - `alert` is present only while the remote Git history was rewritten (see
   [design.md](design.md), section 3): writes return `503` until an
@@ -443,12 +443,13 @@ forbidden`). A module uses its own token for the three calls marked *module*.
 | `POST /api/modules/{name}/runs` | module | body `{started, finished, status: ok\|failed\|skipped, counts: {created, updated, revoked, sent}, error?, run_request?}` (RFC 3339 times, `finished` more than 24 hours ahead of the server clock is refused; one that is merely ahead (a fast module clock) is accepted and stored exactly as reported, with a log line when more than 10 minutes ahead) → `201 {ok: true}`. Only the module's own token (`403` otherwise, an administrator included); `400` for an invalid body. `error` is cut to 300 characters on one line. A run that carries the pending request's id clears it; consecutive `skipped` runs replace each other. The server keeps the last 30 runs per module in `<state-dir>/modules.json` |
 | `GET /api/modules/status` | admin, notify module | `{modules: [{name, type, paused, lastRun}]}`: the last run of every module, for rackbook-notify's digest. `403` for any other token |
 
-## Infra (read-only, `--infra-repo`)
+## Infra (`--infra-repo`)
 
-Only with `--infra-repo` (README, *Infrastructure view*); without it every path below is `404`.
-Each call needs a person listed in `--infra-admins` who signed in with the OIDC login: any other
-caller, a token of the listed person included, gets `403 forbidden`. All of them are `GET` and
-change nothing; none is on `/mcp`. `/api/meta` tells such a person with `user.canInfra: true`.
+Only with `--infra-repo` (README, *Infrastructure view and editors*); without it every path below is `404`.
+Each call needs a person listed in `--infra-admins` who signed in with the OIDC login **under the issuer and
+client ID pinned by `--infra-oidc-issuer` and `--infra-oidc-client-id`, with the identity claim and tenant of `--infra-oidc-identity-claim` and `--infra-oidc-tenant`**: any other caller, a token of the
+listed person included, gets `403 forbidden`. None is on `/mcp`. `/api/meta` tells such a person with
+`user.canInfra: true`, and with `user.canInfraWrite: true` when the editors are on (`--infra-write`, not `--read-only`).
 
 `hub` is `{state: ok|stale|missing|invalid, error?, time?, ageSeconds}`, the state of the hub's
 status file. Anything but `ok` means its data is not current: `report` is left out and `certs`
@@ -461,7 +462,41 @@ and the last successful and failed refresh.
 | `GET /api/infra/hosts/{name}` | `{repo, hub, host: {name, groups, hasVars, vars?, features: [{name, enabled, settings?}], hidden}, report?, behind}`. `vars` is the host_vars file as YAML with secret-looking values replaced by `(hidden)` (`hidden` counts them). `404` for a name that is not in the inventory |
 | `GET /api/infra/certs` | `{hub, certs: [{name, owner, notAfter?, failing, lastError?}]}` |
 | `GET /api/infra/iplists` | `{hub, lists: [{name, version?, entries, warnings}]}` |
-| `GET /api/infra/commits` | `{repo, commits: [{hash, author, time, subject}]}`: the last 50, newest first |
+| `GET /api/infra/commits` | `{repo, canRevert, commits: [{hash, author, time, subject, files, revertible, reason?, later?}]}`: the last 50, newest first. `reason` (when not revertible): `merge`, `root`, `not_editable`, `later_commits` (`later` lists them), `empty`, `not_on_branch` |
+
+### Editors (`--infra-write`)
+
+Each write is one commit on the followed branch (README, *Editing the infra repository*). A write needs
+the person above **and** a sign-in no older than `--infra-write-max-age`; otherwise `403`
+`{"error": "reauth_required", "maxAgeSeconds": 43200}` and the console offers a new sign-in. With the
+editors off or on a `--read-only` server a write is `403 read_only`. Writes are `POST` with
+`Content-Type: application/json` from the console's own origin. Every body may carry `"preview": true`: the
+answer is then `200` with what would happen and nothing is committed (a preview needs the same
+sign-in). `base` is the object ID the `GET` returned for the file; a file that changed since is a conflict.
+
+| Request | Answer |
+|---|---|
+| `GET /api/infra/write` | `{enabled, fresh, signedInAt?, maxAgeSeconds}` |
+| `GET /api/infra/features` | `{features: [{name, description?, type?, settings: [{name, type: string\|int\|bool\|enum, description?, enum?, default?, required?, requiredWhen?, secret?, pattern?, min?, max?}]}], invalid: [name]}` |
+| `GET /api/infra/hosts/{name}/vars` | `{path, exists, base, content, hidden}`. A file with secret-looking values (`hidden > 0`) comes without `content` |
+| `POST /api/infra/hosts/{name}/vars` | `{base, content, preview?, confirmSecretScan?}`: replaces the file. Answer `{commit?, diffs: [{path, status, diff}], issues, blocked}` |
+| `POST /api/infra/hosts/{name}/features/{feature}` | `{base, enabled, settings: {name: value}, preview?, confirmSecretScan?}`: `enabled: false` removes `features.<feature>`; otherwise the settings listed (empty or omitted = default) replace those of the feature and nothing else changes. A `secret: true` setting is refused (`422 invalid`, `feature.secret_refused`). `base` is the one of the host's `vars` |
+| `GET /api/infra/groups` | `{base, membership: {groups, hosts, direct: {host: [group]}}}`: who `inventory/hosts.yml` lists directly in each group of `all.children` |
+| `POST /api/infra/groups` | `{base, changes: [{host, group, member}], preview?}` |
+| `POST /api/infra/commits/{hash}/revert` | `{preview?}`: commits the files that commit touched back to how they were before it |
+
+Errors of a write: `409 conflict` `{reason: changed|later_commits, files, later, diffs}` (diffs: the
+current file against the edit); `409 revert_refused` `{reason}`; `409 busy` (the branch moved on three
+attempts); `422 invalid` `{issues: [{code, severity: error|confirm|warning, file?, path?, params?, message}]}`
+(the checks refused it: `code` and `params` are translated by the console, `message` is English);
+`422 no_change`; `422 edit_failed` (the change cannot be made to the file); `403 forbidden` for
+anyone else. Issues with severity `confirm` (a heuristic secret finding) are let through when
+`confirmSecretScan` is true. Issue codes: `yaml.invalid`, `yaml.multi_document`, `yaml.not_mapping`,
+`yaml.duplicate_key`, `inventory.missing`, `inventory.shape`, `inventory.not_managed`,
+`inventory.no_host_vars`, `inventory.no_secrets`, `inventory.agent_missing`, `inventory.agent_extra`, `yaml.anchor`, `yaml.tag`, `vars.template`, `vars.ansible_key`,
+`feature.unknown`, `feature.not_mapping`, `feature.settings_not_mapping`, `feature.unknown_setting`,
+`feature.secret_in_vars`, `feature.secret_refused`, `feature.hidden_value`, `feature.bad_value`,
+`feature.missing_required`, `secret.found`.
 
 ## Data types (administrators only)
 

@@ -654,6 +654,8 @@ Rackbook uses SemVer (Go modules require SemVer tags). Release plan:
   the deprecated MCP tool names moved to v0.8.0).
 - **v0.7.2** — GitHub App authentication (decision 14), for the ledger and the
   infra repository (owner decision, 2026-11-20; it moved from v0.6.1).
+- **v0.7.3** — the infra editors (decision 24): host_vars, feature switches,
+  groups and history with revert, one commit per edit to the infra branch.
 - **v0.8.0** — storage: one record per file (design in
   `design-v0.4-storage.md`; the file keeps its name); the deprecated MCP tool
   names are removed.
@@ -1011,3 +1013,39 @@ and the exact placeholders. The allow list (by value hash) is the one override
 for the block tier. Free text has none. A secret-named
 field may only be annotated `secret_reference`. Record ids that carry a secret are
 shown as 4 characters plus 8 hex digits of a hash (not a secure hash; it only tells ids apart).
+
+### Decisions, round 8 (2026-11-20): infra editors (v0.7.3)
+
+24. **Rackbook writes to the infra repository** (owner, 2026-11-20). This supersedes
+    the second half of decision 13 for the infra repository: Rackbook's top admin
+    can change everything in it, the commits go straight to the branch (no pull
+    request), the organisation enforces MFA in the identity provider, and there is
+    no CI gate, so Rackbook validates before it commits. The reasons decision 13
+    gave still hold, which is why the write path is narrow:
+    - **The identity provider is pinned** by flags (`--infra-oidc-issuer`,
+      `--infra-oidc-client-id`, `--infra-oidc-identity-claim`, `--infra-oidc-tenant`)
+      and every session records the issuer, client, identity claim and tenant it
+      was issued under, because `auth.oidc` (including `identity_claim` and
+      `allowed_tenants`) lives in the ledger, which other people can edit. A write also needs a sign-in younger than `--infra-write-max-age`
+      (default 12 h).
+    - **Writes are opt-in** (`--infra-write`) and use an installation token narrowed
+      to the infra repository with `contents: write`; reads keep `contents: read`.
+    - **One edit, one commit**, authored by the person, with `Edited-by`,
+      `Edited-via` and `Files` trailers; a revert is a new commit. Only
+      `inventory/hosts.yml` and `host_vars` can be written; `group_vars` are not
+      (they legitimately hold templating and `ansible_connection`).
+    - **host_vars are code**: Ansible evaluates them as root, so a file Rackbook
+      writes may contain no templating (`{{`, `{%`, `{#`, in keys or values), no
+      top-level `ansible_*` variables, and no anchors, aliases, merge keys or tags.
+      What an edit writes must pass every check even if the file was already
+      broken.
+    - **Nothing is forced.** Conflicts are detected by the object ID of each file
+      the editor loaded; a push rejected because the branch moved is replayed on the
+      new tip (three tries) only when none of the files changed.
+    - **Validation is native and data-driven**: the checks read the repository's
+      own `features/*/feature.yml` and group names, nothing about a particular
+      repository is built in, and a problem that already existed does not block an
+      unrelated edit.
+    - **Secrets are not edited** (SOPS is a later phase): a `secret: true` setting is
+      refused, a file with secret-looking values is not offered to the raw editor,
+      and diffs hide such values.

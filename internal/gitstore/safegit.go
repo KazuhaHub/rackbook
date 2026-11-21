@@ -76,6 +76,7 @@ var allowedOptions = map[string][]string{
 	"add":        {"--"},
 	"cat-file":   {},
 	"checkout":   {"--quiet", "--"},
+	"diff-tree":  {"--no-commit-id", "--name-status", "-r", "-z", "--root", "--no-renames"},
 	"commit":     {"--quiet", "--no-verify", "-F", "-", "--only", "--"},
 	"fetch":      {"--quiet"},
 	"log":        {"-n", "--format=*", "--fixed-strings", "--grep=*", "--"},

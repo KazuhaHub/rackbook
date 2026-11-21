@@ -4,6 +4,7 @@ import { Badge } from '@/components/ui/badge'
 import { Skeleton } from '@/components/ui/skeleton'
 import { EmptyState } from '@/components/common'
 import { HubBanner, InfraFrame, LoadError, RepoLine } from '@/components/infra/InfraFrame'
+import { EditLink } from '@/components/infra/EditReview'
 import { ResultBadge } from './InfraHosts'
 import { t } from '@/i18n'
 import { formatDateTime } from '@/i18n/format'
@@ -33,7 +34,10 @@ export default function InfraHost() {
       <Link to="/infra" className="mb-4 inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
         <ArrowLeft className="size-4" /> {t.infra.host.back}
       </Link>
-      <h1 className="mb-4 text-xl font-semibold break-all">{name}</h1>
+      <div className="mb-4 flex flex-wrap items-baseline gap-x-4 gap-y-1">
+        <h1 className="text-xl font-semibold break-all">{name}</h1>
+        {meta.user?.canInfraWrite && !notFound && <EditLink to={`/infra/hosts/${encodeURIComponent(name)}/edit`}>{t.infra.edit.editLink}</EditLink>}
+      </div>
       {q.isPending ? (
         <Skeleton className="h-40 w-full" />
       ) : notFound ? (

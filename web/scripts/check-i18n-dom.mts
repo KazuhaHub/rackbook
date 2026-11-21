@@ -220,6 +220,8 @@ const pages = [
   '/modules',
   '/infra',
   '/infra/hosts/alpha-host',
+  '/infra/hosts/alpha-host/edit',
+  '/infra/groups',
   '/infra/certs',
   '/infra/iplists',
   '/infra/commits',

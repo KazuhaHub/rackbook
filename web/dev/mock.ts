@@ -296,7 +296,7 @@ export function mockApi(root: string): Plugin {
   ]
   const user = readOnly
     ? { id: 'viewer@example.com', email: 'viewer@example.com', name: 'viewer', role: 'viewer', authMethod: 'none', canEdit: false, canAdmin: false, canInfra: false }
-    : { id: 'editor@example.com', email: 'editor@example.com', name: 'Mock Editor', role: 'admin', authMethod: login ? 'oidc' : 'none', canEdit: true, canAdmin: true, canInfra: true }
+    : { id: 'editor@example.com', email: 'editor@example.com', name: 'Mock Editor', role: 'admin', authMethod: login ? 'oidc' : 'none', canEdit: true, canAdmin: true, canInfra: true, canInfraWrite: true }
   // MOCK_ALERT=1 shows the "history rewritten" banner until it is accepted.
   let alert: { kind: string; lastGood: string; remote: string } | undefined =
     process.env.MOCK_ALERT === '1'
@@ -430,6 +430,17 @@ export function mockApi(root: string): Plugin {
       alert = undefined
       return send(res, 200, { ok: true }), true
     }
+    if (head === 'infra' && method === 'POST' && user.canInfra) {
+      const body = await readBody(req)
+      const preview = body.preview === true
+      const path = cname === 'groups' ? 'inventory/hosts.yml' : 'inventory/host_vars/alpha-host.yml'
+      return send(res, 200, {
+        ...(preview ? {} : { commit: infraHead }),
+        blocked: false,
+        diffs: [{ path, status: 'modified', diff: '--- a/' + path + '\n+++ b/' + path + '\n@@ -1,3 +1,3 @@\n tailscale_ip: 100.64.0.1\n-features: {}\n+features:\n+  beszel-agent: {}\n' }],
+        issues: [{ code: 'inventory.no_secrets', severity: 'warning', file: 'secrets/gamma-host.sops.yaml', params: { host: 'gamma-host' }, message: 'managed host gamma-host has no secrets file' }],
+      }), true
+    }
     if (head === 'infra' && method === 'GET' && user.canInfra) {
       const ago = (s: number) => new Date(Date.now() - s * 1000).toISOString()
       const hub = { state: 'ok', ageSeconds: 12, time: ago(12) }
@@ -443,6 +454,7 @@ export function mockApi(root: string): Plugin {
         { name: 'beta-host', groups: ['managed'], hasVars: true, features: [], report: report('0123456789abcdef0123456789abcdef01234567', 'failed', 'feature beszel-agent failed'), behind: true },
         { name: 'gamma-host', groups: [], hasVars: false, features: [], behind: false },
       ]
+      if (cname === 'hosts' && rest[1] === 'vars') return send(res, 200, { path: 'inventory/host_vars/' + rest[0] + '.yml', exists: true, base: 'a'.repeat(40), hidden: 0, content: 'tailscale_ip: 100.64.0.1\nfeatures: {}\n' }), true
       if (cname === 'hosts' && rest[0] === undefined) return send(res, 200, { repo, hub, hosts }), true
       if (cname === 'hosts') {
         const h = hosts.find((x) => x.name === rest[0])
@@ -465,9 +477,19 @@ export function mockApi(root: string): Plugin {
         { name: 'cloudflare', version: 'v42', entries: 22, warnings: [] },
         { name: 'office', version: 'v7', entries: 3, warnings: ['the list shrank by 40%'] },
       ] }), true
-      if (cname === 'commits') return send(res, 200, { repo, commits: [
-        { hash: infraHead, author: 'Mock Editor', time: ago(3600), subject: 'hosts: enable the monitoring agent on alpha-host' },
-        { hash: '0123456789abcdef0123456789abcdef01234567', author: 'Mock Editor', time: ago(86400 * 2), subject: 'certs: add beta.example.org' },
+      if (cname === 'write') return send(res, 200, { enabled: true, fresh: true, maxAgeSeconds: 43200, signedInAt: ago(600) }), true
+      if (cname === 'features') return send(res, 200, { invalid: [], features: [{ name: 'beszel-agent', description: 'Monitoring agent', settings: [
+        { name: 'mode', type: 'enum', enum: ['websocket', 'listen'], default: 'websocket', description: 'How the agent connects' },
+        { name: 'hub_url', type: 'string', description: 'Address of the hub', required: true },
+        { name: 'port', type: 'int', min: 1, max: 65535 },
+        { name: 'docker_stats', type: 'bool', default: false },
+        { name: 'token', type: 'string', secret: true },
+      ] }] }), true
+      if (cname === 'groups') return send(res, 200, { base: 'b'.repeat(40), membership: { groups: ['hub', 'managed'], hosts: ['alpha-host', 'beta-host'], direct: { 'alpha-host': ['hub', 'managed'], 'beta-host': ['managed'] } } }), true
+      if (cname === 'hosts' && rest[1] === 'vars') return send(res, 200, { path: 'inventory/host_vars/' + rest[0] + '.yml', exists: true, base: 'a'.repeat(40), hidden: 0, content: 'tailscale_ip: 100.64.0.1\nfeatures: {}\n' }), true
+      if (cname === 'commits') return send(res, 200, { repo, canRevert: true, commits: [
+        { hash: infraHead, author: 'Mock Editor', time: ago(3600), subject: 'infra(host_vars/alpha-host): enable beszel-agent', files: ['inventory/host_vars/alpha-host.yml'], revertible: true },
+        { hash: '0123456789abcdef0123456789abcdef01234567', author: 'Mock Editor', time: ago(86400 * 2), subject: 'certs: add beta.example.org', files: ['roles/hub/files/certs.yml'], revertible: false, reason: 'not_editable' },
       ] }), true
     }
     if (head === 'expiring' && method === 'GET') {
