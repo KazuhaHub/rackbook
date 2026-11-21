@@ -1,5 +1,5 @@
 // Data type management (docs/design-v0.2.md section 3): shapes of /api/types.
-import { locale, t } from '@/i18n'
+import { t } from '@/i18n'
 
 export type FieldType =
   | 'text'
@@ -34,6 +34,8 @@ export type RefSpec = {
   message?: string
   backrefTitle?: string
   backrefColumns?: string[]
+  /** message and backref_title in the other languages (locale -> key -> text). */
+  i18n?: I18n<'message' | 'backref_title'>
 }
 export type Extra = { key: string; value: unknown }
 
@@ -166,11 +168,6 @@ export function emptyType(): TypeDef {
 
 /** Stable JSON used to tell whether a draft differs from what is saved. */
 export const stable = (v: unknown) => JSON.stringify(v)
-
-/** A field's title in the current language: its translation, else the standard title. */
-export function fieldTitleText(f: Pick<FieldDef, 'title' | 'i18n'>, loc: string = locale): string | undefined {
-  return f.i18n?.[loc]?.title || f.title || undefined
-}
 
 /** `map` with the text of one language set (empty text removes it, an empty language or map disappears). Other keys are kept. */
 export function withText<K extends string>(map: I18n<K> | undefined, loc: string, key: K, text: string): I18n<K> | undefined {

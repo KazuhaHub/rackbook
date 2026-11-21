@@ -5,8 +5,9 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { t } from '@/i18n'
 import type { TypeDef } from '@/lib/typedef'
+import type { TypeDetail } from '@/lib/typesApi'
 import { useMeta } from '@/providers/meta'
-import { backrefTitle, collectionTitle } from '@/lib/labels'
+import { backrefTitle, collectionTitle, refBackrefTitle } from '@/lib/labels'
 
 export function RelationsTab({
   draft,
@@ -15,7 +16,7 @@ export function RelationsTab({
   onAddRef,
 }: {
   draft: TypeDef
-  incoming: { collection: string; field: string; title?: string }[]
+  incoming: TypeDetail['incoming']
   onEdit: (name: string) => void
   onAddRef: () => void
 }) {
@@ -44,7 +45,7 @@ export function RelationsTab({
                       {a}
                     </Badge>
                   ))}
-                  {f.ref!.backrefTitle && <span className="text-xs text-muted-foreground">{t.types.relations.backTitle}{t.common.colon}{f.ref!.backrefTitle}</span>}
+                  {refBackrefTitle(f.ref!) && <span className="text-xs text-muted-foreground">{t.types.relations.backTitle}{t.common.colon}{refBackrefTitle(f.ref!)}</span>}
                   <Button className="ml-auto" variant="ghost" size="icon-sm" aria-label={t.types.fields.edit} onClick={() => onEdit(f.name)}>
                     <Pencil />
                   </Button>

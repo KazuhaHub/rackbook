@@ -539,6 +539,7 @@ const messages = {
       heading: 'Other languages',
       hint: (lang: string) => `Text in the default language (${lang}) goes in the fields above; fill in the other languages here, or leave them empty to show the default language's text.`,
       inLanguage: (field: string, lang: string) => `${field} (${lang})`,
+      inDefault: (field: string, lang: string) => `${field} (${lang}, default language)`,
     },
     fieldTypeAdvanced: 'Advanced',
     fieldTypes: {
@@ -642,7 +643,7 @@ const messages = {
       enumAdd: 'Add value',
       enumValue: 'Code',
       enumColor: 'Color',
-      enumLabelDefault: (lang: string) => `Label (${lang})`,
+      enumLabel: 'Label',
       enumIcon: 'Icon',
       iconPlaceholder: 'Icon name, such as circle-check',
       iconUnknown: 'Unknown icon name',
