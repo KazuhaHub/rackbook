@@ -221,6 +221,7 @@ const pages = [
   '/infra',
   '/infra/hosts/alpha-host',
   '/infra/hosts/alpha-host/edit',
+  '/infra/hosts/alpha-host/secrets',
   '/infra/groups',
   '/infra/certs',
   '/infra/iplists',

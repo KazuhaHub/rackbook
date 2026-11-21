@@ -347,8 +347,8 @@ func TestStaticOnlyOneGitRunnerAndOnePushBuilder(t *testing.T) {
 			t.Fatal(err)
 		}
 		for _, imp := range af.Imports {
-			if p, _ := strconv.Unquote(imp.Path.Value); p == "os/exec" && !strings.HasSuffix(f, filepath.Join("gitstore", "git.go")) {
-				t.Errorf("%s imports os/exec: git must only be started by gitstore's Runner", f)
+			if p, _ := strconv.Unquote(imp.Path.Value); p == "os/exec" && !strings.HasSuffix(f, filepath.Join("gitstore", "git.go")) && !strings.HasSuffix(f, filepath.Join("sops", "sops.go")) && !strings.HasSuffix(f, filepath.Join("sopstest", "sopstest.go")) {
+				t.Errorf("%s imports os/exec: git must only be started by gitstore's Runner (and sops and age-keygen by internal/sops; sopstest is the tests' helper)", f)
 			}
 		}
 		if strings.HasSuffix(f, filepath.Join("gitstore", "safegit.go")) {

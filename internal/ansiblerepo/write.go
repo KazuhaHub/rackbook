@@ -296,7 +296,11 @@ func (r *Repo) evaluate(p *plan) *Outcome {
 	out := &Outcome{Diffs: []FileDiff{}}
 	for _, f := range filesOf(p) {
 		before, _ := cur.Read(f)
-		out.Diffs = append(out.Diffs, unifiedDiff(f, before, p.files[f]))
+		if isSecretsPath(f) {
+			out.Diffs = append(out.Diffs, secretsDiff(f, before, p.files[f]))
+		} else {
+			out.Diffs = append(out.Diffs, unifiedDiff(f, before, p.files[f]))
+		}
 	}
 	before := Validate(cur, r.o.Rules, r.o.Scanner)
 	after := Validate(overlay{cur, p.files}, r.o.Rules, r.o.Scanner)
@@ -312,6 +316,14 @@ func (r *Repo) evaluate(p *plan) *Outcome {
 			}
 		}
 	}
+	// A SOPS file is not scanned for plaintext secrets (every value of it is
+	// ciphertext); it must instead be fully encrypted for the right recipients.
+	after2 := overlay{cur, p.files}
+	for _, f := range filesOf(p) {
+		if isSecretsPath(f) && p.files[f] != nil {
+			out.Issues = append(out.Issues, secretsFileIssues(after2, f, p.files[f])...)
+		}
+	}
 	return out
 }
 
@@ -325,7 +337,7 @@ func (r *Repo) planEdit(ctx context.Context, e Edit) (*plan, error) {
 	var diffs []FileDiff
 	cur := dirTree{r}
 	for _, f := range e.Files {
-		if !editable(f.Path) {
+		if !editable(f.Path) && !isSecretsPath(f.Path) {
 			return nil, fmt.Errorf("%s is not a file the editors may change", f.Path)
 		}
 		blob, err := r.mirror.BlobID(ctx, "HEAD", f.Path)

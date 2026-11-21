@@ -656,6 +656,8 @@ Rackbook uses SemVer (Go modules require SemVer tags). Release plan:
   infra repository (owner decision, 2026-11-20; it moved from v0.6.1).
 - **v0.7.3** — the infra editors (decision 24): host_vars, feature switches,
   groups and history with revert, one commit per edit to the infra branch.
+- **v0.7.4** — the secrets editor (decision 25): edit the hosts' SOPS files
+  from `/infra` with Rackbook's own age key; `sops` and `age` in the image.
 - **v0.8.0** — storage: one record per file (design in
   `design-v0.4-storage.md`; the file keeps its name); the deprecated MCP tool
   names are removed.
@@ -1046,6 +1048,44 @@ shown as 4 characters plus 8 hex digits of a hash (not a secure hash; it only te
       own `features/*/feature.yml` and group names, nothing about a particular
       repository is built in, and a problem that already existed does not block an
       unrelated edit.
-    - **Secrets are not edited** (SOPS is a later phase): a `secret: true` setting is
-      refused, a file with secret-looking values is not offered to the raw editor,
-      and diffs hide such values.
+    - **Secrets are not edited in v0.7.3** (SOPS followed in v0.7.4, decision 25): a
+      `secret: true` setting was refused, a file with secret-looking values is not
+      offered to the raw editor, and diffs hide such values.
+
+### Decisions, round 9 (2026-11-21): infra secrets (v0.7.4)
+
+25. **Rackbook's top admin may edit the infra repository's SOPS secrets** (owner,
+    2026-11-21). The narrow path of decision 24 is kept; what is new is only what
+    is needed to touch ciphertext.
+    - **Rackbook has its own age key**, generated on the host by the infra role and
+      mounted read-only (`--sops-age-key-file`, off when unset). It is added as a
+      recipient of every `.sops.yaml` rule, so it is revocable like any host key and
+      no administrator's key ever reaches the server. Its public key is shown on the
+      secrets page so the coordinator can add it.
+    - **sops and age are binaries, not a library**: the image carries pinned
+      releases (sops 3.13.3, matching the infra repository; age 1.3.2) verified by
+      SHA-256 at build time, so the format and crypto are the reference
+      implementation's. They are started only by `internal/sops` (a static test
+      keeps `os/exec` out of every other package but gitstore), only for
+      `decrypt --extract`, `set --value-stdin`, `unset`, `encrypt` of a new file
+      from standard input and `age-keygen -y`, with an environment built from
+      nothing but the key file and a scratch `HOME`. A value is never an argument
+      (a process list is world-readable), and the only files sops sees hold
+      ciphertext, in a 0700 directory that is removed afterwards.
+    - **Listing decrypts nothing.** Key names are plaintext in a SOPS file, so the
+      page reads them from the YAML. A value leaves the server only through a
+      separate reveal request: fresh sign-in, rate limited (10 a minute per person),
+      `Cache-Control: no-store`, audited as who/what/when and never the value, and
+      shown for 30 seconds.
+    - **Same write path.** A change is one commit with the usual conflict rules and
+      trailers; the secret settings of a feature go to `feature_<feature>_<setting>`
+      in the same commit as the feature's other settings. The plaintext scan skips
+      `secrets/*.sops.yaml` (all of it is ciphertext) and is replaced by a stricter
+      check on the file as it would be committed: SOPS metadata present, every value
+      `ENC[...]` (so no `_unencrypted` key), and exactly the recipients of the
+      creation rule for that path. A file whose recipients do not match its rule
+      (an `updatekeys` that was not run) is refused, not repaired.
+    - **Not reverted.** A commit that touched a SOPS file is not revertible from the
+      console: restoring old ciphertext would also restore a recipient list and
+      values the person did not look at.
+    - **Never on MCP**, never for a token, as in decision 24.

@@ -42,6 +42,7 @@ func (s *server) infraRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/infra/iplists", s.infraIPLists)
 	mux.HandleFunc("GET /api/infra/commits", s.infraCommits)
 	s.infraWriteRoutes(mux)
+	s.infraSecretsRoutes(mux)
 }
 
 // canInfra reports whether the caller may use the infra pages.

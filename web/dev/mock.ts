@@ -433,6 +433,7 @@ export function mockApi(root: string): Plugin {
     if (head === 'infra' && method === 'POST' && user.canInfra) {
       const body = await readBody(req)
       const preview = body.preview === true
+      if (cname === 'hosts' && rest[1] === 'secrets' && rest[2] === 'reveal') return send(res, 200, { key: body.key, value: 'mock-secret-value' }), true
       const path = cname === 'groups' ? 'inventory/hosts.yml' : 'inventory/host_vars/alpha-host.yml'
       return send(res, 200, {
         ...(preview ? {} : { commit: infraHead }),
@@ -455,6 +456,17 @@ export function mockApi(root: string): Plugin {
         { name: 'gamma-host', groups: [], hasVars: false, features: [], behind: false },
       ]
       if (cname === 'hosts' && rest[1] === 'vars') return send(res, 200, { path: 'inventory/host_vars/' + rest[0] + '.yml', exists: true, base: 'a'.repeat(40), hidden: 0, content: 'tailscale_ip: 100.64.0.1\nfeatures: {}\n' }), true
+      if (cname === 'hosts' && rest[1] === 'secrets') {
+        const pub = 'age1l5nse49qke8sne9fsawpm6vvjpw5kxq7t0a62cx46js54tdnv53svqgf2k'
+        return send(res, 200, {
+          enabled: true, canWrite: true, publicKey: pub,
+          file: {
+            host: rest[0], path: 'secrets/' + rest[0] + '.sops.yaml', exists: true, base: 'c'.repeat(40),
+            keys: [{ name: 'cloudflare_dns_token', editable: true }, { name: 'feature_beszel-agent_token', editable: true }, { name: 'Legacy_Key', editable: false }],
+            recipients: [pub, 'age1uyhyewqasw0dgv8zalj57qd3jq3r5s5dlzd5wnvquzrazsk2k5ms3qpjck'], rule: [pub], canDecrypt: true, lastModified: ago(3600),
+          },
+        }), true
+      }
       if (cname === 'hosts' && rest[0] === undefined) return send(res, 200, { repo, hub, hosts }), true
       if (cname === 'hosts') {
         const h = hosts.find((x) => x.name === rest[0])
@@ -477,7 +489,7 @@ export function mockApi(root: string): Plugin {
         { name: 'cloudflare', version: 'v42', entries: 22, warnings: [] },
         { name: 'office', version: 'v7', entries: 3, warnings: ['the list shrank by 40%'] },
       ] }), true
-      if (cname === 'write') return send(res, 200, { enabled: true, fresh: true, maxAgeSeconds: 43200, signedInAt: ago(600) }), true
+      if (cname === 'write') return send(res, 200, { enabled: true, secrets: true, fresh: true, maxAgeSeconds: 43200, signedInAt: ago(600) }), true
       if (cname === 'features') return send(res, 200, { invalid: [], features: [{ name: 'beszel-agent', description: 'Monitoring agent', settings: [
         { name: 'mode', type: 'enum', enum: ['websocket', 'listen'], default: 'websocket', description: 'How the agent connects' },
         { name: 'hub_url', type: 'string', description: 'Address of the hub', required: true },

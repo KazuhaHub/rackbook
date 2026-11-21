@@ -48,6 +48,9 @@ type Options struct {
 	Scanner *secretscan.Scanner
 	// Audit receives the actions that did not end in a commit (nil = none).
 	Audit Auditor
+	// Sops edits the hosts' SOPS files with Rackbook's own age key (nil = the
+	// secrets editor is off).
+	Sops Sopser
 }
 
 // Repo is the read-only clone.

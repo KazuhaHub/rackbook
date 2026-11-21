@@ -89,6 +89,8 @@ type server struct {
 	log *slog.Logger
 	// public are the exact paths served without authentication.
 	public map[string]http.Handler
+	// reveals limits how often one administrator may reveal a stored secret.
+	reveals revealLimiter
 }
 
 // New returns the full handler: API, exports, MCP and console.

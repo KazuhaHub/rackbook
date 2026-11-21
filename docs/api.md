@@ -476,11 +476,11 @@ sign-in). `base` is the object ID the `GET` returned for the file; a file that c
 
 | Request | Answer |
 |---|---|
-| `GET /api/infra/write` | `{enabled, fresh, signedInAt?, maxAgeSeconds}` |
+| `GET /api/infra/write` | `{enabled, secrets, fresh, signedInAt?, maxAgeSeconds}`; `secrets` is true when `--sops-age-key-file` is set |
 | `GET /api/infra/features` | `{features: [{name, description?, type?, settings: [{name, type: string\|int\|bool\|enum, description?, enum?, default?, required?, requiredWhen?, secret?, pattern?, min?, max?}]}], invalid: [name]}` |
 | `GET /api/infra/hosts/{name}/vars` | `{path, exists, base, content, hidden}`. A file with secret-looking values (`hidden > 0`) comes without `content` |
 | `POST /api/infra/hosts/{name}/vars` | `{base, content, preview?, confirmSecretScan?}`: replaces the file. Answer `{commit?, diffs: [{path, status, diff}], issues, blocked}` |
-| `POST /api/infra/hosts/{name}/features/{feature}` | `{base, enabled, settings: {name: value}, preview?, confirmSecretScan?}`: `enabled: false` removes `features.<feature>`; otherwise the settings listed (empty or omitted = default) replace those of the feature and nothing else changes. A `secret: true` setting is refused (`422 invalid`, `feature.secret_refused`). `base` is the one of the host's `vars` |
+| `POST /api/infra/hosts/{name}/features/{feature}` | `{base, enabled, settings: {name: value}, preview?, confirmSecretScan?}`: `enabled: false` removes `features.<feature>`; otherwise the settings listed (empty or omitted = default) replace those of the feature and nothing else changes. A `secret: true` setting with a non-empty value is stored in the host's SOPS file under `feature_<feature>_<setting>` in the same commit (empty or omitted = keep it; `secretsBase` optionally names the object ID of the SOPS file as the editor saw it); `422 invalid` `feature.secret_unavailable` without `--sops-age-key-file`, `feature.bad_value` for a value its definition refuses. `base` is the one of the host's `vars` |
 | `GET /api/infra/groups` | `{base, membership: {groups, hosts, direct: {host: [group]}}}`: who `inventory/hosts.yml` lists directly in each group of `all.children` |
 | `POST /api/infra/groups` | `{base, changes: [{host, group, member}], preview?}` |
 | `POST /api/infra/commits/{hash}/revert` | `{preview?}`: commits the files that commit touched back to how they were before it |
@@ -495,8 +495,27 @@ anyone else. Issues with severity `confirm` (a heuristic secret finding) are let
 `yaml.duplicate_key`, `inventory.missing`, `inventory.shape`, `inventory.not_managed`,
 `inventory.no_host_vars`, `inventory.no_secrets`, `inventory.agent_missing`, `inventory.agent_extra`, `yaml.anchor`, `yaml.tag`, `vars.template`, `vars.ansible_key`,
 `feature.unknown`, `feature.not_mapping`, `feature.settings_not_mapping`, `feature.unknown_setting`,
-`feature.secret_in_vars`, `feature.secret_refused`, `feature.hidden_value`, `feature.bad_value`,
-`feature.missing_required`, `secret.found`.
+`feature.secret_in_vars`, `feature.secret_unavailable`, `feature.hidden_value`, `feature.bad_value`,
+`feature.missing_required`, `secret.found`, `secrets.invalid`, `secrets.no_metadata`, `secrets.not_encrypted`,
+`secrets.recipients`, `secrets.no_rule`.
+
+### Secrets (`--sops-age-key-file`)
+
+The secrets of a host's `secrets/<host>.sops.yaml` (README, *Editing secrets*). Same callers as the editors. Without
+`--sops-age-key-file` every call but the `GET` is `403 secrets_off`. Reveal, set and unset also need a
+sign-in no older than `--infra-write-max-age` (`403 reauth_required`); set and unset need the editors on (`403 read_only`).
+A value is never in a listing, a diff, an audit entry or a log; only a successful reveal returns it.
+
+| Request | Answer |
+|---|---|
+| `GET /api/infra/hosts/{name}/secrets` | `{enabled, canWrite, publicKey, file: {host, path, exists, base, keys: [{name, editable}], recipients, rule, canDecrypt, lastModified?, problem?}}`. Read from the YAML without decrypting. `recipients` are the age recipients of the file, `rule` those of its creation rule in `.sops.yaml` (`null` = no rule), `canDecrypt` whether Rackbook's key is among them, `publicKey` is Rackbook's own age public key (to add as a recipient). `editable` is false for a nested value or a name the editor does not accept. `404` for a host not in the inventory |
+| `POST /api/infra/hosts/{name}/secrets/reveal` | `{key}` → `{key, value}` with `Cache-Control: no-store`. `404 no_such_key` (also for a name outside `^[a-z0-9_-]+$`), `429 rate_limited` after 10 a minute per person (`Retry-After`), `422 edit_failed` when Rackbook's key is not a recipient of the file. Audited as `infra(secrets/<host>): reveal <key>` with outcome `revealed`, `reveal_failed`, `no_such_key` or `rate_limited` |
+| `POST /api/infra/hosts/{name}/secrets/set` | `{base, key, value}`: sets or replaces one key (creates the file from its `.sops.yaml` rule when the host has none; `base` is `""` then). One commit `infra(secrets/<host>): set <key>`; answer `{commit, diffs, issues}` (the diff lists key names only). Values are non-empty UTF-8 text of at most 16 KiB; key names `^[a-z0-9_-]{1,128}$`, not `sops`, not ending in `_unencrypted` (`422 edit_failed`) |
+| `POST /api/infra/hosts/{name}/secrets/unset` | `{base, key}`: deletes one key, one commit `infra(secrets/<host>): delete <key>` |
+
+The checks after an edit refuse (`422 invalid`) a SOPS file that is not fully encrypted or whose recipients differ from its
+creation rule: `secrets.invalid`, `secrets.no_metadata`, `secrets.not_encrypted` (`params.name`), `secrets.recipients`,
+`secrets.no_rule`. Conflicts and `409 busy` are as for the other editors.
 
 ## Data types (administrators only)
 

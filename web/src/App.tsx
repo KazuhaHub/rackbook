@@ -40,6 +40,7 @@ const InfraCerts = lazy(retryImport(() => import('@/pages/InfraCerts')))
 const InfraIPLists = lazy(retryImport(() => import('@/pages/InfraIPLists')))
 const InfraCommits = lazy(retryImport(() => import('@/pages/InfraCommits')))
 const InfraHostEdit = lazy(retryImport(() => import('@/pages/InfraHostEdit')))
+const InfraSecrets = lazy(retryImport(() => import('@/pages/InfraSecrets')))
 const InfraGroups = lazy(retryImport(() => import('@/pages/InfraGroups')))
 // data types (admin)
 const Types = lazy(retryImport(() => import('@/pages/Types')))
@@ -104,6 +105,7 @@ function RefineApp() {
           <Route path="infra/certs" element={<InfraCerts />} />
           <Route path="infra/iplists" element={<InfraIPLists />} />
           <Route path="infra/hosts/:name/edit" element={<InfraHostEdit />} />
+          <Route path="infra/hosts/:name/secrets" element={<InfraSecrets />} />
           <Route path="infra/groups" element={<InfraGroups />} />
           <Route path="infra/commits" element={<InfraCommits />} />
           <Route path="types" element={<Types />} />
