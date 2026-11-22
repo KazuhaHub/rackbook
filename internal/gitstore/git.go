@@ -106,6 +106,10 @@ type Cmd struct {
 	// MaxStdout, when positive, limits the output read: past it the process is
 	// killed and Run returns what was read with ErrOutputLimit.
 	MaxStdout int
+	// Each, when set, receives the output as it is read, in chunks; it returns
+	// false to stop: the process is killed and waited for, and Run returns
+	// ErrOutputLimit. Nothing is collected into the returned stdout.
+	Each func(chunk []byte) bool
 }
 
 // Runner runs git. It is the only place in rackbook that starts a git
@@ -153,6 +157,33 @@ func (execRunner) Run(ctx context.Context, c Cmd) (string, string, error) {
 	}
 	var out, errb bytes.Buffer
 	cmd.Stderr = &errb
+	if c.Each != nil {
+		pipe, err := cmd.StdoutPipe()
+		if err != nil {
+			return "", "", err
+		}
+		if err := cmd.Start(); err != nil {
+			return "", "", err
+		}
+		buf := make([]byte, 32<<10)
+		stopped := false
+		for {
+			n, rerr := pipe.Read(buf)
+			if n > 0 && !c.Each(buf[:n]) {
+				stopped = true
+				cancel() // kill the process; Wait below reaps it
+				break
+			}
+			if rerr != nil {
+				break
+			}
+		}
+		werr := cmd.Wait()
+		if stopped {
+			return "", errb.String(), ErrOutputLimit
+		}
+		return "", errb.String(), werr
+	}
 	if c.MaxStdout > 0 {
 		lw := &limitWriter{max: c.MaxStdout, stop: cancel}
 		cmd.Stdout = lw
@@ -190,6 +221,23 @@ func (w *limitWriter) Write(p []byte) (int, error) {
 		return 0, ErrOutputLimit
 	}
 	return w.buf.Write(p)
+}
+
+// runStream runs git and hands its output to each as it arrives; each returns
+// false to stop the walk early (the process is killed and waited for).
+func (r *Repo) runStream(ctx context.Context, each func([]byte) bool, args ...string) error {
+	rn := r.Runner
+	if rn == nil {
+		rn = defaultRunner
+	}
+	_, errOut, err := rn.Run(ctx, Cmd{Dir: r.Dir, Args: args, IgnoreUserConfig: r.IgnoreUserConfig, Each: each})
+	if err != nil && !errors.Is(err, ErrOutputLimit) {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		return &GitError{Args: args, Stderr: errOut, Err: err}
+	}
+	return nil
 }
 
 // runLimited is runRaw with the output cut at max bytes; truncated says it was.

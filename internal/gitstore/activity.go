@@ -5,6 +5,7 @@ package gitstore
 // changed. It reads with the same guarded git runner as everything else.
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -84,21 +85,61 @@ const activityFormat = "--format=%x1d%H%x1f%h%x1f%an%x1f%ae%x1f%cI%x1f%s" +
 	"%x1f%(trailers:key=Edited-via,valueonly,separator=%x1e)" +
 	"%x1f%(trailers:key=Record,valueonly,separator=%x1e)%x1c"
 
-// activityLog lists up to q.Limit commits of the walk from tip, after q.Skip of
-// them. paths are the pathspecs after "--" (none = no limit). record, when set,
-// is the exact Record trailer wanted; git's text search narrows the walk and the
-// others are returned Excluded.
-func activityLog(ctx context.Context, r *Repo, tip string, q ActivityQuery, paths []string, record string) ([]ActivityCommit, error) {
-	limit := q.Limit
-	if limit <= 0 {
-		limit = 50
+// parseActivityRecord reads one record of activityFormat plus its file names.
+func parseActivityRecord(rec, prefix, record string) (ActivityCommit, error) {
+	head, names, ok := strings.Cut(rec, "\x1c")
+	f := strings.Split(head, "\x1f")
+	if !ok || len(f) != 9 {
+		return ActivityCommit{}, errors.New("unreadable commit record")
 	}
-	limit = min(limit, MaxActivity)
+	c := ActivityCommit{Hash: strings.TrimSpace(f[0]), Short: f[1], Author: f[2], Email: f[3], Subject: f[5],
+		EditedBy: firstValue(f[6]), EditedVia: firstValue(f[7]), State: StateNone}
+	for _, v := range strings.Split(f[8], "\x1e") {
+		if v = strings.TrimSpace(v); v != "" {
+			c.Records = append(c.Records, v)
+		}
+	}
+	if record != "" && !contains(c.Records, record) {
+		c.Excluded = true
+	}
+	t, err := time.Parse(time.RFC3339, f[4])
+	if err != nil {
+		return ActivityCommit{}, fmt.Errorf("unreadable commit date %q", f[4])
+	}
+	c.Time = t.UTC()
+	state, other := 0, 0
+	for _, n := range strings.Split(names, "\n") {
+		if n = strings.TrimSpace(n); n == "" {
+			continue
+		}
+		if rel := strings.TrimPrefix(n, prefix); config.IsStatePath(rel) {
+			state++
+		} else {
+			other++
+		}
+	}
+	switch {
+	case state > 0 && other > 0:
+		c.State = StateSome
+	case state > 0:
+		c.State = StateOnly
+	}
+	return c, nil
+}
+
+// activityLog streams the commits of the walk from tip, after q.Skip of them, to
+// each, with one git process that is killed as soon as each returns false (or
+// after q.Limit commits when that is set). paths are the pathspecs after "--"
+// (none = no limit). record, when set, is the exact Record trailer wanted; git's
+// text search narrows the walk and the others are passed on Excluded.
+func activityLog(ctx context.Context, r *Repo, tip string, q ActivityQuery, paths []string, record string, each func(ActivityCommit) bool) error {
 	args := []string{"log", activityFormat, "--name-only", "--date-order"}
 	if q.Skip > 0 {
 		args = append(args, "--skip="+strconv.Itoa(q.Skip))
 	}
-	args = append(args, "-n", strconv.Itoa(limit))
+	if q.Limit > 0 {
+		args = append(args, "-n", strconv.Itoa(min(q.Limit, MaxActivity)))
+	}
 	if record != "" {
 		// A substring prefilter; --fixed-strings keeps it literal whatever grep.patternType says.
 		args = append(args, "--fixed-strings", "--grep=Record: "+record)
@@ -109,57 +150,61 @@ func activityLog(ctx context.Context, r *Repo, tip string, q ActivityQuery, path
 	}
 	prefix, err := r.git(ctx, "rev-parse", "--show-prefix")
 	if err != nil {
-		return nil, err
+		return err
 	}
-	out, err := r.git(ctx, args...)
+	var acc []byte
+	var perr error
+	stopped := false
+	emit := func(rec []byte) bool {
+		c, err := parseActivityRecord(string(rec), prefix, record)
+		if err != nil {
+			perr = err
+			return false
+		}
+		if !each(c) {
+			stopped = true
+			return false
+		}
+		return true
+	}
+	err = r.runStream(ctx, func(chunk []byte) bool {
+		acc = append(acc, chunk...)
+		for {
+			// records start with 0x1d: one is complete when the next one has begun
+			i := bytes.IndexByte(acc, 0x1d)
+			if i < 0 {
+				return true
+			}
+			j := bytes.IndexByte(acc[i+1:], 0x1d)
+			if j < 0 {
+				acc = acc[i:]
+				return true
+			}
+			rec := acc[i+1 : i+1+j]
+			acc = acc[i+1+j:]
+			if !emit(rec) {
+				return false
+			}
+		}
+	}, args...)
 	if err != nil {
 		if strings.Contains(err.Error(), "does not have any commits") {
-			return []ActivityCommit{}, nil
+			return nil
 		}
-		return nil, err
+		return err
 	}
-	commits := []ActivityCommit{}
-	for _, rec := range strings.Split(out, "\x1d") {
-		head, names, ok := strings.Cut(rec, "\x1c")
-		f := strings.Split(head, "\x1f")
-		if !ok || len(f) != 9 {
-			continue
-		}
-		c := ActivityCommit{Hash: strings.TrimSpace(f[0]), Short: f[1], Author: f[2], Email: f[3], Subject: f[5],
-			EditedBy: firstValue(f[6]), EditedVia: firstValue(f[7]), State: StateNone}
-		for _, v := range strings.Split(f[8], "\x1e") {
-			if v = strings.TrimSpace(v); v != "" {
-				c.Records = append(c.Records, v)
-			}
-		}
-		if record != "" && !contains(c.Records, record) {
-			c.Excluded = true
-		}
-		t, err := time.Parse(time.RFC3339, f[4])
-		if err != nil {
-			return nil, fmt.Errorf("unreadable commit date %q", f[4])
-		}
-		c.Time = t.UTC()
-		state, other := 0, 0
-		for _, n := range strings.Split(names, "\n") {
-			if n = strings.TrimSpace(n); n == "" {
-				continue
-			}
-			if rel := strings.TrimPrefix(n, prefix); config.IsStatePath(rel) {
-				state++
-			} else {
-				other++
-			}
-		}
-		switch {
-		case state > 0 && other > 0:
-			c.State = StateSome
-		case state > 0:
-			c.State = StateOnly
-		}
-		commits = append(commits, c)
+	if perr != nil {
+		return perr
 	}
-	return commits, nil
+	if !stopped {
+		if i := bytes.IndexByte(acc, 0x1d); i >= 0 {
+			emit(acc[i+1:])
+			if perr != nil {
+				return perr
+			}
+		}
+	}
+	return nil
 }
 
 func contains(l []string, s string) bool {
@@ -195,30 +240,26 @@ func pinnedTip(ctx context.Context, r *Repo, branchTip, tip string) (string, err
 	return full, nil
 }
 
-// Activity lists the commits of the tracked branch in git's --date-order walk
-// (children before parents, by committer date otherwise), one chunk of it.
-// A repository without Git, or without commits, has none.
-func (s *Store) Activity(ctx context.Context, q ActivityQuery) (ActivityPage, error) {
+// activityPlan resolves the query against the data repository: the commit the
+// walk starts from, the pathspecs and the exact record wanted.
+func (s *Store) activityPlan(ctx context.Context, q ActivityQuery) (tip string, paths []string, record string, ok bool, err error) {
 	if !s.git {
-		return ActivityPage{Commits: []ActivityCommit{}}, nil
+		return "", nil, "", false, nil
 	}
-	branchTip, ok := s.trackedTip(ctx)
-	if !ok {
-		return ActivityPage{Commits: []ActivityCommit{}}, nil
+	branchTip, found := s.trackedTip(ctx)
+	if !found {
+		return "", nil, "", false, nil
 	}
 	if q.ID != "" && q.Collection == "" {
-		return ActivityPage{}, errors.New("id needs a collection")
+		return "", nil, "", false, errors.New("id needs a collection")
 	}
-	tip, err := pinnedTip(ctx, s.repo, branchTip, q.Tip)
-	if err != nil {
-		return ActivityPage{}, err
+	if tip, err = pinnedTip(ctx, s.repo, branchTip, q.Tip); err != nil {
+		return "", nil, "", false, err
 	}
-	var paths []string
-	record := ""
 	if q.Collection != "" {
 		c := s.cur.Load().Collection(q.Collection)
 		if c == nil {
-			return ActivityPage{}, fmt.Errorf("unknown collection %q", q.Collection)
+			return "", nil, "", false, fmt.Errorf("unknown collection %q", q.Collection)
 		}
 		paths = []string{filepath.FromSlash(c.File)}
 		if q.ID != "" {
@@ -230,33 +271,68 @@ func (s *Store) Activity(ctx context.Context, q ActivityQuery) (ActivityPage, er
 			paths = append(paths, ":(exclude)"+config.StateDir)
 		}
 	}
-	commits, err := activityLog(ctx, s.repo, tip, q, paths, record)
-	if err != nil {
-		return ActivityPage{}, err
-	}
-	return ActivityPage{Tip: tip, Commits: commits}, nil
+	return tip, paths, record, true, nil
 }
 
-// Activity is Store.Activity for the followed branch (the work tree is reset to
-// it). The mirror has no state directory.
-func (m *Mirror) Activity(ctx context.Context, q ActivityQuery) (ActivityPage, error) {
+// ActivityWalk streams the commits of the tracked branch in git's --date-order
+// walk (children before parents, by committer date otherwise) to each, from
+// q.Tip after q.Skip commits, with one git process; each returns false to stop
+// it. onStart is told the commit the walk is pinned to before the first commit.
+// A repository without Git, or without commits, has none.
+func (s *Store) ActivityWalk(ctx context.Context, q ActivityQuery, onStart func(tip string), each func(ActivityCommit) bool) error {
+	tip, paths, record, ok, err := s.activityPlan(ctx, q)
+	if err != nil || !ok {
+		return err
+	}
+	onStart(tip)
+	return activityLog(ctx, s.repo, tip, q, paths, record, each)
+}
+
+// Activity is ActivityWalk collected: the next q.Limit commits (50 when 0).
+func (s *Store) Activity(ctx context.Context, q ActivityQuery) (ActivityPage, error) {
+	return collectWalk(q, func(onStart func(string), each func(ActivityCommit) bool) error {
+		return s.ActivityWalk(ctx, q, onStart, each)
+	})
+}
+
+func collectWalk(q ActivityQuery, walk func(onStart func(string), each func(ActivityCommit) bool) error) (ActivityPage, error) {
+	limit := q.Limit
+	if limit <= 0 {
+		limit = 50
+	}
+	limit = min(limit, MaxActivity)
+	pg := ActivityPage{Commits: []ActivityCommit{}}
+	err := walk(func(tip string) { pg.Tip = tip }, func(c ActivityCommit) bool {
+		pg.Commits = append(pg.Commits, c)
+		return len(pg.Commits) < limit
+	})
+	return pg, err
+}
+
+// ActivityWalk is Store.ActivityWalk for the followed branch (the work tree is
+// reset to it). The mirror has no state directory.
+func (m *Mirror) ActivityWalk(ctx context.Context, q ActivityQuery, onStart func(tip string), each func(ActivityCommit) bool) error {
 	r, err := m.check(ctx)
 	if err != nil {
-		return ActivityPage{}, err
+		return err
 	}
 	head, err := r.Head(ctx)
 	if err != nil {
-		return ActivityPage{}, err
+		return err
 	}
 	tip, err := pinnedTip(ctx, r, head, q.Tip)
 	if err != nil {
-		return ActivityPage{}, err
+		return err
 	}
-	commits, err := activityLog(ctx, r, tip, q, nil, "")
-	if err != nil {
-		return ActivityPage{}, err
-	}
-	return ActivityPage{Tip: tip, Commits: commits}, nil
+	onStart(tip)
+	return activityLog(ctx, r, tip, q, nil, "", each)
+}
+
+// Activity is ActivityWalk collected.
+func (m *Mirror) Activity(ctx context.Context, q ActivityQuery) (ActivityPage, error) {
+	return collectWalk(q, func(onStart func(string), each func(ActivityCommit) bool) error {
+		return m.ActivityWalk(ctx, q, onStart, each)
+	})
 }
 
 // Diff limits.
@@ -323,32 +399,30 @@ func diffCommit(ctx context.Context, r *Repo, tip, hash string, o DiffOptions) (
 	}
 	f := strings.Split(strings.TrimRight(out, "\x00"), "\x00")
 	d := &CommitDiff{Hash: full, Files: []FileDiff{}}
-	// the files to read patches of, and the pathspecs that leave out all others
-	spec := []string{"."}
-	var shown []int // indexes into d.Files of the files that get a patch
+	// the files to read patches of: only they are named, so the arguments stay
+	// bounded by MaxDiffFiles however many files the commit changed
+	var spec []string
+	shown := map[string]int{} // path from the repository root -> index into d.Files
 	for i := 0; i+1 < len(f); i += 2 {
 		root := f[i+1]
 		rel := strings.TrimPrefix(root, prefix)
-		drop := ":(top,exclude,literal)" + root
 		if o.Include != nil && !o.Include(rel) {
-			spec = append(spec, drop)
 			continue
 		}
 		if len(d.Files) >= MaxDiffFiles {
 			d.MoreFiles = true
-			spec = append(spec, drop)
 			continue
 		}
 		fd := FileDiff{Status: f[i], Path: rel}
 		if o.HidePatch != nil && o.HidePatch(rel) {
 			fd.Hidden = true
-			spec = append(spec, drop)
 		} else {
-			shown = append(shown, len(d.Files))
+			shown[root] = len(d.Files)
+			spec = append(spec, ":(top,literal)"+root)
 		}
 		d.Files = append(d.Files, fd)
 	}
-	if len(shown) == 0 {
+	if len(spec) == 0 {
 		return d, nil
 	}
 	args := append([]string{"diff-tree", "--patch", "--no-ext-diff", "--no-color", "--no-commit-id", "-r", "--root", "--no-renames", full, "--"}, spec...)
@@ -356,16 +430,33 @@ func diffCommit(ctx context.Context, r *Repo, tip, hash string, o DiffOptions) (
 	if err != nil {
 		return nil, err
 	}
-	// one "diff --git" section per file, in the order of the name-status list
-	sections := splitPatch(patch)
-	for k, i := range shown {
+	// Each section belongs to the file named in its own header (a type change
+	// has two sections for one file). A section of no listed file is dropped.
+	secs := splitPatch(patch)
+	got := map[int]*strings.Builder{}
+	last := -1
+	for k, sec := range secs {
+		i, ok := shown[sectionPath(sec)]
+		if !ok {
+			continue
+		}
+		if got[i] == nil {
+			got[i] = &strings.Builder{}
+		}
+		got[i].WriteString(sec)
+		if k == len(secs)-1 {
+			last = i
+		}
+	}
+	for _, i := range shown {
 		fd := &d.Files[i]
-		if k >= len(sections) {
+		b := got[i]
+		if b == nil {
 			fd.Truncated = cut // never reached: the output ended first
 			continue
 		}
-		p := sections[k]
-		if cut && k == len(sections)-1 {
+		p := b.String()
+		if cut && i == last {
 			fd.Truncated = true
 			p = trimPartialRune(p)
 		}
@@ -391,6 +482,32 @@ func splitPatch(patch string) []string {
 		patch = patch[i+1:]
 	}
 	return out
+}
+
+// sectionPath is the path in the "diff --git a/P b/P" line of a section (the
+// diff has no renames, so both sides name the same file); "" when it cannot be read.
+func sectionPath(sec string) string {
+	line, _, _ := strings.Cut(sec, "\n")
+	rest, ok := strings.CutPrefix(line, "diff --git ")
+	if !ok {
+		return ""
+	}
+	if strings.HasPrefix(rest, `"`) { // a name git quotes (a quote, backslash or control character)
+		q, err := strconv.QuotedPrefix(rest)
+		if err != nil {
+			return ""
+		}
+		name, err := strconv.Unquote(q)
+		if err != nil {
+			return ""
+		}
+		return strings.TrimPrefix(name, "a/")
+	}
+	n := (len(rest) - len("a/ b/")) / 2
+	if n <= 0 || rest != "a/"+rest[2:2+n]+" b/"+rest[2:2+n] {
+		return ""
+	}
+	return rest[2 : 2+n]
 }
 
 // StripHunkContext rewrites every hunk header of a unified diff down to

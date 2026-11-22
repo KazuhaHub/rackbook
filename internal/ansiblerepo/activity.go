@@ -15,6 +15,13 @@ func (r *Repo) Activity(ctx context.Context, q gitstore.ActivityQuery) (gitstore
 	return r.mirror.Activity(ctx, q)
 }
 
+// ActivityWalk streams the commits of the branch to each (see gitstore.Mirror.ActivityWalk).
+func (r *Repo) ActivityWalk(ctx context.Context, q gitstore.ActivityQuery, onStart func(tip string), each func(gitstore.ActivityCommit) bool) error {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.mirror.ActivityWalk(ctx, q, onStart, each)
+}
+
 // CommitDiff shows what a commit of the branch changed, for the activity view.
 // A file the repository treats as secret (SOPS files, vault files, anything
 // under secrets/) is listed as changed without its patch, and what looks like

@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -369,6 +370,79 @@ func TestCommitDiffRunsOneLimitedGitProcess(t *testing.T) {
 	for _, f := range d.Files {
 		if !strings.Contains(f.Patch, "+"+strings.TrimSuffix(f.Path, ".txt")) {
 			t.Fatalf("%+v", f)
+		}
+	}
+}
+
+// A type change (a file becomes a symlink) is one name-status entry and two
+// "diff --git" sections: the sections belong to files by the path in their own
+// header, not by position.
+func TestCommitDiffSectionsFollowTheirPathsAcrossATypeChange(t *testing.T) {
+	e := newEnv(t)
+	commitAt(t, e, "2026-03-01T10:00:00Z", "files", map[string]string{"a.yml": "a: 1\n", "b.yml": "b: 1\n", "c.yml": "c: 1\n"})
+	sh(t, e.laptop, "pull", "--quiet")
+	if err := os.Remove(filepath.Join(e.laptop, "a.yml")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("b.yml", filepath.Join(e.laptop, "a.yml")); err != nil {
+		t.Fatal(err)
+	}
+	for f, body := range map[string]string{"b.yml": "b: 2\n", "c.yml": "c: 3\n"} {
+		if err := os.WriteFile(filepath.Join(e.laptop, f), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sh(t, e.laptop, "add", "-A")
+	sh(t, e.laptop, "commit", "-qm", "type change")
+	sh(t, e.laptop, "push", "--quiet", "origin", "main")
+	s := open(t, e.server, nil)
+	ctx := context.Background()
+	if err := s.Pull(ctx); err != nil {
+		t.Fatal(err)
+	}
+	cs := act(t, s, ActivityQuery{})
+	d, err := s.CommitDiff(ctx, cs[0].Hash, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	by := map[string]FileDiff{}
+	for _, f := range d.Files {
+		by[f.Path] = f
+	}
+	if len(d.Files) != 3 || by["a.yml"].Status != "T" {
+		t.Fatalf("%+v", d.Files)
+	}
+	if p := by["b.yml"].Patch; !strings.Contains(p, "+b: 2") || strings.Contains(p, "symbolic") || strings.Contains(p, "-a: 1") {
+		t.Fatalf("b.yml shows another file's patch:\n%s", p)
+	}
+	if p := by["c.yml"].Patch; !strings.Contains(p, "+c: 3") || strings.Contains(p, "+b: 2") {
+		t.Fatalf("c.yml:\n%s", p)
+	}
+	if p := by["a.yml"].Patch; !strings.Contains(p, "-a: 1") || !strings.Contains(p, "120000") {
+		t.Fatalf("a.yml holds both its sections:\n%s", p)
+	}
+}
+
+// The arguments of the patch process do not grow with the number of files.
+func TestCommitDiffArgumentsStayBoundedForAHugeCommit(t *testing.T) {
+	e := newEnv(t)
+	files := map[string]string{}
+	for i := 0; i < 1000; i++ {
+		files["many/f"+strings.Repeat("0", 4-len(strconv.Itoa(i)))+strconv.Itoa(i)+".txt"] = "x\n"
+	}
+	commitAt(t, e, "2026-03-01T10:00:00Z", "huge", files)
+	rr := &recordRunner{next: RealRunner()}
+	s := open(t, e.server, func(o *Options) { o.Runner = rr })
+	ctx := context.Background()
+	cs := act(t, s, ActivityQuery{})
+	rr.cmds, rr.max = nil, nil
+	d, err := s.CommitDiff(ctx, cs[0].Hash, false)
+	if err != nil || len(d.Files) != MaxDiffFiles || !d.MoreFiles {
+		t.Fatalf("%v %d %v", err, len(d.Files), d.MoreFiles)
+	}
+	for _, c := range rr.cmds {
+		if len(c) > MaxDiffFiles+20 {
+			t.Fatalf("%d arguments: %v...", len(c), c[:12])
 		}
 	}
 }
