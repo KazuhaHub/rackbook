@@ -1,6 +1,6 @@
 import { Suspense, useEffect } from 'react'
 import { Outlet, NavLink, useLocation } from 'react-router'
-import { CalendarClock, FileClock, KeyRound, LayoutDashboard, List, PlugZap, Puzzle, Layers, Server, Shapes, ShieldCheck } from 'lucide-react'
+import { Activity, CalendarClock, FileClock, KeyRound, LayoutDashboard, List, PlugZap, Puzzle, Layers, Server, Shapes, ShieldCheck } from 'lucide-react'
 import {
   Sidebar,
   SidebarContent,
@@ -29,6 +29,7 @@ import { useMeta } from '@/providers/meta'
 import { PageFallback } from '@/components/common'
 import { ErrorBoundary } from '@/components/ErrorBoundary'
 import { CheckBadge } from './CheckBadge'
+import { AuditAlert } from './AuditAlert'
 import { HistoryAlert } from './HistoryAlert'
 import { GlobalSearch } from './GlobalSearch'
 import { ThemeToggle } from './ThemeToggle'
@@ -98,6 +99,12 @@ function AppSidebar() {
                 <SidebarMenuButton isActive={pathname === '/'} render={<NavLink to="/" />}>
                   <LayoutDashboard />
                   <span>{t.nav.dashboard}</span>
+                </SidebarMenuButton>
+              </SidebarMenuItem>
+              <SidebarMenuItem>
+                <SidebarMenuButton isActive={pathname === '/activity'} render={<NavLink to="/activity" />}>
+                  <Activity />
+                  <span>{t.nav.activity}</span>
                 </SidebarMenuButton>
               </SidebarMenuItem>
               {hasExpiry(meta) && (
@@ -214,6 +221,7 @@ export function AppShell() {
       <AppSidebar />
       <SidebarInset className="min-w-0">
         <HistoryAlert />
+        <AuditAlert />
         <header className="sticky top-0 z-30 flex h-14 items-center gap-2 border-b bg-background/80 px-4 backdrop-blur">
           <OpenSidebarButton />
           <div className="flex min-w-0 flex-1 items-center">

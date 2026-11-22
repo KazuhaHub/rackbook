@@ -210,6 +210,7 @@ const pages = [
   ...(first && rec ? [`/c/${first}/${encodeURIComponent(rec.id)}`, `/c/${first}/${encodeURIComponent(rec.id)}/edit`] : []),
   '/check',
   '/expiring',
+  '/activity',
   '/account',
   '/admin/users',
   '/admin/tokens',
