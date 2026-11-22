@@ -225,7 +225,8 @@ write always encrypts the last *committed* state and can never persist an unaudi
 as `*.tmp`, `fsync`ed, renamed into place, and the directory `fsync`ed, so a named file is always complete.
 
 - **Counters** (failure counts, locks, `good_buckets`, `last_login`, `last_second_factor_failure`) keep the store's
-  current `change` and `audit_seq` and have no audit event of their own.
+  current `change` and `audit_seq` and carry no `change:` id. A failed attempt's counters are written after its
+  answer is sent, with the attempt's audit line appended by `RecordSync` (8.6).
 - **Changes** are the events of section 10 that carry `change:`. Each:
   1. builds the new state with a fresh random `change` id and writes it to `accounts.enc.pending`;
   2. appends its audit event, carrying `detail: ["change:<id>"]` and the ids needed to re-apply it, with
@@ -618,13 +619,32 @@ accepted.
 
 **The dummy-hash budget.** Dummy argon2id runs (5.6 step 5) are limited to **60 a minute for the server and 2 a
 minute per bucket**, in both CAPTCHA modes, so the buckets that spend the budget are the ones that run out of it.
-Past either limit, an unknown or non-active name is answered after **sleeping** instead of hashing: the sleep is
-drawn from the durations of the last 256 real password checks, measured end to end (slot queue and hash together),
-so it has the median and the jitter of a real run. It never answers `busy`, and real accounts keep hashing in their
-slots. So nobody can exhaust the budget to block others: the cost of a made-up name past the budget is a sleeping
+Past either limit, an unknown or non-active name is answered after **sleeping** instead of hashing. The sleeper
+joins the slot queue like a real check and, when its turn comes, releases the slot at once, so it waits the queue
+time **of this moment**; then it sleeps a duration drawn from the **hash-only** sample (the time real argon2id runs
+took inside their slot). Its total therefore has a real check's queue wait plus a real hash's median and jitter. It
+never answers `busy`, and real accounts keep hashing in their slots.
+
+**The hash-only sample** is a ring of 256 durations:
+
+- **Seeded at start** by 16 calibration hashes run in the background on a fixed input, through the slots.
+- **Before it holds 16 durations** (the first seconds after start), the budget does not switch to sleeping:
+  unknown and non-active names run a real dummy hash, as within the budget. Sign-in is not delayed by the
+  calibration.
+- **Bounded per source:** one bucket, and one account, may hold at most 16 entries; a further duration from them
+  replaces their own oldest entry, so no bucket or account can steer the distribution. Calibration entries are
+  replaced as real ones arrive.
+
+**Counter writes are off the response path.** A failed attempt's store updates (`consecutive_failures`,
+`totp_failures`, `passkey_path_failures`, an `account` lock) are written **after the answer has been sent**, through
+the single writer (4.3), with their audit line appended by `RecordSync`, so an existing account's failure takes
+no longer to answer than an unknown name's. If that write or its audit append fails, the answer already sent stands;
+the server enters the fail-closed state of section 10, and it is the **next** attempt that is refused with
+`503 audit_unavailable`. Changes (4.3) still write before they answer; only these counters move. So nobody can exhaust the budget to block others: the cost of a made-up name past the budget is a sleeping
 goroutine, bounded by the flood ceiling and the throttle, and the answer is the same as before the budget ran out.
 
-Residual: when the load changes suddenly, the last 256 real durations lag behind it for a moment. Test: exhaust the
+Residual: the hash-only sample follows changes in CPU speed (thermal throttling, a noisy neighbour) only as fast as
+real checks arrive; the queue part is always current. Test: exhaust the
 budget (globally, and for one bucket) with unknown names, then check that an existing account with a wrong password
 and an unknown name get byte-identical answers, and that their response times have the same distribution within the
 variance of one argon2id run (a two-sample Kolmogorov–Smirnov test over 500 samples each, in both CAPTCHA modes).
