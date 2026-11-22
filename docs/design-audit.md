@@ -323,8 +323,8 @@ This builds on what exists: the role is computed from the identity and the claim
   TOTP: their second factor is the provider's (Entra supports passkeys itself). `auth.passkeys_oidc_max_age`,
   the `passkey_needs_oidc` refusal and `last_oidc` are dropped, and `auth.passkeys` with SSO is ignored with a
   warning. Passkeys were never enabled in this deployment, so there is nothing to migrate. Passkeys remain, as
-  a second factor, for local accounts ([design-local-accounts.md](design-local-accounts.md), section 2.2; its
-  first piece).
+  a second factor, for local accounts, which is our reading of the owner's rule and awaits confirmation
+  ([design-local-accounts.md](design-local-accounts.md), sections 2.2 and 14).
 - **How fast a removal takes effect.** Claims are read only at sign-in. `auth.session.claims_absolute`
   (default 24 h) shortens the absolute lifetime of a session whose role came from claims. Removing someone
   by name in `rackbook.yml` still applies at the next pull, unless a domain or group entry also matches.
@@ -385,33 +385,48 @@ The open questions of the first draft, as the owner decided them:
 
 1. **Phase 3** (section 6): accepted. `/infra` admins may also come from one Entra group or app role, pinned
    with the issuer, client and tenant.
-2. **Local accounts** are wanted, **beside SSO**, not instead of it: like the owner's Passwall-Sub-Panel and
-   Report Portal (and GitLab, Gitea, Grafana, Mattermost), a deployment can offer both, with a login mode
-   (`dual`, `sso_first`, `sso_redirect`, `local_only`) and an `sso_only` switch that both fail safe without a
-   provider, and with admins always exempt. An admin creates an account with a single-use, expiring invite
-   link; the person sets a password and must enrol a second factor (TOTP or a passkey, both allowed).
-   Passwords are argon2id, in the state dir, encrypted, never in Git. No e-mail and no recovery codes: a
-   forgotten password or a lost factor is an admin-issued reset link; a single admin may issue a full reset.
-   Usernames are never reused. Every sign-in, failure, lock, reset and invite is in the audit log. Design:
-   [design-local-accounts.md](design-local-accounts.md).
-3. **Sign-in security settings in the console**, switchable without a restart: the CAPTCHA (image,
-   Turnstile, reCAPTCHA or hCaptcha, off until enabled), the throttle (always on), the lock (off by default)
-   and the 2FA limits. The NIST SP 800-63B cap of 100 consecutive failures is a ceiling admins can lower but
-   not raise. Non-secret settings are `rackbook.yml` keys; secrets are kept encrypted in the state dir and
-   never returned. Passwordless passkey sign-in is an option, off by default; device-bound passkeys are not
-   required.
-4. **Passkeys under SSO:** Rackbook offers SSO identities no passkey sign-in and no TOTP, which makes
-   `auth.passkeys_oidc_max_age` moot; it is dropped (section 4). Passkeys were never enabled here, so nothing is
-   migrated.
-5. **`/infra`** stays OIDC-only and pinned by deployment flags; nothing on the new settings page reaches it.
-   Outside OAuth issuers are trusted only when configured explicitly, in any mode.
-6. **The CLI** behaves the same on Linux, macOS and Windows (a Unix socket or a named pipe, with the same
-   authenticated and encrypted protocol).
-7. **Daily anchor** (3.1): stays off.
-8. **Defaults:** this deployment runs with `--audit-addr full` (an IPv6 client is still kept as its /64);
+2. **Sign-in without an OIDC provider:** local accounts are wanted, for teams without SSO. Only when no OIDC
+   provider is configured, so a deployment is either SSO or local. An admin creates an account with a
+   single-use, expiring invite link; on first use the person sets a password and must enrol a second factor
+   (TOTP or a passkey). Passwords are stored as argon2id, in the state dir, encrypted, never in Git.
+   Per-account and per-address limits, lockout with backoff. No e-mail: a forgotten password or a lost second
+   factor is an admin-issued one-time reset link. Every sign-in, failure, lockout, reset and invite is in the
+   audit log.
+3. **Passkeys under SSO:** passkey sign-in is disabled when SSO is configured, which makes
+   `auth.passkeys_oidc_max_age` moot; it is dropped (section 4).
+4. **Daily anchor** (3.1): stays off.
+5. **Defaults:** this deployment runs with `--audit-addr full` (an IPv6 client is still kept as its /64);
    the default of the flag stays `truncate`.
    Audit retention is forever (`--audit-retention-months 0`, the default), and stays configurable through that
    flag. `claims_absolute: 24h` stays.
+
+**Later the same day (2026-11-22).** The owner then asked that Rackbook match their own products,
+Passwall-Sub-Panel and Report Portal, and answered the open questions of the local-accounts design. This changes
+items 2 and 3 above as follows; the rest stands.
+
+6. **Local accounts beside SSO** (changes item 2): not only without SSO. As in Passwall-Sub-Panel and Report
+   Portal (and GitLab, Gitea, Grafana, Mattermost), a deployment can offer both, with a login mode (`dual`,
+   `sso_first`, `sso_redirect`, `local_only`) and an `sso_only` switch, both failing safe without a provider, and
+   with admins always exempt. TOTP and passkey are both allowed as second factors; no recovery codes; a single
+   admin may issue a full reset; usernames are never reused.
+7. **Item 3 still applies to SSO identities**: Rackbook offers people who sign in through SSO no passkey sign-in
+   and no TOTP; their second factor is the provider's. Passkeys were never enabled in this deployment, so nothing is
+   migrated. Whether local accounts beside SSO may keep a passkey as their second factor is our reading of the
+   owner's rule, not the owner's own words; it is listed for confirmation in
+   [design-local-accounts.md](design-local-accounts.md), section 14.
+8. **Sign-in security settings in the console**, switchable without a restart: the CAPTCHA (image, Turnstile,
+   reCAPTCHA or hCaptcha, off until enabled), the throttle (always on), the lock (off by default) and the 2FA
+   limits, all admin-editable. The NIST SP 800-63B cap of 100 consecutive failures is a ceiling admins can lower
+   (down to 10) but not raise. Non-secret settings are `rackbook.yml` keys; secrets are kept encrypted in the
+   state dir and never returned. Passwordless passkey sign-in is an option, off by default; device-bound passkeys
+   are not required.
+9. **`/infra`** stays OIDC-only and pinned by deployment flags; nothing on the new settings page reaches it.
+   Outside OAuth issuers are trusted only when configured explicitly, in any mode.
+10. **The CLI** behaves the same on Linux, macOS and Windows (a Unix socket or a named pipe, with the same
+    authenticated and encrypted protocol).
+11. **authcore/captcha** is used whole, as Report Portal uses it, not split.
+
+Design: [design-local-accounts.md](design-local-accounts.md).
 
 Still open: [design-local-accounts.md](design-local-accounts.md), section 14.
 

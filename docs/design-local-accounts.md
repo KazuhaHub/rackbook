@@ -69,10 +69,14 @@ page drew. Rackbook adopts both axes.
 
 Both **fail safe** (`rp/internal/app/login_mode.go:51-75`):
 
-- When no SSO provider is configured and working, any mode degrades to `local_only`: there is nothing to redirect
-  to, and an admin could not undo it from inside the product.
+- When no SSO provider is **configured and enabled**, any mode degrades to `local_only`: there is nothing to
+  redirect to, and an admin could not undo it from inside the product. "Configured and enabled" means the OIDC
+  settings are complete, a usable client secret is present (9.3) and the provider is not switched off; it **never**
+  means "healthy". A discovery failure, a timeout or an outage at the provider changes nothing here, so a passing
+  problem at the IdP cannot open local sign-in to non-admins.
 - `sso_only` is inert unless the page actually offers SSO (so it is inert under `local_only`, and without a
-  provider). Refusing passwords only means something when there is a visible way in that is not a password.
+  configured and enabled provider). Refusing passwords only means something when there is a visible way in that is
+  not a password.
 - When local accounts are unavailable (section 11: no state dir or key), the page shows SSO only and the local
   endpoint is off.
 
@@ -81,6 +85,13 @@ place of a secret bypass URL. Who is an admin is decided by the role (`auth.role
 `sso_only` on is refused unless a **local admin exists** (`rp/internal/app/captcha_api.go:330`, `login_mode.go:94`):
 an `active` local account whose `local:` identity holds the admin role and has a password and a second factor.
 Otherwise an organisation whose admins all sign in through SSO would have no way in when the provider broke.
+
+**The same guard at load time.** `rackbook.yml` can also change by a push, which skips the console. At every load the
+server checks the guard itself: if `sso_only` is on but no `active` local admin with a second factor exists (none was
+ever made, or the last one was disabled, removed or lost the admin role), `sso_only` is **treated as off**, admins see
+a banner saying why, and the rest of the config loads normally. The config is not refused, because refusing it would
+also block the unrelated changes in the same push. Every setting a pull changes writes `settings_changed` with
+`because: config` and the commit, as phase 2a does for `role_changed`.
 
 **One switch, not two.** PSP has a separate `disallow_user_local_login` that applies "regardless of LoginMode"
 (`psp/internal/ports/repos.go:1240-1244`, enforced at `psp/internal/transport/http/handler/auth_local.go:381-386`).
@@ -91,6 +102,8 @@ way in. RP's `sso_only` covers the same need and degrades safely. Rackbook there
 ### 2.2 Second factors
 
 - **Local accounts:** a second factor is **mandatory**, TOTP or passkey, both always available (owner decision 5).
+  That local accounts keep the passkey even when SSO is configured is our reading of the owner's rule "no passkey
+  sign-in when SSO is configured", which we apply to SSO identities; it awaits confirmation (section 14).
 - **SSO identities:** none from Rackbook. Their second factor is the identity provider's (as in PSP, where only
   local-password accounts are gated: `psp/internal/service/authpolicy/authpolicy.go:44-50`). Rackbook offers SSO
   identities neither a passkey sign-in nor TOTP.
@@ -127,7 +140,7 @@ sign-in with a single factor; Rackbook avoids that).
 | **Phishing** | SSO: the provider's business. Local accounts: a mandatory second factor; passkeys are origin-bound and offered first. | Password + TOTP of a local account can be relayed in real time. |
 | **Online password guessing** | A throttle that is always on, an optional lock, an optional CAPTCHA, and the **NIST SP 800-63B §5.2.2 cap**, which admins can lower but not raise past 100 (section 8). Password and second factor are checked in **one step** with one undifferentiated answer (5.6). | Up to the cap per holder sign-in, at the throttle's pace, and with the CAPTCHA's cost when it is on. |
 | **Lockout of a legitimate user** (NAT neighbours, botnets, targeted DoS) | Locks are off by default; the CAPTCHA replaces refusals where it is on; a verified passkey goes past the throttle and the locks; stateless attempts that cannot be evicted; reserved capacity for known networks (section 8). | Depends on the settings; 8.9 says exactly what, per setting, and the console's help text says it too. |
-| **An admin repoints SSO** to a provider they control | Changing the issuer, client or identity claim is a sensitive action (re-authentication), a commit to `rackbook.yml`, and an audited `settings_changed`; sessions from the old issuer end; `/infra` is pinned by the deployment and unaffected (9.4). | An admin can already change `auth.roles`; repointing SSO gives them nothing they did not have. |
+| **An admin (or a push) repoints SSO** to a provider they control | Changing the issuer, client or identity claim is a sensitive action, a commit, and an audited `settings_changed`; the stored client secret is bound to (issuer, client id) and never sent to another issuer, and an environment secret pins both; old SSO sessions end by the settings generation; `/infra` is pinned by the deployment and unaffected (9.3, 9.4). | An admin can already change `auth.roles`; repointing SSO gives them no new access and no longer leaks the secret. |
 | **Someone with push access to the data repository** | Settings are in `rackbook.yml`, so push access is admin, as it already is for `auth.roles`. Hard bounds stay in code (the NIST cap ≤ 100, argon2id parameters, lock ≤ 1 week, throttle bounds), and secrets are not in Git. | By design. |
 | **The identity provider fails or is compromised** | Local admins remain (break-glass, 2.1). A compromised provider can sign in anyone matching SSO entries, as today. | |
 | **An offline copy of the state dir** | Accounts and secrets are encrypted, `usernames` is MACed, the admin channel is mutually authenticated and encrypted, all under the state key, which is not in the state dir (section 4, 11.3). A planted or torn file stops the server instead of rolling anything back (4.3). | A copy *with* the key gives argon2id hashes, TOTP secrets, session secrets and the stored provider secrets. Response in 5.10. |
@@ -135,7 +148,7 @@ sign-in with a single factor; Rackbook avoids that).
 | **A forged local session** | MACed under a key derived from the session key **and** a per-account secret in the encrypted store (section 6). | Someone with both keys and the store holds everything already. |
 | **An insider admin** | A reset replaces only what it names; only a separate, warned *full reset* hands over an account (5.8). Every reset revokes tokens and grants, ends sessions and is shown to the holder. All in the hash-chained audit log. | A full reset lets an admin act as the victim; the victim notices and the log tells the story. |
 | **A leaked invite or reset link** | 256-bit, single-use, expiring, in the URL fragment; nothing happens until *Continue*; a 30-minute hold; a CAPTCHA on the link when enabled; a `password` or `second_factor` reset link alone is not enough. | Whoever presses *Continue* first wins on an invite. |
-| **Account enumeration** | Usernames are not secret. CAPTCHA triggers read one counter table for every typed name; unknown and non-active accounts get the same answers and the same argon2id time (8.8). | The variance of one argon2id run. |
+| **Account enumeration**, including which names are admins | Usernames are not secret. Refusals before the name is looked up take no hash and look the same for every name; after it, unknown and non-active accounts get the same answers and the same argon2id time; under `sso_only` every failure is `sso_required`, and only verified admins get through (5.6, 8.8). | The variance of one argon2id run. |
 | **Resource exhaustion** | CAPTCHA before any hash; stateless attempt tokens; a solved set that only verified CAPTCHAs can fill, with partitions and no eviction; hashing slots with a reserved one; bounded siteverify concurrency; an image budget (8.7). | A botnet that solves CAPTCHAs can make sign-in from **new** networks slow (8.9). |
 | **A weak CAPTCHA** | The console warns that the image CAPTCHA is solved by OCR and has no audio version, and recommends a token provider. | With the image CAPTCHA, the throttle and the NIST cap are the real bound. |
 | **Flooding the audit log** (kept forever) | Refusals and CAPTCHA failures are aggregated per bucket per minute (section 10). | |
@@ -150,7 +163,7 @@ repository's own access control.
 | What | Where | Why |
 |---|---|---|
 | Non-secret settings (login mode, `sso_only`, CAPTCHA provider, trigger and site key, throttle, lock, the NIST cap, 2FA limits, OIDC issuer, client id, claims, label, tenants, trusted issuers) | `rackbook.yml`, `auth.*`, in the data repository | Versioned, reviewable and audited like `auth.roles`; edited in the console as ordinary commits (as phase 2a's role editor does); hot-reloaded on save and on pull |
-| Provider secrets (CAPTCHA secret, OIDC client secret) | `<state-dir>/secrets.enc`, encrypted under the state key | Secrets never go into Git |
+| Provider secrets (CAPTCHA secret, OIDC client secret, the latter bound to its issuer and client id, 9.3) | `<state-dir>/secrets.enc`, encrypted under the state key | Secrets never go into Git |
 | Local accounts | `<state-dir>/accounts/accounts.enc`, encrypted under the state key | The same |
 | Usernames ever used | `<state-dir>/accounts/usernames`, MACed | Survives a lost key (4.5) |
 
@@ -348,19 +361,26 @@ wrong, so a guess never learns that the password alone was right.
    same token.
 2. One request, `POST /auth/local/login`: the attempt token and CAPTCHA solve when needed, the username, the
    password, and **either** a 6-digit code **or** the passkey assertion.
-3. CAPTCHA (when enabled): the server opens the attempt, checks that its nonce is unused, verifies the solve if there
-   is one, and only then records the nonce (8.7). If a CAPTCHA is needed (8.5) and was not solved, the answer is
-   `401 captcha_required` and nothing else is checked.
-4. `sso_only` (2.1): if it is active and the named account is not an admin, `403 sso_required` ("use your
-   organisation's sign-in"), after the same dummy argon2id as any refusal.
-5. With a passkey assertion it is verified **first**, before any hash and before the throttle and locks are
-   consulted: it must be valid and belong to the named account. A verified passkey goes past the throttle and any
-   lock (8.2, 8.3), because nobody can guess with it. Then the password, by argon2id, in a slot (8.7). With a code:
-   throttle and locks, then the password, then the code.
-6. Unknown, `invited`, `reset_pending`, `disabled` or `removed`, refused by the throttle, a lock, `restricted` or
-   `passkey_only`: a **dummy argon2id**, then the same answer as any failure.
-7. Any failure: `401 sign_in_failed`, "username, password or code is wrong", whatever failed (a throttle or lock
-   refusal says "too many attempts, try later" instead, without a time, for every name alike). It adds to the
+3. **Before the name is looked up** (8.1): the flood ceiling; the CAPTCHA when needed (the server opens the attempt,
+   checks that its nonce is unused, verifies the solve, and only then records the nonce, 8.7; an unsolved required
+   CAPTCHA answers `401 captcha_required`); the dummy-hash budget (8.6); the throttle and the locks. These refusals
+   do not depend on whether the account exists, so they answer **without hashing**, after a fixed delay of 250 ms,
+   with "too many attempts, try later" (no time given) or `503 busy`, the same for every name. A verified passkey
+   assertion (step 4) goes past the throttle and the locks.
+4. With a passkey assertion it is verified next, before any hash: it must be valid and belong to the named account.
+   Nobody can guess with it, which is why it goes past the throttle and the locks (8.2, 8.3).
+5. **The name is looked up.** Unknown, `invited`, `reset_pending`, `disabled` or `removed`, or an account whose
+   `restricted` or `passkey_only` state refuses this attempt: a **dummy argon2id** (it counts against the budget),
+   then the same answer as a wrong password. Here the timing would otherwise show the account's state, so the hash
+   is needed. Otherwise the password, by argon2id, in a slot (8.7), and then the code.
+6. **`sso_only`** (2.1), when active, is checked only **after** the password and the second factor verified. Until
+   then every outcome, for unknown names, non-admins and admins alike, is the same `403 sso_required` ("use your
+   organisation's sign-in"): a wrong password, an unknown name and a non-admin's correct credentials cannot be told
+   apart. Only an admin whose credentials verified is let through. The cost of this order: under `sso_only` every
+   local attempt costs one argon2id run (no cheap refusal for non-admins), bounded by the throttle, the dummy-hash
+   budget and the CAPTCHA; an admin who mistypes sees "use your organisation's sign-in" rather than "wrong
+   password"; and non-admins' attempts count as guesses toward their counters like any other.
+7. Any other failure: `401 sign_in_failed`, "username, password or code is wrong", whatever failed. It adds to the
    counters of 8.2–8.5.
 8. Success clears the counters, adds the bucket to `good_buckets`, rehashes the password if needed, issues the
    session (section 6) and writes `login`.
@@ -428,7 +448,12 @@ HKDF-SHA256(ikm = session key, salt = account.session_secret, info = "rackbook.s
 
 The account must exist, be `active`, `restricted` or `passkey_only`, and have the same `sid`. `restricted` and
 `passkey_only` limit **new sign-ins** only; live sessions, tokens and grants keep working. Only `disabled`,
-`removed`, `reset_pending` and `invited` end sessions. SSO sessions are unchanged.
+`removed`, `reset_pending` and `invited` end sessions.
+
+**SSO sessions carry a settings generation**: `ssog`, the first 16 hex digits of SHA-256 over the issuer, the client
+id, the identity claim and the identity mode in force when the session was issued. `readSession` refuses an SSO
+session whose `ssog` differs from the current settings, which replaces today's comparison of `Iss` alone. Changing
+the client id or the identity claim therefore ends old SSO sessions too, not only changing the issuer.
 
 **Re-authentication.** Sensitive actions need `aat` (local) or the last SSO sign-in within
 `auth.local.reauth_window` (default 10 minutes, 1 minute to 1 hour), otherwise `403 reauth_required`. Sensitive:
@@ -478,9 +503,16 @@ constant. Buckets: `clientip.Bucket(r, trusted, 48)`, IPv6 by /48, IPv4 by the f
 
 ### 8.1 Order
 
-A local sign-in passes, in order: the flood ceiling (constant: 600 requests a minute per bucket, then `429`); the
-CAPTCHA, when needed (8.5); `sso_only`; a verified passkey assertion, if given, which then skips 8.2 and 8.3; the
-throttle; the locks; the restriction states; the password and second factor.
+A local sign-in passes, in order:
+
+1. **Without looking up the name, without hashing** (a fixed 250 ms delay on refusal, the same for every name): the
+   flood ceiling (constant: 600 requests a minute per bucket, then `429`); the CAPTCHA when needed (8.5); the
+   dummy-hash budget (8.6); the throttle (8.2); the locks of every scope (8.3). A verified passkey assertion, verified
+   at this point when given, goes past the throttle and the locks.
+2. **The name is looked up**: the account's state and the restriction states (8.4), with a dummy argon2id wherever
+   the answer would otherwise come faster for an account that cannot sign in.
+3. The password and the second factor.
+4. `sso_only`, only after step 3 succeeded (5.6).
 
 ### 8.2 The throttle (always on)
 
@@ -509,7 +541,8 @@ Locks are never permanent (the bound), a verified passkey goes past them, and *U
 ### 8.4 The NIST cap and the 2FA limits
 
 **The NIST cap** (SP 800-63B §5.2.2, at most 100 consecutive failed attempts) is a setting `cap`, default and
-**maximum 100**: admins may lower it, never raise it. `consecutive_failures` counts every failed password check of the
+**maximum 100**, minimum 10: admins may lower it, never raise it, and never so far that a few typing mistakes
+restrict an account. `consecutive_failures` counts every failed password check of the
 account across all buckets and is cleared only by a success or *Unlock*. A refusal that never reaches the password
 check does not count.
 
@@ -538,7 +571,7 @@ Matched to PSP (`psp/internal/ports/repos.go:1270-1295`) and RP (`rp/internal/ap
 - **Trigger** for sign-in: `always`, or `after_failures` with a threshold (default **3**, 1–100) that fires when
   either the bucket **or** the typed name has that many failures in the throttle window
   (`rp/internal/app/captcha_api.go:99-103`). Links: always, when enabled. In addition, while the CAPTCHA is enabled
-  it is always required when the global dummy-hash budget is used up or the replay set has no room (8.7).
+  it is always required when the global dummy-hash budget is used up (8.6) or the replay set has no room (8.7).
 - **Hostname pinned** to the host of `--base-url`; a successful result **with no hostname** is refused (authcore
   skips the pin then; reCAPTCHA needs domain verification on).
 - **Errors fail closed**, as in RP (`captcha_api.go:120-138`): `ErrNetwork`, `ErrBadStatus`, `ErrDecodeResponse` and
@@ -560,15 +593,30 @@ Matched to PSP (`psp/internal/ports/repos.go:1270-1295`) and RP (`rp/internal/ap
 | failures per bucket | memory | the throttle window |
 | failures per (name, bucket), for every typed name | memory, the **pair table**, keyed by (HMAC(per-start key, name), bucket) | consecutive, cleared on success |
 | failures per name, all buckets | memory, the **name table**, keyed by HMAC(name) | the throttle window |
-| locks of scope `ip` and `ip_account` | memory | the lock duration |
-| locks of scope `account`, `consecutive_failures`, `totp_failures`, `passkey_path_failures` | the store | 8.3, 8.4 |
-| dummy hashes | memory, global | 30 per minute |
+| locks of every scope (`ip` by bucket, `ip_account` in the pair table, `account` in the name table) | memory, for every typed name | the lock duration |
+| `consecutive_failures`, `totp_failures`, `passkey_path_failures` | the store | 8.4 |
+| dummy hashes | memory, global | 60 per minute |
 
 CAPTCHA triggers read only the memory tables, which treat existing and unknown names alike, so whether a CAPTCHA
 appears never says whether a name exists. Bounds: the pair table 100 000 rows, at most 1 000 per bucket; the name
 table 50 000 rows, at most 200 new rows per bucket per hour. On overflow the rows with the fewest failures go first,
-never one at or above the CAPTCHA threshold; a name that cannot get a row is treated as over the threshold. A lock of
-scope `ip` or `ip_account` is lost on restart, which only shortens it.
+never one at or above the CAPTCHA threshold, nor one holding a lock; a name that cannot get a row is treated as over
+the threshold. Locks are kept in memory for every typed name, existing or not, so a lock refusal never says whether
+an account exists; a restart loses them, which only shortens them.
+
+**The dummy-hash budget.** Dummy argon2id runs (5.6 step 5) are limited to 60 a minute for the whole server, in both
+CAPTCHA modes. The budget is checked **before the name is looked up**, from the global count alone:
+
+- **CAPTCHA on:** past the budget, every password attempt needs a CAPTCHA until the minute ends.
+- **CAPTCHA off:** past the budget, every password attempt is answered `503 busy` ("the server is busy, try again
+  shortly") until the minute ends, for existing and unknown names alike. A verified passkey assertion still goes
+  through.
+
+This leaks nothing: the decision depends only on a global counter, is taken before the name is read, and is the same
+for every name, so neither the answer nor its timing says anything about the name. The cost, with the CAPTCHA off:
+about 60 attempts a minute with made-up names make password sign-in busy for everyone; the Security tab's help text
+says so and recommends turning the CAPTCHA on. Test: exhaust the budget with unknown names, then check that an
+existing and an unknown name get byte-identical answers within the same delay, in both modes.
 
 ### 8.7 Attempts, sets and capacity (when the CAPTCHA is enabled)
 
@@ -602,8 +650,10 @@ busy`. The CAPTCHA and a passkey assertion are verified before a caller queues.
 ### 8.8 Uniform answers
 
 Unknown, invited, reset-pending, disabled and removed accounts, and refusals by `restricted` or `passkey_only`, get
-exactly the answers an existing account gets, after one argon2id run against a fixed dummy hash. Throttle and lock
-refusals are the same "too many attempts" for every name. The residual is the variance of one argon2id run.
+exactly the answers an existing account gets, after one argon2id run against a fixed dummy hash, within the budget.
+Refusals taken before the name is looked up (flood, CAPTCHA, budget, throttle, locks) take no hash, a fixed delay,
+and the same answer for every name. Under `sso_only` every failure is `sso_required` (5.6). The residual is the
+variance of one argon2id run.
 
 ### 8.9 What the holder of a local account can count on
 
@@ -618,7 +668,7 @@ For a holder who has their password and second factor, and whose password nobody
 | Settings | From a known network | From a new network |
 |---|---|---|
 | CAPTCHA on, lock off (recommended) | always, one CAPTCHA per attempt at most | yes, unless the account is `restricted` (then a known network or Unlock), the provider is out, or someone keeps the *general* and *headroom* partitions full (about 250 000 verified solves every 5 minutes; with a token provider roughly $70 000–220 000 a day; with the **image** provider much cheaper, which is why the console warns) |
-| CAPTCHA off, lock off | yes, unless someone on the same network exhausts the throttle (wait for the window) | the same, plus the NIST cap |
+| CAPTCHA off, lock off | yes, unless someone on the same network exhausts the throttle (wait for the window), or anyone exhausts the dummy-hash budget (`busy` for everyone, for up to a minute at a time; 8.6) | the same, plus the NIST cap |
 | lock `ip_account` | as above, plus: a neighbour on the same network can lock them there for the lock duration | unaffected by others |
 | lock `ip` | a neighbour can lock the whole network | unaffected by others |
 | lock `account` | **anyone who knows the username can lock them out everywhere** for the duration | the same |
@@ -671,7 +721,7 @@ auth:
     threshold: 3               # 1..100
   throttle: {max: 10, window: 15m}            # 1..1000, 1m..24h
   lock: {enabled: false, duration: 30m, scope: ip_account}   # 1m..7d; ip | ip_account | account
-  nist_cap: 100                # 1..100
+  nist_cap: 100                # 10..100
   twofa_limits: {totp_per_day: 10, passkey_path_per_hour: 10}   # 3..20 each
   oidc: {issuer: …, client_id: …, scopes: […], identity_claim: …, name_claim: …, label: …, allowed_tenants: […]}
   mcp: {trusted_issuers: […]}
@@ -693,9 +743,26 @@ because a form that sends every field cannot then clear a secret by accident.
 
 - A token provider cannot be saved as enabled without a secret (stored or new), as PSP refuses it
   (`admin_settings.go:753-760`).
-- **The environment wins.** If `RACKBOOK_OIDC_CLIENT_SECRET` (or `RACKBOOK_CAPTCHA_SECRET`) is set, it is used, and
-  the console shows "set by the deployment" without *Change* or *Clear*. Existing deployments keep working unchanged.
+- **The environment wins.** If `RACKBOOK_CAPTCHA_SECRET` or `RACKBOOK_OIDC_CLIENT_SECRET` is set, it is used, and
+  the console shows "set by the deployment" without *Change* or *Clear*.
 - Without the state key, secrets can come only from the environment.
+
+**The OIDC client secret is bound to its provider.** A client secret is a credential for one client at one issuer;
+sent anywhere else, it is leaked. So:
+
+- **Stored in the console:** `secrets.enc` keeps it together with the `(issuer, client_id)` it was entered for.
+  Changing either in the console clears it, and the form cannot be saved until a new secret is entered in the same
+  save. When `rackbook.yml` changes by a push and its issuer or client id no longer match the binding, the server
+  **does not use** the stored secret (no token request is ever sent with it), treats SSO as not configured (2.1),
+  shows admins a banner ("the SSO client secret belongs to another provider; enter it again"), and writes
+  `settings_problem` (`code: oidc_secret_binding`).
+- **From the environment:** `RACKBOOK_OIDC_CLIENT_SECRET` requires the pins `RACKBOOK_OIDC_ISSUER` and
+  `RACKBOOK_OIDC_CLIENT_ID`. The server refuses to start if `rackbook.yml`'s issuer or client id differ from them;
+  a pulled config that differs is refused like any invalid config (the last good one stays, and admins see a
+  banner); and the console shows issuer and client id as "pinned by the deployment", not editable. This changes
+  existing deployments that set only the secret: the release notes, and the start-up error, say which two values to
+  add. The CAPTCHA secret needs no such binding: a CAPTCHA secret sent to the wrong provider is refused there and
+  grants nothing, and the provider is chosen from a fixed list of endpoints.
 
 Setting or clearing a secret writes `settings_secret_set` or `settings_secret_cleared` (the name only).
 
@@ -706,11 +773,14 @@ label, allowed tenants; the client secret (in `secrets.enc`). **Deployment only*
 (`--infra-oidc-*`, `--infra-admins`) and `--base-url` (the redirect URI and relying-party ID).
 
 The risk: an admin can point SSO at a provider they control and sign in as anyone an SSO entry in `auth.roles`
-matches. That is no new power, since an admin can already edit `auth.roles` (and anyone with push access already can
-edit `auth.oidc`). The console makes it visible instead: saving the issuer, client id or identity claim needs
-re-authentication, shows a warning ("everyone signed in through SSO will be signed out; roles matched by SSO entries
-will follow the new provider"), commits, writes `settings_changed` with `area: sso`, and ends every SSO session (the
-issuer check already does). `/infra` is unaffected: it compares sessions with its own pinned issuer, client, claim and
+matches. As a way to gain access that is no new power, since an admin can already edit `auth.roles` (and anyone with
+push access already can edit `auth.oidc`). What would be new is **leaking the client secret** to the other provider;
+the binding above prevents that: the stored secret is cleared on any change of issuer or client id and never sent to
+an issuer it was not entered for, and an environment secret pins both values. The console makes the change visible:
+saving the issuer, client id or identity claim needs re-authentication, shows a warning ("everyone signed in through
+SSO will be signed out; roles matched by SSO entries will follow the new provider"), commits, writes
+`settings_changed` with `area: sso`, and ends every SSO session through the settings generation in the cookie
+(section 6). `/infra` is unaffected: it compares sessions with its own pinned issuer, client, claim and
 tenant, so a repointed provider's sessions never reach it. The **Test sign-in** button runs a sign-in against the
 unsaved settings first, so a broken provider is caught before saving; local admins remain the way back.
 
@@ -752,8 +822,9 @@ recorded. New field **`target`**: the account acted on when that is not the acto
 | `password_changed`, `factor_added`, `factor_removed` | the account | `addr`; factors: `code`, `detail: ["name:…", "credential:<id>"]` |
 | `sessions_ended` | the account, or the admin/CLI with `target` | `reason`: `self`, `reauth_failed`, `cli`; `detail: ["tokens:<names>", "grants:<ids>"]` |
 | `account_disabled`, `account_enabled`, `account_removed` | the admin | `target`; disable and remove list revocations |
-| `settings_changed` | the admin | `area`: `security`, `captcha`, `lockout`, `sso`, `trusted_issuers`; `detail`: the keys changed (names, and old → new for non-secret values); the commit is its own `commit` line |
-| `settings_secret_set`, `settings_secret_cleared` | the admin | `detail: ["name:captcha_secret"]` or `oidc_client_secret` |
+| `settings_changed` | the admin, or none with `because: config` for a change that arrived by a pull | `area`: `security`, `captcha`, `lockout`, `sso`, `trusted_issuers`; `detail`: the keys changed (names, and old → new for non-secret values); the commit is its own `commit` line |
+| `settings_secret_set`, `settings_secret_cleared` | the admin | `detail: ["name:captcha_secret"]` or `oidc_client_secret`; a clear caused by an issuer or client id change says `because: binding` |
+| `settings_problem` | none | `code`: `oidc_secret_binding`, `oidc_pin_mismatch`, `sso_only_without_local_admin`; shown as an admin banner until resolved |
 | `account_store_checkpoint`, `account_store_problem`, `account_store_restored`, `account_store_rekeyed` | none | as in 4.3–4.7 |
 
 **Aggregates.** Per bucket and minute, the first `login_refused` and the first `captcha_failed` for each account (and
@@ -773,7 +844,8 @@ Beyond 100 buckets in one minute the rest fold into one summary without `addr`.
 | `--state-dir` | required for local accounts and console-set secrets |
 | `RACKBOOK_STATE_KEY` / `--state-key-file` | the state key (4.1); without it, SSO only |
 | `RACKBOOK_SESSION_KEY` / `--session-key-file`, `--base-url` | as today |
-| `RACKBOOK_OIDC_CLIENT_SECRET`, `RACKBOOK_CAPTCHA_SECRET` | optional; override the console (9.3) |
+| `RACKBOOK_CAPTCHA_SECRET` | optional; overrides the console (9.3) |
+| `RACKBOOK_OIDC_CLIENT_SECRET` with `RACKBOOK_OIDC_ISSUER` and `RACKBOOK_OIDC_CLIENT_ID` | optional; overrides the console and pins the issuer and client id (9.3) |
 | `--infra-*` | as today; never console settings |
 
 Everything else is in the console. There are no CAPTCHA flags and no `--captcha-image-weak-ok`; the console warning
@@ -801,7 +873,9 @@ and prints links to the operator's terminal only.
 
 With the server running, commands go over a local channel: a Unix socket `<state-dir>/admin.sock` (mode 0600) on
 Linux and macOS, and a named pipe `\\.\pipe\rackbook-<first 16 hex of SHA-256 of the state dir's absolute path>` on
-Windows, created with a security descriptor that grants access only to the server's account and Administrators. The
+Windows, created with `FILE_FLAG_FIRST_PIPE_INSTANCE` and a security descriptor that grants access only to the
+server's account and Administrators. If a pipe of that name already exists, the server refuses to start ("another
+process holds the admin pipe"), so nothing else can stand in for the server's end. The
 OS permission is defence in depth; **access is by possession of the state key**, with the identical protocol on all
 three:
 
@@ -883,5 +957,9 @@ The owner's decisions of 2026-11-22 settle everything that was open before. What
    Cloudflare, Turnstile is the better choice; it is a one-time console setting.
 3. **`sso_redirect` and admins:** the break-glass form is reached with `/auth/login?local=1`. Confirm that this
    documented URL is acceptable; RP relies on the admin exemption and the page showing SSO only.
-4. **Turnstile `cdata`:** an optional, additive authcore change that would bind the attempt id into the token. Not
+4. **Passkeys for local accounts beside SSO.** The owner's rule was "no passkey sign-in when SSO is configured".
+   This design reads it as applying to SSO identities (they get no Rackbook passkey or TOTP), while local accounts
+   keep the passkey as one of their two allowed second factors even when SSO is configured (2.2). That reading is
+   ours; please confirm it, or say whether local accounts beside SSO should use TOTP only.
+5. **Turnstile `cdata`:** an optional, additive authcore change that would bind the attempt id into the token. Not
    required by this design.
