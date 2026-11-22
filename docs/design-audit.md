@@ -1,6 +1,6 @@
 # Audit history and roles from the identity provider
 
-Status: design, agreed 2026-11-22. Phase 1 pieces 1 and 2 are built (3.5); the rest is not. Phase 2
+Status: design, agreed 2026-11-22. Phase 1 pieces 1, 2 and 3 are built (3.5); the rest is not. Phase 2
 starts with the light version (2a); SCIM (2b) comes later. Phase 3 still needs a decision (section 7).
 
 The team is growing. Two things are needed:
@@ -287,7 +287,33 @@ must not decide who sees infra.
    - `/api/meta` carries `auditAlert` for admins while recorded problems are not acknowledged; the console's red
      banner (on every page, so also on Activity) reads it.
    - Not done here: the CLI and MCP do not read the audit log.
-3. Field-level record history, the restore endpoint, deleted records.
+3. Field-level record history, the restore endpoint, deleted records. **Done** (README, "Record history, restore and
+   deleted records"). As built, and where it differs from 3.3:
+   - The timeline is `GET /api/c/{collection}/{id}/history` (paged like Activity: pinned tip, walk position, signed
+     cursor bound to the record and the person; a walk budget of 400 commits and at most 50 versions per request) and
+     one version with the diff against today's record is `GET .../history/{commit}`, which the restore dialog uses.
+     Commits are the ones with the exact `Record` trailer, else the collection-file fallback with unchanged commits
+     dropped (the mode is chosen on the first page and kept in the cursor). Trailer commits are kept even when the
+     record's content did not change in them.
+   - The old record is read with `git cat-file blob <commit>:./<path>` (hash validated, path literal, relative, not
+     in `.rackbook/` or `.git/`); the runner now allows `cat-file` only as `cat-file blob <one argument>`. The
+     collection's file, key and schema come from the `rackbook.yml` of that commit; when that file does not load, the
+     collection is assumed to have been as it is now. A rename of the key fields (same list position, old id gone) is
+     marked `renamed`, not `created` and `deleted`.
+   - What "the same hiding as for the current record" means: the record `GET` returns the stored values as they are, so
+     the check made is the one the writes make. Any value that the secret scan flags for that version (with the type
+     definition of that commit) is returned as `(hidden)`, in the diff, in the single version and in the content that
+     comes back with `restore_needs_edit`, which also counts them (`hidden`). A restore itself uses the full old content.
+   - Restore is `POST .../restore` as designed, through `s.apply` and `edit.Op` (`RestoredFrom` adds the trailer and the
+     subject `restore`). Beyond the design: `already_current` when the version is the current one, a collection without a
+     key always answers `restore_needs_edit` (ids are positions), and restoring a deleted record needs create as well as
+     update permission. The body key is `confirm_not_secret` as for `PUT`; `confirmNotSecret` is accepted too.
+   - Deleted records: `GET /api/c/{collection}/deleted`, with the cache `<state-dir>/history/deleted-<collection>.json`
+     (memory without `--state-dir`), a work budget of 200 commits per request and `complete:false` until the history is
+     read. It reads the history of the collection's current file path only, so deletions from before the file was
+     moved are not found; collections without a key are skipped. The list shows the commit that removed the record
+     and the commit before it (`last`), not the last commit that changed the record.
+   - The Activity page shows `Restored-from` (`restoredFrom` on a ledger commit item).
 4. `auth.auditors` and `--infra-auditors`.
 5. The optional daily anchor.
 

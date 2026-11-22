@@ -1005,6 +1005,58 @@ red banner on every page, with the kinds of problem and the first affected line.
 `rackbook audit verify` (marked acknowledged, and verify still exits 1); it stops showing the banner and stops
 keeping its month from the retention.
 
+## Record history, restore and deleted records
+
+On a record page, **History** is the version timeline of that record: one entry for each commit that changed
+it, newest first, with the time, the person, the commit subject, and the change **field by field** against the
+commit's parent: fields added, removed and changed, with the old and the new value (nested fields are named by
+path, such as `ports[2].proto`; a long value is collapsed). A commit that created the record, deleted it or renamed it
+(its key fields changed, so its id did) says so. Who made a commit is shown as in [Activity](#activity), **Verified** or
+**Unverified**, and a commit made by a restore says *Restored from* and the commit it came from (the Activity page
+shows that too).
+
+**What is read, and from where.** A version is read from the collection file *as it was at that commit*, with the
+collection's file path, key and type definition of that commit, not today's, so a collection file that moved or a key
+that changed does not break the older versions. The commits are those with the exact `Record: <collection>/<id>`
+trailer; a record that no commit names (edited by hand, or before the trailer existed) falls back to the commits that
+touched the collection's file, and those in which the record did not change are left out. Reading follows the paging
+model of Activity: the first page pins the current tip, the cursor holds the commit the walk is pinned to and how many
+commits of it were consumed, a request walks at most 400 commits (a page can be short or empty while the cursor
+goes on) and returns at most 50 versions. Nothing hidden elsewhere is shown here: ids that hold a secret are shown
+redacted, `.rackbook/` is never read, and a value that the secret scan flags (as it would for the record today, with
+the type definition of that commit) is not returned, neither in the timeline nor in what *Restore* sends back to the
+editor: it is shown as `(hidden)` and a change between two hidden values is still a change. The old values are read
+with `git cat-file blob <commit>:./<path>` only (the guarded runner allows exactly one blob argument, never an option).
+
+**Restore this version** (editors; not on the current version) is done by the server: it reads the record at the
+commit itself (the browser never gets the hidden values) and writes it as **one new commit** through the ordinary
+edit path, so the current schema, references and the secret scan check it exactly as for a `PUT`. The commit has the
+subject `ledger(<collection>): restore <id>`, the usual trailers, `Record:` and `Restored-from: <full commit hash>`; it
+is a Rackbook commit like any other, so the audit log vouches for it. History is never rewritten. The console asks
+first and shows what would change from the current record to that version. If the old version needs the secret-scan
+confirmation, the editor is asked again, as for any write. If the old content no longer fits the current schema or
+references, or its key fields give another id than the record's, nothing is written: the server answers `409
+restore_needs_edit` with the old content and the console opens it in the editor, to be fixed and saved as an ordinary
+edit. A collection without a key always needs this step (ids are positions there). `hash` is the current record's
+hash, so a change made in the meantime is the usual conflict.
+
+**Deleted records.** On a collection's page, *Deleted records* lists the records whose last change removed them: the
+id (redacted if needed), when, by whom (verified or not), a few fields of the last version, and *Restore*, which
+brings the record back as an add with `Restored-from`. A record that was deleted and added again is not listed; a
+rename is not a deletion. Finding them reads the collection file's whole history, so the result is kept: with
+`--state-dir` in `<state-dir>/history/deleted-<collection>.json` (`0600`), without it in memory. The cache is keyed by
+the commit the history was read to and extended from there with only the new commits; if that commit is no longer an
+ancestor of the tip (the history was rewritten) it is built again, and deleting the file is always safe. A first build is
+spread over requests, 200 commits each: until it is finished the answer says `"complete": false` with what is known,
+and the console asks again. The cache holds commit hashes, times, ids (redacted where needed) and the author and subject of the deleting commit, never record values.
+
+| Request | Meaning |
+|---|---|
+| `GET /api/c/{collection}/{id}/history` | `limit` (default 20, at most 50), `cursor`. `{"id", "versions": [...], "cursor"?, "audit"}`. A version has the fields of an Activity row (`time`, `hash`, `short`, `subject`, `identity`, `name`, `via`, `verified`, `token`, `restoredFrom`) and `change` (`created`, `changed`, `deleted`, `renamed`), `renamedFrom`/`renamedTo`, `recordHash` (the record's hash at that commit, `""` when deleted) and `changes`: `[{"path", "op": "added"\|"removed"\|"changed", "old", "new", "hidden"?, "truncated"?}]` (at most 200 per version, a value is cut at 8 KiB). Every role may read it. Cursors are signed like Activity's, bound to the record and the person; `400 cursor_invalid` when one no longer fits. |
+| `GET /api/c/{collection}/{id}/history/{commit}` | One version: `{"id", "commit", "recordHash", "data", "hidden", "exists", "current", "changes"}`; `changes` go from today's record to that version (what a restore would change). `404` when the commit is not on the tracked branch or the record did not exist in it. |
+| `POST /api/c/{collection}/{id}/restore` | `{"commit": "<hash, 7 or more digits>", "hash": "<current record hash>", "confirm_not_secret": false}` (`confirmNotSecret` is accepted too). Editors, with the gates of `PUT` (read-only mode, role, token narrowing, same-origin, PR write mode). `200` as a `PUT` plus `"restoredFrom"`. `hash: ""` is for a record that does not exist now and makes it a `201` add (it needs create permission too); `400` for an empty hash when the record exists, `409 conflict` for a hash that does not match. `404` for a commit that is not on the tracked branch, or in which the record did not exist; `409 already_current`; `409 restore_needs_edit` `{"data", "hidden", "commit", "errors"}`; `422 secret_suspected` / `secret_detected` as for any write. |
+| `GET /api/c/{collection}/deleted` | `limit` (default 50, at most 200). `{"records": [{...commit fields of the deleting commit..., "id", "last", "deletedAt", "summary": [{"field", "value"}]}], "complete", "more"}`; `last` is the commit that still had the record (pass it to restore). A record whose id is `deleted` cannot be fetched with `GET /api/c/{collection}/deleted`, which is this list. |
+
 ## Expiry tracking and modules
 
 Rackbook can list what is about to expire (certificates, client secrets, API
