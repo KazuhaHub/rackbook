@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/kazuhahub/rackbook/internal/apierr"
+	"github.com/kazuhahub/rackbook/internal/audit"
 	"github.com/kazuhahub/rackbook/internal/auth"
 	"github.com/kazuhahub/rackbook/internal/edit"
 	"github.com/kazuhahub/rackbook/internal/expiry"
@@ -74,6 +75,9 @@ type Options struct {
 	Prefs *prefs.Store
 	// Infra turns on the read-only /infra pages (nil = off, and /api/infra is a 404).
 	Infra *InfraOptions
+	// Audit is the audit log (nil = none: the activity view then shows every
+	// commit as unverified, and /api/audit/status says the log is off).
+	Audit *audit.Log
 	// Now is the clock; nil = time.Now.
 	Now func() time.Time
 }
@@ -135,6 +139,7 @@ func New(o Options) http.Handler {
 	s.modulesRoutes(mux)  // modules.go
 	s.brandingRoutes(mux) // branding.go: public
 	s.infraRoutes(mux)    // infra.go: only with Options.Infra
+	s.activityRoutes(mux) // activity.go
 	public := map[string]http.Handler{}
 	for p, h := range o.Public {
 		public[p] = h
@@ -435,6 +440,12 @@ func (s *server) meta(w http.ResponseWriter, r *http.Request) {
 	meta["branding"] = map[string]any{"name": cfg.Branding.Name, "logo": cfg.BrandLogo() != nil}
 	if a := s.o.Store.Alert(); a != nil {
 		meta["alert"] = a
+	}
+	if s.o.Audit != nil && s.canSee(r, seeAudit) {
+		if st := s.o.Audit.Status(); !st.OK {
+			// the banner for administrators; the Activity page has the details
+			meta["auditAlert"] = map[string]any{"problems": len(st.Problems), "firstSeq": st.FirstBrokenSeq}
+		}
 	}
 	writeJSON(w, http.StatusOK, meta)
 }
