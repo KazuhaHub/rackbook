@@ -582,3 +582,37 @@ func TestCommitChangesDoesNotWaitForTheWriteLock(t *testing.T) {
 		t.Fatal("CommitChanges is waiting for the write lock")
 	}
 }
+
+func TestOnCommitReportsOwnPushedCommitsOnly(t *testing.T) {
+	type call struct {
+		hash, who, record string
+	}
+	var calls []call
+	hook := func(o *Options) {
+		o.OnCommit = func(hash string, who *auth.Identity, record string) {
+			calls = append(calls, call{hash, who.ID, record})
+		}
+	}
+	e := newEnv(t)
+	s := open(t, e.server, hook)
+	// a failed push that is not a moved remote: no commit, no call
+	s.pushFn = func(context.Context, string) error { return errors.New("network down") }
+	if _, err := s.Write(context.Background(), sshEdit(t, s, "TCP 22"), editor); err == nil {
+		t.Fatal("expected the push to fail")
+	}
+	if len(calls) != 0 {
+		t.Fatalf("nothing reached the branch: %+v", calls)
+	}
+	s.pushFn = nil
+	if _, err := s.Write(context.Background(), sshEdit(t, s, "TCP 22"), editor); err != nil {
+		t.Fatal(err)
+	}
+	head := sh(t, e.bare, "rev-parse", "main")
+	if len(calls) != 1 || calls[0].hash != head || calls[0].who != "ann@example.com" || calls[0].record != "services/web-hostco-ashburn-va-us-dc/SSH" {
+		t.Fatalf("want the full hash %s: %+v", head, calls)
+	}
+	// an edit that changes nothing makes no commit and no call
+	if _, err := s.Write(context.Background(), sshEdit(t, s, "TCP 22"), editor); err != nil || len(calls) != 1 {
+		t.Fatalf("%v %+v", err, calls)
+	}
+}

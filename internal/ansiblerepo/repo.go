@@ -16,6 +16,7 @@ import (
 
 	"go.yaml.in/yaml/v3"
 
+	"github.com/kazuhahub/rackbook/internal/auth"
 	"github.com/kazuhahub/rackbook/internal/gitstore"
 	"github.com/kazuhahub/rackbook/internal/secretscan"
 )
@@ -48,6 +49,10 @@ type Options struct {
 	Scanner *secretscan.Scanner
 	// Audit receives the actions that did not end in a commit (nil = none).
 	Audit Auditor
+	// OnCommit, when set, is called after an edit's commit was pushed: hash is
+	// the full commit hash, who the editor and scope what was edited (the
+	// scope of the edit, e.g. "host_vars/alpha"). It runs under the write lock.
+	OnCommit func(hash string, who *auth.Identity, scope string)
 	// Sops edits the hosts' SOPS files with Rackbook's own age key (nil = the
 	// secrets editor is off).
 	Sops Sopser

@@ -10,6 +10,7 @@ import (
 
 	authoidc "github.com/KazuhaHub/authcore/oidc"
 
+	"github.com/kazuhahub/rackbook/internal/audit"
 	"github.com/kazuhahub/rackbook/internal/auth"
 	"github.com/kazuhahub/rackbook/internal/clientip"
 	"github.com/kazuhahub/rackbook/internal/roles"
@@ -142,21 +143,26 @@ func (s *Service) oidcCallback(w http.ResponseWriter, r *http.Request) {
 	id, tid, err := s.identityFromClaims(assertion)
 	if err != nil {
 		s.log.Warn("login failed: claims", "reason", err.Error(), "subject", sanitizeLog(assertion.Subject))
+		s.record(r, audit.Event{Event: "login_refused", Reason: "claims", Method: auth.MethodOIDC})
 		s.loginFail(w, r, "claims", entry.ret)
 		return
 	}
 	if allowed := s.o.Login.OIDC.AllowedTenants; len(allowed) > 0 && !tenantAllowed(allowed, tid) {
 		s.log.Warn("login refused: tenant not allowed", "identity", id.ID, "tid", sanitizeLog(tid))
+		s.record(r, audit.Event{Event: "login_refused", Reason: "tenant", Identity: id.ID, Name: id.Name, Method: auth.MethodOIDC})
 		s.loginFail(w, r, "tenant", entry.ret)
 		return
 	}
-	if s.roleOf(id) == roles.None {
+	role := s.roleOf(id)
+	if role == roles.None {
 		s.log.Warn("login refused: identity has no role", "identity", id.ID, "method", auth.MethodOIDC)
+		s.record(r, audit.Event{Event: "login_refused", Reason: "no_role", Identity: id.ID, Name: id.Name, Method: auth.MethodOIDC})
 		s.loginFail(w, r, "no_role", "")
 		return
 	}
 	s.issue(w, id, auth.MethodOIDC, "")
 	s.log.Info("login", "identity", id.ID, "method", auth.MethodOIDC, "remote", r.RemoteAddr)
+	s.record(r, audit.Event{Event: "login", Identity: id.ID, Name: id.Name, Method: auth.MethodOIDC, Role: role.String()})
 	http.Redirect(w, r, SafeReturn(entry.ret), http.StatusSeeOther)
 }
 

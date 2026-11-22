@@ -23,7 +23,9 @@ import (
 
 	authoidc "github.com/KazuhaHub/authcore/oidc"
 
+	"github.com/kazuhahub/rackbook/internal/audit"
 	"github.com/kazuhahub/rackbook/internal/auth"
+	"github.com/kazuhahub/rackbook/internal/clientip"
 	"github.com/kazuhahub/rackbook/internal/config"
 	"github.com/kazuhahub/rackbook/internal/gitstore"
 	"github.com/kazuhahub/rackbook/internal/locale"
@@ -57,6 +59,7 @@ type Options struct {
 	ReadOnly       bool           // refuse passkey changes
 	TrustedProxies []netip.Prefix // --trusted-proxy CIDRs
 	Logger         *slog.Logger
+	Audit          *audit.Log // sign-ins, sign-outs and refusals; nil = none
 	Now            func() time.Time
 	Context        context.Context // lifetime of the OIDC provider; default Background
 }
@@ -489,9 +492,17 @@ func (s *Service) publicConfig(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// record writes an event of this request to the audit log; addr is the client
+// address by the trusted-proxy rules.
+func (s *Service) record(r *http.Request, e audit.Event) {
+	e.Addr = clientip.Of(r, s.trusted)
+	s.o.Audit.Record(e)
+}
+
 func (s *Service) logout(w http.ResponseWriter, r *http.Request) {
 	if sess, err := s.readSession(r); err == nil {
 		s.log.Info("logout", "identity", sess.ID, "method", sess.Method)
+		s.record(r, audit.Event{Event: "logout", Identity: sess.ID, Name: sess.Name, Method: sess.Method, Role: s.roleOf(identityOf(sess)).String()})
 	}
 	clearCookie(w, SessionCookie)
 	to := loginURL("", url.Values{"error": {"logged_out"}})

@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -144,11 +145,11 @@ func TestSecretsListShowsNamesWithoutDecrypting(t *testing.T) {
 
 func TestSecretsRevealIsAuditedNoStoreAndRateLimited(t *testing.T) {
 	var logBuf bytes.Buffer
-	auditFile := filepath.Join(t.TempDir(), "audit.jsonl")
+	sink := &jsonSink{}
 	s := newSEnv(t, func(o *api.Options, io *api.InfraOptions) {
 		lg := slog.New(slog.NewTextHandler(&logBuf, nil))
 		o.Logger = lg
-		io.Audit = &ansiblerepo.AuditLog{Path: auditFile, Log: lg}
+		io.Audit = multiAuditor{&ansiblerepo.AuditLog{Log: lg}, sink}
 	}, nil)
 	code, body, hdr := s.reveal(t, "alpha", "cloudflare_dns_token", me)
 	if code != 200 || body["value"] != sAlphaToken {
@@ -158,7 +159,7 @@ func TestSecretsRevealIsAuditedNoStoreAndRateLimited(t *testing.T) {
 		t.Fatalf("Cache-Control %q", cc)
 	}
 	// who, what and when are audited; the value is not, anywhere
-	raw, _ := os.ReadFile(auditFile)
+	raw := sink.bytes()
 	var e ansiblerepo.AuditEntry
 	if err := json.Unmarshal(bytes.TrimSpace(raw), &e); err != nil {
 		t.Fatalf("%v %q", err, raw)
@@ -193,7 +194,7 @@ func TestSecretsRevealIsAuditedNoStoreAndRateLimited(t *testing.T) {
 	if !got429 {
 		t.Fatal("reveals are not rate limited")
 	}
-	raw, _ = os.ReadFile(auditFile)
+	raw = sink.bytes()
 	if !strings.Contains(string(raw), `"outcome":"rate_limited"`) || strings.Contains(string(raw), "old-demo-token") {
 		t.Fatalf("%s", raw)
 	}
@@ -702,4 +703,31 @@ func strs(in []any) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// jsonSink keeps the audit entries as JSON lines.
+type jsonSink struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (j *jsonSink) Record(e ansiblerepo.AuditEntry) {
+	b, _ := json.Marshal(e)
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	j.buf.Write(append(b, '\n'))
+}
+
+func (j *jsonSink) bytes() []byte {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return append([]byte(nil), j.buf.Bytes()...)
+}
+
+type multiAuditor []ansiblerepo.Auditor
+
+func (m multiAuditor) Record(e ansiblerepo.AuditEntry) {
+	for _, a := range m {
+		a.Record(e)
+	}
 }

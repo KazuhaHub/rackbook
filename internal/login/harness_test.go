@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/kazuhahub/rackbook/internal/api"
+	"github.com/kazuhahub/rackbook/internal/audit"
 	"github.com/kazuhahub/rackbook/internal/auth"
 	"github.com/kazuhahub/rackbook/internal/config"
 	"github.com/kazuhahub/rackbook/internal/gitstore"
@@ -62,6 +63,7 @@ type env struct {
 	clk   *clock
 	pool  *x509.CertPool
 	logs  *logBuf
+	audit string // directory of the audit log every Service of the env writes to
 }
 
 type logBuf struct {
@@ -202,8 +204,14 @@ func newEnv(t *testing.T, o options) *env {
 		t.Fatal(err)
 	}
 	ps := &prefs.Store{}
+	e.audit = filepath.Join(t.TempDir(), "audit")
+	al, err := audit.Open(e.audit, audit.Options{Logger: logger})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(al.Close)
 	lo := Options{
-		Prefs: ps,
+		Prefs: ps, Audit: al,
 		Login: cfg.Auth.Login, BaseURL: e.base, Key: testKey, ClientSecret: clientSecret,
 		Config: st.Config, HTTPClient: e.idpS.Client(), ReadOnly: o.readOnly, Logger: logger, Now: e.clk.Now,
 	}
