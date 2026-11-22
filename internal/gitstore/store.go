@@ -108,6 +108,11 @@ type Store struct {
 	delMu    sync.Mutex
 	delMem   map[string]*deletedState
 	delBuild sync.Mutex
+	delOK    map[string]bool // commits found reachable from the tip (deleted.go)
+
+	// parsed blobs of the history views, shared by their requests (histread.go)
+	histOnce sync.Once
+	hc       *histCache
 }
 
 // Open loads the config and ledger and detects Git. Inside a repository with
@@ -584,11 +589,10 @@ func (s *Store) discard(ctx context.Context, parent string, files []string) {
 		return
 	}
 	for _, f := range files {
-		if _, err := s.repo.git(ctx, "cat-file", "blob", parent+":./"+f); err != nil {
-			if msg := err.Error(); !strings.Contains(msg, "Not a valid object name") && !strings.Contains(msg, "does not exist") && !strings.Contains(msg, "but not in") {
-				s.log.Error("could not tell whether the edit created the file", "file", f, "err", err)
-				continue
-			}
+		if id, err := s.repo.blobOf(ctx, parent+":./"+f); err != nil {
+			s.log.Error("could not tell whether the edit created the file", "file", f, "err", err)
+			continue
+		} else if id == "" {
 			if err := os.Remove(filepath.Join(s.repo.Dir, filepath.FromSlash(f))); err != nil && !errors.Is(err, os.ErrNotExist) {
 				s.log.Error("could not remove the created file", "file", f, "err", err)
 			}

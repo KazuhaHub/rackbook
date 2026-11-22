@@ -13,12 +13,15 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"time"
 
+	"github.com/kazuhahub/rackbook/internal/config"
 	"github.com/kazuhahub/rackbook/internal/ledger"
 )
 
@@ -35,6 +38,9 @@ const deletedCacheVersion = 1
 // (redacted when its key holds a secret): the cache never holds a secret.
 type DeletedEvent struct {
 	ID string `json:"id"`
+	// Fields are a few fields of the last version for a summary, already without the
+	// values the secret scan flags.
+	Fields []SummaryField `json:"fields,omitempty"`
 	// Commit removed the record; Last is the commit that still had it (its first parent).
 	Commit string    `json:"commit"`
 	Last   string    `json:"last"`
@@ -52,6 +58,10 @@ type deletedState struct {
 	Version    int    `json:"version"`
 	Collection string `json:"collection"`
 	File       string `json:"file"` // the collection's file the history was read for
+	// Fingerprint says what the ids and summaries below were made with (the secret
+	// scan, the collection's type, key and list fields): when it is not today's they
+	// are made again.
+	Fingerprint string `json:"fingerprint"`
 	// Tip: the events below are those of every commit reachable from it that
 	// touched the file ("" = nothing read yet).
 	Tip    string         `json:"tip"`
@@ -102,6 +112,39 @@ func (st *deletedState) valid() bool {
 	return true
 }
 
+func cloneEvents(in []DeletedEvent) []DeletedEvent {
+	out := make([]DeletedEvent, len(in))
+	for i, e := range in {
+		out[i] = e
+		out[i].Fields = append([]SummaryField(nil), e.Fields...)
+	}
+	return out
+}
+
+// clone is a deep copy: the in-memory cache never shares a slice with a caller.
+func (st *deletedState) clone() *deletedState {
+	cp := *st
+	cp.Events = cloneEvents(st.Events)
+	if st.Pending != nil {
+		p := *st.Pending
+		p.Events = cloneEvents(st.Pending.Events)
+		cp.Pending = &p
+	}
+	return &cp
+}
+
+// deletedFingerprint is what the cached ids and summaries depend on besides the history.
+func (s *Store) deletedFingerprint(col *ledger.Collection) string {
+	cfg := s.Config()
+	sc, _ := json.Marshal(cfg.SecretScan)
+	h := sha256.New()
+	for _, part := range [][]byte{sc, col.SchemaRaw, []byte(strings.Join(col.Key, "\x01")), []byte(strings.Join(col.List, "\x01")), []byte(col.Label)} {
+		h.Write(part)
+		h.Write([]byte{0})
+	}
+	return hex.EncodeToString(h.Sum(nil))[:24]
+}
+
 // deletedFile is the cache file of a collection; a name that is not a plain file
 // name is replaced by a hash of it.
 func (s *Store) deletedFile(collection string) string {
@@ -116,8 +159,8 @@ func (s *Store) deletedFile(collection string) string {
 	return filepath.Join(s.opts.StateDir, "history", "deleted-"+name+".json")
 }
 
-func (s *Store) loadDeleted(collection, file string) *deletedState {
-	fresh := &deletedState{Version: deletedCacheVersion, Collection: collection, File: file}
+func (s *Store) loadDeleted(collection, file, fp string) *deletedState {
+	fresh := &deletedState{Version: deletedCacheVersion, Collection: collection, File: file, Fingerprint: fp}
 	var st *deletedState
 	if p := s.deletedFile(collection); p != "" {
 		b, err := os.ReadFile(p)
@@ -133,11 +176,10 @@ func (s *Store) loadDeleted(collection, file string) *deletedState {
 		st = s.delMem[collection]
 		s.delMu.Unlock()
 		if st != nil {
-			cp := *st
-			st = &cp
+			st = st.clone()
 		}
 	}
-	if st == nil || !st.valid() || st.Collection != collection || st.File != file {
+	if st == nil || !st.valid() || st.Collection != collection || st.File != file || st.Fingerprint != fp {
 		return fresh
 	}
 	return st
@@ -146,12 +188,12 @@ func (s *Store) loadDeleted(collection, file string) *deletedState {
 func (s *Store) saveDeleted(st *deletedState) {
 	p := s.deletedFile(st.Collection)
 	if p == "" {
-		cp := *st
+		cp := st.clone()
 		s.delMu.Lock()
 		if s.delMem == nil {
 			s.delMem = map[string]*deletedState{}
 		}
-		s.delMem[st.Collection] = &cp
+		s.delMem[st.Collection] = cp
 		s.delMu.Unlock()
 		return
 	}
@@ -175,24 +217,45 @@ func (s *Store) saveDeleted(st *deletedState) {
 // DeletedRecords lists the records of the collection whose last change removed
 // them, newest deletion first: not the ones deleted and added again, and not the
 // ones that were only renamed. It reads at most DeletedBudget commits of the
-// collection file's history per call and keeps the result (see the file comment).
+// collection file's history per call (and works at most DeletedTimeBudget) and keeps
+// the result (see the file comment). Serving the list reads nothing from Git except
+// that every commit it names is checked, once, to be on the tracked branch.
 func (s *Store) DeletedRecords(ctx context.Context, collection string) (*DeletedResult, error) {
 	col := s.cur.Load().Collection(collection)
 	if col == nil {
 		return nil, fmt.Errorf("unknown collection %q", collection)
 	}
-	res := &DeletedResult{Complete: true}
 	if !s.git || len(col.Key) == 0 {
-		return res, nil // without a key a record has no identity to be found by
+		return &DeletedResult{Complete: true}, nil // without a key a record has no identity to be found by
 	}
 	tip, ok := s.trackedTip(ctx)
 	if !ok {
-		return res, nil
+		return &DeletedResult{Complete: true}, nil
 	}
 	// one build at a time per store: they are bounded, and two would repeat each other's work
 	s.delBuild.Lock()
 	defer s.delBuild.Unlock()
-	st := s.loadDeleted(collection, col.File)
+	res, err := s.deletedOnce(ctx, col, tip)
+	if errors.Is(err, errCacheUnreachable) {
+		res, err = s.deletedOnce(ctx, col, tip) // the cache was dropped: once more, from nothing
+	}
+	return res, err
+}
+
+// errCacheUnreachable says a cached commit is not on the tracked branch: the cache was dropped.
+var errCacheUnreachable = errors.New("the deleted-records cache names a commit that is not on the branch")
+
+func (s *Store) deletedOnce(ctx context.Context, col *ledger.Collection, tip string) (*DeletedResult, error) {
+	collection := col.Name
+	res := &DeletedResult{Complete: true}
+	fp := s.deletedFingerprint(col)
+	st := s.loadDeleted(collection, col.File, fp)
+	reset := func() {
+		*st = deletedState{Version: deletedCacheVersion, Collection: collection, File: col.File, Fingerprint: fp}
+		s.delMu.Lock()
+		s.delOK = nil
+		s.delMu.Unlock()
+	}
 	if st.Pending != nil {
 		// a pending read is pinned to the tip it began at; it is dropped when that
 		// commit is not on the branch any more (history rewritten)
@@ -202,7 +265,7 @@ func (s *Store) DeletedRecords(ctx context.Context, collection string) (*Deleted
 	}
 	if st.Tip != "" && st.Tip != tip {
 		if _, err := s.repo.git(ctx, "merge-base", "--is-ancestor", st.Tip, tip); err != nil {
-			*st = deletedState{Version: deletedCacheVersion, Collection: collection, File: col.File} // rewritten: rebuild
+			reset() // rewritten: rebuild
 		}
 	}
 	if st.Pending == nil && st.Tip != tip {
@@ -238,8 +301,87 @@ func (s *Store) DeletedRecords(ctx context.Context, collection string) (*Deleted
 			break
 		}
 	}
+	// the cache may have been edited or come from a branch that was rewritten: what is
+	// named has to be on the tracked branch (checked once per commit, then remembered)
+	for _, e := range res.Records {
+		for _, h := range []string{e.Commit, e.Last} {
+			ok, err := s.reachableFrom(ctx, h, tip)
+			if err != nil {
+				return nil, err
+			}
+			if !ok {
+				reset()
+				s.saveDeleted(st)
+				return nil, errCacheUnreachable
+			}
+		}
+	}
 	return res, nil
 }
+
+// reachableFrom says whether the commit is on the history of tip; what was found
+// reachable is remembered (it stays so while the history is only added to, and the
+// memory is cleared when a cache is dropped).
+func (s *Store) reachableFrom(ctx context.Context, commit, tip string) (bool, error) {
+	s.delMu.Lock()
+	ok := s.delOK[commit]
+	s.delMu.Unlock()
+	if ok {
+		return true, nil
+	}
+	if _, err := s.repo.git(ctx, "merge-base", "--is-ancestor", commit, tip); err != nil {
+		if ctx.Err() != nil {
+			return false, ctx.Err()
+		}
+		return false, nil
+	}
+	s.delMu.Lock()
+	if s.delOK == nil {
+		s.delOK = map[string]bool{}
+	}
+	s.delOK[commit] = true
+	s.delMu.Unlock()
+	return true, nil
+}
+
+// summaryFieldNames are the fields a summary of a record of the collection shows:
+// its list columns, else its label and key fields.
+func summaryFieldNames(col *ledger.Collection) []string {
+	fields := append([]string{}, col.List...)
+	if len(fields) == 0 {
+		if col.Label != "" {
+			fields = append(fields, col.Label)
+		}
+		fields = append(fields, col.Key...)
+	}
+	if len(fields) > 4 {
+		fields = fields[:4]
+	}
+	return fields
+}
+
+// summaryOf makes the summary fields of a record (as it was in sn), without the
+// values that are hidden.
+func (s *Store) summaryOf(col *ledger.Collection, sn *snapshot, rec *ledger.Record) []SummaryField {
+	hidden := hideFindings(rec.Data, s.findingsOf(col.Name, sn, rec))
+	var out []SummaryField
+	for _, f := range summaryFieldNames(col) {
+		v, ok := hidden[f]
+		if !ok {
+			continue
+		}
+		v, _ = scrub(v)
+		txt := ledger.Str(v)
+		if r := []rune(txt); len(r) > 120 {
+			txt = string(r[:120]) + "…"
+		}
+		out = append(out, SummaryField{Field: f, Value: txt})
+	}
+	return out
+}
+
+// DeletedTimeBudget is how long one call reads history before it ends the chunk.
+var DeletedTimeBudget = 700 * time.Millisecond
 
 // extendDeleted reads up to DeletedBudget more commits of the pending walk. When
 // the walk ends the events replace or extend the finished ones.
@@ -248,31 +390,20 @@ func (s *Store) extendDeleted(ctx context.Context, col *ledger.Collection, st *d
 	rd := s.newSnapReader(ctx, col.Name)
 	cfg := s.Config()
 	n := 0
+	start := time.Now()
+	timedOut := false
 	var inner error
 	err := activityLog(ctx, s.repo, p.Tip, ActivityQuery{Skip: p.Skip, Limit: min(DeletedBudget, MaxActivity), Exclude: p.Base},
 		[]string{filepath.FromSlash(col.File)}, "", func(c ActivityCommit) bool {
 			n++
-			if c.Parent == "" || !hexRe.MatchString(c.Parent) {
-				return true // the first commit removed nothing
-			}
-			cur, err := rd.at(c.Hash)
-			if err == nil {
-				var prev *snapshot
-				if prev, err = rd.at(c.Parent); err == nil && !cur.broken && !prev.broken && prev.found {
-					for _, r := range prev.recs {
-						if cur.byID[r.ID] != nil || prev.byID[r.ID] != r || renamedTo(prev, cur, r) != nil {
-							continue
-						}
-						p.Events = append(p.Events, DeletedEvent{ID: ledger.SafeID(cfg, col.Name, r.ID), Commit: c.Hash, Last: c.Parent, Time: c.Time,
-							Subject: c.Subject, Author: c.Author, Email: c.Email, EditedBy: c.EditedBy, EditedVia: c.EditedVia})
-						if len(p.Events) > maxDeletedEvents {
-							break
-						}
-					}
+			if c.Parent != "" && hexRe.MatchString(c.Parent) { // the first commit removed nothing
+				if err := s.deletedAt(rd, col, cfg, c, p); err != nil {
+					inner = err
+					return false
 				}
 			}
-			if err != nil {
-				inner = err
+			if time.Since(start) > DeletedTimeBudget {
+				timedOut = true
 				return false
 			}
 			return true
@@ -284,7 +415,7 @@ func (s *Store) extendDeleted(ctx context.Context, col *ledger.Collection, st *d
 		return err
 	}
 	p.Skip += n
-	if n >= min(DeletedBudget, MaxActivity) {
+	if timedOut || n >= min(DeletedBudget, MaxActivity) {
 		return nil // maybe more
 	}
 	// the walk is finished
@@ -299,68 +430,51 @@ func (s *Store) extendDeleted(ctx context.Context, col *ledger.Collection, st *d
 	return nil
 }
 
+// deletedAt adds to p the events of the records that commit c removed.
+func (s *Store) deletedAt(rd *snapReader, col *ledger.Collection, cfg *config.Config, c ActivityCommit, p *deletedPending) error {
+	ct, err := rd.tree(c.Hash)
+	if err != nil {
+		return err
+	}
+	pt, err := rd.tree(c.Parent)
+	if err != nil {
+		return err
+	}
+	if ct.found == pt.found && ct.fileBlob == pt.fileBlob {
+		return nil // the same file: nothing was removed
+	}
+	cur, err := rd.at(c.Hash)
+	if err != nil {
+		return err
+	}
+	prev, err := rd.at(c.Parent)
+	if err != nil {
+		return err
+	}
+	if cur.unreadable || prev.unreadable || !prev.found {
+		return nil // nothing can be said of this commit; the walk goes on past it
+	}
+	for _, r := range prev.recs {
+		if cur.byID[r.ID] != nil || prev.byID[r.ID] != r || renamedTo(prev, cur, r) != nil {
+			continue
+		}
+		p.Events = append(p.Events, DeletedEvent{ID: ledger.SafeID(cfg, col.Name, r.ID), Fields: s.summaryOf(col, prev, r), Commit: c.Hash, Last: c.Parent, Time: c.Time,
+			Subject: c.Subject, Author: c.Author, Email: c.Email, EditedBy: c.EditedBy, EditedVia: c.EditedVia})
+		if len(p.Events) > maxDeletedEvents {
+			break
+		}
+	}
+	return nil
+}
+
 // ActivityCommit is the deleting commit as the activity view shows commits.
 func (e DeletedEvent) ActivityCommit() ActivityCommit {
 	return ActivityCommit{Hash: e.Commit, Short: e.Commit[:7], Author: e.Author, Email: e.Email, Time: e.Time, Subject: e.Subject,
 		EditedBy: e.EditedBy, EditedVia: e.EditedVia, State: StateNone}
 }
 
-// DeletedSummary is a deleted record with a few fields of its last version.
-type DeletedSummary struct {
-	DeletedEvent
-	// Fields are the fields a list of the collection shows, with the values of the
-	// last version (without the ones the secret scan flags).
-	Fields []SummaryField
-}
-
 // SummaryField is one field of a summary.
 type SummaryField struct {
 	Field string `json:"field"`
 	Value string `json:"value"`
-}
-
-// Summaries reads the last version of each deleted record, for a few display
-// fields: the collection's list columns, else its label and key fields.
-func (s *Store) Summaries(ctx context.Context, collection string, evs []DeletedEvent) ([]DeletedSummary, error) {
-	col := s.cur.Load().Collection(collection)
-	if col == nil {
-		return nil, fmt.Errorf("unknown collection %q", collection)
-	}
-	fields := append([]string{}, col.List...)
-	if len(fields) == 0 {
-		if col.Label != "" {
-			fields = append(fields, col.Label)
-		}
-		fields = append(fields, col.Key...)
-	}
-	if len(fields) > 4 {
-		fields = fields[:4]
-	}
-	cfg := s.Config()
-	rd := s.newSnapReader(ctx, collection)
-	out := make([]DeletedSummary, 0, len(evs))
-	for _, e := range evs {
-		d := DeletedSummary{DeletedEvent: e}
-		sn, err := rd.at(e.Last)
-		if err != nil {
-			return nil, err
-		}
-		if rec := sn.find(cfg, e.ID); rec != nil {
-			hidden := hideFindings(rec.Data, scanOf(cfg.SecretScanner(), collection, cfg, sn, rec))
-			for _, f := range fields {
-				v, ok := hidden[f]
-				if !ok {
-					continue
-				}
-				v, _ = scrub(v)
-				txt := ledger.Str(v)
-				if r := []rune(txt); len(r) > 120 {
-					txt = string(r[:120]) + "…"
-				}
-				d.Fields = append(d.Fields, SummaryField{Field: f, Value: txt})
-			}
-		}
-		out = append(out, d)
-	}
-	return out, nil
 }

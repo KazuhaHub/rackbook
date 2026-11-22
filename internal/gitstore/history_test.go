@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -146,7 +148,7 @@ func TestRecordVersionsHaveFieldLevelDiffs(t *testing.T) {
 	m.rackbook(s, editOf(t, s, "alpha", map[string]any{"os": "ubuntu", "ports": []any{map[string]any{"port": 22, "proto": "tcp"}, map[string]any{"port": 80, "proto": "udp"}}, "meta": map[string]any{"owner": "ann"}}))
 
 	pg := versions(t, s, "alpha")
-	if pg.Mode != ModeRecord || !pg.Done || len(pg.Versions) != 3 || pg.ID != "alpha" {
+	if !pg.Done || len(pg.Versions) != 3 || pg.ID != "alpha" {
 		t.Fatalf("%+v", pg)
 	}
 	v3, v2, v1 := pg.Versions[0], pg.Versions[1], pg.Versions[2]
@@ -203,7 +205,7 @@ func TestRecordVersionsPageByWalkPosition(t *testing.T) {
 	}
 	// a commit that lands between the pages changes nothing for the next page
 	m.rackbook(s, editOf(t, s, "alpha", map[string]any{"os": "e"}))
-	p2, err := s.RecordVersions(ctx, VersionQuery{Collection: "hosts", ID: "alpha", Limit: 2, Tip: p1.Tip, Mode: p1.Mode, Skip: p1.Skip})
+	p2, err := s.RecordVersions(ctx, VersionQuery{Collection: "hosts", ID: "alpha", Limit: 2, Tip: p1.Tip, Skip: p1.Skip})
 	if err != nil || len(p2.Versions) != 2 {
 		t.Fatalf("%v %+v", err, p2)
 	}
@@ -217,10 +219,10 @@ func TestRecordVersionsPageByWalkPosition(t *testing.T) {
 	if len(seen) != 4 {
 		t.Fatalf("%+v", p2)
 	}
-	if p3, err := s.RecordVersions(ctx, VersionQuery{Collection: "hosts", ID: "alpha", Limit: 2, Tip: p2.Tip, Mode: p2.Mode, Skip: p2.Skip}); err != nil || len(p3.Versions) != 0 || !p3.Done {
+	if p3, err := s.RecordVersions(ctx, VersionQuery{Collection: "hosts", ID: "alpha", Limit: 2, Tip: p2.Tip, Skip: p2.Skip}); err != nil || len(p3.Versions) != 0 || !p3.Done {
 		t.Fatalf("%v %+v", err, p3)
 	}
-	for _, q := range []VersionQuery{{Collection: "hosts", ID: "alpha", Tip: "nothex"}, {Collection: "hosts", ID: "alpha", Mode: "nope"}, {Collection: "nope", ID: "x"}, {Collection: "hosts"}} {
+	for _, q := range []VersionQuery{{Collection: "hosts", ID: "alpha", Tip: "nothex"}, {Collection: "nope", ID: "x"}, {Collection: "hosts"}} {
 		if _, err := s.RecordVersions(ctx, q); err == nil {
 			t.Fatalf("%+v accepted", q)
 		}
@@ -267,7 +269,7 @@ func TestRecordVersionsFileFallbackDropsCommitsThatDidNotChangeTheRecord(t *test
 	m.commit("change beta again")
 	s := m.store()
 	pg := versions(t, s, "alpha")
-	if pg.Mode != ModeFile || len(pg.Versions) != 2 || pg.Versions[0].Commit.Hash != c3 || pg.Versions[1].Commit.Hash != c1 {
+	if len(pg.Versions) != 2 || pg.Versions[0].Commit.Hash != c3 || pg.Versions[1].Commit.Hash != c1 {
 		t.Fatalf("%+v", pg)
 	}
 	if pg.Versions[1].Kind != KindCreated {
@@ -382,25 +384,36 @@ func TestVersionAtAndRestoreSourceRefuseWhatIsNotTheRecordsHistory(t *testing.T)
 	}
 }
 
-func TestBlobAtRefusesWhatIsNotAPlainFileOfTheDataDirectory(t *testing.T) {
+func TestFilesAtACommitAreReadByBlobIDAndRefusedOtherwise(t *testing.T) {
 	m := newMini(t)
 	s := m.store()
 	head := sh(t, m.dir, "rev-parse", "HEAD")
 	ctx := context.Background()
-	if b, ok, err := s.repo.blobAt(ctx, head, "rackbook.yml"); err != nil || !ok || !strings.Contains(string(b), "title: t") {
-		t.Fatalf("%v %v", ok, err)
+	ids, err := s.repo.lsTree(ctx, head, "rackbook.yml", "data/hosts.yml", "nope.yml")
+	if err != nil || len(ids) != 2 || ids["rackbook.yml"] == "" || ids["nope.yml"] != "" {
+		t.Fatalf("%v %v", ids, err)
 	}
-	if _, ok, err := s.repo.blobAt(ctx, head, "nope.yml"); err != nil || ok {
-		t.Fatalf("a missing file is not an error: %v %v", ok, err)
+	b, cut, err := s.repo.catBlob(ctx, ids["rackbook.yml"], maxBlobBytes)
+	if err != nil || cut || !strings.Contains(string(b), "title: t") {
+		t.Fatalf("%v %v", cut, err)
 	}
+	if _, cut, _ := s.repo.catBlob(ctx, ids["rackbook.yml"], 5); !cut {
+		t.Fatal("a limit cuts")
+	}
+	// paths that are not plain files of the data directory are not looked up
 	for _, rel := range []string{"", ".", "..", "../x", "/etc/passwd", ".rackbook/tokens.yml", ".git/config", "a\nb", "a\x00b", "sub/../../x"} {
-		if _, _, err := s.repo.blobAt(ctx, head, rel); err == nil {
-			t.Errorf("%q was read", rel)
+		if got, _ := s.repo.lsTree(ctx, head, rel); len(got) != 0 {
+			t.Errorf("%q was looked up", rel)
 		}
 	}
 	for _, rev := range []string{"HEAD", "main", "-x", head[:10], head + ":x", "HEAD^{tree}", ""} {
-		if _, _, err := s.repo.blobAt(ctx, rev, "rackbook.yml"); err == nil {
+		if _, err := s.repo.lsTree(ctx, rev, "rackbook.yml"); err == nil {
 			t.Errorf("%q accepted as a commit", rev)
+		}
+	}
+	for _, id := range []string{"", "HEAD:rackbook.yml", head + ":./rackbook.yml", "-p", ids["rackbook.yml"][:12], ids["rackbook.yml"] + "\n"} {
+		if _, _, err := s.repo.catBlob(ctx, id, 100); err == nil {
+			t.Errorf("%q accepted as a blob id", id)
 		}
 	}
 }
@@ -455,9 +468,8 @@ func TestDeletedRecordsAreThoseWhoseLastChangeRemovedThem(t *testing.T) {
 	if d.Commit == del || d.Commit != sh(t, m.dir, "rev-parse", "HEAD") || d.Last != sh(t, m.dir, "rev-parse", "HEAD~1") || d.Subject != "ledger(hosts): delete delta2" || d.EditedBy != "ann@example.com" || d.Time.IsZero() {
 		t.Fatalf("%+v", d)
 	}
-	sums, err := s.Summaries(context.Background(), "hosts", res.Records)
-	if err != nil || len(sums) != 2 || len(sums[1].Fields) != 2 || sums[1].Fields[0].Field != "name" || sums[1].Fields[0].Value != "beta" || sums[1].Fields[1].Value != "x" {
-		t.Fatalf("%v %+v", err, sums)
+	if f := res.Records[1].Fields; len(f) != 2 || f[0].Field != "name" || f[0].Value != "beta" || f[1].Value != "x" {
+		t.Fatalf("the summary is kept with the event: %+v", res.Records[1])
 	}
 	// the last version can be read for a restore
 	src, err := s.RestoreSourceAt(context.Background(), "hosts", "beta", res.Records[1].Last)
@@ -608,6 +620,391 @@ func TestDeletedRecordsOfAnUnknownCollectionOrWithoutGit(t *testing.T) {
 	}
 	s := open(t, m.dir, func(o *Options) { o.NoGit = true })
 	if res, err := s.DeletedRecords(context.Background(), "hosts"); err != nil || len(res.Records) != 0 || !res.Complete {
+		t.Fatalf("%v %+v", err, res)
+	}
+}
+
+// Cost --------------------------------------------------------------------------
+
+// gitCounter counts the git processes by subcommand.
+type gitCounter struct {
+	mu sync.Mutex
+	by map[string]int
+}
+
+func newGitCounter() *gitCounter { return &gitCounter{by: map[string]int{}} }
+
+func (g *gitCounter) Run(ctx context.Context, cmd Cmd) (string, string, error) {
+	sub, _ := subcommand(cmd.Args)
+	g.mu.Lock()
+	g.by[sub]++
+	g.mu.Unlock()
+	return RealRunner().Run(ctx, cmd)
+}
+
+func (g *gitCounter) total() (n int) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for _, c := range g.by {
+		n += c
+	}
+	return
+}
+
+func (g *gitCounter) reset() {
+	g.mu.Lock()
+	g.by = map[string]int{}
+	g.mu.Unlock()
+}
+
+// bigHosts is a collection file of n records.
+func bigHosts(n int, change map[int]string) string {
+	var b strings.Builder
+	for i := 0; i < n; i++ {
+		os := "debian"
+		if v, ok := change[i]; ok {
+			os = v
+		}
+		fmt.Fprintf(&b, "- {name: host%03d, os: %s, note: \"a note for host number %d\"}\n", i, os, i)
+	}
+	return b.String()
+}
+
+func allVersions(t *testing.T, s *Store, id string) (vs []RecordVersion, pages int) {
+	t.Helper()
+	q := VersionQuery{Collection: "hosts", ID: id, Limit: 50}
+	for {
+		pg, err := s.RecordVersions(context.Background(), q)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pages++
+		vs = append(vs, pg.Versions...)
+		if pg.Done || pages > 500 {
+			return
+		}
+		q.Tip, q.Skip = pg.Tip, pg.Skip
+	}
+}
+
+// A long file-mode history is read by blob: each distinct file is parsed once
+// (a commit's file is its parent's blob for the next commit), a commit whose file
+// is the very blob of its parent's is not parsed at all, and what was parsed is
+// kept for the next request. The git processes are one or two a commit.
+func TestVersionWalkParsesEachBlobOnceAndRunsFewGitProcesses(t *testing.T) {
+	m := newMini(t)
+	const commits = 40
+	changes := map[int]string{}
+	m.put(m.file, bigHosts(300, nil))
+	m.commit("big file")
+	for i := 1; i <= commits; i++ {
+		changes[i%7] = fmt.Sprintf("os%d", i) // host000..host006 change in turn
+		m.put(m.file, bigHosts(300, changes))
+		m.commit(fmt.Sprintf("change %d", i))
+		// a commit that names the record but changes another file: the file is the same blob
+		m.put("notes.txt", fmt.Sprintf("%d\n", i))
+		m.commit(fmt.Sprintf("notes %d\n\nRecord: hosts/host003", i))
+	}
+	oldCache := histFileCache
+	histFileCache = 64
+	t.Cleanup(func() { histFileCache = oldCache })
+	gc := newGitCounter()
+	s := open(t, m.dir, func(o *Options) { o.Runner = gc })
+	gc.reset()
+	histStats.parses.Store(0)
+	vs, _ := allVersions(t, s, "host003")
+	if len(vs) < 5 {
+		t.Fatalf("%d versions", len(vs))
+	}
+	for _, v := range vs {
+		if v.Commit.Subject == "" || strings.HasPrefix(v.Commit.Subject, "notes") {
+			t.Fatalf("a commit that left the file as it was is not a version: %+v", v.Commit)
+		}
+	}
+	parses, procs := histStats.parses.Load(), gc.total()
+	if parses > commits+4 {
+		t.Fatalf("%d parses for %d versions of the file", parses, commits+1)
+	}
+	if procs > 2*(2*commits)+30 {
+		t.Fatalf("%d git processes for %d commits", procs, 2*commits)
+	}
+	// the second request parses nothing and starts few processes: the blobs are kept
+	histStats.parses.Store(0)
+	gc.reset()
+	vs2, _ := allVersions(t, s, "host003")
+	if histStats.parses.Load() != 0 || len(vs2) != len(vs) {
+		t.Fatalf("parsed again: %d", histStats.parses.Load())
+	}
+	if gc.by["cat-file"] != 0 || gc.by["ls-tree"] != 0 {
+		t.Fatalf("read again: %v", gc.by)
+	}
+}
+
+// A request that has used its time ends the page and the cursor goes on: nothing is
+// lost or repeated, whatever the budget.
+func TestVersionPagesEndOnTheTimeBudgetAndResume(t *testing.T) {
+	m := newMini(t)
+	m.put(m.file, bigHosts(20, nil))
+	m.commit("seed hosts")
+	ch := map[int]string{}
+	for i := 1; i <= 12; i++ {
+		ch[0] = fmt.Sprintf("os%d", i)
+		m.put(m.file, bigHosts(20, ch))
+		m.commit(fmt.Sprintf("change %d", i))
+	}
+	s := m.store()
+	want, _ := allVersions(t, s, "host000")
+	old := VersionTimeBudget
+	VersionTimeBudget = time.Nanosecond
+	t.Cleanup(func() { VersionTimeBudget = old })
+	got, pages := allVersions(t, s, "host000")
+	if pages < len(want) {
+		t.Fatalf("a request that has no time left ends its page after one commit: %d pages for %d versions", pages, len(want))
+	}
+	if len(got) != len(want) {
+		t.Fatalf("%d against %d", len(got), len(want))
+	}
+	for i := range got {
+		if got[i].Commit.Hash != want[i].Commit.Hash {
+			t.Fatalf("%d: %s against %s", i, got[i].Commit.Hash, want[i].Commit.Hash)
+		}
+	}
+}
+
+// What a commit that is not named for the record did to it shows too: a hand edit
+// without the trailer, next to the commits that carry it.
+func TestRecordVersionsIncludeHandEditsNextToTrailerCommits(t *testing.T) {
+	m := newMini(t)
+	s := m.store()
+	m.rackbook(s, add("alpha", map[string]any{"os": "a"}))
+	m.rackbook(s, add("beta", map[string]any{"os": "b"}))
+	// by hand, no trailer: changes alpha
+	b, _ := os.ReadFile(filepath.Join(m.dir, m.file))
+	m.put(m.file, strings.Replace(string(b), "os: a\n", "os: by-hand\n", 1))
+	hand := m.commit("tweak by hand")
+	// by hand, no trailer: changes only beta
+	b, _ = os.ReadFile(filepath.Join(m.dir, m.file))
+	m.put(m.file, strings.Replace(string(b), "os: b\n", "os: b2\n", 1))
+	m.commit("tweak beta by hand")
+	s = m.store()
+	m.rackbook(s, editOf(t, s, "alpha", map[string]any{"os": "after"}))
+	vs := versions(t, s, "alpha").Versions
+	if len(vs) != 3 || vs[0].Changes[0].New != "after" || vs[1].Commit.Hash != hand || vs[1].Changes[0].Old != "a" || vs[1].Changes[0].New != "by-hand" || vs[2].Kind != KindCreated {
+		t.Fatalf("%+v", vs)
+	}
+	if vs[1].Commit.EditedBy != "" {
+		t.Fatalf("%+v", vs[1].Commit)
+	}
+}
+
+// A file that is too large (or does not parse) at a commit says nothing: that
+// version is marked, the request goes on, and so does the walk for deleted records.
+func TestAnUnreadableBlobIsMarkedAndDoesNotFailTheRequest(t *testing.T) {
+	old := maxBlobBytes
+	maxBlobBytes = 400
+	t.Cleanup(func() { maxBlobBytes = old })
+	m := newMini(t)
+	m.put(m.file, "- {name: alpha, os: a}\n- {name: beta, os: b}\n")
+	m.commit("add\n\nRecord: hosts/alpha")
+	m.put(m.file, bigHosts(60, nil)) // far over the limit
+	big := m.commit("huge\n\nRecord: hosts/alpha")
+	m.put(m.file, "- {name: alpha, os: z}\n")
+	m.commit("small again\n\nRecord: hosts/alpha")
+	s := m.store()
+	vs := versions(t, s, "alpha").Versions
+	if len(vs) != 3 {
+		t.Fatalf("%+v", vs)
+	}
+	if !vs[1].Unreadable || vs[1].Commit.Hash != big || vs[1].Hash != "" || len(vs[1].Changes) != 0 {
+		t.Fatalf("%+v", vs[1])
+	}
+	if !vs[0].Unreadable || vs[2].Unreadable || vs[2].Kind != KindCreated {
+		t.Fatalf("the commit after it has nothing to compare with, the one before it is fine: %+v", vs)
+	}
+	res, err := s.DeletedRecords(context.Background(), "hosts")
+	if err != nil || !res.Complete {
+		t.Fatalf("%v %+v", err, res)
+	}
+	if _, err := s.RestoreSourceAt(context.Background(), "hosts", "alpha", big); !errors.Is(err, ErrNotInCommit) {
+		t.Fatalf("a record of an unreadable file is not found there: %v", err)
+	}
+}
+
+// An old rackbook.yml is read for what history needs only: it may name branding
+// files that are not there, hold fields no version knows, and still gives the file
+// and the key. One that cannot be read at all makes the versions approximate.
+func TestAnOldConfigIsReadWithoutTodaysParserAndFlagsWhenItCannotBe(t *testing.T) {
+	m := newMini(t)
+	s := m.store()
+	m.rackbook(s, add("alpha", map[string]any{"os": "a"}))
+	old := "title: old\nbranding:\n  name: X\n  logo: logos/not-here.svg\neditors: [a@b.c]\nfuture_thing: {x: 1}\ncollections:\n  hosts:\n    title: Hosts\n    file: data/hosts.yml\n    schema: schemas/host.json\n    key: name\n    from_the_future: true\n"
+	m.put("rackbook.yml", old)
+	m.put(m.file, "- {name: alpha, os: b}\n")
+	m.commit("old config\n\nRecord: hosts/alpha")
+	// and one that is not YAML at all
+	m.put("rackbook.yml", "collections: [\n")
+	m.put(m.file, "- {name: alpha, os: c}\n")
+	bad := m.commit("broken config\n\nRecord: hosts/alpha")
+	m.put("rackbook.yml", strings.ReplaceAll(miniConfig, "%FILE%", m.file))
+	m.put(m.file, "- {name: alpha, os: d}\n")
+	m.commit("fixed\n\nRecord: hosts/alpha")
+	s = m.store()
+	vs := versions(t, s, "alpha").Versions
+	if len(vs) != 4 {
+		t.Fatalf("%d versions", len(vs))
+	}
+	for _, v := range vs {
+		wantApprox := v.Commit.Hash == bad || v.Commit.Parent == bad
+		if v.Approximate != wantApprox {
+			t.Errorf("%s: approximate=%v", v.Commit.Subject, v.Approximate)
+		}
+	}
+	for i, want := range []string{"c>d", "b>c", "a>b"} {
+		c := changeOf(vs[i], "os")
+		if c == nil || c.Old.(string)+">"+c.New.(string) != want {
+			t.Fatalf("%d: %+v", i, vs[i].Changes)
+		}
+	}
+}
+
+// Hiding goes by every reading of the value: the type of the commit, today's type
+// and no type at all.
+func TestHiddenValuesFollowEveryReadingOfTheScan(t *testing.T) {
+	m := newMini(t)
+	// the type exempts "fp" as a public hex id, today and then
+	m.put("schemas/host.json", strings.Replace(miniSchema, `"os": {"type": "string"},`, `"os": {"type": "string"}, "fp": {"type": "string", "x-rackbook": {"public": "hex_id"}},`, 1))
+	m.commit("type")
+	const fp1, fp2 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
+	m.put(m.file, "- {name: alpha, os: a, fp: "+fp1+"}\n")
+	m.commit("one\n\nRecord: hosts/alpha")
+	m.put(m.file, "- {name: alpha, os: a, fp: "+fp2+"}\n")
+	last := m.commit("two\n\nRecord: hosts/alpha")
+	s := m.store()
+	sc := s.Config().SecretScanner()
+	if len(sc.ScanRecordWith("hosts", "alpha", map[string]any{"fp": fp1}, nil)) == 0 {
+		t.Skip("this scan does not flag a long hex string without the exemption")
+	}
+	pg := versions(t, s, "alpha")
+	if strings.Contains(jsonOf(pg), fp1) || strings.Contains(jsonOf(pg), fp2) {
+		t.Fatalf("a value flagged with no exemption is shown: %s", jsonOf(pg))
+	}
+	d, err := s.VersionAt(context.Background(), "hosts", "alpha", last)
+	if err != nil || strings.Contains(jsonOf(d), fp2) {
+		t.Fatalf("%v %s", err, jsonOf(d))
+	}
+	src, err := s.RestoreSourceAt(context.Background(), "hosts", "alpha", last)
+	if err != nil || strings.Contains(jsonOf(src.Visible), fp2) || len(src.HiddenPaths) != 1 || src.HiddenPaths[0] != "/fp" || src.Data["fp"] != fp2 {
+		t.Fatalf("%v %+v", err, src)
+	}
+}
+
+func TestRestoreSourceNamesWhereTheHiddenValuesWere(t *testing.T) {
+	m := newMini(t)
+	const key = "ghp_0123456789abcdefghijklmnopqrstuvwxyz"
+	m.put(m.file, "- name: alpha\n  os: a\n  note: \"token "+key+"\"\n  ports:\n    - {port: 22, proto: tcp}\n    - {port: 80, proto: \""+key+"\"}\n")
+	c := m.commit("by hand\n\nRecord: hosts/alpha")
+	s := m.store()
+	src, err := s.RestoreSourceAt(context.Background(), "hosts", "alpha", c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(src.HiddenPaths, ",") != "/note,/ports/1/proto" || src.Hidden != 2 {
+		t.Fatalf("%v", src.HiddenPaths)
+	}
+	if _, has := src.Visible["note"]; has || strings.Contains(jsonOf(src.Visible), key) {
+		t.Fatalf("%s", jsonOf(src.Visible))
+	}
+}
+
+// Deleted records: the summary is kept with the event, so serving the list reads
+// nothing; what a cache was made with is part of it; and what it names must be on the branch.
+func TestDeletedListIsServedFromTheCacheWithoutGitReads(t *testing.T) {
+	m := newMini(t)
+	gc := newGitCounter()
+	state := filepath.Join(t.TempDir(), "state")
+	s := open(t, m.dir, func(o *Options) { o.StateDir = state; o.Runner = gc })
+	for _, n := range []string{"a", "b"} {
+		m.rackbook(s, add(n, map[string]any{"os": "x"}))
+	}
+	m.rackbook(s, deleteOf(s, "a"))
+	m.rackbook(s, deleteOf(s, "b"))
+	res, err := s.DeletedRecords(context.Background(), "hosts")
+	if err != nil || len(res.Records) != 2 || len(res.Records[0].Fields) == 0 {
+		t.Fatalf("%v %+v", err, res)
+	}
+	gc.reset()
+	for i := 0; i < 3; i++ {
+		if res, err = s.DeletedRecords(context.Background(), "hosts"); err != nil || len(res.Records) != 2 || res.Records[1].Fields[1].Value != "x" {
+			t.Fatalf("%v %+v", err, res)
+		}
+	}
+	// only the lookup of the branch's tip, once a request
+	if n := gc.total(); n != gc.by["rev-parse"] || n > 3 {
+		t.Fatalf("serving the list started %d git processes: %v", n, gc.by)
+	}
+	// what the caller does with the answer does not reach the cache
+	res.Records[0].Fields[0].Value = "changed by the caller"
+	if res, _ = s.DeletedRecords(context.Background(), "hosts"); res.Records[0].Fields[0].Value == "changed by the caller" {
+		t.Fatal("the cache shares memory with the caller")
+	}
+}
+
+func TestDeletedCacheIsRebuiltWhenTheScanOrTheSummaryChanges(t *testing.T) {
+	m := newMini(t)
+	const key = "ghp_0123456789abcdefghijklmnopqrstuvwxyz"
+	state := filepath.Join(t.TempDir(), "state")
+	openState := func() *Store { return open(t, m.dir, func(o *Options) { o.StateDir = state }) }
+	// the scan is off: the ids and summaries made now are plain
+	m.put("rackbook.yml", strings.ReplaceAll(miniConfig, "%FILE%", m.file)+"secret_scan:\n  enabled: false\n")
+	m.put(m.file, "- {name: \"tok "+key+"\", os: a}\n- {name: keep, os: b}\n")
+	m.commit("add")
+	m.put(m.file, "- {name: keep, os: b}\n")
+	m.commit("remove")
+	res, err := openState().DeletedRecords(context.Background(), "hosts")
+	if err != nil || len(res.Records) != 1 || !strings.Contains(res.Records[0].ID, key) {
+		t.Fatalf("%v %+v", err, res)
+	}
+	// the scan is on again
+	m.put("rackbook.yml", strings.ReplaceAll(miniConfig, "%FILE%", m.file))
+	m.commit("scan on")
+	res, err = openState().DeletedRecords(context.Background(), "hosts")
+	if err != nil || len(res.Records) != 1 || strings.Contains(jsonOf(res), key) {
+		t.Fatalf("a cache made with the scan off still holds the secret: %v %s", err, jsonOf(res))
+	}
+	// the summary's fields change
+	m.put("rackbook.yml", strings.ReplaceAll(strings.ReplaceAll(miniConfig, "%FILE%", m.file), "list: [name, os]", "list: [name]"))
+	m.commit("narrower list")
+	res, err = openState().DeletedRecords(context.Background(), "hosts")
+	if err != nil || len(res.Records) != 1 || len(res.Records[0].Fields) != 1 {
+		t.Fatalf("%v %+v", err, res)
+	}
+}
+
+func TestDeletedCacheNamingACommitOffTheBranchIsDroppedAndRebuilt(t *testing.T) {
+	m := newMini(t)
+	state := filepath.Join(t.TempDir(), "state")
+	openState := func() *Store { return open(t, m.dir, func(o *Options) { o.StateDir = state }) }
+	s := openState()
+	m.rackbook(s, add("a", nil))
+	m.rackbook(s, deleteOf(s, "a"))
+	if ids, _ := deletedIDs(t, s); strings.Join(ids, ",") != "a" {
+		t.Fatalf("%v", ids)
+	}
+	good := sh(t, m.dir, "rev-parse", "HEAD~1")
+	sh(t, m.dir, "checkout", "-q", "-b", "side", "HEAD~2")
+	m.put("side.txt", "x\n")
+	side := m.commit("only on a side branch")
+	sh(t, m.dir, "checkout", "-q", "main")
+	file := filepath.Join(state, "history", "deleted-hosts.json")
+	b, err := os.ReadFile(file)
+	if err != nil || !strings.Contains(string(b), good) {
+		t.Fatalf("%v %s", err, b)
+	}
+	if err := os.WriteFile(file, []byte(strings.ReplaceAll(string(b), good, side)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	res, err := openState().DeletedRecords(context.Background(), "hosts")
+	if err != nil || len(res.Records) != 1 || res.Records[0].Last != good || strings.Contains(jsonOf(res), side) {
 		t.Fatalf("%v %+v", err, res)
 	}
 }

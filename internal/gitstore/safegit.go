@@ -79,6 +79,7 @@ var allowedOptions = map[string][]string{
 	"diff-tree":  {"--no-commit-id", "--name-status", "-r", "-z", "--root", "--no-renames", "--patch", "--no-ext-diff", "--no-color"},
 	"commit":     {"--quiet", "--no-verify", "-F", "-", "--only", "--"},
 	"fetch":      {"--quiet"},
+	"ls-tree":    {"-z", "--"},
 	"log":        {"-n", "--format=*", "--fixed-strings", "--grep=*", "--skip=*", "--name-only", "--date-order", "--"},
 	"merge":      {"--quiet", "--ff-only"},
 	"merge-base": {"--is-ancestor"},
@@ -118,9 +119,18 @@ func refuseDestructive(args []string) error {
 		if len(rest) != 2 || rest[0] != "get-url" || rest[1] != "origin" {
 			return fmt.Errorf("%w: remote %s", errDestructive, strings.Join(rest, " "))
 		}
-	case "cat-file": // read only: one blob, named as <rev>:<path>, never an option
-		if len(rest) != 2 || rest[0] != "blob" || rest[1] == "" || strings.HasPrefix(rest[1], "-") {
-			return fmt.Errorf("%w: cat-file %s (only \"cat-file blob <object>\")", errDestructive, strings.Join(rest, " "))
+	case "cat-file": // read only: one blob, by its object id, never an option or a name
+		if len(rest) != 2 || rest[0] != "blob" || !blobIDRe.MatchString(rest[1]) {
+			return fmt.Errorf("%w: cat-file %s (only \"cat-file blob <object id>\")", errDestructive, strings.Join(rest, " "))
+		}
+	case "ls-tree": // read only: "-z <commit> -- <up to 4 plain paths>"
+		if len(rest) < 4 || len(rest) > 7 || rest[0] != "-z" || !fullRevRe.MatchString(rest[1]) || rest[2] != "--" {
+			return fmt.Errorf("%w: ls-tree %s", errDestructive, strings.Join(rest, " "))
+		}
+		for _, p := range rest[3:] {
+			if _, err := safeHistPath(p); err != nil || strings.HasPrefix(p, "-") || strings.HasPrefix(p, ":") {
+				return fmt.Errorf("%w: ls-tree path %q", errDestructive, p)
+			}
 		}
 	case "config": // read only, fixed keys
 		if len(rest) != 1 || (rest[0] != "user.name" && rest[0] != "user.email") {

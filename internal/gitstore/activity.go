@@ -53,8 +53,10 @@ type ActivityQuery struct {
 	// Exclude (a full commit hash) leaves out the commits reachable from it: only what
 	// is new since that commit is walked.
 	Exclude string
-	Skip    int // commits of the walk already consumed
-	Limit   int // at most MaxActivity, 50 when 0
+	// Touch (a config-relative file) makes each commit say whether it changed that file.
+	Touch string
+	Skip  int // commits of the walk already consumed
+	Limit int // at most MaxActivity, 50 when 0
 }
 
 // ActivityPage is what Activity returns: Tip is what to pass on the next call.
@@ -82,6 +84,8 @@ type ActivityCommit struct {
 	State        string `json:"state"` // StateNone, StateSome or StateOnly
 	// Parent is the first parent ("" for a root commit).
 	Parent string `json:"-"`
+	// Touched says the commit changed ActivityQuery.Touch.
+	Touched bool `json:"-"`
 	// Excluded: the commit is part of the walk (it counts for Skip) but does not
 	// match the record filter exactly.
 	Excluded bool `json:"-"`
@@ -95,7 +99,7 @@ const activityFormat = "--format=%x1d%H%x1f%h%x1f%an%x1f%ae%x1f%cI%x1f%s" +
 	"%x1f%P%x1c"
 
 // parseActivityRecord reads one record of activityFormat plus its file names.
-func parseActivityRecord(rec, prefix, record string) (ActivityCommit, error) {
+func parseActivityRecord(rec, prefix, record, touch string) (ActivityCommit, error) {
 	head, names, ok := strings.Cut(rec, "\x1c")
 	f := strings.Split(head, "\x1f")
 	if !ok || len(f) != 11 {
@@ -121,7 +125,11 @@ func parseActivityRecord(rec, prefix, record string) (ActivityCommit, error) {
 		if n = strings.TrimSpace(n); n == "" {
 			continue
 		}
-		if rel := strings.TrimPrefix(n, prefix); config.IsStatePath(rel) {
+		rel := strings.TrimPrefix(n, prefix)
+		if touch != "" && rel == touch {
+			c.Touched = true
+		}
+		if config.IsStatePath(rel) {
 			state++
 		} else {
 			other++
@@ -171,7 +179,7 @@ func activityLog(ctx context.Context, r *Repo, tip string, q ActivityQuery, path
 	var perr error
 	stopped := false
 	emit := func(rec []byte) bool {
-		c, err := parseActivityRecord(string(rec), prefix, record)
+		c, err := parseActivityRecord(string(rec), prefix, record, filepath.ToSlash(q.Touch))
 		if err != nil {
 			perr = err
 			return false

@@ -11,12 +11,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"path"
-	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/kazuhahub/rackbook/internal/config"
 	"github.com/kazuhahub/rackbook/internal/edit"
@@ -24,57 +23,20 @@ import (
 	"github.com/kazuhahub/rackbook/internal/secretscan"
 )
 
-// How the commits of a record are found (VersionQuery.Mode).
-const (
-	// ModeRecord lists the commits that carry the exact trailer "Record: <collection>/<id>".
-	ModeRecord = "record"
-	// ModeFile is the fallback for a record no commit names (edited before the
-	// trailer existed, or by hand): the commits that touched the collection's
-	// file, those in which the record did not change left out.
-	ModeFile = "file"
-)
-
 // Limits of one RecordVersions call, variables for the tests.
 var (
-	MaxVersions   = 50      // versions one call returns
-	VersionBudget = 400     // commits one call walks
-	MaxChanges    = 200     // field changes kept for one version
-	maxValueBytes = 8 << 10 // a value longer than this (as JSON) is cut
-	maxBlobBytes  = 8 << 20 // the largest file read at a commit
+	MaxVersions   = 50   // versions one call returns
+	VersionBudget = 1000 // commits one call walks (most are skipped without reading anything)
+	// VersionTimeBudget is how long one call works before it ends the page, whatever
+	// it has: the cursor goes on from there. It always finishes the commit it is at.
+	VersionTimeBudget = 700 * time.Millisecond
+	MaxChanges        = 200     // field changes kept for one version
+	maxValueBytes     = 8 << 10 // a value longer than this (as JSON) is cut
+	maxBlobBytes      = 8 << 20 // the largest file read at a commit
 )
 
 // ErrNotInCommit is matched by errors.Is when the record did not exist in the commit.
 var ErrNotInCommit = errors.New("the record did not exist in that commit")
-
-var fullRevRe = regexp.MustCompile(`^([0-9a-f]{40}|[0-9a-f]{64})$`)
-
-// blobAt reads the file rel (config-relative, a literal path) as it was in the
-// commit, a full hash. found is false when the commit has no such file. It is
-// the only way a file is read at a commit: "git cat-file blob <commit>:./<path>"
-// with a validated hash and a path that is relative and inside the data
-// directory, never "git show" and never an option.
-func (r *Repo) blobAt(ctx context.Context, commit, rel string) (data []byte, found bool, err error) {
-	if !fullRevRe.MatchString(commit) {
-		return nil, false, fmt.Errorf("%w: %q", ErrNoCommit, commit)
-	}
-	p := path.Clean(filepath.ToSlash(rel))
-	if rel == "" || p == "." || p == ".." || strings.HasPrefix(p, "../") || strings.HasPrefix(p, "/") ||
-		strings.ContainsAny(p, "\x00\n\r") || config.IsStatePath(p) || p == ".git" || strings.HasPrefix(p, ".git/") {
-		return nil, false, fmt.Errorf("refusing to read %q at a commit", rel)
-	}
-	out, truncated, err := r.runLimited(ctx, maxBlobBytes, "cat-file", "blob", commit+":./"+p)
-	if err != nil {
-		msg := err.Error()
-		if strings.Contains(msg, "Not a valid object name") || strings.Contains(msg, "does not exist") || strings.Contains(msg, "but not in") {
-			return nil, false, nil
-		}
-		return nil, false, err
-	}
-	if truncated {
-		return nil, false, fmt.Errorf("%s is too large to read at a commit", p)
-	}
-	return []byte(out), true, nil
-}
 
 // resolveOnBranch turns rev into a full commit hash and checks that the commit
 // is on the tracked branch's accepted history (reachable from tip). One error
@@ -92,111 +54,6 @@ func resolveOnBranch(ctx context.Context, r *Repo, tip, rev string) (string, err
 		return "", notFound
 	}
 	return full, nil
-}
-
-// snapshot is one collection as it was at a commit.
-type snapshot struct {
-	found  bool // the collection and its file existed and the file could be read
-	broken bool // the file existed but did not parse: nothing can be said about it
-	col    *config.Collection
-	recs   []*ledger.Record
-	byID   map[string]*ledger.Record
-	ann    secretscan.Annotations
-}
-
-// find returns the record with the id, or the one whose redacted id (what the
-// API shows for a record whose key holds a secret) it is.
-func (sn *snapshot) find(cfg *config.Config, id string) *ledger.Record {
-	if sn == nil || !sn.found {
-		return nil
-	}
-	if r := sn.byID[id]; r != nil {
-		return r
-	}
-	if strings.Contains(id, "…~") { // the shape of secretscan.RedactID
-		for _, r := range sn.recs {
-			if ledger.SafeID(cfg, sn.col.Name, r.ID) == id {
-				return r
-			}
-		}
-	}
-	return nil
-}
-
-// snapReader reads snapshots of one collection and keeps the ones it has read
-// (a commit's version is read again as the next commit's parent).
-type snapReader struct {
-	s     *Store
-	ctx   context.Context
-	coll  string
-	cfgs  map[string]*config.Config
-	snaps map[string]*snapshot
-}
-
-func (s *Store) newSnapReader(ctx context.Context, collection string) *snapReader {
-	return &snapReader{s: s, ctx: ctx, coll: collection, cfgs: map[string]*config.Config{}, snaps: map[string]*snapshot{}}
-}
-
-// config is the rackbook.yml of the commit; nil when it is missing or does not load.
-func (rd *snapReader) config(commit string) *config.Config {
-	if c, ok := rd.cfgs[commit]; ok {
-		return c
-	}
-	var cfg *config.Config
-	cur := rd.s.Config()
-	if data, ok, err := rd.s.repo.blobAt(rd.ctx, commit, filepath.Base(cur.Path)); err == nil && ok {
-		if c, err := config.Parse(data, cur.Path); err == nil {
-			cfg = c
-		}
-	}
-	rd.cfgs[commit] = cfg
-	return cfg
-}
-
-// at reads the collection at the commit (a full hash; "" = before the first commit).
-func (rd *snapReader) at(commit string) (*snapshot, error) {
-	if commit == "" {
-		return &snapshot{}, nil
-	}
-	if sn, ok := rd.snaps[commit]; ok {
-		return sn, nil
-	}
-	sn := &snapshot{}
-	rd.snaps[commit] = sn
-	var col *config.Collection
-	if old := rd.config(commit); old != nil {
-		col = old.Collection(rd.coll)
-	} else if c := rd.s.Config().Collection(rd.coll); c != nil {
-		col = c // the config of that commit is unreadable: assume the collection was as it is now
-	}
-	if col == nil {
-		return sn, nil
-	}
-	src, ok, err := rd.s.repo.blobAt(rd.ctx, commit, col.File)
-	if err != nil {
-		delete(rd.snaps, commit)
-		return nil, err
-	}
-	if !ok {
-		return sn, nil
-	}
-	recs, err := ledger.ParseRecords(col, src)
-	if err != nil {
-		sn.broken = true
-		return sn, nil
-	}
-	sn.found, sn.col, sn.recs, sn.byID = true, col, recs, make(map[string]*ledger.Record, len(recs))
-	for _, r := range recs {
-		if _, dup := sn.byID[r.ID]; !dup {
-			sn.byID[r.ID] = r
-		}
-	}
-	if col.Schema != "" {
-		if raw, ok, err := rd.s.repo.blobAt(rd.ctx, commit, col.Schema); err == nil && ok {
-			sn.ann = secretscan.AnnotationsOf(raw)
-		}
-	}
-	return sn, nil
 }
 
 // FieldChange is one difference between two versions of a record.
@@ -231,22 +88,28 @@ type RecordVersion struct {
 	Hash        string        `json:"hash"`
 	Changes     []FieldChange `json:"changes"`
 	MoreChanges bool          `json:"moreChanges,omitempty"`
+	// Unreadable says the file is too large, cannot be read or does not parse at
+	// that commit (or its parent): nothing is said of the record.
+	Unreadable bool `json:"unreadable,omitempty"`
+	// Approximate says the commit's rackbook.yml could not be read, so the collection
+	// is taken as it is today.
+	Approximate bool `json:"approximate,omitempty"`
 }
 
 // VersionQuery selects the versions of one record. The caller pages by walk
 // position, as for the activity view: Tip pins the commit the walk starts from
-// (as a previous page returned it), Mode is the one the first page chose and
-// Skip the commits of the walk already consumed.
+// (as a previous page returned it) and Skip is the commits of the walk already
+// consumed.
 type VersionQuery struct {
 	Collection, ID string
-	Tip, Mode      string
+	Tip            string
 	Skip           int
 	Limit          int // at most MaxVersions, 20 when 0
 }
 
 // VersionPage is one page of versions, newest first.
 type VersionPage struct {
-	Tip, Mode string
+	Tip string
 	// Skip is where the next page resumes; Done says there is no next page.
 	Skip     int
 	Done     bool
@@ -266,17 +129,18 @@ func (s *Store) versionPlan(collection, id string) (*ledger.Collection, string, 
 }
 
 // RecordVersions lists the commits that changed the record, newest first, each
-// with what changed in the record against the commit's parent. Commits are the
-// ones with the exact Record trailer; a record no commit names falls back to the
-// commits that touched the collection's file, from which those in which the
-// record did not change are left out. A page walks at most VersionBudget
-// commits, so Versions may be short or empty while Done is false.
+// with what changed in the record against the commit's parent. A commit counts when
+// it carries the exact Record trailer, or when it changed the collection's file and
+// the record's content in it (a hand edit, or one from before the trailer): a
+// commit whose file is the very blob of its parent's is not read at all. A page
+// walks at most VersionBudget commits and works for at most VersionTimeBudget, so
+// Versions may be short or empty while Done is false.
 func (s *Store) RecordVersions(ctx context.Context, q VersionQuery) (*VersionPage, error) {
 	col, shown, err := s.versionPlan(q.Collection, q.ID)
 	if err != nil {
 		return nil, err
 	}
-	pg := &VersionPage{Versions: []RecordVersion{}, Done: true, ID: shown, Mode: q.Mode, Skip: q.Skip}
+	pg := &VersionPage{Versions: []RecordVersion{}, Done: true, ID: shown, Skip: q.Skip}
 	if !s.git {
 		return pg, nil
 	}
@@ -290,58 +154,35 @@ func (s *Store) RecordVersions(ctx context.Context, q VersionQuery) (*VersionPag
 	}
 	pg.Tip = tip
 	record := edit.RecordRef(q.Collection, shown)
-	mode := q.Mode
-	switch mode {
-	case "":
-		found := false
-		err := activityLog(ctx, s.repo, tip, ActivityQuery{Limit: MaxActivity}, nil, record, func(c ActivityCommit) bool {
-			found = !c.Excluded
-			return !found
-		})
-		if err != nil {
-			return nil, err
-		}
-		mode = ModeRecord
-		if !found {
-			mode = ModeFile
-		}
-	case ModeRecord, ModeFile:
-	default:
-		return nil, ErrBadTip
-	}
-	pg.Mode = mode
 	limit := q.Limit
 	if limit <= 0 {
 		limit = 20
 	}
 	limit = min(limit, MaxVersions)
-	var paths []string
-	want := ""
-	if mode == ModeFile {
-		paths = []string{filepath.FromSlash(col.File)}
-	} else {
-		want = record
-	}
 	rd := s.newSnapReader(ctx, q.Collection)
 	budget := min(VersionBudget, MaxActivity)
+	start := time.Now()
 	consumed, stopped := 0, false
 	var inner error
-	err = activityLog(ctx, s.repo, tip, ActivityQuery{Skip: q.Skip, Limit: budget}, paths, want, func(c ActivityCommit) bool {
+	err = activityLog(ctx, s.repo, tip, ActivityQuery{Skip: q.Skip, Limit: budget, Touch: col.File}, nil, "", func(c ActivityCommit) bool {
 		consumed++
-		if c.Excluded {
-			return true
-		}
-		v, err := rd.version(c, q.ID, mode)
-		if err != nil {
-			inner = err
-			return false
-		}
-		if v != nil {
-			pg.Versions = append(pg.Versions, *v)
-			if len(pg.Versions) >= limit {
-				stopped = true
+		if exact := contains(c.Records, record); exact || c.Touched {
+			v, err := rd.version(c, q.ID, exact)
+			if err != nil {
+				inner = err
 				return false
 			}
+			if v != nil {
+				pg.Versions = append(pg.Versions, *v)
+				if len(pg.Versions) >= limit {
+					stopped = true
+					return false
+				}
+			}
+		}
+		if time.Since(start) > VersionTimeBudget {
+			stopped = true
+			return false
 		}
 		return true
 	})
@@ -357,9 +198,25 @@ func (s *Store) RecordVersions(ctx context.Context, q VersionQuery) (*VersionPag
 }
 
 // version builds the version of the record that commit c made, nil when the
-// record is not involved (or did not change, in the file fallback).
-func (rd *snapReader) version(c ActivityCommit, id, mode string) (*RecordVersion, error) {
+// record is not involved or did not change. named says the commit carries the
+// record's own Record trailer; without it the record's content must have changed.
+func (rd *snapReader) version(c ActivityCommit, id string, named bool) (*RecordVersion, error) {
 	cfg := rd.s.Config()
+	ct, err := rd.tree(c.Hash)
+	if err != nil {
+		return nil, err
+	}
+	var pt *treeInfo
+	if c.Parent != "" {
+		if pt, err = rd.tree(c.Parent); err != nil {
+			return nil, err
+		}
+	} else {
+		pt = &treeInfo{}
+	}
+	if ct.found == pt.found && ct.fileBlob == pt.fileBlob {
+		return nil, nil // the file is the same blob: the record did not change, and nothing is parsed
+	}
 	cur, err := rd.at(c.Hash)
 	if err != nil {
 		return nil, err
@@ -368,11 +225,16 @@ func (rd *snapReader) version(c ActivityCommit, id, mode string) (*RecordVersion
 	if err != nil {
 		return nil, err
 	}
-	if cur.broken || prev.broken {
-		return nil, nil // a file that does not parse says nothing about the record
+	v := &RecordVersion{Commit: c, Kind: KindChanged, Approximate: cur.approximate || prev.approximate}
+	if cur.unreadable || prev.unreadable {
+		// too large, unreadable or not valid YAML there: nothing can be said, but the commit is named
+		if !named {
+			return nil, nil
+		}
+		v.Unreadable, v.Changes = true, []FieldChange{}
+		return v, nil
 	}
 	newRec, oldRec := cur.find(cfg, id), prev.find(cfg, id)
-	v := &RecordVersion{Commit: c, Kind: KindChanged}
 	switch {
 	case newRec == nil && oldRec == nil:
 		return nil, nil
@@ -392,18 +254,17 @@ func (rd *snapReader) version(c ActivityCommit, id, mode string) (*RecordVersion
 	if newRec != nil {
 		v.Hash = ledger.Hash(newRec.Data)
 	}
-	if mode == ModeFile && v.Kind == KindChanged && v.Hash == ledger.Hash(oldRec.Data) {
+	if v.Kind == KindChanged && v.Hash == ledger.Hash(oldRec.Data) && !named {
 		return nil, nil
 	}
 	var from, to map[string]any
-	var fromSn, toSn = prev, cur
 	if oldRec != nil {
 		from = oldRec.Data
 	}
 	if newRec != nil {
 		to = newRec.Data
 	}
-	v.Changes, v.MoreChanges = rd.s.diffRecords(rd.coll, cfg, fromSn, oldRec, from, toSn, newRec, to)
+	v.Changes, v.MoreChanges = rd.s.diffRecords(rd.coll, cfg, prev, oldRec, from, cur, newRec, to)
 	return v, nil
 }
 
@@ -438,9 +299,8 @@ func renamedTo(prev, cur *snapshot, rec *ledger.Record) *ledger.Record {
 // is not returned: it is "(hidden)", and a change between two hidden values is
 // still reported. A nil side is a record that did not exist.
 func (s *Store) diffRecords(coll string, cfg *config.Config, fromSn *snapshot, fromRec *ledger.Record, from map[string]any, toSn *snapshot, toRec *ledger.Record, to map[string]any) ([]FieldChange, bool) {
-	sc := cfg.SecretScanner()
-	a := hideFindings(from, scanOf(sc, coll, cfg, fromSn, fromRec))
-	b := hideFindings(to, scanOf(sc, coll, cfg, toSn, toRec))
+	a := hideFindings(from, s.findingsOf(coll, fromSn, fromRec))
+	b := hideFindings(to, s.findingsOf(coll, toSn, toRec))
 	var out []FieldChange
 	more := false
 	diffValues("", a, b, func(c FieldChange) {
@@ -456,11 +316,27 @@ func (s *Store) diffRecords(coll string, cfg *config.Config, fromSn *snapshot, f
 	return out, more
 }
 
-func scanOf(sc *secretscan.Scanner, coll string, cfg *config.Config, sn *snapshot, rec *ledger.Record) []secretscan.Finding {
+// findingsOf are the findings that decide which values of a version are hidden: what
+// the secret scan flags with the type of the version's own commit, and with today's
+// type, and with no type at all (so that a type that exempts a value today or then
+// does not make a value visible that a plainer reading flags).
+func (s *Store) findingsOf(coll string, sn *snapshot, rec *ledger.Record) []secretscan.Finding {
 	if rec == nil || sn == nil {
 		return nil
 	}
-	return sc.ScanRecordWith(coll, ledger.SafeID(cfg, coll, rec.ID), rec.Data, sn.ann)
+	cfg := s.Config()
+	sc := cfg.SecretScanner()
+	if !sc.Enabled() {
+		return nil
+	}
+	id := ledger.SafeID(cfg, coll, rec.ID)
+	var today secretscan.Annotations
+	if c := s.cur.Load().Collection(coll); c != nil {
+		today = secretscan.AnnotationsOf(c.SchemaRaw)
+	}
+	fs := sc.ScanRecordWith(coll, id, rec.Data, sn.ann)
+	fs = append(fs, sc.ScanRecordWith(coll, id, rec.Data, today)...)
+	return append(fs, sc.ScanRecordWith(coll, id, rec.Data, nil)...)
 }
 
 // The value shown in place of a hidden one, and what stands for it while two
@@ -491,24 +367,34 @@ func hiddenValue(v any) string {
 // hideFindings returns a copy of data in which the values the findings point at
 // are replaced by hidden marks; data itself when there are none.
 func hideFindings(data map[string]any, fs []secretscan.Finding) map[string]any {
+	out, _ := hideAt(data, fs)
+	return out
+}
+
+// hideAt is hideFindings that also says where the values it hid are, as JSON
+// pointers ("" for the record itself, when a secret is in one of its field names).
+func hideAt(data map[string]any, fs []secretscan.Finding) (map[string]any, []string) {
 	if len(fs) == 0 || data == nil {
-		return data
+		return data, nil
 	}
 	out := copyValue(data).(map[string]any)
+	var paths []string
+	seen := map[string]bool{}
 	for _, f := range fs {
 		segs := pointerSegs(f.Path)
 		if len(segs) == 0 {
 			// a secret in a field name of the record itself: nothing of it can be shown
-			return map[string]any{hiddenText: hiddenValue(data)}
+			return map[string]any{hiddenText: hiddenValue(data)}, []string{""}
 		}
 		var at any = out
+		hid := false
 		for i, seg := range segs {
 			last := i == len(segs)-1
 			switch x := at.(type) {
 			case map[string]any:
 				if last {
 					if v, ok := x[seg]; ok {
-						x[seg] = hiddenValue(v)
+						x[seg], hid = hiddenValue(v), true
 					}
 					at = nil
 				} else {
@@ -519,7 +405,7 @@ func hideFindings(data map[string]any, fs []secretscan.Finding) map[string]any {
 				if err != nil || n < 0 || n >= len(x) {
 					at = nil
 				} else if last {
-					x[n] = hiddenValue(x[n])
+					x[n], hid = hiddenValue(x[n]), true
 					at = nil
 				} else {
 					at = x[n]
@@ -531,8 +417,13 @@ func hideFindings(data map[string]any, fs []secretscan.Finding) map[string]any {
 				break
 			}
 		}
+		if hid && !seen[f.Path] {
+			seen[f.Path] = true
+			paths = append(paths, f.Path)
+		}
 	}
-	return out
+	sort.Strings(paths)
+	return out, paths
 }
 
 func copyValue(v any) any {
@@ -718,6 +609,9 @@ type RestoreSource struct {
 	// many were left out: it is what may be shown to the caller.
 	Visible map[string]any
 	Hidden  int
+	// HiddenPaths are where the left out values were, as JSON pointers: a left out
+	// field of a map is missing from Visible and an element of a list is "" there.
+	HiddenPaths []string
 }
 
 // atCommit finds the record in the commit, which must be on the tracked branch.
@@ -745,29 +639,6 @@ func (s *Store) atCommit(ctx context.Context, collection, id, rev string) (full 
 		err = fmt.Errorf("%w: %s", ErrNotInCommit, rev)
 	}
 	return
-}
-
-// hiddenCount counts the hidden marks in v.
-func hiddenCount(v any) int {
-	switch x := v.(type) {
-	case string:
-		if strings.HasPrefix(x, hiddenMark) {
-			return 1
-		}
-	case map[string]any:
-		n := 0
-		for _, e := range x {
-			n += hiddenCount(e)
-		}
-		return n
-	case []any:
-		n := 0
-		for _, e := range x {
-			n += hiddenCount(e)
-		}
-		return n
-	}
-	return 0
 }
 
 // dropHidden returns v without the entries that are hidden marks (a hidden
@@ -806,9 +677,8 @@ func (s *Store) RestoreSourceAt(ctx context.Context, collection, id, rev string)
 	if err != nil {
 		return nil, err
 	}
-	cfg := s.Config()
-	hidden := hideFindings(rec.Data, scanOf(cfg.SecretScanner(), collection, cfg, sn, rec))
-	out := &RestoreSource{Commit: full, Data: rec.Data, Hash: ledger.Hash(rec.Data), ID: rec.ID, Hidden: hiddenCount(hidden)}
+	hidden, paths := hideAt(rec.Data, s.findingsOf(collection, sn, rec))
+	out := &RestoreSource{Commit: full, Data: rec.Data, Hash: ledger.Hash(rec.Data), ID: rec.ID, Hidden: len(paths), HiddenPaths: paths}
 	out.Visible = dropHidden(hidden).(map[string]any)
 	return out, nil
 }
@@ -822,8 +692,8 @@ func (s *Store) VersionAt(ctx context.Context, collection, id, rev string) (*Ver
 	}
 	cfg := s.Config()
 	d := &VersionDetail{ID: ledger.SafeID(cfg, collection, rec.ID), Hash: ledger.Hash(rec.Data), Changes: []FieldChange{}}
-	hidden := hideFindings(rec.Data, scanOf(cfg.SecretScanner(), collection, cfg, sn, rec))
-	d.Hidden = hiddenCount(hidden)
+	hidden, hpaths := hideAt(rec.Data, s.findingsOf(collection, sn, rec))
+	d.Hidden = len(hpaths)
 	scrubbed, _ := scrub(hidden)
 	d.Data = scrubbed.(map[string]any)
 	found := false
