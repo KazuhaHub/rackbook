@@ -156,7 +156,7 @@ func TestCommitIndexIsACacheOfTheChain(t *testing.T) {
 	}
 	var disk commitIndex
 	b, _ := os.ReadFile(filepath.Join(dir, indexName))
-	if json.Unmarshal(b, &disk) != nil || disk.Version != 1 || disk.LastSeq != 3 || len(disk.Commits) != 2 || !strings.HasPrefix(disk.LastLineHash, "sha256:") {
+	if json.Unmarshal(b, &disk) != nil || disk.Version != indexVersion || disk.LastSeq != 3 || len(disk.Commits) != 2 || !strings.HasPrefix(disk.LastLineHash, "sha256:") {
 		t.Fatalf("%s", b)
 	}
 	if rep := mustVerify(t, dir); !rep.OK {
@@ -341,5 +341,179 @@ func TestAckClearsARecordedProblemAndUnblocksRetention(t *testing.T) {
 	defer l4.Close()
 	if st := l4.Status(); !st.OK || len(st.Problems) != 0 {
 		t.Fatalf("%+v", st)
+	}
+}
+
+func pendingKinds(l *Log) string {
+	var k []string
+	for _, p := range l.Status().Problems {
+		k = append(k, fmt.Sprintf("%s@%d", p.Kind, p.Seq))
+	}
+	return strings.Join(k, ",")
+}
+
+func countChainProblems(t *testing.T, dir string) int { return len(chainProblems(t, dir)) }
+
+// An acknowledgement covers the evidence the administrator saw: a line that is
+// rewritten afterwards is a new problem even though kind and seq are the same.
+func TestAckDoesNotHideALineRewrittenAfterwards(t *testing.T) {
+	l, dir := newLog(t, Options{})
+	fill(t, l, 6)
+	l.Close()
+	p := filepath.Join(dir, "audit-2026-11.jsonl")
+	ls := lines(t, p)
+	ls[1] = bytes.Replace(ls[1], []byte("a@example.com"), []byte("b@example.com"), 1)
+	write(t, p, ls)
+	who := &auth.Identity{ID: "boss@example.com", Method: "oidc"}
+	l2, err := Open(dir, Options{Now: (&fakeClock{at(2026, 11, 22)}).Now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pendingKinds(l2) != "edited@4" {
+		t.Fatalf("%s", pendingKinds(l2))
+	}
+	if err := l2.Ack(who, l2.Status().LastSeq); err != nil {
+		t.Fatal(err)
+	}
+	l2.Close()
+	// the same old break, seen again at the next start: still acknowledged, recorded once
+	l2b, _ := Open(dir, Options{Now: (&fakeClock{at(2026, 11, 22)}).Now})
+	if !l2b.Status().OK || countChainProblems(t, dir) != 1 {
+		t.Fatalf("%+v %d", l2b.Status(), countChainProblems(t, dir))
+	}
+	l2b.Close()
+	// line 4 is rewritten again, keeping its prev
+	ls = lines(t, p)
+	ls[1] = bytes.Replace(ls[1], []byte("b@example.com"), []byte("c@example.com"), 1)
+	write(t, p, ls)
+	l3, err := Open(dir, Options{Now: (&fakeClock{at(2026, 11, 22)}).Now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l3.Close()
+	if st := l3.Status(); st.OK || pendingKinds(l3) != "edited@4" || countChainProblems(t, dir) != 2 {
+		t.Fatalf("a rewrite after the acknowledgement must be reported again: %+v", st)
+	}
+}
+
+func TestAckDoesNotHideANewHeadProblemAndANewCut(t *testing.T) {
+	l, dir := newLog(t, Options{})
+	fill(t, l, 6)
+	l.Close()
+	head := filepath.Join(dir, "head.json")
+	if err := os.WriteFile(head, []byte("garbage\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	who := &auth.Identity{ID: "boss@example.com", Method: "oidc"}
+	l2, err := Open(dir, Options{Now: (&fakeClock{at(2026, 11, 22)}).Now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pendingKinds(l2) != "head_mismatch@0" {
+		t.Fatalf("%s", pendingKinds(l2))
+	}
+	if err := l2.Ack(who, l2.Status().LastSeq); err != nil {
+		t.Fatal(err)
+	}
+	l2.Record(ev("login"))
+	l2.Record(ev("login"))
+	l2.Close()
+	// head.json is garbage again and lines are cut from the end
+	p := filepath.Join(dir, "audit-2026-11.jsonl")
+	ls := lines(t, p)
+	write(t, p, ls[:len(ls)-2])
+	if err := os.WriteFile(head, []byte("garbage\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	l3, err := Open(dir, Options{Now: (&fakeClock{at(2026, 11, 22)}).Now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l3.Close()
+	if l3.Status().OK || pendingKinds(l3) != "head_mismatch@0" || countChainProblems(t, dir) != 2 {
+		t.Fatalf("%+v", l3.Status())
+	}
+}
+
+// An entry added to index.json by hand does not verify a commit: each hit is
+// checked against the chain.
+func TestForgedIndexEntryDoesNotVerify(t *testing.T) {
+	l, dir := newLog(t, Options{})
+	l.Record(commitEv("ledger", hashA, "a@example.com"))
+	l.Record(ev("login"))
+	l.Record(commitEv("ledger", hashB, "b@example.com"))
+	keys := []CommitKey{{"ledger", hashA}, {"ledger", hashB}, {"ledger", hashC}}
+	if got := l.LookupCommits(keys); len(got) != 2 {
+		t.Fatalf("%+v", got)
+	}
+	path := filepath.Join(dir, indexName)
+	b, _ := os.ReadFile(path)
+	forged := bytes.Replace(b, []byte(`"commits":{`), []byte(`"commits":{"ledger:`+hashC+`":{"seq":2,"identity":"mallory"},"ledger:`+hashA+`":{"seq":3,"identity":"mallory"},`), 1)
+	if bytes.Equal(forged, b) {
+		t.Fatal("no forged entry")
+	}
+	os.WriteFile(path, forged, 0o600)
+	l2, _ := Open(dir, Options{})
+	defer l2.Close()
+	got := l2.LookupCommits(keys)
+	if _, ok := got[CommitKey{"ledger", hashC}]; ok {
+		t.Fatalf("a forged entry verified a commit: %+v", got)
+	}
+	if got[CommitKey{"ledger", hashA}].Identity != "a@example.com" || got[CommitKey{"ledger", hashB}].Identity != "b@example.com" {
+		t.Fatalf("the real entries stay: %+v", got)
+	}
+}
+
+// Resuming after a scan budget ran out reaches every match, and a file of a
+// later month than Until is not read at all.
+func TestReadResumesAfterTheScanBudgetAndSkipsNewerMonths(t *testing.T) {
+	l, dir := newLog(t, Options{})
+	for i := 1; i <= 30; i++ {
+		e := Event{Event: "login", Identity: "a@example.com"}
+		if i%10 == 0 {
+			e.Identity = "rare@example.com"
+		}
+		e.Time = at(2026, 8, 1).AddDate(0, 0, i*4) // Aug 5 ... Nov 29
+		l.Record(e)
+	}
+	var got []int64
+	var before int64
+	calls := 0
+	for {
+		p, err := l.Read(Query{Identity: "rare@example.com", Before: before, MaxScan: 4})
+		if err != nil {
+			t.Fatal(err)
+		}
+		calls++
+		if p.Scanned > 4 {
+			t.Fatalf("scanned %d", p.Scanned)
+		}
+		for _, e := range p.Events {
+			got = append(got, e.Seq)
+		}
+		if !p.More {
+			break
+		}
+		before = p.Next
+	}
+	if fmt.Sprint(got) != "[30 20 10]" || calls < 7 {
+		t.Fatalf("%v after %d calls", got, calls)
+	}
+	// Until in September: the October and November files are not opened (made unreadable)
+	for _, f := range []string{"audit-2026-10.jsonl", "audit-2026-11.jsonl"} {
+		if err := os.Chmod(filepath.Join(dir, f), 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	defer func() {
+		for _, f := range []string{"audit-2026-10.jsonl", "audit-2026-11.jsonl"} {
+			os.Chmod(filepath.Join(dir, f), 0o600)
+		}
+	}()
+	if os.Geteuid() != 0 {
+		p, err := l.Read(Query{Until: at(2026, 9, 30), Limit: 3})
+		if err != nil || len(p.Events) != 3 || p.Events[0].Time.After(at(2026, 9, 30)) {
+			t.Fatalf("%v %+v", err, p)
+		}
 	}
 }

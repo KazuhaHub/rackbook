@@ -136,7 +136,8 @@ func (l *Log) check() error {
 			l.log.Error("audit log: could not set aside the last, incomplete line; nothing will be written", "file", s.tornFile, "err", err)
 		} else {
 			if !s.tornCrash {
-				torn = &Problem{Seq: s.lastSeq + 1, Kind: KindEdited, File: s.tornFile, Detail: "torn=" + name}
+				torn = &Problem{Seq: s.lastSeq + 1, Kind: KindEdited, File: s.tornFile, Detail: "torn=" + name,
+					Fingerprint: fingerprint(KindEdited, s.lastSeq+1, s.tornFile, "torn="+name)}
 			}
 			if s, err = scanDir(l.dir); err != nil {
 				return err
@@ -266,6 +267,7 @@ func (l *Log) recordProblems(ps []Problem, h *head) {
 		if p.Detail != "" {
 			e.Detail = append(e.Detail, p.Detail)
 		}
+		e.Detail = append(e.Detail, "fp="+p.Fingerprint)
 		if err := l.append(e); err != nil {
 			l.log.Error("audit log: could not record a chain problem", "kind", p.Kind, "seq", p.Seq, "err", err)
 			return

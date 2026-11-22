@@ -1,6 +1,7 @@
 package audit
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"errors"
@@ -35,9 +36,13 @@ type Query struct {
 // Page is the result of Read: events newest first (by seq).
 type Page struct {
 	Events []Event
-	// More says there may be older matches. Next is the Before to continue with.
+	// More says there may be older matches. Next is the Before to continue with:
+	// the seq of the last event returned, or, when the scan budget ran out first,
+	// of the last line looked at (the page may then hold no event at all).
 	More bool
 	Next int64
+	// Scanned is how many lines were looked at.
+	Scanned int
 }
 
 func (q Query) match(e Event) bool {
@@ -90,6 +95,15 @@ func (l *Log) Read(q Query) (Page, error) {
 				break
 			}
 		}
+		if !q.Until.IsZero() {
+			// Lines are filed under their own month (an event written late goes
+			// into the newest file, which only happens for events with an explicit
+			// old time): a file of a later month than Until holds nothing up to it.
+			var y, m int
+			if _, err := parseMonth(files[i], &y, &m); err == nil && y*12+m-1 > monthIndex(q.Until.UTC()) {
+				continue
+			}
+		}
 		f, err := os.Open(filepath.Join(l.dir, files[i]))
 		if errors.Is(err, os.ErrNotExist) {
 			continue
@@ -97,10 +111,20 @@ func (l *Log) Read(q Query) (Page, error) {
 		if err != nil {
 			return Page{}, err
 		}
-		err = eachLineBackward(f, func(raw []byte) error {
+		if q.Before > 0 {
+			// a file that starts at or after Before is all seen: do not read it
+			if first, ok := firstSeq(f); ok && first >= q.Before {
+				f.Close()
+				continue
+			}
+		}
+		err = eachLineBackward(f, func(raw []byte, _ int64) error {
 			var e Event
 			if json.Unmarshal(raw, &e) != nil {
 				return nil
+			}
+			if q.Before > 0 && e.Seq >= q.Before {
+				return nil // already seen by the page before: not part of this scan's budget
 			}
 			if scanned >= maxScan {
 				page.More, page.Next = true, lastSeq
@@ -126,6 +150,7 @@ func (l *Log) Read(q Query) (Page, error) {
 			return Page{}, err
 		}
 	}
+	page.Scanned = scanned
 	return page, nil
 }
 
@@ -134,7 +159,7 @@ const backBlock = 64 << 10
 // eachLineBackward calls fn with every complete line of f, the last one first.
 // A last line without a newline is not complete and is skipped, as are empty
 // lines. fn returns an error to stop; Read returns it.
-func eachLineBackward(f *os.File, fn func(line []byte) error) error {
+func eachLineBackward(f *os.File, fn func(line []byte, off int64) error) error {
 	st, err := f.Stat()
 	if err != nil {
 		return err
@@ -155,6 +180,11 @@ func eachLineBackward(f *os.File, fn func(line []byte) error) error {
 		if pos == 0 {
 			first = 0
 		}
+		offs := make([]int64, len(parts)) // data starts at file offset pos
+		o := pos
+		for i, part := range parts {
+			offs[i], o = o, o+int64(len(part))+1
+		}
 		for i := len(parts) - 1; i >= first; i-- {
 			if skip {
 				skip = false
@@ -163,7 +193,7 @@ func eachLineBackward(f *os.File, fn func(line []byte) error) error {
 			if len(parts[i]) == 0 {
 				continue
 			}
-			if err := fn(parts[i]); err != nil {
+			if err := fn(parts[i], offs[i]); err != nil {
 				return err
 			}
 		}
@@ -172,4 +202,17 @@ func eachLineBackward(f *os.File, fn func(line []byte) error) error {
 		}
 	}
 	return nil
+}
+
+// firstSeq is the seq of the first line of f.
+func firstSeq(f *os.File) (int64, bool) {
+	line, err := bufio.NewReader(io.NewSectionReader(f, 0, 1<<20)).ReadBytes('\n')
+	if err != nil {
+		return 0, false
+	}
+	var e Event
+	if json.Unmarshal(line, &e) != nil {
+		return 0, false
+	}
+	return e.Seq, true
 }

@@ -1,10 +1,14 @@
 package audit
 
 import (
+	"bufio"
+	"bytes"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 )
@@ -16,14 +20,18 @@ import (
 
 const (
 	indexName    = "index.json"
-	indexVersion = 1
+	indexVersion = 2
 	// minShortHash is the shortest stored hash a longer one may match by prefix.
 	minShortHash = 7
 )
 
 // CommitRef is what the log knows about a commit this server made.
 type CommitRef struct {
-	Seq      int64  `json:"seq"`
+	Seq int64 `json:"seq"`
+	// File and Off say where the line is, so a lookup can check the entry
+	// against the chain instead of trusting the cache.
+	File     string `json:"file"`
+	Off      int64  `json:"off"`
 	Identity string `json:"identity,omitempty"`
 	Name     string `json:"name,omitempty"`
 	Method   string `json:"method,omitempty"`
@@ -62,22 +70,25 @@ func (x *commitIndex) add(k CommitKey, r CommitRef) {
 	}
 }
 
-func (x *commitIndex) find(k CommitKey) (CommitRef, bool) {
+// find returns the entry for k and the hash it was stored under (a short one
+// for a line from before the full hash was written).
+func (x *commitIndex) find(k CommitKey) (CommitRef, string, bool) {
 	if r, ok := x.Commits[k.String()]; ok {
-		return r, true
+		return r, k.Hash, true
 	}
 	// A line from before the full hash was written: a prefix of at least
 	// seven characters, and only when exactly one line fits.
 	var found CommitRef
+	var foundHash string
 	n := 0
 	prefix := k.Area + ":"
 	for _, s := range x.short {
 		if h := strings.TrimPrefix(s, prefix); h != s && strings.HasPrefix(k.Hash, h) {
-			found = x.Commits[s]
+			found, foundHash = x.Commits[s], h
 			n++
 		}
 	}
-	return found, n == 1
+	return found, foundHash, n == 1
 }
 
 // LookupCommits returns, for the keys that were committed by this server, who
@@ -94,12 +105,84 @@ func (l *Log) LookupCommits(keys []CommitKey) map[CommitKey]CommitRef {
 		l.log.Warn("audit log: could not read the commit index; commits show as unverified for now", "err", err)
 		return out
 	}
+	// Every hit is checked against the chain itself: the cache is only a map to
+	// where the lines are. One that does not check out is a forged or stale
+	// entry; the index is rebuilt from the files and the commit looked up again.
+	var bad []CommitKey
 	for _, k := range keys {
-		if r, ok := l.index.idx.find(k); ok {
-			out[k] = r
+		if r, h, ok := l.index.idx.find(k); ok {
+			if l.confirmCommit(k, r, h) {
+				out[k] = r
+			} else {
+				bad = append(bad, k)
+			}
+		}
+	}
+	if len(bad) > 0 {
+		l.log.Warn("audit log: the commit index does not match the log; rebuilding it", "entries", len(bad))
+		l.index.idx = newCommitIndex()
+		if err := l.syncIndex(); err != nil {
+			return out
+		}
+		for _, k := range bad {
+			if r, h, ok := l.index.idx.find(k); ok && l.confirmCommit(k, r, h) {
+				out[k] = r
+			}
 		}
 	}
 	return out
+}
+
+// confirmCommit reads the line the entry points to and checks that it is a
+// commit line with this area, hash and identity, and that it belongs to the
+// chain: the next line's prev is its hash, or head.json says it is the last.
+func (l *Log) confirmCommit(k CommitKey, r CommitRef, storedHash string) bool {
+	if !fileRe.MatchString(r.File) || r.Off < 0 {
+		return false
+	}
+	f, err := os.Open(filepath.Join(l.dir, r.File))
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	st, err := f.Stat()
+	if err != nil || r.Off >= st.Size() {
+		return false
+	}
+	br := bufio.NewReader(io.NewSectionReader(f, r.Off, st.Size()-r.Off))
+	line, err := br.ReadBytes('\n')
+	if err != nil {
+		return false
+	}
+	raw := bytes.TrimSuffix(line, []byte("\n"))
+	var e Event
+	if json.Unmarshal(raw, &e) != nil || e.Seq != r.Seq || e.Event != "commit" || e.Area != k.Area || e.Hash != storedHash || withPos(refOf(e), r.File, r.Off) != r {
+		return false
+	}
+	h := hashOf(raw)
+	next, err := br.ReadBytes('\n')
+	if err == nil {
+		var n Event
+		return json.Unmarshal(bytes.TrimSuffix(next, []byte("\n")), &n) == nil && n.Prev == h
+	}
+	// the last line of its file: the first line of the next file, or head.json
+	files, err := listFiles(l.dir)
+	if err != nil {
+		return false
+	}
+	if i := slices.Index(files, r.File); i >= 0 && i+1 < len(files) {
+		nf, err := os.Open(filepath.Join(l.dir, files[i+1]))
+		if err != nil {
+			return false
+		}
+		defer nf.Close()
+		nl, err := bufio.NewReader(nf).ReadBytes('\n')
+		var n Event
+		return err == nil && json.Unmarshal(bytes.TrimSuffix(nl, []byte("\n")), &n) == nil && n.Prev == h
+	}
+	hb, err := os.ReadFile(filepath.Join(l.dir, headName))
+	var hd head
+	return err == nil && json.Unmarshal(hb, &hd) == nil && hd.Seq == r.Seq && hd.Hash == h
 }
 
 // syncIndex loads index.json once, checks that it still describes this log and
@@ -151,7 +234,8 @@ func (l *Log) readSince(files []string, x *commitIndex) (added, ok bool, err err
 		if oerr != nil {
 			return false, false, oerr
 		}
-		err = eachLineBackward(f, func(raw []byte) error {
+		file := files[i]
+		err = eachLineBackward(f, func(raw []byte, off int64) error {
 			var e Event
 			if json.Unmarshal(raw, &e) != nil {
 				return nil
@@ -162,7 +246,7 @@ func (l *Log) readSince(files []string, x *commitIndex) (added, ok bool, err err
 			switch {
 			case e.Seq > x.LastSeq:
 				if e.Event == "commit" && e.Hash != "" {
-					fresh = append(fresh, found{CommitKey{e.Area, e.Hash}, refOf(e)})
+					fresh = append(fresh, found{CommitKey{e.Area, e.Hash}, withPos(refOf(e), file, off)})
 				}
 				return nil
 			case e.Seq == x.LastSeq && hashOf(raw) == x.LastLineHash:
@@ -192,7 +276,8 @@ func (l *Log) readSince(files []string, x *commitIndex) (added, ok bool, err err
 			if oerr != nil {
 				return false, false, oerr
 			}
-			err = eachLineBackward(f, func(raw []byte) error {
+			file := files[i]
+			err = eachLineBackward(f, func(raw []byte, off int64) error {
 				var e Event
 				if json.Unmarshal(raw, &e) != nil {
 					return nil
@@ -201,7 +286,7 @@ func (l *Log) readSince(files []string, x *commitIndex) (added, ok bool, err err
 					newestSeq, newestHash = e.Seq, hashOf(raw)
 				}
 				if e.Event == "commit" && e.Hash != "" {
-					fresh = append(fresh, found{CommitKey{e.Area, e.Hash}, refOf(e)})
+					fresh = append(fresh, found{CommitKey{e.Area, e.Hash}, withPos(refOf(e), file, off)})
 				}
 				return nil
 			})
@@ -221,6 +306,11 @@ func (l *Log) readSince(files []string, x *commitIndex) (added, ok bool, err err
 		x.LastSeq, x.LastLineHash = newestSeq, newestHash
 	}
 	return added, true, nil
+}
+
+func withPos(r CommitRef, file string, off int64) CommitRef {
+	r.File, r.Off = file, off
+	return r
 }
 
 func refOf(e Event) CommitRef {
