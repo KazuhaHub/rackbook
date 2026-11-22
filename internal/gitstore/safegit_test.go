@@ -232,6 +232,23 @@ func TestRuntimeGuardRefusesDestructiveCommands(t *testing.T) {
 		{"fetch", "--quiet", "--exec=evil", "origin"},
 		{"log", "-n", "1", "--output=/tmp/x"},
 		{"log", "-n", "1", "--ext-diff"},
+		{"log", "--since", "yesterday"},
+		{"log", "--since=1.day"}, // time limits stop the walk at a skewed commit: filtered in Go instead
+		{"log", "--until=1.day"},
+		{"log", "--skip", "5"},
+		{"log", "--max-count=5"},
+		{"log", "--name-status"},
+		{"log", "--stat"},
+		{"log", "--date=iso"},
+		{"log", "--author=x"},
+		{"log", "--all"},
+		{"log", "--since=1.day", "--output=/tmp/x"},
+		{"diff-tree", "--patch", "--output=/tmp/x", "HEAD"},
+		{"diff-tree", "--ext-diff", "HEAD"},
+		{"diff-tree", "--textconv", "-p", "HEAD"},
+		{"diff-tree", "--stat", "HEAD"},
+		{"diff-tree", "-p", "HEAD"},
+		{"diff-tree", "--no-patch", "--ext-diff", "HEAD"},
 		{"log", "-n", "1", "--textconv"},
 		{"merge", "--quiet", "--ff-only", "-o", "x", "origin/main"},
 		{"reset", "--quiet", "--hard", "--push-option=x", "origin/main"},
@@ -250,7 +267,9 @@ func TestRuntimeGuardRefusesDestructiveCommands(t *testing.T) {
 			t.Errorf("git %v: %v", args, err)
 		}
 	}
-	for _, args := range [][]string{{"fetch", "--quiet", "origin"}, {"reset", "--quiet", "--hard", "origin/main"}, {"-C", "d", "log", "-n", "1"}, {"-c", "commit.gpgsign=false", "-C", "d", "status"}, {"-c", "core.autocrlf=false", "status"}, {"--no-pager", "log"}, {"config", "user.name"}, {"remote", "get-url", "origin"}, {"log", "-n", "5", "--format=%h", "--fixed-strings", "--grep=Record: x", "--", "--weird-file"}, {"commit", "--quiet", "--no-verify", "-F", "-", "--only", "--", "-f"}} {
+	for _, args := range [][]string{{"fetch", "--quiet", "origin"}, {"reset", "--quiet", "--hard", "origin/main"}, {"-C", "d", "log", "-n", "1"}, {"-c", "commit.gpgsign=false", "-C", "d", "status"}, {"-c", "core.autocrlf=false", "status"}, {"--no-pager", "log"}, {"config", "user.name"}, {"remote", "get-url", "origin"}, {"log", "-n", "5", "--format=%h", "--fixed-strings", "--grep=Record: x", "--", "--weird-file"}, {"commit", "--quiet", "--no-verify", "-F", "-", "--only", "--", "-f"},
+		{"log", "--date-order", "--skip=10", "-n", "5", "--name-only", "--format=%H", "HEAD", "--", ".", ":(exclude).rackbook"},
+		{"diff-tree", "--patch", "--no-ext-diff", "--no-color", "--no-commit-id", "-r", "--root", "--no-renames", "abc1234", "--", ":(top,literal)a.yml"}} {
 		if err := refuseDestructive(args); err != nil {
 			t.Errorf("%v refused: %v", args, err)
 		}

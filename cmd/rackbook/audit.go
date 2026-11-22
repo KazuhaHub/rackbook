@@ -105,7 +105,12 @@ last, and looks again before it reports a mismatch.
 
 Exit status 0: the chain is intact. A line cut short by a crash, or a head.json one
 line behind, are warnings only (the server repairs both at start) and also exit 0.
-Exit status 1: anything else, with the first broken seq.`,
+Exit status 1: anything else, with the first broken seq.
+
+A problem the server wrote down at start and an administrator acknowledged on the
+Activity page is still listed, marked "acknowledged at seq N", and still counts:
+acknowledging stops it from blocking retention and from showing as a banner, it does
+not make the chain intact.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			dir, _ := cmd.Flags().GetString("state-dir")

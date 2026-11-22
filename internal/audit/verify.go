@@ -41,6 +41,23 @@ type Problem struct {
 	// before head.json moved on. It stays listed, and still counts as a problem.
 	Recorded   bool  `json:"recorded,omitempty"`
 	RecordedAt int64 `json:"recorded_at,omitempty"`
+	// Acked says an administrator acknowledged the recorded problem with a
+	// chain_problem_ack event (at AckedAt). It stays listed and still counts
+	// in the report; it no longer blocks retention or shows in Status.
+	Acked   bool  `json:"acked,omitempty"`
+	AckedAt int64 `json:"acked_at,omitempty"`
+	// Fingerprint identifies the evidence of the problem (the lines involved, or
+	// head.json and the end of the files), not only its kind and seq: the same
+	// unchanged break keeps it, a later rewrite or a new cut does not. A
+	// chain_problem event holds it as "fp=<hex>", and an acknowledgement covers
+	// only the fingerprints it saw.
+	Fingerprint string `json:"fingerprint,omitempty"`
+}
+
+// fingerprint is the short digest of a problem's kind, place and evidence.
+func fingerprint(kind string, seq int64, file, evidence string) string {
+	h := sha256.Sum256([]byte(kind + "\x00" + strconv.FormatInt(seq, 10) + "\x00" + file + "\x00" + evidence))
+	return hex.EncodeToString(h[:16])
 }
 
 // Report is the result of Verify.
@@ -109,9 +126,12 @@ type scan struct {
 	tornFile  string // file whose last line has no newline
 	tornAt    int64  // offset where that partial line starts
 	headBad   bool   // head.json exists but does not parse
+	headRaw   []byte // head.json as it was read (nil when it is missing)
+	ev        string // the evidence of the problem the next add records
 	tornCrash bool   // the cut-short last line fits a crash (head.json is at the last complete line)
 	firstSeq  int64  // seq of the first line walked
 	recorded  []Problem
+	acks      []ack
 
 	fileLast        map[string]string // hash of the last complete line of each file
 	probsAfterFirst map[string]int    // problems found up to and including each file's first line
@@ -165,7 +185,7 @@ func scanOnce(dir string) (*scan, error) {
 	s := &scan{fileLast: map[string]string{}, probsAfterFirst: map[string]int{}}
 	r := &s.report
 	add := func(seq int64, kind, file, format string, args ...any) {
-		r.Problems = append(r.Problems, Problem{Seq: seq, Kind: kind, File: file, Detail: fmt.Sprintf(format, args...)})
+		r.Problems = append(r.Problems, Problem{Seq: seq, Kind: kind, File: file, Detail: fmt.Sprintf(format, args...), Fingerprint: fingerprint(kind, seq, file, s.ev)})
 	}
 	if len(files) > 0 {
 		s.lastFile = files[len(files)-1]
@@ -210,6 +230,7 @@ func scanOnce(dir string) (*scan, error) {
 			}
 			switch {
 			case perr != nil:
+				s.ev = h
 				add(prevSeq+1, KindEdited, name, "the line does not parse")
 				prevSeq++
 				prevBad = true
@@ -218,6 +239,7 @@ func scanOnce(dir string) (*scan, error) {
 				s.firstSeq, s.firstPrev, chained = e.Seq, e.Prev, true
 				prevSeq, prevBad = e.Seq, false
 			case e.Seq != prevSeq+1:
+				s.ev = prevHash + "|" + h
 				if e.Seq <= prevSeq {
 					add(e.Seq, KindReordered, name, "seq %d comes after seq %d", e.Seq, prevSeq)
 				} else {
@@ -226,6 +248,8 @@ func scanOnce(dir string) (*scan, error) {
 				prevSeq, prevBad = e.Seq, false
 			case e.Prev != prevHash:
 				if !prevBad {
+					// line N as it is now, and what line N+1 says line N was
+					s.ev = prevHash + "|" + e.Prev
 					add(prevSeq, KindEdited, name, "seq %d does not chain to the line before it", e.Seq)
 				}
 				prevSeq, prevBad = e.Seq, false
@@ -235,6 +259,11 @@ func scanOnce(dir string) (*scan, error) {
 			}
 			if perr == nil && e.Event == ChainProblemEvent {
 				s.recorded = append(s.recorded, recordedProblem(e, name))
+			}
+			if perr == nil && e.Event == ChainProblemAckEvent {
+				if through, ok := ackThrough(e); ok {
+					s.acks = append(s.acks, ack{seq: e.Seq, through: through})
+				}
 			}
 			first = false
 			lastChained, lastPrev = chained, e.Prev
@@ -253,7 +282,9 @@ func scanOnce(dir string) (*scan, error) {
 	}
 	if b, err := os.ReadFile(filepath.Join(dir, headName)); err == nil {
 		var h head
+		s.headRaw = b
 		if json.Unmarshal(b, &h) != nil {
+			s.ev = s.headEvidence()
 			add(0, KindHeadMismatch, headName, "head.json does not parse")
 			s.headBad = true
 		} else {
@@ -277,6 +308,7 @@ func (s *scan) checkTorn(add func(int64, string, string, string, ...any)) {
 	if s.tornFile == "" {
 		return
 	}
+	s.ev = s.tornFile + "|" + s.lastHash + "|" + strconv.FormatInt(s.tornAt, 10)
 	s.tornCrash = (s.head != nil && s.head.Seq == s.lastSeq) || (s.head == nil && !s.headBad && s.lastSeq == 0)
 	if s.tornCrash {
 		add(s.lastSeq+1, KindTruncatedTail, s.tornFile, "the last line has no newline")
@@ -294,6 +326,10 @@ func (s *scan) checkFirst(add func(int64, string, string, string, ...any), files
 		return
 	}
 	oldest := files[0]
+	s.ev = oldest + "|" + s.firstPrev
+	if s.head != nil {
+		s.ev += "|" + s.head.FirstFile + "|" + s.head.FirstPrev
+	}
 	wantPrev, trusted := "", true // no head, or no first_file: the log starts at genesis
 	if s.head != nil && s.head.FirstFile != "" {
 		switch {
@@ -351,6 +387,34 @@ func (s *scan) pendingDelete(files []string) bool {
 // that does not verify (other than the two crash cases).
 const ChainProblemEvent = "chain_problem"
 
+// headEvidence is what a problem with head.json rests on: the bytes of
+// head.json and where the files end. A new garbage head.json, or lines cut
+// from the end, is a different fingerprint.
+func (s *scan) headEvidence() string {
+	d := "none"
+	if s.headRaw != nil {
+		d = hashOf(s.headRaw)
+	}
+	return d + "|" + strconv.FormatInt(s.lastSeq, 10) + "|" + s.lastHash
+}
+
+// ChainProblemAckEvent is the event an administrator's acknowledgement is
+// recorded as: Detail holds "through:<seq>", and every recorded chain problem
+// whose chain_problem event has a seq up to that one counts as acknowledged.
+const ChainProblemAckEvent = "chain_problem_ack"
+
+type ack struct{ seq, through int64 }
+
+func ackThrough(e Event) (int64, bool) {
+	for _, d := range e.Detail {
+		if v, ok := strings.CutPrefix(d, "through:"); ok {
+			n, err := strconv.ParseInt(v, 10, 64)
+			return n, err == nil && n > 0
+		}
+	}
+	return 0, false
+}
+
 // recordedProblem reads a chain_problem event: Code is the kind and Detail
 // holds "seq=<first broken seq>", "head_seq=" and "head_hash=".
 func recordedProblem(e Event, file string) Problem {
@@ -359,6 +423,8 @@ func recordedProblem(e Event, file string) Problem {
 	for _, d := range e.Detail {
 		if v, ok := strings.CutPrefix(d, "seq="); ok {
 			p.Seq, _ = strconv.ParseInt(v, 10, 64)
+		} else if v, ok := strings.CutPrefix(d, "fp="); ok {
+			p.Fingerprint = v
 		} else {
 			rest = append(rest, d)
 		}
@@ -373,21 +439,50 @@ func (s *scan) mergeRecorded() {
 	if len(s.recorded) == 0 {
 		return
 	}
+	// An acknowledgement counts only when it comes after the problem it covers.
+	for i := range s.recorded {
+		p := &s.recorded[i]
+		for _, a := range s.acks {
+			if a.seq > p.RecordedAt && a.through >= p.RecordedAt {
+				p.Acked, p.AckedAt = true, a.seq
+				break
+			}
+		}
+	}
 	type key struct {
 		kind string
 		seq  int64
+		fp   string
 	}
 	have := map[key]bool{}
 	for _, p := range s.recorded {
-		have[key{p.Kind, p.Seq}] = true
+		if p.Fingerprint != "" {
+			have[key{p.Kind, p.Seq, p.Fingerprint}] = true
+		} else if !p.Acked {
+			// recorded before fingerprints: kind and seq are all there is, and an
+			// acknowledgement of it never extends to what it did not see
+			have[key{p.Kind, p.Seq, ""}] = true
+		}
 	}
 	var out []Problem
 	for _, p := range s.report.Problems {
-		if !have[key{p.Kind, p.Seq}] {
+		if !have[key{p.Kind, p.Seq, p.Fingerprint}] && !have[key{p.Kind, p.Seq, ""}] {
 			out = append(out, p)
 		}
 	}
 	s.report.Problems = append(out, s.recorded...)
+}
+
+// Pending are the problems that still need attention: everything except a
+// recorded problem that was acknowledged.
+func (r Report) Pending() []Problem {
+	var out []Problem
+	for _, p := range r.Problems {
+		if !(p.Recorded && p.Acked) {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // fresh are the problems no chain_problem event holds yet.
@@ -403,6 +498,7 @@ func (r Report) fresh() []Problem {
 
 // checkHead compares the last line with head.json.
 func (s *scan) checkHead(add func(int64, string, string, string, ...any), lastChained bool, lastPrev string) {
+	s.ev = s.headEvidence()
 	h := s.head
 	if h == nil {
 		if s.headBad {
@@ -437,6 +533,9 @@ func (p Problem) Describe() string {
 	}
 	if p.Recorded {
 		fmt.Fprintf(&b, " (recorded at seq %d)", p.RecordedAt)
+	}
+	if p.Acked {
+		fmt.Fprintf(&b, " (acknowledged at seq %d)", p.AckedAt)
 	}
 	if p.Detail != "" {
 		b.WriteString(": " + p.Detail)

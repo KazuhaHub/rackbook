@@ -269,7 +269,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		Store: store, Auth: authn, ReadOnly: readOnly, BaseURL: baseURL, Web: dist, Logger: logger, RestrictHost: mode == auth.ModeNone, Login: loginMount,
 		MCP:    mcpauth.Handler(mcpserver.Handler(mcpSrv, mode != auth.ModeNone || baseURL != "" || cfg.Auth.MCP.Enabled())),
 		Public: map[string]http.Handler{mcpauth.MetadataPath: meta, mcpauth.MetadataPathMCP: meta},
-		Tokens: registry, Modules: modState, Prefs: prefStore, OAuth: oauthSrv, Infra: infra,
+		Tokens: registry, Modules: modState, Prefs: prefStore, OAuth: oauthSrv, Infra: infra, Audit: auditLog,
 	})
 
 	addr, _ := f.GetString("listen")

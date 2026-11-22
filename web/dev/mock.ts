@@ -303,6 +303,9 @@ export function mockApi(root: string): Plugin {
       ? { kind: 'history_rewritten', lastGood: 'a1b2c3d4e5f60718293a4b5c6d7e8f9012345678', remote: '9f8e7d6c5b4a39281706f5e4d3c2b1a098765432' }
       : undefined
 
+  // MOCK_AUDIT=1 shows the "audit log problems" banner until an admin acknowledges it.
+  let auditProblem = process.env.MOCK_AUDIT === '1'
+
   // The language preference of the mock user (PUT /api/account/preferences), and a
   // rough Accept-Language match like the server's (internal/locale).
   let userLocale: string | undefined
@@ -327,6 +330,7 @@ export function mockApi(root: string): Plugin {
       writeMode: cfg.write?.mode ?? 'push',
       user: { ...user, ...(userLocale ? { locale: userLocale } : {}) },
       ...(alert ? { alert } : {}),
+      ...(auditProblem ? { auditAlert: { problems: 1, firstSeq: 41 } } : {}),
       modules,
       collections: [...colls.values()].map((c) => ({
         expiryField: expiryFields[c.name]?.expiryField ?? '',
@@ -541,6 +545,53 @@ export function mockApi(root: string): Plugin {
       const col = url.searchParams.get('collection')
       const commits = history.filter((h) => !col || h.collection === col).slice(0, limit).map((h) => ({ hash: h.hash, author: h.author, email: h.email, date: h.date, subject: h.subject }))
       return send(res, 200, { commits }), true
+    }
+    if (head === 'audit' && cname === 'status' && method === 'GET') {
+      const problems = auditProblem ? [{ kind: 'cut_from_end', seq: 41, file: 'audit-2026-11.jsonl', recordedAt: 44 }] : []
+      return send(res, 200, { enabled: true, ok: !auditProblem, problems, lastSeq: 52 }), true
+    }
+    if (head === 'audit' && cname === 'ack' && method === 'POST') {
+      auditProblem = false
+      return send(res, 200, { enabled: true, ok: true, problems: [], lastSeq: 53 }), true
+    }
+    if (head === 'activity' && cname === 'commit' && method === 'GET') {
+      const diff = '--- a/docs/ledger/todo.yml\n+++ b/docs/ledger/todo.yml\n@@ -1,3 +1,3 @@\n - item: 示例\n-  status: 待办\n+  status: 完成\n   notes: ""\n'
+      return send(res, 200, {
+        area: rest[0],
+        hash: rest[1],
+        files: [
+          { status: 'M', path: 'docs/ledger/todo.yml', patch: diff },
+          { status: 'A', path: 'secrets/alpha.sops.yaml', hidden: true },
+          { status: 'M', path: 'docs/ledger/big.yml', patch: diff, truncated: true },
+        ],
+        moreFiles: true,
+      }), true
+    }
+    if (head === 'activity' && method === 'GET') {
+      const q = url.searchParams
+      const ago = (m: number) => new Date(Date.now() - m * 60000).toISOString()
+      const areas = q.getAll('area').flatMap((a) => a.split(','))
+      let items: Record<string, unknown>[] = history.map((h, i) => ({
+        time: h.date, area: 'ledger', kind: 'commit', hash: h.hash.padEnd(40, '0'), short: h.hash, subject: h.subject,
+        identity: i === 3 ? 'mallory@example.com' : user.id, name: i === 3 ? 'Mallory' : user.name, verified: i !== 3, via: 'rackbook (oidc)',
+        records: [`${h.collection}/${h.subject.split(' ').slice(2).join(' ')}`], ...(i === 1 ? { token: 'ci-bot' } : {}), collection: h.collection,
+      }))
+      items.push(
+        { time: ago(2), area: 'audit', kind: 'login', seq: 51, identity: user.id, name: user.name, method: 'oidc', role: 'admin', addr: '203.0.113.0' },
+        { time: ago(40), area: 'audit', kind: 'login_refused', seq: 50, identity: 'guest@example.com', reason: 'no_role', method: 'oidc' },
+        { time: ago(26 * 60), area: 'audit', kind: 'chain_problem', seq: 44, code: 'cut_from_end', detail: ['seq=41'] },
+        { time: ago(26 * 60 - 5), area: 'infra', kind: 'secret_revealed', seq: 45, identity: user.id, name: user.name, host: 'alpha-host' },
+        { time: ago(30 * 60), area: 'infra', kind: 'commit', hash: 'e5f6a7b8'.padEnd(40, '1'), short: 'e5f6a7b', subject: 'infra(host_vars/alpha-host): enable beszel-agent', identity: user.id, name: user.name, verified: true },
+        { time: ago(24 * 60), area: 'ledger', kind: 'commit', hash: 'c0ffee1'.padEnd(40, '2'), short: 'c0ffee1', subject: 'rackbook(auth): add passkey', identity: user.id, name: user.name, verified: true, state: 'only' },
+      )
+      const col = q.get('collection')
+      const who = q.get('identity')
+      items = items
+        .filter((it) => (!areas.length || areas.includes(String(it.area))) && (!col || it.collection === col) && (!who || (it.identity === who && it.verified !== false)))
+        .sort((a, b) => String(b.time).localeCompare(String(a.time)))
+      const start = Number(q.get('cursor') || 0)
+      const page = items.slice(start, start + 5)
+      return send(res, 200, { items: page, areas: ['ledger', 'infra', 'audit'], audit: true, ...(start + 5 < items.length ? { cursor: String(start + 5) } : {}) }), true
     }
     if (head !== 'c') return send(res, 404, { error: 'not_found', message: 'no such endpoint' }), true
     const c = colls.get(cname)

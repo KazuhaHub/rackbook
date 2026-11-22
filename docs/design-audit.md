@@ -1,7 +1,7 @@
 # Audit history and roles from the identity provider
 
-Status: design, agreed 2026-11-22. Nothing here is built yet. Phase 1 comes first. Phase 2 starts with
-the light version (2a); SCIM (2b) comes later. Phase 3 still needs a decision (section 7).
+Status: design, agreed 2026-11-22. Phase 1 pieces 1 and 2 are built (3.5); the rest is not. Phase 2
+starts with the light version (2a); SCIM (2b) comes later. Phase 3 still needs a decision (section 7).
 
 The team is growing. Two things are needed:
 
@@ -234,8 +234,59 @@ must not decide who sees infra.
 ### 3.5 Pieces (one PR each)
 
 1. The audit log: chain, `head.json`, `rackbook audit verify`, migration, sign-in and refusal events,
-   `clientip`, retention and address settings.
-2. `GET /api/activity` (with `format=jsonl`) and the Activity page.
+   `clientip`, retention and address settings. **Done.**
+2. `GET /api/activity` (with `format=jsonl`) and the Activity page. **Done** (README, "Activity"). As built:
+   - Acknowledging a chain problem is part of this piece: `POST /api/audit/ack` records a
+     `chain_problem_ack` event, and retention stops keeping the month of an acknowledged problem. It is for
+     admins, refused on a read-only server and for API tokens. A `chain_problem` event carries a fingerprint of
+     the evidence (the lines involved, or head.json and where the files end), and an acknowledgement covers only
+     the fingerprints it saw: the same old break stays acknowledged, a line rewritten later or a new garbage
+     head.json or a new cut is recorded again and shows the banner.
+   - `audit/index.json` is a map to the `commit` lines (file and offset), not a source of truth: every hit is
+     checked against the chain (the line is a `commit` event with that area, hash and identity, and the next
+     line's `prev`, or head.json, vouches for it), and a hit that fails rebuilds the index.
+   - The `canSee` function in `internal/api/activity.go` is the one place that decides who sees which area;
+     piece 4 (auditors) only changes it. Until then the audit areas are admin-only.
+   - Audit events are shown under the area `audit`, except the infra ones, which are shown under `infra`.
+     The `ledger` area holds commits only, so `write_refused` for the ledger is an `audit` row.
+   - Paging model. Each source is a stream with its own resume position, and the cursor holds all of them: for
+     a repository, the commit the walk is pinned to (the first page pins the current tip, so new commits do not
+     shift later pages) and the number of commits of that `git log --date-order` walk already consumed
+     (`--skip=N -n M`); for the audit log, the seq it has come down to. The time, person, record and state
+     filters are applied in Go to what a stream reads and never as git options, because git stops a
+     time-limited walk at the first old commit, which loses commits whose committer dates are out of order. The
+     merge takes the newest head of the three streams. Each git source is one streaming `git log` process per
+     request (started by the first read, killed and waited for when the request ends), not one process per
+     chunk. Each request has a work budget per stream (2 000 commits, 200 000 audit lines); when it is spent the
+     page ends, possibly without a row, and the cursor resumes there; the console follows an empty page three
+     times and then asks. With `since` a walk stops after 200 commits in a row dated more than 24 hours before
+     it. That is a heuristic bound and is a deviation from "never lose a commit": a commit dated more than a day
+     earlier than the 200 that follow it in the walk can be missed by a `since` filter; without `since` there
+     is no early stop. The cursor is signed with a key made at start (HMAC-SHA256, bound to the caller), so it
+     cannot be forged or replayed by another person and does not survive a restart (`400 cursor_invalid`; the
+     console starts again from the top). The audit reader keeps a sparse in-memory seq-to-offset index per month
+     file (one mark per 512 lines) so a deep read seeks instead of parsing every newer line. A commit line that
+     the chain does not vouch for (a break follows it) is reported unverified without rebuilding the index; the
+     index is rebuilt only when it contradicts the files. So the output is complete and has no repeats, but it is sorted only as far as each stream
+     is: a repository whose dates go backwards along its history, or audit lines written with an old explicit
+     time (the copy of the old infra audit file), show at their position in the stream. The JSONL export walks
+     the same pages up to 50 000 rows or its work budget, then ends with `{"truncated":true}`.
+   - `format=jsonl` is for admins (design 3.1); `canSee` has a `seeExport` class so piece 4 only adds the
+     auditors. The list itself is open to every role, limited by area.
+   - A `collection` or `id` filter leaves out infra and audit rows. `id` matches the exact `Record` trailer; it
+     does not fall back to the collection's file history as the record page's History does, because a page of the
+     timeline must not change meaning when an older page has no such commit.
+   - The patch of a commit comes from one `git diff-tree --patch` process whose output is cut at 256 KiB (the
+     process is killed there; the files not read in full are marked truncated), 200 files at most, and the
+     patches are matched to files by the path in each `diff --git` header (a type change has two sections), with
+     only the shown files named in the arguments. Every hunk
+     header is rewritten to `@@ -a,b +c,d @@`, because git appends the nearest line above the hunk (for YAML, a
+     top-level key and value) and that line can be a secret. `.rackbook/` files are shown to admins in full
+     (they hold public keys, ids and hashes by design), secret files of the infra repository are listed as
+     changed without a patch.
+   - `/api/meta` carries `auditAlert` for admins while recorded problems are not acknowledged; the console's red
+     banner (on every page, so also on Activity) reads it.
+   - Not done here: the CLI and MCP do not read the audit log.
 3. Field-level record history, the restore endpoint, deleted records.
 4. `auth.auditors` and `--infra-auditors`.
 5. The optional daily anchor.

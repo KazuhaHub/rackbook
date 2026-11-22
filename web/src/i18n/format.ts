@@ -42,6 +42,18 @@ export function formatDateTime(v: string | number | Date, timeZone?: string): st
   }
 }
 
+/** The time of day on a 24-hour clock, such as 14:05:09. */
+export function formatTime(v: string | number | Date): string {
+  const d = parse(v)
+  return d ? dateTime({ hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' }).format(d) : String(v)
+}
+
+/** A day written out with its weekday, for a heading. */
+export function formatDay(v: string | number | Date): string {
+  const d = parse(v)
+  return d ? dateTime({ year: 'numeric', month: 'long', day: 'numeric', weekday: 'long' }).format(d) : String(v)
+}
+
 const numCache = new Map<string, Intl.NumberFormat>()
 
 export function formatNumber(n: number, opts: Intl.NumberFormatOptions = {}): string {

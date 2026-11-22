@@ -32,7 +32,7 @@ func monthIndex(t time.Time) int { return t.Year()*12 + int(t.Month()) - 1 }
 
 // prune deletes the month files older than RetentionMonths whole months
 // before the current month. It never deletes the newest file, nor a file that
-// holds a chain_problem event (the evidence stays), and does nothing while the
+// holds a chain_problem event that nobody acknowledged yet (the evidence stays), and does nothing while the
 // chain has a problem that is not recorded in it yet or the log is failed.
 // Before deleting, head.json records the first kept file and the Prev of its
 // first line, so verification starts there.
@@ -63,7 +63,9 @@ func (l *Log) prune() {
 	}
 	holds := map[string]bool{}
 	for _, p := range s.recorded {
-		holds[p.File] = true
+		if !p.Acked {
+			holds[p.File] = true
+		}
 	}
 	files, err := listFiles(l.dir)
 	if err != nil {

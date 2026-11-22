@@ -87,6 +87,8 @@ export type Meta = {
   writeMode?: string
   user: MetaUser | null
   alert?: MetaAlert
+  /** administrators only: the audit log has recorded problems nobody has acknowledged */
+  auditAlert?: { problems: number; firstSeq: number }
   branding?: { name: string; logo: boolean }
   collections: Collection[]
   modules?: ModuleInfo[]
