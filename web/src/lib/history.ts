@@ -20,7 +20,7 @@ export type RecordVersion = ActivityItem & {
   approximate?: boolean
 }
 
-export type VersionsPage = { id: string; versions: RecordVersion[]; cursor?: string; audit: boolean }
+export type VersionsPage = { id: string; versions: RecordVersion[]; cursor?: string; audit: boolean; /** commits of the history this page looked at */ scanned?: number }
 
 export type VersionDetail = {
   id: string
@@ -29,6 +29,8 @@ export type VersionDetail = {
   /** the record at that commit, without the values the secret scan flags */
   data: Record<string, unknown>
   hidden: number
+  /** that commit's collection settings could not be read; today's were used */
+  approximate?: boolean
   exists: boolean
   current: boolean
   /** what a restore would change: from today's record to this version */

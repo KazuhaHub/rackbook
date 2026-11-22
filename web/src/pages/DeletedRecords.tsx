@@ -26,6 +26,8 @@ function LastVersion({ col, item }: { col: Collection; item: DeletedItem }) {
   const data = q.data.data
   const known = new Set(schemaProps(col).map(([f]) => f))
   return (
+    <div className="min-w-0">
+    {q.data.approximate && <p className="mb-1 text-xs text-muted-foreground">{t.history.approximate}</p>}
     <dl className="grid min-w-0 gap-x-4 gap-y-2 rounded-lg border bg-muted/20 p-3 text-sm sm:grid-cols-[minmax(6rem,10rem)_minmax(0,1fr)]">
       {schemaProps(col)
         .filter(([f]) => data[f] !== undefined)
@@ -48,6 +50,7 @@ function LastVersion({ col, item }: { col: Collection; item: DeletedItem }) {
           </div>
         ))}
     </dl>
+    </div>
   )
 }
 

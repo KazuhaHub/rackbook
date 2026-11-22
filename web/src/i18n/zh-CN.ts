@@ -822,6 +822,8 @@ const messages = {
     restoredPR: '已提交为拉取请求，合并后生效',
     conflictBody: '你查看期间，有人修改或删除了这条记录。请加载最新版本后再试。',
     reload: '加载最新版本',
+    scanning: (n: number) => `正在扫描更早的历史…… 目前已查看 ${n} 个提交`,
+    keepSearching: '继续查找',
     needsEditTitle: '此版本需要先修改',
     issuesTitle: '为什么不能原样恢复',
     issuesBody: '把旧版本对照当前的 schema 和引用检查时，发现了下列问题。',

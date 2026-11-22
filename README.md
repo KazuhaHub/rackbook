@@ -1023,21 +1023,25 @@ ignores fields it does not know. If it cannot be read, the collection is taken a
 `approximate`. The commits are those with the exact `Record: <collection>/<id>` trailer, together with those that
 changed the collection's file and the record's content in it without naming the record (a hand edit, or one from before
 the trailer); those show as unverified. A commit whose collection file is the very blob of its parent's is not read at
-all.
+all, even if it names the record, unless the commit changed the collection's key fields in `rackbook.yml`: then the
+record's id changed and it is reported as a rename. Hand edits made before the collection file was moved to its
+present path are not shown (the walk follows the file's present path; commits that carry the `Record` trailer are
+still found). `approximate` is also reported for a single version and by the restore dialog, and the console shows a note.
 
 *What it costs.* Nothing is parsed by commit but by blob. A commit is resolved to the ids of its `rackbook.yml`,
 collection file and type with one `git ls-tree`, the blobs are read by id, and what is parsed from a blob is kept in
 small caches shared by all requests (12 collection files, 64 `rackbook.yml` and type files, 2 048 resolved
 commits), so each distinct file is parsed once. A request walks at most 1 000 commits (most are skipped without
 reading anything) and works at most 0.7 s; when that is used up the page ends, possibly with no version, and the
-cursor goes on. Reading follows the paging model of Activity: the first page pins the current tip, the cursor holds the
+cursor goes on (each page says `scanned`; the console goes on by itself for up to 15 s through pages with no version, showing how many commits it looked at, and then asks). Reading follows the paging model of Activity: the first page pins the current tip, the cursor holds the
 commit the walk is pinned to and how many commits of it were consumed, and a page has at most 50 versions. A file that
 is too large (8 MiB), cannot be read or does not parse at a commit makes that version `unreadable`: it is listed
 without changes, and the request goes on.
 
 Nothing hidden elsewhere is shown here: ids that hold a secret are shown redacted, `.rackbook/` is never read, and a
-value is hidden when the secret scan flags it with the type of that commit, with today's type, or with no type at all
-(a type's exemption does not make a value visible that a plainer reading flags). That holds in the timeline, in
+value is hidden when the secret scan flags it with the type of that commit or with today's type (a value that both
+types declare public, such as a public key, is shown; one that either flags is hidden). Only when neither type can be
+read is it scanned with no type at all. That holds in the timeline, in
 the single version, in what *Restore* sends back to the editor and in the summaries of deleted records. A hidden value is
 shown as `(hidden)`, and a change between two hidden values is still a change. The old values are read through
 `git rev-parse <commit>:./<path>` and `git cat-file blob <object id>` only: the guarded runner allows `cat-file`
@@ -1069,7 +1073,7 @@ rebuilds it). With
 `--state-dir` in `<state-dir>/history/deleted-<collection>.json` (`0600`), without it in memory. The cache is keyed by
 the commit the history was read to and extended from there with only the new commits; if that commit is no longer an
 ancestor of the tip (the history was rewritten), or the secret scan, the collection's type, key or list fields changed
-since it was made, it is built again, and deleting the file is always safe. A first build is
+since it was made, it is built again (the scan's fingerprint covers its built-in rules, extra patterns and allow list), and deleting the file is always safe. A first build is
 spread over requests, 200 commits or 0.7 s each: until it is finished the answer says `"complete": false` with what is known,
 and the console asks again. The cache holds commit hashes, times, ids (redacted where needed), the author and subject of the deleting commit and a few summary fields without hidden values.
 

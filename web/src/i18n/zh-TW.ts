@@ -822,6 +822,8 @@ const messages = {
     restoredPR: '已送出為合併請求，合併後生效',
     conflictBody: '你檢視期間，有人修改或刪除了這筆記錄。請載入最新版本後再試一次。',
     reload: '載入最新版本',
+    scanning: (n: number) => `正在掃描更早的歷史…… 目前已檢視 ${n} 個提交`,
+    keepSearching: '繼續尋找',
     needsEditTitle: '此版本需要先修改',
     issuesTitle: '為什麼無法原樣還原',
     issuesBody: '將舊版本對照目前的 schema 與參照檢查時，發現了下列問題。',

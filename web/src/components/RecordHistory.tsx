@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router'
 import { useQueryClient } from '@tanstack/react-query'
 import { GitCommitHorizontal, History, RotateCcw } from 'lucide-react'
@@ -16,6 +16,9 @@ import { relativeTime } from '@/lib/ledger'
 import { displayId } from '@/lib/recordId'
 import { shortHash } from '@/lib/versionValue'
 import type { Collection } from '@/lib/types'
+
+/** How long the timeline goes on by itself through pages with no version. */
+const SCAN_MS = 15_000
 
 /**
  * The version timeline of a record: who changed it, when, and what each commit changed field by field,
@@ -41,13 +44,33 @@ export function RecordHistory({
   const pages = q.data?.pages ?? []
   const versions = pages.flatMap((p) => p.versions)
   const audit = pages[0]?.audit ?? true
-  // A page can come back empty with a cursor (the walk budget ran out before a version was found): go on by itself a few times.
+  // A page can come back empty with a cursor (the walk's time budget ran out before a version was found): go on by
+  // itself for up to SCAN_MS in all, showing how far it has got, then ask.
   let emptyRun = 0
-  for (let i = pages.length - 1; i >= 0 && pages[i].versions.length === 0; i--) emptyRun++
+  let scanned = 0
+  for (let i = pages.length - 1; i >= 0 && pages[i].versions.length === 0; i--) {
+    emptyRun++
+    scanned += pages[i].scanned ?? 0
+  }
   const { hasNextPage, isFetchingNextPage, fetchNextPage } = q
+  // when it gave up (the number of pages then: asking for another page ends it)
+  const startedAt = useRef(0)
+  const [gaveUpAt, setGaveUpAt] = useState(-1)
+  const wants = emptyRun > 0 && hasNextPage
+  const searching = wants && gaveUpAt !== pages.length
   useEffect(() => {
-    if (emptyRun > 0 && emptyRun < 3 && hasNextPage && !isFetchingNextPage) void fetchNextPage()
-  }, [emptyRun, hasNextPage, isFetchingNextPage, fetchNextPage])
+    if (!wants) {
+      startedAt.current = 0
+      return
+    }
+    if (startedAt.current === 0) startedAt.current = Date.now()
+    if (gaveUpAt === pages.length || isFetchingNextPage) return
+    if (Date.now() - startedAt.current > SCAN_MS) {
+      const id = window.setTimeout(() => setGaveUpAt(pages.length), 0)
+      return () => window.clearTimeout(id)
+    }
+    void fetchNextPage()
+  }, [wants, gaveUpAt, isFetchingNextPage, fetchNextPage, pages.length])
   // a cursor the server no longer accepts (it restarted): start again from the newest
   const cursorGone = q.isFetchNextPageError && q.error instanceof ApiError && q.error.code === 'cursor_invalid'
   useEffect(() => {
@@ -103,10 +126,19 @@ export function RecordHistory({
           })}
         </ol>
       )}
-      {hasNextPage && (
+      {searching && <p className="mt-4 text-sm text-muted-foreground">{t.history.scanning(scanned)}</p>}
+      {hasNextPage && !searching && (
         <div className="mt-4">
-          <Button variant="outline" size="sm" disabled={isFetchingNextPage} onClick={() => void fetchNextPage()}>
-            <History /> {isFetchingNextPage ? t.history.loading : t.history.loadMore}
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={isFetchingNextPage}
+            onClick={() => {
+              startedAt.current = Date.now() // asked: another round of searching
+              void fetchNextPage()
+            }}
+          >
+            <History /> {isFetchingNextPage ? t.history.loading : emptyRun > 0 ? t.history.keepSearching : t.history.loadMore}
           </Button>
         </div>
       )}

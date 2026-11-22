@@ -828,6 +828,8 @@ const messages = {
     restoredPR: 'Submitted as a pull request; it takes effect once merged',
     conflictBody: 'Someone changed or deleted this record while you were looking at it. Load the latest version and try again.',
     reload: 'Load the latest',
+    scanning: (n: number) => `Scanning older history… ${n} ${pick(n, 'commit', 'commits')} looked at so far`,
+    keepSearching: 'Keep searching',
     needsEditTitle: 'This version needs a change first',
     issuesTitle: 'Why it cannot be restored as it is',
     issuesBody: 'These problems were found when the old version was checked against the current schema and references.',

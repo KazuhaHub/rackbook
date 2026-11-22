@@ -137,6 +137,11 @@ export function RestoreDialog({
               </dl>
             </>
           ) : null}
+          {d?.approximate && (
+            <Alert>
+              <AlertDescription>{t.history.approximate}</AlertDescription>
+            </Alert>
+          )}
           {conflict && (
             <Alert variant="destructive">
               <AlertDescription>

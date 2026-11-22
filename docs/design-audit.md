@@ -294,7 +294,7 @@ must not decide who sees infra.
      one version with the diff against today's record is `GET .../history/{commit}`, which the restore dialog uses.
      Commits are those with the exact `Record` trailer plus those that changed the collection's file and the
      record's content without naming it (hand edits, shown unverified); a commit whose file is the blob of its
-     parent's is skipped without reading it, so trailer commits that left the file as it was are not versions.
+     parent's is skipped without reading it, so trailer commits that left the file as it was are not versions, unless the commit named the record and changed the collection's key in `rackbook.yml`, which is a rename. Known limit: hand edits made before the collection file moved to its present path are not shown (the walk is limited to the present path; trailer commits are found regardless).
    - Cost. Nothing is read or parsed by commit but by blob: `git ls-tree -z <commit> -- <paths>` gives the blob ids of
      `rackbook.yml`, the collection file and the type, the blobs are read by id, and the parsed `rackbook.yml`
      collection definitions, collection files and type annotations are kept in bounded LRUs shared across requests
@@ -308,7 +308,7 @@ must not decide who sees infra.
      the key fields (same list position, old id gone) is marked `renamed`, not `created` and `deleted`.
    - What "the same hiding as for the current record" means: the record `GET` returns the stored values as they are, so
      the check made is the one the writes make. A value is hidden when the secret scan flags it with the type of that
-     commit, with today's type or with no type, in the diff, the single version, the content that comes back with
+     commit or with today's type (public in both: shown; only when neither type can be read is no type used), in the diff, the single version, the content that comes back with
      `restore_needs_edit` (which names the places, `hiddenPaths`) and the deleted summaries. A restore itself uses the
      full old content. The validation issues of a refused restore are rebuilt from path and rule, since the
      validator's messages quote values. The form refuses to save until each hidden value has a decision (new value,
