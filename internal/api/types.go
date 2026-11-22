@@ -16,7 +16,7 @@ import (
 
 // Data type management (docs/design-v0.2.md section 3). Administrators only.
 
-func (s *server) typesRoutes(mux *http.ServeMux) {
+func (s *server) typesRoutes(mux *routeMux) {
 	mux.HandleFunc("GET /api/types", s.typesList)
 	mux.HandleFunc("POST /api/types", s.typesCreate)
 	mux.HandleFunc("GET /api/types/{name}", s.typesGet)

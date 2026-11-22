@@ -9,7 +9,7 @@ import (
 	"github.com/kazuhahub/rackbook/internal/prefs"
 )
 
-func (s *server) accountRoutes(mux *http.ServeMux) {
+func (s *server) accountRoutes(mux *routeMux) {
 	mux.HandleFunc("PUT /api/account/preferences", s.putPreferences)
 }
 

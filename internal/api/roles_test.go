@@ -18,7 +18,8 @@ auth:
   roles:
     admin: [boss@example.com]
     editor: ["*@team.example.com"]
-    viewer: [guest@example.com]
+    viewer: [guest@example.com, ira@example.com]
+  auditors: [audie@example.com, eve@team.example.com]
 `
 
 func withRoles(t *testing.T, dir string) string {
@@ -96,7 +97,7 @@ func TestIdentityWithoutARoleIsRefusedAndRolesFollowTheFile(t *testing.T) {
 		t.Fatal("healthz must stay open")
 	}
 	// Without Git the files are re-read on every request: editing roles in the file takes effect at once.
-	testutil.Replace(t, dir, "rackbook.yml", "viewer: [guest@example.com]", "viewer: [guest@example.com, eve@elsewhere.org]")
+	testutil.Replace(t, dir, "rackbook.yml", "viewer: [guest@example.com, ira@example.com]", "viewer: [guest@example.com, ira@example.com, eve@elsewhere.org]")
 	_, m, _ := f.do(t, "GET", "/api/meta", nil, nil)
 	if m["user"].(map[string]any)["role"] != "viewer" {
 		t.Fatalf("%v", m["user"])

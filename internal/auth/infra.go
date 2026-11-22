@@ -82,6 +82,20 @@ func (a *InfraAdmins) WriteAge() time.Duration {
 // auth.roles: case-insensitively, folding ASCII letters only). Wildcards and
 // prefixed entries are refused: this list names people one by one.
 func NewInfraAdmins(entries []string) (*InfraAdmins, error) {
+	return newInfraList("--infra-admins", entries)
+}
+
+// NewInfraAuditors is NewInfraAdmins for --infra-auditors: the same kind of
+// list with the same rules, and it must be pinned (Pin) to the same issuer,
+// client, claim and tenant. The people on it may read /infra but not the
+// secrets, and may not change anything. The type is shared, so every rule that
+// protects the administrators' list (OIDC sessions only, never tokens, the
+// pinned provider) holds for it too.
+func NewInfraAuditors(entries []string) (*InfraAdmins, error) {
+	return newInfraList("--infra-auditors", entries)
+}
+
+func newInfraList(flag string, entries []string) (*InfraAdmins, error) {
 	a := &InfraAdmins{ids: map[string]bool{}}
 	for _, e := range entries {
 		e = strings.TrimSpace(e)
@@ -89,12 +103,12 @@ func NewInfraAdmins(entries []string) (*InfraAdmins, error) {
 			continue
 		}
 		if strings.ContainsAny(e, "*? \t") {
-			return nil, fmt.Errorf("--infra-admins: %q is not one exact identity (no wildcards)", e)
+			return nil, fmt.Errorf("%s: %q is not one exact identity (no wildcards)", flag, e)
 		}
 		a.ids[roles.FoldASCII(e)] = true
 	}
 	if len(a.ids) == 0 {
-		return nil, fmt.Errorf("--infra-admins names nobody")
+		return nil, fmt.Errorf("%s names nobody", flag)
 	}
 	return a, nil
 }
@@ -123,4 +137,12 @@ func (a *InfraAdmins) Fresh(id *Identity, now time.Time) bool {
 	}
 	age := now.Sub(id.OIDCAt)
 	return age >= -time.Minute && age < a.WriteAge()
+}
+
+// Len is the number of people on the list (0 for a nil list).
+func (a *InfraAdmins) Len() int {
+	if a == nil {
+		return 0
+	}
+	return len(a.ids)
 }

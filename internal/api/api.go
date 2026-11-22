@@ -99,8 +99,31 @@ type server struct {
 	cursorKey []byte
 }
 
+// routeMux is the mux with a list of the patterns registered through it, so
+// that a test can walk every route the API defines (RoutePatterns).
+type routeMux struct {
+	*http.ServeMux
+	patterns []string
+}
+
+func (m *routeMux) HandleFunc(pattern string, h func(http.ResponseWriter, *http.Request)) {
+	m.patterns = append(m.patterns, pattern)
+	m.ServeMux.HandleFunc(pattern, h)
+}
+
+func (m *routeMux) Handle(pattern string, h http.Handler) {
+	m.patterns = append(m.patterns, pattern)
+	m.ServeMux.Handle(pattern, h)
+}
+
 // New returns the full handler: API, exports, MCP and console.
 func New(o Options) http.Handler {
+	h, _ := build(o)
+	return h
+}
+
+// build makes the handler and lists the route patterns it registered.
+func build(o Options) (http.Handler, []string) {
 	s := &server{o: o, log: o.Logger}
 	if s.log == nil {
 		s.log = slog.New(slog.DiscardHandler)
@@ -127,7 +150,7 @@ func New(o Options) http.Handler {
 	if s.o.Prefs == nil {
 		s.o.Prefs = &prefs.Store{}
 	}
-	mux := http.NewServeMux()
+	mux := &routeMux{ServeMux: http.NewServeMux()}
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, "ok\n") })
 	mux.HandleFunc("GET /api/meta", s.meta)
 	mux.HandleFunc("GET /api/check", s.check)
@@ -152,7 +175,7 @@ func New(o Options) http.Handler {
 		public[p] = h
 	}
 	if o.OAuth != nil {
-		o.OAuth.Mount(mux)
+		o.OAuth.Mount(mux.ServeMux)
 		for p, h := range o.OAuth.Public() {
 			public[p] = h
 		}
@@ -171,7 +194,7 @@ func New(o Options) http.Handler {
 	}
 	mux.HandleFunc("/", s.static)
 	if o.Login != nil {
-		o.Login.Mount(mux, http.HandlerFunc(s.static))
+		o.Login.Mount(mux.ServeMux, http.HandlerFunc(s.static))
 	}
 
 	authed := s.o.Auth.Middleware(mux)
@@ -190,7 +213,7 @@ func New(o Options) http.Handler {
 		}
 		authed.ServeHTTP(w, r)
 	})
-	return securityHeaders(s.guard(h))
+	return securityHeaders(s.guard(h)), mux.patterns
 }
 
 // guard rejects DNS-rebinding (unexpected Host) and cross-site or non-JSON writes.
@@ -384,9 +407,15 @@ func (s *server) meta(w http.ResponseWriter, r *http.Request) {
 	l := s.o.Store.Ledger()
 	cfg := l.Config
 	user := map[string]any{"canEdit": s.canEdit(r), "canAdmin": auth.Can(r.Context(), roles.Manage)}
+	if auth.IsAuditor(r.Context()) {
+		user["auditor"] = true
+	}
 	if s.canInfra(r) {
 		user["canInfra"] = true
-		if s.writesOn() {
+		switch {
+		case !s.canInfraAdmin(r):
+			user["infraAuditor"] = true // read-only, no secrets
+		case s.writesOn():
 			user["canInfraWrite"] = true
 		}
 	}

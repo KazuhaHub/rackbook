@@ -19,7 +19,7 @@ import (
 // of the commits of the data repository, the commits of the infra repository
 // and the audit log, with who may see which part decided in canSee.
 
-func (s *server) activityRoutes(mux *http.ServeMux) {
+func (s *server) activityRoutes(mux *routeMux) {
 	mux.HandleFunc("GET /api/activity", s.activity)
 	mux.HandleFunc("GET /api/activity/commit/{area}/{hash}", s.activityCommit)
 	mux.HandleFunc("GET /api/audit/status", s.auditStatus)
@@ -44,15 +44,18 @@ const (
 )
 
 // canSee is the one place that says who may see which kind of activity.
-// Today: everybody sees the ledger; administrators see state and audit events;
-// the infra administrators (--infra-admins) see infra. The auditor capability
-// (design 3.4) will change only this function.
+// Everybody sees the ledger. State (.rackbook/ commits), audit events and the
+// export are for administrators and auditors (auth.auditors: a capability that
+// is separate from the role, design 3.4). Infra is for the infra
+// administrators and the infra auditors (--infra-admins, --infra-auditors).
+// Seeing is not acknowledging: the acknowledgement is admin-only and does not
+// go through here.
 func (s *server) canSee(r *http.Request, v visibility) bool {
 	switch v {
 	case seeLedger:
 		return true
 	case seeState, seeAudit, seeExport:
-		return auth.Can(r.Context(), roles.Manage)
+		return auth.Can(r.Context(), roles.Manage) || auth.IsAuditor(r.Context())
 	case seeInfra:
 		return s.canInfra(r)
 	}
@@ -90,7 +93,7 @@ type activityItem struct {
 	// Verified says this server made the commit (its audit log has the line).
 	Verified *bool  `json:"verified,omitempty"`
 	Token    string `json:"token,omitempty"`
-	// State: the commit touches .rackbook/ ("only" or "some"); administrators only.
+	// State: the commit touches .rackbook/ ("only" or "some"); administrators and auditors (seeState).
 	State string `json:"state,omitempty"`
 
 	// Audit events.
@@ -99,7 +102,7 @@ type activityItem struct {
 	Reason  string   `json:"reason,omitempty"`
 	Code    string   `json:"code,omitempty"`
 	Role    string   `json:"role,omitempty"`
-	Addr    string   `json:"addr,omitempty"` // administrators only
+	Addr    string   `json:"addr,omitempty"` // administrators and auditors (seeAudit)
 	Outcome string   `json:"outcome,omitempty"`
 	Action  string   `json:"action,omitempty"`
 	Host    string   `json:"host,omitempty"`
@@ -134,7 +137,7 @@ type activityFilter struct {
 
 func (f *activityFilter) has(area string) bool { return slices.Contains(f.areas, area) }
 
-func commitItems(area string, src int, cs []gitstore.ActivityCommit, admin bool) []walkEntry {
+func commitItems(area string, src int, cs []gitstore.ActivityCommit, showState bool) []walkEntry {
 	out := make([]walkEntry, 0, len(cs))
 	for _, c := range cs {
 		it := &activityItem{Area: area, Kind: "commit", Hash: c.Hash, Short: c.Short, Commit: c.Short, Subject: c.Subject,
@@ -142,7 +145,7 @@ func commitItems(area string, src int, cs []gitstore.ActivityCommit, admin bool)
 			// as written in the commit: nothing here proves it (see markVerified)
 			Identity: c.EditedBy, Name: c.Author}
 		it.Time = it.at.Format(time.RFC3339)
-		if admin && (c.State == gitstore.StateOnly || c.State == gitstore.StateSome) {
+		if showState && (c.State == gitstore.StateOnly || c.State == gitstore.StateSome) {
 			it.State = c.State
 		}
 		out = append(out, walkEntry{item: it, match: !c.Excluded})
@@ -150,7 +153,7 @@ func commitItems(area string, src int, cs []gitstore.ActivityCommit, admin bool)
 	return out
 }
 
-func eventItems(es []audit.Event, admin bool) []*activityItem {
+func eventItems(es []audit.Event, showAddr bool) []*activityItem {
 	out := make([]*activityItem, 0, len(es))
 	for _, e := range es {
 		area := areaAudit
@@ -167,7 +170,7 @@ func eventItems(es []audit.Event, admin bool) []*activityItem {
 				it.Detail = append(it.Detail, d)
 			}
 		}
-		if admin {
+		if showAddr {
 			it.Addr = e.Addr
 		}
 		it.Time = it.at.Format(time.RFC3339)
@@ -258,7 +261,7 @@ func (s *server) activity(w http.ResponseWriter, r *http.Request) {
 	case "":
 	case "jsonl":
 		if !s.canSee(r, seeExport) {
-			writeError(w, http.StatusForbidden, "forbidden", "only administrators may export the activity")
+			writeError(w, http.StatusForbidden, "forbidden", "only administrators and auditors may export the activity")
 			return
 		}
 		s.activityExport(w, r, f)
@@ -355,7 +358,7 @@ func (s *server) activityCommit(w http.ResponseWriter, r *http.Request) {
 			notFound()
 			return
 		}
-		if !s.infraAdmin(w, r) {
+		if !s.infraReader(w, r) {
 			return
 		}
 		d, err = s.o.Infra.Repo.CommitDiff(r.Context(), hash)
@@ -384,21 +387,32 @@ type auditProblemOut struct {
 	RecordedAt int64  `json:"recordedAt,omitempty"`
 }
 
-func (s *server) auditAdmin(w http.ResponseWriter, r *http.Request, write bool) bool {
+// auditAccess admits the audit status (administrators and auditors) and, with
+// write, the acknowledgement. The acknowledgement is for administrators only,
+// whatever the auditor list says, and never for a token.
+func (s *server) auditAccess(w http.ResponseWriter, r *http.Request, write bool) bool {
 	if write && s.o.ReadOnly {
 		writeError(w, http.StatusForbidden, "read_only", "the ledger is read-only")
 		return false
 	}
 	id := s.who(r)
-	if id == nil || (write && id.Method == auth.MethodToken) || !s.canSee(r, seeAudit) {
-		writeError(w, http.StatusForbidden, "forbidden", "only administrators may see or acknowledge the audit log status")
+	switch {
+	case id == nil:
+	case write:
+		if id.Method != auth.MethodToken && auth.Can(r.Context(), roles.Manage) {
+			return true
+		}
+		writeError(w, http.StatusForbidden, "forbidden", "only administrators may acknowledge the audit log status")
 		return false
+	case s.canSee(r, seeAudit):
+		return true
 	}
-	return true
+	writeError(w, http.StatusForbidden, "forbidden", "only administrators and auditors may see the audit log status")
+	return false
 }
 
 func (s *server) auditStatus(w http.ResponseWriter, r *http.Request) {
-	if !s.auditAdmin(w, r, false) {
+	if !s.auditAccess(w, r, false) {
 		return
 	}
 	writeJSON(w, http.StatusOK, s.auditStatusOut())
@@ -423,7 +437,7 @@ func (s *server) auditStatusOut() map[string]any {
 }
 
 func (s *server) auditAck(w http.ResponseWriter, r *http.Request) {
-	if !s.auditAdmin(w, r, true) {
+	if !s.auditAccess(w, r, true) {
 		return
 	}
 	var b struct {

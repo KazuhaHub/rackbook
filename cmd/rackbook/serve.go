@@ -97,6 +97,7 @@ RACKBOOK_GITHUB_TOKEN.`,
 	f.String("infra-managed-group", "managed", `inventory group whose hosts must each have host_vars and a SOPS file, and that holds every host of every group ("" = no such check)`)
 	f.String("infra-agent-group", "infra_agent", `inventory group that must list exactly the managed hosts, checked only when the inventory has it ("" = no such check)`)
 	f.StringSlice("infra-admins", nil, "exact identities (comma-separated) who may see /infra; they must sign in with --auth oidc (API tokens, MCP and OAuth tokens never count; not read from rackbook.yml)")
+	f.StringSlice("infra-auditors", nil, "exact identities (comma-separated) who may read /infra but not its secrets and may change nothing; the same rules as --infra-admins (OIDC login sessions only, the identity provider pinned by the --infra-oidc-* flags; needs --infra-admins)")
 	f.String("hub-status-file", "", "status.json of the infra hub (infra-hub status -o json), shown under /infra; kept fresh by a timer outside Rackbook (needs --infra-repo)")
 	f.StringSlice("trusted-proxy", nil, "CIDRs (or addresses) of reverse proxies whose CF-Connecting-IP header is believed when rate-limiting failed API-token attempts")
 	return cmd
@@ -400,7 +401,7 @@ func newInfra(ctx context.Context, f *pflag.FlagSet, cfg *config.Config, mode st
 	status, _ := f.GetString("hub-status-file")
 	key, _ := f.GetString("infra-ssh-key")
 	if dir == "" {
-		for _, name := range []string{"infra-admins", "hub-status-file", "infra-ssh-key", "infra-oidc-issuer", "infra-oidc-client-id", "infra-oidc-identity-claim", "infra-oidc-tenant", "infra-write", "sops-age-key-file", "infra-write-max-age", "infra-managed-group", "infra-agent-group"} {
+		for _, name := range []string{"infra-admins", "infra-auditors", "hub-status-file", "infra-ssh-key", "infra-oidc-issuer", "infra-oidc-client-id", "infra-oidc-identity-claim", "infra-oidc-tenant", "infra-write", "sops-age-key-file", "infra-write-max-age", "infra-managed-group", "infra-agent-group"} {
 			if f.Changed(name) {
 				return nil, fmt.Errorf("--%s needs --infra-repo", name)
 			}
@@ -421,6 +422,17 @@ func newInfra(ctx context.Context, f *pflag.FlagSet, cfg *config.Config, mode st
 	tenant, _ := f.GetString("infra-oidc-tenant")
 	if err := ia.Pin(issuer, clientID, claim, tenant, maxAge); err != nil {
 		return nil, err
+	}
+	var infraAuditors *auth.InfraAdmins
+	if f.Changed("infra-auditors") {
+		auditors, _ := f.GetStringSlice("infra-auditors")
+		if infraAuditors, err = auth.NewInfraAuditors(auditors); err != nil {
+			return nil, err
+		}
+		// the same pinned provider, client, claim and tenant as the administrators
+		if err := infraAuditors.Pin(issuer, clientID, claim, tenant, maxAge); err != nil {
+			return nil, err
+		}
 	}
 	li := cfg.Auth.Login.OIDC
 	liClaim, _ := li.ClaimsOrDefault()
@@ -499,8 +511,8 @@ func newInfra(ctx context.Context, f *pflag.FlagSet, cfg *config.Config, mode st
 		}
 		repo.Run(ctx)
 	}()
-	logger.Info("infra pages on", "repo", absDir, "branch", branch, "admins", len(admins), "hubStatus", status != "", "editors", write && !readOnly, "issuer", issuer, "writeMaxAge", ia.WriteAge().String())
-	return &api.InfraOptions{Repo: repo, Admins: ia, StatusFile: status, Write: write, Audit: infraAudit}, nil
+	logger.Info("infra pages on", "repo", absDir, "branch", branch, "admins", len(admins), "auditors", infraAuditors.Len(), "hubStatus", status != "", "editors", write && !readOnly, "issuer", issuer, "writeMaxAge", ia.WriteAge().String())
+	return &api.InfraOptions{Repo: repo, Admins: ia, Auditors: infraAuditors, StatusFile: status, Write: write, Audit: infraAudit}, nil
 }
 
 // inside reports whether path is dir or below it.

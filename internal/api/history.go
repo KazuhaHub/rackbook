@@ -19,7 +19,7 @@ import (
 // (docs/design-audit.md, section 3.3). Everyone with a role may read the history,
 // as for /api/history; restore is a write and has the gates of PUT.
 
-func (s *server) historyRoutes(mux *http.ServeMux) {
+func (s *server) historyRoutes(mux *routeMux) {
 	mux.HandleFunc("GET /api/c/{collection}/{id}/history", s.versions)
 	mux.HandleFunc("GET /api/c/{collection}/{id}/history/{commit}", s.version)
 	mux.HandleFunc("POST /api/c/{collection}/{id}/restore", s.restore)
