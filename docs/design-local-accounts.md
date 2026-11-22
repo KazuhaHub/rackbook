@@ -363,16 +363,18 @@ wrong, so a guess never learns that the password alone was right.
    password, and **either** a 6-digit code **or** the passkey assertion.
 3. **Before the name is looked up** (8.1): the flood ceiling; the CAPTCHA when needed (the server opens the attempt,
    checks that its nonce is unused, verifies the solve, and only then records the nonce, 8.7; an unsolved required
-   CAPTCHA answers `401 captcha_required`); the dummy-hash budget (8.6); the throttle and the locks. These refusals
+   CAPTCHA answers `401 captcha_required`); the throttle; the locks of scope `ip` and `ip_account`. These refusals
    do not depend on whether the account exists, so they answer **without hashing**, after a fixed delay of 250 ms,
-   with "too many attempts, try later" (no time given) or `503 busy`, the same for every name. A verified passkey
-   assertion (step 4) goes past the throttle and the locks.
+   with "too many attempts, try later" (no time given), the same for every name. A verified passkey assertion
+   (step 4) goes past the throttle and the locks.
 4. With a passkey assertion it is verified next, before any hash: it must be valid and belong to the named account.
    Nobody can guess with it, which is why it goes past the throttle and the locks (8.2, 8.3).
-5. **The name is looked up.** Unknown, `invited`, `reset_pending`, `disabled` or `removed`, or an account whose
-   `restricted` or `passkey_only` state refuses this attempt: a **dummy argon2id** (it counts against the budget),
-   then the same answer as a wrong password. Here the timing would otherwise show the account's state, so the hash
-   is needed. Otherwise the password, by argon2id, in a slot (8.7), and then the code.
+5. **The name is looked up** (an in-memory read). A lock of scope `account` is checked now, from the store for an
+   existing account and from the name table for any other name, with the same answer and fixed delay as step 3.
+   Unknown, `invited`, `reset_pending`, `disabled` or `removed`, or an account whose `restricted` or `passkey_only`
+   state refuses this attempt: a **dummy argon2id** while the dummy-hash budget allows, otherwise an equal wait
+   (8.6), then the same answer as a wrong password. Here the timing would otherwise show the account's state.
+   Otherwise the password, by argon2id, in a slot (8.7), and then the code.
 6. **`sso_only`** (2.1), when active, is checked only **after** the password and the second factor verified. Until
    then every outcome, for unknown names, non-admins and admins alike, is the same `403 sso_required` ("use your
    organisation's sign-in"): a wrong password, an unknown name and a non-admin's correct credentials cannot be told
@@ -507,10 +509,11 @@ A local sign-in passes, in order:
 
 1. **Without looking up the name, without hashing** (a fixed 250 ms delay on refusal, the same for every name): the
    flood ceiling (constant: 600 requests a minute per bucket, then `429`); the CAPTCHA when needed (8.5); the
-   dummy-hash budget (8.6); the throttle (8.2); the locks of every scope (8.3). A verified passkey assertion, verified
-   at this point when given, goes past the throttle and the locks.
-2. **The name is looked up**: the account's state and the restriction states (8.4), with a dummy argon2id wherever
-   the answer would otherwise come faster for an account that cannot sign in.
+   throttle (8.2); the locks of scope `ip` and `ip_account` (8.3). A verified passkey assertion, verified at this
+   point when given, goes past the throttle and the locks.
+2. **The name is looked up**: the lock of scope `account` (same answer and delay as step 1), then the account's state
+   and the restriction states (8.4), with a dummy argon2id, or past the budget an equal wait (8.6), wherever the
+   answer would otherwise come faster for an account that cannot sign in.
 3. The password and the second factor.
 4. `sso_only`, only after step 3 succeeded (5.6).
 
@@ -571,7 +574,7 @@ Matched to PSP (`psp/internal/ports/repos.go:1270-1295`) and RP (`rp/internal/ap
 - **Trigger** for sign-in: `always`, or `after_failures` with a threshold (default **3**, 1–100) that fires when
   either the bucket **or** the typed name has that many failures in the throttle window
   (`rp/internal/app/captcha_api.go:99-103`). Links: always, when enabled. In addition, while the CAPTCHA is enabled
-  it is always required when the global dummy-hash budget is used up (8.6) or the replay set has no room (8.7).
+  it is always required when the replay set has no room (8.7).
 - **Hostname pinned** to the host of `--base-url`; a successful result **with no hostname** is refused (authcore
   skips the pin then; reCAPTCHA needs domain verification on).
 - **Errors fail closed**, as in RP (`captcha_api.go:120-138`): `ErrNetwork`, `ErrBadStatus`, `ErrDecodeResponse` and
@@ -593,30 +596,38 @@ Matched to PSP (`psp/internal/ports/repos.go:1270-1295`) and RP (`rp/internal/ap
 | failures per bucket | memory | the throttle window |
 | failures per (name, bucket), for every typed name | memory, the **pair table**, keyed by (HMAC(per-start key, name), bucket) | consecutive, cleared on success |
 | failures per name, all buckets | memory, the **name table**, keyed by HMAC(name) | the throttle window |
-| locks of every scope (`ip` by bucket, `ip_account` in the pair table, `account` in the name table) | memory, for every typed name | the lock duration |
-| `consecutive_failures`, `totp_failures`, `passkey_path_failures` | the store | 8.4 |
-| dummy hashes | memory, global | 60 per minute |
+| locks of scope `ip` (by bucket) and `ip_account` (in the pair table) | memory, for every typed name | the lock duration |
+| locks of scope `account` for **existing** accounts, `consecutive_failures`, `totp_failures`, `passkey_path_failures` | the store | 8.3, 8.4 |
+| locks of scope `account` for names that do **not** exist | memory, the name table | the lock duration |
+| dummy hashes | memory | 60 per minute for the server, 2 per minute per bucket |
 
 CAPTCHA triggers read only the memory tables, which treat existing and unknown names alike, so whether a CAPTCHA
 appears never says whether a name exists. Bounds: the pair table 100 000 rows, at most 1 000 per bucket; the name
 table 50 000 rows, at most 200 new rows per bucket per hour. On overflow the rows with the fewest failures go first,
-never one at or above the CAPTCHA threshold, nor one holding a lock; a name that cannot get a row is treated as over
-the threshold. Locks are kept in memory for every typed name, existing or not, so a lock refusal never says whether
-an account exists; a restart loses them, which only shortens them.
+unlocked rows before locked ones, but **locked rows can be dropped too**, so made-up names locked for days cannot
+fill the tables. A name or pair that cannot get a row is treated as over the CAPTCHA threshold and gets the
+**throttle only, never a lock**, in both CAPTCHA modes. Existing accounts never depend on a row for an `account`
+lock: theirs is in the store. A restart loses the memory locks, which only shortens them.
 
-**The dummy-hash budget.** Dummy argon2id runs (5.6 step 5) are limited to 60 a minute for the whole server, in both
-CAPTCHA modes. The budget is checked **before the name is looked up**, from the global count alone:
+**Enumeration check.** A lock answer is the same for every name, and the `account`-lock check sits right after an
+in-memory lookup, so its timing does not differ. What differs is only durability: an existing account's `account`
+lock survives a restart and table pressure, a made-up name's lock may not. To use that, an attacker must lock both
+names and then fill the name table (some 250 buckets for an hour at 200 new rows each) or wait for a restart, to
+learn whether a username exists. Usernames are not secret here (they are in `auth.roles`), so this residual is
+accepted.
 
-- **CAPTCHA on:** past the budget, every password attempt needs a CAPTCHA until the minute ends.
-- **CAPTCHA off:** past the budget, every password attempt is answered `503 busy` ("the server is busy, try again
-  shortly") until the minute ends, for existing and unknown names alike. A verified passkey assertion still goes
-  through.
+**The dummy-hash budget.** Dummy argon2id runs (5.6 step 5) are limited to **60 a minute for the server and 2 a
+minute per bucket**, in both CAPTCHA modes, so the buckets that spend the budget are the ones that run out of it.
+Past either limit, an unknown or non-active name is answered after **sleeping** instead of hashing: the sleep is
+drawn from the durations of the last 256 real password checks, measured end to end (slot queue and hash together),
+so it has the median and the jitter of a real run. It never answers `busy`, and real accounts keep hashing in their
+slots. So nobody can exhaust the budget to block others: the cost of a made-up name past the budget is a sleeping
+goroutine, bounded by the flood ceiling and the throttle, and the answer is the same as before the budget ran out.
 
-This leaks nothing: the decision depends only on a global counter, is taken before the name is read, and is the same
-for every name, so neither the answer nor its timing says anything about the name. The cost, with the CAPTCHA off:
-about 60 attempts a minute with made-up names make password sign-in busy for everyone; the Security tab's help text
-says so and recommends turning the CAPTCHA on. Test: exhaust the budget with unknown names, then check that an
-existing and an unknown name get byte-identical answers within the same delay, in both modes.
+Residual: when the load changes suddenly, the last 256 real durations lag behind it for a moment. Test: exhaust the
+budget (globally, and for one bucket) with unknown names, then check that an existing account with a wrong password
+and an unknown name get byte-identical answers, and that their response times have the same distribution within the
+variance of one argon2id run (a two-sample Kolmogorov–Smirnov test over 500 samples each, in both CAPTCHA modes).
 
 ### 8.7 Attempts, sets and capacity (when the CAPTCHA is enabled)
 
@@ -650,9 +661,10 @@ busy`. The CAPTCHA and a passkey assertion are verified before a caller queues.
 ### 8.8 Uniform answers
 
 Unknown, invited, reset-pending, disabled and removed accounts, and refusals by `restricted` or `passkey_only`, get
-exactly the answers an existing account gets, after one argon2id run against a fixed dummy hash, within the budget.
-Refusals taken before the name is looked up (flood, CAPTCHA, budget, throttle, locks) take no hash, a fixed delay,
-and the same answer for every name. Under `sso_only` every failure is `sso_required` (5.6). The residual is the
+exactly the answers an existing account gets, after one argon2id run against a fixed dummy hash, or past the budget
+a sleep with the same distribution (8.6). Refusals taken before the name is looked up (flood, CAPTCHA, throttle, `ip`
+and `ip_account` locks), and the `account` lock right after it, take no hash, a fixed delay, and the same answer for
+every name. Under `sso_only` every failure is `sso_required` (5.6). The residual is the
 variance of one argon2id run.
 
 ### 8.9 What the holder of a local account can count on
@@ -668,7 +680,7 @@ For a holder who has their password and second factor, and whose password nobody
 | Settings | From a known network | From a new network |
 |---|---|---|
 | CAPTCHA on, lock off (recommended) | always, one CAPTCHA per attempt at most | yes, unless the account is `restricted` (then a known network or Unlock), the provider is out, or someone keeps the *general* and *headroom* partitions full (about 250 000 verified solves every 5 minutes; with a token provider roughly $70 000–220 000 a day; with the **image** provider much cheaper, which is why the console warns) |
-| CAPTCHA off, lock off | yes, unless someone on the same network exhausts the throttle (wait for the window), or anyone exhausts the dummy-hash budget (`busy` for everyone, for up to a minute at a time; 8.6) | the same, plus the NIST cap |
+| CAPTCHA off, lock off | yes, unless someone on the same network exhausts the throttle (wait for the window) | unaffected by others apart from the bucket's own throttle; plus the NIST cap |
 | lock `ip_account` | as above, plus: a neighbour on the same network can lock them there for the lock duration | unaffected by others |
 | lock `ip` | a neighbour can lock the whole network | unaffected by others |
 | lock `account` | **anyone who knows the username can lock them out everywhere** for the duration | the same |
@@ -761,7 +773,15 @@ sent anywhere else, it is leaked. So:
   a pulled config that differs is refused like any invalid config (the last good one stays, and admins see a
   banner); and the console shows issuer and client id as "pinned by the deployment", not editable. This changes
   existing deployments that set only the secret: the release notes, and the start-up error, say which two values to
-  add. The CAPTCHA secret needs no such binding: a CAPTCHA secret sent to the wrong provider is refused there and
+  add.
+- **Rollout for this deployment.** Production sets only `RACKBOOK_OIDC_CLIENT_SECRET`, in
+  `/etc/rackbook/rackbook.env`. The infra change that bumps the image to the version with this rule must, in the same
+  change, add `RACKBOOK_OIDC_ISSUER` and `RACKBOOK_OIDC_CLIENT_ID` to that file, with the values of
+  `rackbook_infra_oidc_issuer` and `rackbook_infra_oidc_client_id`; and the version assert in
+  `roles/rackbook/tasks/main.yml` should fail early, before the restart, when they are missing. This is guidance for
+  that infra change; this design does not edit the infra repository. The release notes say the same for other
+  deployments.
+- The CAPTCHA secret needs no such binding: a CAPTCHA secret sent to the wrong provider is refused there and
   grants nothing, and the provider is chosen from a fixed list of endpoints.
 
 Setting or clearing a secret writes `settings_secret_set` or `settings_secret_cleared` (the name only).
@@ -808,7 +828,7 @@ recorded. New field **`target`**: the account acted on when that is not the acto
 | Event | `identity` | Other fields |
 |---|---|---|
 | `login` | the account | `role`, `addr`, `detail: ["factor:totp"]`, `["factor:passkey"]` or `["factor:passkey", "passwordless"]` |
-| `login_refused` | the account, empty if unknown | `addr`; `reason`: `unknown_account`, `bad_credentials`, `sso_required`, `throttled`, `locked`, `restricted`, `totp_locked`, `passkey_path_limit`, `disabled`, `not_set_up`, `reset_pending`, `no_role`, `quota`, `busy`, `invite_invalid`, `invite_expired`, `invite_claimed`; `code: reauth`; `code: summary` for an aggregate |
+| `login_refused` | the account, empty if unknown | `addr`; `reason`: `unknown_account`, `bad_credentials`, `sso_required`, `throttled`, `locked`, `restricted`, `totp_locked`, `passkey_path_limit`, `disabled`, `not_set_up`, `reset_pending`, `no_role`, `quota`, `busy` (hashing slots or siteverify full, never the dummy-hash budget), `invite_invalid`, `invite_expired`, `invite_claimed`; `code: reauth`; `code: summary` for an aggregate |
 | `captcha_failed` | the account, empty if unknown | `addr`; `reason`: `wrong_answer`, `rejected`, `hostname_mismatch`, `hostname_missing`, `expired`, `unavailable`; `detail`: provider error codes; `code: summary` |
 | `captcha_outage` | none | `code`: `start` or `end` |
 | `logout`, `reauth` | the account | `addr` |
