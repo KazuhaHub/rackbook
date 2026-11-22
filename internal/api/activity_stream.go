@@ -52,6 +52,7 @@ type streamCursor struct {
 	N      int    `json:"n,omitempty"` // git: commits of the walk consumed
 	Resume int64  `json:"r,omitempty"` // audit: the lines read so far are those with seq >= Resume
 	Done   bool   `json:"d,omitempty"`
+	Mode   string `json:"m,omitempty"` // a record's versions: how its commits are found
 }
 
 type activityCursor map[string]streamCursor
@@ -95,7 +96,7 @@ func (s *server) decodeCursor(who, v string) (activityCursor, error) {
 	}
 	// a guard in depth: what is signed was made by this server, but a position is never negative
 	for _, sc := range c {
-		if sc.N < 0 || sc.Resume < 0 || (sc.Tip != "" && !gitstore.ValidRev(sc.Tip)) {
+		if sc.N < 0 || sc.Resume < 0 || (sc.Tip != "" && !gitstore.ValidRev(sc.Tip)) || (sc.Mode != "" && sc.Mode != gitstore.ModeRecord && sc.Mode != gitstore.ModeFile) {
 			return nil, errCursor
 		}
 	}
@@ -324,6 +325,24 @@ func (a *auditStream) cursor() streamCursor {
 	return streamCursor{Resume: a.resume, Done: a.done}
 }
 
+// markVerified says for each commit item whether this server made the commit (its
+// audit log has the line), and for the ones it did, who made it as the log has it.
+// Everything else stays as written in the commit and is unverified.
+func (s *server) markVerified(items []*activityItem) {
+	keys := make([]audit.CommitKey, len(items))
+	for i, it := range items {
+		keys[i] = audit.CommitKey{Area: it.Area, Hash: it.Hash}
+	}
+	refs := s.o.Audit.LookupCommits(keys)
+	for i, it := range items {
+		ref, ok := refs[keys[i]]
+		it.Verified = &ok
+		if ok {
+			it.Identity, it.Name, it.Method, it.Token = ref.Identity, ref.Name, ref.Method, ref.Token
+		}
+	}
+}
+
 // activityStreams are the sources the caller's filter reads from, resumed from cur.
 func (s *server) activityStreams(ctx context.Context, r *http.Request, f *activityFilter, cur activityCursor) (map[string]activityStream, error) {
 	out := map[string]activityStream{}
@@ -334,21 +353,16 @@ func (s *server) activityStreams(ctx context.Context, r *http.Request, f *activi
 	// commits: who made them from the audit log, then the filters
 	finish := func(cs []gitstore.ActivityCommit, area string, src int) []walkEntry {
 		ents := commitItems(area, src, cs, admin)
-		keys := make([]audit.CommitKey, len(ents))
+		items := make([]*activityItem, len(ents))
 		for i, e := range ents {
-			keys[i] = audit.CommitKey{Area: e.item.Area, Hash: e.item.Hash}
+			items[i] = e.item
 		}
-		refs := s.o.Audit.LookupCommits(keys)
+		s.markVerified(items)
 		for i := range ents {
 			it := ents[i].item
-			ref, ok := refs[keys[i]]
-			it.Verified = &ok
-			if ok {
-				it.Identity, it.Name, it.Method, it.Token = ref.Identity, ref.Name, ref.Method, ref.Token
-			}
 			// the identity filter keeps what the log vouches for: anybody with push
 			// access can write any author or trailer
-			if f.identity != "" && !(ok && it.Identity == f.identity) {
+			if f.identity != "" && !(*it.Verified && it.Identity == f.identity) {
 				ents[i].match = false
 			}
 			ents[i].match = ents[i].match && inRange(it)

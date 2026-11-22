@@ -85,6 +85,8 @@ type activityItem struct {
 	Via      string   `json:"via,omitempty"`
 	Subject  string   `json:"subject,omitempty"`
 	Records  []string `json:"records,omitempty"`
+	// RestoredFrom is the commit a restore took the record from (the Restored-from trailer).
+	RestoredFrom string `json:"restoredFrom,omitempty"`
 	// Verified says this server made the commit (its audit log has the line).
 	Verified *bool  `json:"verified,omitempty"`
 	Token    string `json:"token,omitempty"`
@@ -136,7 +138,7 @@ func commitItems(area string, src int, cs []gitstore.ActivityCommit, admin bool)
 	out := make([]walkEntry, 0, len(cs))
 	for _, c := range cs {
 		it := &activityItem{Area: area, Kind: "commit", Hash: c.Hash, Short: c.Short, Commit: c.Short, Subject: c.Subject,
-			Records: c.Records, Via: c.EditedVia, at: c.Time.Truncate(time.Second), src: src,
+			Records: c.Records, Via: c.EditedVia, RestoredFrom: c.RestoredFrom, at: c.Time.Truncate(time.Second), src: src,
 			// as written in the commit: nothing here proves it (see markVerified)
 			Identity: c.EditedBy, Name: c.Author}
 		it.Time = it.at.Format(time.RFC3339)
