@@ -1,7 +1,7 @@
 # Audit history and roles from the identity provider
 
-Status: design, agreed 2026-11-22. Nothing here is built yet. Phase 1 comes first. Phase 2 starts with
-the light version (2a); SCIM (2b) comes later. Phase 3 still needs a decision (section 7).
+Status: design, agreed 2026-11-22. Phase 1 pieces 1 and 2 are built (3.5); the rest is not. Phase 2
+starts with the light version (2a); SCIM (2b) comes later. Phase 3 still needs a decision (section 7).
 
 The team is growing. Two things are needed:
 
@@ -234,8 +234,29 @@ must not decide who sees infra.
 ### 3.5 Pieces (one PR each)
 
 1. The audit log: chain, `head.json`, `rackbook audit verify`, migration, sign-in and refusal events,
-   `clientip`, retention and address settings.
-2. `GET /api/activity` (with `format=jsonl`) and the Activity page.
+   `clientip`, retention and address settings. **Done.**
+2. `GET /api/activity` (with `format=jsonl`) and the Activity page. **Done** (README, "Activity"). As built:
+   - Acknowledging a chain problem is part of this piece: `POST /api/audit/ack` records a
+     `chain_problem_ack` event, and retention stops keeping the month of an acknowledged problem. It is for
+     admins, refused on a read-only server and for API tokens.
+   - The `canSee` function in `internal/api/activity.go` is the one place that decides who sees which area;
+     piece 4 (auditors) only changes it. Until then the audit areas are admin-only.
+   - Audit events are shown under the area `audit`, except the infra ones, which are shown under `infra`.
+     The `ledger` area holds commits only, so `write_refused` for the ledger is an `audit` row.
+   - The cursor merges the three sources by time to the second, with a fixed order inside a second; it holds
+     the keys already shown in the last second. It does not use the audit `seq`, because lines copied from the
+     old infra audit file carry old times with new seqs.
+   - A `collection` or `id` filter leaves out infra and audit rows. `id` matches the exact `Record` trailer; it
+     does not fall back to the collection's file history as the record page's History does, because a page of the
+     timeline must not change meaning when an older page has no such commit.
+   - Commits are listed with `git log --date-order` and `-n`, which takes the first commits in Git's order, so a
+     commit whose committer date is older than its parent's can show up late. Rackbook's own commits never do.
+   - The patch of a commit is capped at 256 KiB (200 files); `.rackbook/` files are shown to admins in full
+     (they hold public keys, ids and hashes by design), secret files of the infra repository are listed as
+     changed without a patch.
+   - `/api/meta` carries `auditAlert` for admins while recorded problems are not acknowledged; the console's red
+     banner (on every page, so also on Activity) reads it.
+   - Not done here: the CLI and MCP do not read the audit log.
 3. Field-level record history, the restore endpoint, deleted records.
 4. `auth.auditors` and `--infra-auditors`.
 5. The optional daily anchor.

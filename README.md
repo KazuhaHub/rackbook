@@ -913,8 +913,8 @@ newline (the server moves it to `audit/torn-<seq>.jsonl` and continues from the 
 tampering. Any other mismatch is logged as an error; the server still starts and keeps appending, and
 repairs nothing. The first thing it appends is a `chain_problem` event for each problem (the kind in `code`, the
 broken `seq` and what `head.json` said before, in `detail`), so the evidence is inside the chain before
-`head.json` moves on. The problem stays listed, and the server reports the log as not OK, until recorded
-problems can be acknowledged; that comes with the Activity page (a later piece).
+`head.json` moves on. The problem stays listed, and the server reports the log as not OK, until an
+administrator acknowledges it (see [Activity](#activity)).
 A last line cut short while `head.json` does not show a crash is set aside in `torn-<seq>.jsonl` too, and recorded
 as a `chain_problem` event (code `edited`, with the file name); auditing continues. Only if the partial line cannot
 be set aside, or a failed write cannot be undone, does the server write nothing more: it logs an error and reports
@@ -922,14 +922,17 @@ the log as failed, because appending would glue a line onto a partial one.
 
 **Checking.** `rackbook audit verify --state-dir <dir>` reads the log and prints what it found: the number of
 lines and files, and each problem (`edited`, `missing`, `reordered`, `cut_from_end`, `head_mismatch`) with the
-`seq` it starts at. A problem the server already wrote down is listed as `recorded at seq N` and still counts. It never changes a file. It exits 1 on any problem, and 0 when the chain is intact; a torn
+`seq` it starts at. A problem the server already wrote down is listed as `recorded at seq N` and still counts;
+once acknowledged it is also listed as `acknowledged at seq N`, and still counts. It never changes a file. It exits 1 on any problem, and 0 when the chain is intact; a torn
 last line or a `head.json` one line behind alone are warnings and exit 0. `--json` prints the report as JSON.
 
 **Retention.** With `--audit-retention-months`, old month files are deleted at start and once a day. Before a
 file goes, `head.json` records the first file kept and the `prev` of its first line, so `verify` starts there and
 does not report the deleted months as missing. Nothing is deleted while the chain has a problem that is not yet recorded in it. After a recorded chain
-problem, retention keeps the month that holds the `chain_problem` event and every later month, until recorded problems
-can be acknowledged (that comes with the Activity page, a later piece); older months are still deleted. Each skipped
+problem, retention keeps the month that holds the `chain_problem` event and every later month until an
+administrator acknowledges the problem on the Activity page (older months are still deleted); once it is
+acknowledged, that month is deleted like any other when its turn comes. The acknowledgement is a
+`chain_problem_ack` line in the chain itself (`detail: through:<seq>`), so it can be audited too. Each skipped
 run logs a warning with the reason. If a start or crash left months behind that `head.json` already says are gone,
 they are not a problem, and the next retention run deletes them.
 
@@ -937,6 +940,54 @@ they are not a problem, and the next retention run deletes them.
 start with the audit log, its entries are copied into the log with their original times (`audit/migrated` marks it
 done). If a start is cut short in the middle, the next start finishes the copy without repeating lines. The old
 file stays where it is and is no longer written to.
+
+## Activity
+
+The **Activity** page (`/activity`) is one timeline of everything that changed: the commits of the data
+repository, the commits of the `--infra-repo` repository and the audit log. Each row says when, who, what, and
+whether Rackbook can vouch for it; a commit opens its diff. The filters (person, area, collection, record, from,
+to) are in the URL, so a link reproduces the view; "Load more" pages through older entries.
+
+**Who may see what.** Every request needs a role; what a role shows is decided in one place
+(`canSee` in `internal/api/activity.go`):
+
+| Area | What it holds | Who sees it |
+|---|---|---|
+| `ledger` | commits of the data repository that touch ledger files | every role |
+| `ledger`, state | commits that touch `.rackbook/` (tokens, passkeys) | admins |
+| `audit` | sign-ins, refusals, `write_refused`, acknowledgements, chain problems | admins |
+| `infra` | commits of the infra repository and the infra audit events (secret reveals, re-encryption) | `--infra-admins`, signed in with the console login |
+
+Without `area`, a request returns every area its caller may see. Naming an area the caller may not see is a `403`.
+The client address of an audit event is shown to admins only.
+
+**Verified.** Anybody with push access can write any author and any `Edited-by` trailer, so a commit's
+trailers prove nothing. A commit is **verified** only when Rackbook itself made it: after its own push it writes a
+`commit` line, with the full hash and the signed-in identity, to the audit log. For verified commits the person comes
+from that line (and the API token's name, if one was used). Every other commit shows the Git author and trailers as
+written, marked **unverified**, and the `identity` filter never matches it. Without `--state-dir` there is no audit
+log, so every commit is unverified. `commit` lines are not rows of their own; they only verify a commit. A cache of
+them, `audit/index.json`, is updated as the log grows; it can be deleted at any time and is rebuilt from the chain.
+
+**API.**
+
+| Request | Meaning |
+|---|---|
+| `GET /api/activity` | `since`, `until` (RFC 3339 or `YYYY-MM-DD`; a date for `until` includes that whole day, UTC), `identity`, `area` (`ledger`, `infra`, `audit`; repeat it or separate with commas), `collection`, `id` (needs `collection`; commits with that exact `Record` trailer), `limit` (default 50, at most 200), `cursor`. Answers `{"items": [...], "cursor": "...", "areas": [...], "audit": true}`; `cursor` is absent on the last page. `collection` leaves out infra and audit rows, which belong to no collection. |
+| `GET /api/activity?format=jsonl` | The same filters, no cursor: every match, one JSON object per line, as `application/x-ndjson` with `Content-Disposition: attachment`. It stops at 50 000 rows with a last line `{"truncated":true}`. |
+| `GET /api/activity/commit/{area}/{hash}` | What a commit changed (`ledger` or `infra`): the files with status and unified patch. The patches together are capped at 256 KiB (a file that crosses it says `truncated`), at most 200 files. Files under `.rackbook/` are left out for non-admins, and a commit with nothing else is a `404`. In the infra repository SOPS and vault files, and anything under `secrets/`, are listed as changed without a patch, and values that look like secrets are hidden in the others. |
+| `GET /api/audit/status` | Admins: `{"enabled", "ok", "problems": [...], "lastSeq"}`: the recorded chain problems nobody has acknowledged. |
+| `POST /api/audit/ack` | Admins, signed in (not with an API token), not on a read-only server: `{"through": <seq>}` acknowledges the recorded problems whose `chain_problem` line has that seq or a lower one. `409` when there is no audit log or nothing waits to be acknowledged. |
+
+Ordering is by time (to the second), newest first, and ties come out in a fixed order, so a page never repeats or skips
+a row. Commits are ordered by committer date, audit lines by their time. If commit dates go backwards along the
+history (a clock set wrong), such a commit can show up late.
+
+**Acknowledging a chain problem.** While the audit log has a recorded problem nobody has acknowledged, admins see a
+red banner on every page, with the kinds of problem and the first affected line. *I have checked — acknowledge*
+(after a confirmation) records a `chain_problem_ack` line by the admin. The problem stays in the log and in
+`rackbook audit verify` (marked acknowledged, and verify still exits 1); it stops showing the banner and stops
+keeping its month from the retention.
 
 ## Expiry tracking and modules
 
