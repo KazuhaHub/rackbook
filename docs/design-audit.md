@@ -255,9 +255,19 @@ must not decide who sees infra.
      (`--skip=N -n M`); for the audit log, the seq it has come down to. The time, person, record and state
      filters are applied in Go to what a stream reads and never as git options, because git stops a
      time-limited walk at the first old commit, which loses commits whose committer dates are out of order. The
-     merge takes the newest head of the three streams. Each request has a work budget per stream (commits
-     walked, audit lines looked at); when it is spent the page ends, possibly without a row, and the cursor
-     resumes there. So the output is complete and has no repeats, but it is sorted only as far as each stream
+     merge takes the newest head of the three streams. Each git source is one streaming `git log` process per
+     request (started by the first read, killed and waited for when the request ends), not one process per
+     chunk. Each request has a work budget per stream (2 000 commits, 200 000 audit lines); when it is spent the
+     page ends, possibly without a row, and the cursor resumes there; the console follows an empty page three
+     times and then asks. With `since` a walk stops after 200 commits in a row dated more than 24 hours before
+     it. That is a heuristic bound and is a deviation from "never lose a commit": a commit dated more than a day
+     earlier than the 200 that follow it in the walk can be missed by a `since` filter; without `since` there
+     is no early stop. The cursor is signed with a key made at start (HMAC-SHA256, bound to the caller), so it
+     cannot be forged or replayed by another person and does not survive a restart (`400 cursor_invalid`; the
+     console starts again from the top). The audit reader keeps a sparse in-memory seq-to-offset index per month
+     file (one mark per 512 lines) so a deep read seeks instead of parsing every newer line. A commit line that
+     the chain does not vouch for (a break follows it) is reported unverified without rebuilding the index; the
+     index is rebuilt only when it contradicts the files. So the output is complete and has no repeats, but it is sorted only as far as each stream
      is: a repository whose dates go backwards along its history, or audit lines written with an old explicit
      time (the copy of the old infra audit file), show at their position in the stream. The JSONL export walks
      the same pages up to 50 000 rows or its work budget, then ends with `{"truncated":true}`.
@@ -267,7 +277,9 @@ must not decide who sees infra.
      does not fall back to the collection's file history as the record page's History does, because a page of the
      timeline must not change meaning when an older page has no such commit.
    - The patch of a commit comes from one `git diff-tree --patch` process whose output is cut at 256 KiB (the
-     process is killed there; the files not read in full are marked truncated), 200 files at most. Every hunk
+     process is killed there; the files not read in full are marked truncated), 200 files at most, and the
+     patches are matched to files by the path in each `diff --git` header (a type change has two sections), with
+     only the shown files named in the arguments. Every hunk
      header is rewritten to `@@ -a,b +c,d @@`, because git appends the nearest line above the hunk (for YAML, a
      top-level key and value) and that line can be a secret. `.rackbook/` files are shown to admins in full
      (they hold public keys, ids and hashes by design), secret files of the infra repository are listed as

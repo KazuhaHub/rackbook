@@ -95,6 +95,8 @@ type server struct {
 	public map[string]http.Handler
 	// reveals limits how often one administrator may reveal a stored secret.
 	reveals *revealLimiter
+	// cursorKey signs the activity cursors; made at start, never stored.
+	cursorKey []byte
 }
 
 // New returns the full handler: API, exports, MCP and console.
@@ -102,6 +104,10 @@ func New(o Options) http.Handler {
 	s := &server{o: o, log: o.Logger}
 	if s.log == nil {
 		s.log = slog.New(slog.DiscardHandler)
+	}
+	s.cursorKey = make([]byte, 32)
+	if _, err := rand.Read(s.cursorKey); err != nil {
+		panic(err)
 	}
 	s.reveals = &revealLimiter{log: s.log}
 	if o.Infra != nil {

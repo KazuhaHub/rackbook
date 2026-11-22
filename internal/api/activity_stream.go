@@ -1,9 +1,14 @@
 package api
 
 import (
+	"context"
+	"crypto/hmac"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/kazuhahub/rackbook/internal/audit"
@@ -21,12 +26,20 @@ import (
 
 // Work limits, variables for the tests.
 var (
-	activityChunk = 200     // entries read from a source at a time
-	walkBudget    = 20_000  // commits one stream walks per request
+	activityChunk = 200     // audit events read at a time
+	walkBudget    = 2_000   // commits one git stream walks per request
 	auditBudget   = 200_000 // audit lines one stream looks at per request
+	// sinceStopRun: with a since filter, a git walk stops once it has seen this
+	// many commits in a row dated more than sinceSlack before it. The walk is in
+	// --date-order (a commit before its parents, otherwise by date), so older
+	// commits come last; this is a heuristic bound, a commit dated more than
+	// sinceSlack earlier than the sinceStopRun commits that follow it can be missed.
+	sinceStopRun = 200
 	// exportWorkBudget bounds the work of one JSONL export (commits walked plus lines looked at).
 	exportWorkBudget = 5_000_000
 )
+
+const sinceSlack = 24 * time.Hour
 
 type walkEntry struct {
 	item  *activityItem
@@ -42,24 +55,50 @@ type streamCursor struct {
 
 type activityCursor map[string]streamCursor
 
-func decodeCursor(s string) (activityCursor, error) {
-	if s == "" {
-		return nil, nil
-	}
-	b, err := base64.RawURLEncoding.DecodeString(s)
-	if err != nil {
-		return nil, err
-	}
-	var c activityCursor
-	if err := json.Unmarshal(b, &c); err != nil {
-		return nil, err
-	}
-	return c, nil
+// Cursors are authenticated: the payload is signed (HMAC-SHA256) with a key the
+// server makes at start and keeps in memory, together with the identity of the
+// caller. A cursor therefore cannot be forged (it names a pinned commit, which
+// would otherwise tell whether any commit exists), cannot be used by another
+// person, and does not survive a restart.
+var errCursor = errors.New("the cursor is not valid")
+
+func cursorMAC(key []byte, who string, payload []byte) []byte {
+	m := hmac.New(sha256.New, key)
+	m.Write([]byte(who))
+	m.Write([]byte{0})
+	m.Write(payload)
+	return m.Sum(nil)
 }
 
-func (c activityCursor) encode() string {
+func (s *server) encodeCursor(who string, c activityCursor) string {
 	b, _ := json.Marshal(c)
-	return base64.RawURLEncoding.EncodeToString(b)
+	return base64.RawURLEncoding.EncodeToString(b) + "." + base64.RawURLEncoding.EncodeToString(cursorMAC(s.cursorKey, who, b))
+}
+
+func (s *server) decodeCursor(who, v string) (activityCursor, error) {
+	if v == "" {
+		return nil, nil
+	}
+	p, m, ok := strings.Cut(v, ".")
+	if !ok {
+		return nil, errCursor
+	}
+	payload, err1 := base64.RawURLEncoding.DecodeString(p)
+	mac, err2 := base64.RawURLEncoding.DecodeString(m)
+	if err1 != nil || err2 != nil || !hmac.Equal(mac, cursorMAC(s.cursorKey, who, payload)) {
+		return nil, errCursor
+	}
+	var c activityCursor
+	if json.Unmarshal(payload, &c) != nil {
+		return nil, errCursor
+	}
+	// a guard in depth: what is signed was made by this server, but a position is never negative
+	for _, sc := range c {
+		if sc.N < 0 || sc.Resume < 0 || (sc.Tip != "" && !gitstore.ValidRev(sc.Tip)) {
+			return nil, errCursor
+		}
+	}
+	return c, nil
 }
 
 type activityStream interface {
@@ -71,22 +110,101 @@ type activityStream interface {
 	stalled() bool
 	cursor() streamCursor
 	work() int
+	close() // stops what the stream started (the git process)
 }
 
-// gitStream reads a git walk in chunks.
+// gitFeed is one git process of a request, read through a channel. It is
+// started by the first read and killed (and waited for) by close.
+type gitFeed struct {
+	ch     chan feedMsg
+	cancel context.CancelFunc
+}
+
+type feedMsg struct {
+	tip string // the commit the walk is pinned to (first message)
+	e   walkEntry
+	err error
+}
+
+func (f *gitFeed) close() {
+	f.cancel()
+	for range f.ch { // the process is gone and the goroutine ends when the channel closes
+	}
+}
+
+// gitWalk streams a repository's walk to each (gitstore Store/Repo.ActivityWalk).
+type gitWalk func(ctx context.Context, tip string, skip int, onStart func(string), each func(gitstore.ActivityCommit) bool) error
+
+// startFeed runs the walk in a goroutine. Commits are turned into entries in
+// small batches (finish looks the batch up in the audit log).
+func startFeed(parent context.Context, walk gitWalk, tip string, skip int, convert func([]gitstore.ActivityCommit) []walkEntry) *gitFeed {
+	ctx, cancel := context.WithCancel(parent)
+	f := &gitFeed{ch: make(chan feedMsg), cancel: cancel}
+	send := func(m feedMsg) bool {
+		select {
+		case f.ch <- m:
+			return true
+		case <-ctx.Done():
+			return false
+		}
+	}
+	go func() {
+		defer close(f.ch)
+		var batch []gitstore.ActivityCommit
+		flush := func() bool {
+			ents := convert(batch)
+			batch = batch[:0]
+			for _, e := range ents {
+				if !send(feedMsg{e: e}) {
+					return false
+				}
+			}
+			return true
+		}
+		err := walk(ctx, tip, skip, func(t string) { send(feedMsg{tip: t}) }, func(c gitstore.ActivityCommit) bool {
+			batch = append(batch, c)
+			return len(batch) < 50 || flush()
+		})
+		if err == nil && ctx.Err() == nil {
+			flush()
+		}
+		if err != nil && ctx.Err() == nil {
+			send(feedMsg{err: err})
+		}
+	}()
+	return f
+}
+
+// gitStream reads a git walk through one process per request.
 type gitStream struct {
-	fetch func(tip string, skip, n int) (string, []walkEntry, error)
-	cur   streamCursor
-	buf   []walkEntry
-	pos   int
-	base  int // walk position of buf[0]
-	eof   bool
-	spent int
-	stall bool
+	ctx      context.Context
+	walk     gitWalk
+	convert  func([]gitstore.ActivityCommit) []walkEntry
+	since    time.Time // with it, the walk may stop early (see sinceStopRun)
+	cur      streamCursor
+	consumed int // commits of the walk consumed by this request
+	feed     *gitFeed
+	head     *walkEntry
+	spent    int
+	run      int
+	stall    bool
 }
 
-func newGitStream(c streamCursor, fetch func(tip string, skip, n int) (string, []walkEntry, error)) *gitStream {
-	return &gitStream{fetch: fetch, cur: c, base: c.N}
+func (g *gitStream) next() (walkEntry, bool, error) {
+	if g.feed == nil {
+		g.feed = startFeed(g.ctx, g.walk, g.cur.Tip, g.cur.N, g.convert)
+	}
+	for m := range g.feed.ch {
+		switch {
+		case m.err != nil:
+			return walkEntry{}, false, m.err
+		case m.tip != "":
+			g.cur.Tip = m.tip
+		default:
+			return m.e, true, nil
+		}
+	}
+	return walkEntry{}, false, nil
 }
 
 func (g *gitStream) peek() (*activityItem, error) {
@@ -94,40 +212,54 @@ func (g *gitStream) peek() (*activityItem, error) {
 		if g.cur.Done {
 			return nil, nil
 		}
-		for g.pos < len(g.buf) {
-			if e := g.buf[g.pos]; e.match {
-				return e.item, nil
+		if g.head == nil {
+			if g.spent >= walkBudget {
+				g.stall = true
+				return nil, nil
 			}
-			g.pos++
+			e, ok, err := g.next()
+			if err != nil {
+				return nil, err
+			}
+			if !ok {
+				g.cur.Done = true
+				return nil, nil
+			}
+			g.head = &e
+			g.spent++
 		}
-		if g.eof {
+		if g.head.match {
+			g.run = 0
+			return g.head.item, nil
+		}
+		// part of the walk, not an item: consumed, and counted for the early stop
+		old := !g.since.IsZero() && g.head.item.at.Before(g.since.Add(-sinceSlack))
+		g.consumed++
+		g.head = nil
+		if !old {
+			g.run = 0
+		} else if g.run++; g.run >= sinceStopRun {
 			g.cur.Done = true
 			return nil, nil
 		}
-		if g.spent >= walkBudget {
-			g.stall = true
-			return nil, nil
-		}
-		g.base += len(g.buf)
-		g.buf, g.pos = nil, 0
-		tip, ents, err := g.fetch(g.cur.Tip, g.base, activityChunk)
-		if err != nil {
-			return nil, err
-		}
-		g.cur.Tip = tip
-		g.buf = ents
-		g.spent += len(ents)
-		g.eof = len(ents) < activityChunk
 	}
 }
 
-func (g *gitStream) take()          { g.pos++ }
+func (g *gitStream) take() {
+	g.consumed++
+	g.head = nil
+}
 func (g *gitStream) finished() bool { return g.cur.Done }
 func (g *gitStream) stalled() bool  { return g.stall }
 func (g *gitStream) work() int      { return g.spent }
+func (g *gitStream) close() {
+	if g.feed != nil {
+		g.feed.close()
+	}
+}
 func (g *gitStream) cursor() streamCursor {
 	c := g.cur
-	c.N = g.base + g.pos
+	c.N = g.cur.N + g.consumed
 	return c
 }
 
@@ -180,20 +312,21 @@ func (a *auditStream) take() {
 func (a *auditStream) finished() bool { return a.done }
 func (a *auditStream) stalled() bool  { return a.stall }
 func (a *auditStream) work() int      { return a.spent }
+func (a *auditStream) close()         {}
 func (a *auditStream) cursor() streamCursor {
 	return streamCursor{Resume: a.resume, Done: a.done}
 }
 
 // activityStreams are the sources the caller's filter reads from, resumed from cur.
-func (s *server) activityStreams(r *http.Request, f *activityFilter, cur activityCursor) (map[string]activityStream, error) {
+func (s *server) activityStreams(ctx context.Context, r *http.Request, f *activityFilter, cur activityCursor) (map[string]activityStream, error) {
 	out := map[string]activityStream{}
-	ctx := r.Context()
 	admin := auth.Can(ctx, roles.Manage)
 	inRange := func(it *activityItem) bool {
 		return (f.since.IsZero() || !it.at.Before(f.since)) && (f.until.IsZero() || !it.at.After(f.until))
 	}
-	// commits: raw entries, then who made them from the audit log, then the filters
-	finish := func(ents []walkEntry) []walkEntry {
+	// commits: who made them from the audit log, then the filters
+	finish := func(cs []gitstore.ActivityCommit, area string, src int) []walkEntry {
+		ents := commitItems(area, src, cs, admin)
 		keys := make([]audit.CommitKey, len(ents))
 		for i, e := range ents {
 			keys[i] = audit.CommitKey{Area: e.item.Area, Hash: e.item.Hash}
@@ -216,13 +349,11 @@ func (s *server) activityStreams(r *http.Request, f *activityFilter, cur activit
 		return ents
 	}
 	if f.has(areaLedger) {
-		out[areaLedger] = newGitStream(cur[areaLedger], func(tip string, skip, n int) (string, []walkEntry, error) {
-			pg, err := s.o.Store.Activity(ctx, gitstore.ActivityQuery{Collection: f.collection, ID: f.id, IncludeState: s.canSee(r, seeState), Tip: tip, Skip: skip, Limit: n})
-			if err != nil {
-				return "", nil, err
-			}
-			return pg.Tip, finish(commitItems(areaLedger, 0, pg.Commits, admin)), nil
-		})
+		out[areaLedger] = &gitStream{ctx: ctx, cur: cur[areaLedger], since: f.since,
+			walk: func(ctx context.Context, tip string, skip int, onStart func(string), each func(gitstore.ActivityCommit) bool) error {
+				return s.o.Store.ActivityWalk(ctx, gitstore.ActivityQuery{Collection: f.collection, ID: f.id, IncludeState: s.canSee(r, seeState), Tip: tip, Skip: skip}, onStart, each)
+			},
+			convert: func(cs []gitstore.ActivityCommit) []walkEntry { return finish(cs, areaLedger, 0) }}
 	}
 	// An infra commit or an audit event belongs to no collection.
 	if f.collection != "" {
@@ -230,13 +361,11 @@ func (s *server) activityStreams(r *http.Request, f *activityFilter, cur activit
 	}
 	wantInfra, wantAudit := f.has(areaInfra) && s.canSee(r, seeInfra), f.has(areaAudit) && s.canSee(r, seeAudit)
 	if wantInfra {
-		out[areaInfra] = newGitStream(cur[areaInfra], func(tip string, skip, n int) (string, []walkEntry, error) {
-			pg, err := s.o.Infra.Repo.Activity(ctx, gitstore.ActivityQuery{Tip: tip, Skip: skip, Limit: n})
-			if err != nil {
-				return "", nil, err
-			}
-			return pg.Tip, finish(commitItems(areaInfra, 1, pg.Commits, admin)), nil
-		})
+		out[areaInfra] = &gitStream{ctx: ctx, cur: cur[areaInfra], since: f.since,
+			walk: func(ctx context.Context, tip string, skip int, onStart func(string), each func(gitstore.ActivityCommit) bool) error {
+				return s.o.Infra.Repo.ActivityWalk(ctx, gitstore.ActivityQuery{Tip: tip, Skip: skip}, onStart, each)
+			},
+			convert: func(cs []gitstore.ActivityCommit) []walkEntry { return finish(cs, areaInfra, 1) }}
 	}
 	if s.o.Audit != nil && (wantInfra || wantAudit) {
 		q := audit.Query{Since: f.since, Identity: f.identity, Filter: func(e audit.Event) bool {
@@ -268,11 +397,18 @@ func (s *server) activityStreams(r *http.Request, f *activityFilter, cur activit
 // own order, so under skewed commit dates the result is not perfectly sorted,
 // but nothing is lost or repeated. A stream that runs out of work budget ends
 // the page early (possibly with no item), and the cursor carries on from there.
-func (s *server) activityPage(r *http.Request, f *activityFilter, cur activityCursor, limit int) ([]*activityItem, string, int, error) {
-	streams, err := s.activityStreams(r, f, cur)
+func (s *server) activityPage(r *http.Request, who string, f *activityFilter, cur activityCursor, limit int) ([]*activityItem, string, int, error) {
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
+	streams, err := s.activityStreams(ctx, r, f, cur)
 	if err != nil {
 		return nil, "", 0, err
 	}
+	defer func() {
+		for _, st := range streams {
+			st.close() // one git process per source: kill and wait for it
+		}
+	}()
 	var items []*activityItem
 	stalled := false
 	for len(items) < limit && !stalled {
@@ -313,5 +449,5 @@ func (s *server) activityPage(r *http.Request, f *activityFilter, cur activityCu
 	if !more {
 		return items, "", work, nil
 	}
-	return items, next.encode(), work, nil
+	return items, s.encodeCursor(who, next), work, nil
 }

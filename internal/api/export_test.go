@@ -7,3 +7,4 @@ func SetActivityChunk(n int) int    { old := activityChunk; activityChunk = n; r
 func SetWalkBudget(n int) int       { old := walkBudget; walkBudget = n; return old }
 func SetAuditBudget(n int) int      { old := auditBudget; auditBudget = n; return old }
 func SetExportWorkBudget(n int) int { old := exportWorkBudget; exportWorkBudget = n; return old }
+func SetSinceStopRun(n int) int     { old := sinceStopRun; sinceStopRun = n; return old }

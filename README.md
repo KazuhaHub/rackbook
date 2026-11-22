@@ -984,11 +984,20 @@ its own order, and merged by taking the newest of their heads. The cursor holds,
 for a repository the commit its walk is pinned to and how many commits of the walk were consumed (so pages stay
 stable while new commits land, and a commit whose committer date is older than its parent's is not lost); for the
 audit log the seq it has come down to. The `since`, `until`, person and record filters are applied to what a stream
-reads, never as limits on the walk. Every request has a work budget per stream; when it runs out, the page ends (it
-can hold no row at all) and the cursor carries on from there, so keep following `cursor` until it is absent. The
+reads, never as limits on the walk. Each source is read by one git process per request, streamed and killed once the page is full. Every request
+has a work budget per stream (2 000 commits; `scanned` in the answer says how much was looked at); when it runs
+out, the page ends (it can hold no row at all) and the cursor carries on from there, so keep following `cursor`
+until it is absent. The console goes on by itself for three empty pages in a row and then asks ("keep searching").
+With `since`, a git walk may stop early: git's `--date-order` puts a commit before its parents and otherwise
+orders by date, so once a walk has seen 200 commits in a row dated more than a day before `since`, it gives up.
+This is a heuristic bound: a commit dated more than a day earlier than the 200 commits that follow it in the
+walk can be missed by a `since` filter. Without `since` there is no early stop. The
 result is ordered by time, newest first, except where a repository's commit dates go backwards along its history or
 audit lines were written with an old explicit time: such a row comes at its position in its stream, not at its
-date. Nothing is lost or shown twice. A cursor from before a history rewrite was accepted is refused with `400`.
+date. Nothing is lost or shown twice. Cursors are signed (HMAC-SHA256 with a key the server makes at start, bound to the signed-in person), so they
+cannot be made up, used by somebody else, or told apart from a commit lookup; they do not survive a restart. One that
+fails the check, or from before a history rewrite was accepted, is `400` with `"error": "cursor_invalid"`; the
+console then starts again from the first page with a notice.
 
 **Acknowledging a chain problem.** While the audit log has a recorded problem nobody has acknowledged, admins see a
 red banner on every page, with the kinds of problem and the first affected line. *I have checked — acknowledge*

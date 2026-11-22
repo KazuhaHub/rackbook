@@ -282,21 +282,21 @@ func (s *server) activity(w http.ResponseWriter, r *http.Request) {
 		}
 		limit = min(n, maxActivityLimit)
 	}
-	cur, err := decodeCursor(q.Get("cursor"))
+	cur, err := s.decodeCursor(s.cursorWho(r), q.Get("cursor"))
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "bad_request", "unusable cursor")
+		writeError(w, http.StatusBadRequest, "cursor_invalid", "the cursor is not valid (it does not survive a restart, and is for the person who got it); start again without it")
 		return
 	}
-	items, next, _, err := s.activityPage(r, f, cur, limit)
+	items, next, work, err := s.activityPage(r, s.cursorWho(r), f, cur, limit)
 	if errors.Is(err, gitstore.ErrBadTip) {
-		writeError(w, http.StatusBadRequest, "bad_request", "the cursor no longer fits this history; start again without it")
+		writeError(w, http.StatusBadRequest, "cursor_invalid", "the cursor no longer fits this history; start again without it")
 		return
 	}
 	if err != nil {
 		s.internal(w, err)
 		return
 	}
-	out := map[string]any{"items": items, "areas": s.visibleAreas(r), "audit": s.o.Audit != nil}
+	out := map[string]any{"items": items, "areas": s.visibleAreas(r), "audit": s.o.Audit != nil, "scanned": work}
 	if items == nil {
 		out["items"] = []*activityItem{}
 	}
@@ -318,7 +318,7 @@ func (s *server) activityExport(w http.ResponseWriter, r *http.Request, f *activ
 	sent, work := 0, 0
 	truncated := func() { _ = enc.Encode(map[string]bool{"truncated": true}) }
 	for {
-		items, next, w1, err := s.activityPage(r, f, cur, 500)
+		items, next, w1, err := s.activityPage(r, s.cursorWho(r), f, cur, 500)
 		if err != nil {
 			s.log.Error("activity export failed", "err", err)
 			_ = enc.Encode(map[string]any{"error": "internal"})
@@ -342,7 +342,7 @@ func (s *server) activityExport(w http.ResponseWriter, r *http.Request, f *activ
 			truncated()
 			return
 		}
-		if cur, err = decodeCursor(next); err != nil {
+		if cur, err = s.decodeCursor(s.cursorWho(r), next); err != nil {
 			return
 		}
 	}
@@ -455,4 +455,12 @@ func (s *server) auditAck(w http.ResponseWriter, r *http.Request) {
 	default:
 		s.internal(w, err)
 	}
+}
+
+// cursorWho is the identity a cursor is bound to.
+func (s *server) cursorWho(r *http.Request) string {
+	if id := s.who(r); id != nil {
+		return id.Method + ":" + id.ID
+	}
+	return ""
 }

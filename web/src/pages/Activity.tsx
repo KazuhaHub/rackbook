@@ -1,4 +1,5 @@
 import { Fragment, useEffect, useState, type FormEvent } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 import { Link, useSearchParams } from 'react-router'
 import { Activity as ActivityIcon, ChevronDown, ChevronRight, Download, GitCommitHorizontal, ShieldCheck, ShieldQuestion } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
@@ -11,7 +12,7 @@ import { DiffView } from '@/components/types/DiffView'
 import { EmptyState, PageHeader } from '@/components/common'
 import { t } from '@/i18n'
 import { formatDateTime, formatDay, formatTime } from '@/i18n/format'
-import { errorMessage } from '@/lib/api'
+import { ApiError, errorMessage } from '@/lib/api'
 import {
   AREAS,
   eventSentence,
@@ -296,12 +297,33 @@ export default function Activity() {
   const q = useActivity(filters)
   const items = q.data?.pages.flatMap((p) => p.items) ?? []
   const audit = q.data?.pages[0]?.audit ?? true
-  // a page can come back empty with a cursor (the server's work budget ran out before it found a row): go on
-  const lastEmpty = !!q.data && q.data.pages[q.data.pages.length - 1].items.length === 0
+  // A page can come back empty with a cursor (the server's work budget ran out before it found a row):
+  // go on by itself a few times, then ask.
+  const pages = q.data?.pages ?? []
+  let emptyRun = 0
+  let scanned = 0
+  for (let i = pages.length - 1; i >= 0 && pages[i].items.length === 0; i--) {
+    emptyRun++
+    scanned += pages[i].scanned ?? 0
+  }
   const { hasNextPage, isFetchingNextPage, fetchNextPage } = q
   useEffect(() => {
-    if (lastEmpty && hasNextPage && !isFetchingNextPage) void fetchNextPage()
-  }, [lastEmpty, hasNextPage, isFetchingNextPage, fetchNextPage])
+    if (emptyRun > 0 && emptyRun < 3 && hasNextPage && !isFetchingNextPage) void fetchNextPage()
+  }, [emptyRun, hasNextPage, isFetchingNextPage, fetchNextPage])
+  // a cursor the server no longer accepts (it restarted): start again from the first page, with a notice
+  const qc = useQueryClient()
+  const cursorGone = q.isFetchNextPageError && q.error instanceof ApiError && q.error.code === 'cursor_invalid'
+  const [notice, setNotice] = useState(false)
+  const filterKey = filterQuery(filters).toString()
+  const [noticeKey, setNoticeKey] = useState(filterKey)
+  if (noticeKey !== filterKey) {
+    setNoticeKey(filterKey)
+    setNotice(false)
+  }
+  if (cursorGone && !notice) setNotice(true)
+  useEffect(() => {
+    if (cursorGone) void qc.resetQueries({ queryKey: ['rb', 'activity'] })
+  }, [cursorGone, qc])
   const setFilters = (f: ActivityFilters) => setSp(filterQuery(f), { replace: false })
   return (
     <div>
@@ -319,6 +341,7 @@ export default function Activity() {
         }
       />
       <Filters value={filters} onChange={setFilters} />
+      {notice && <p className="mb-4 rounded-md border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">{t.activity.cursorReset}</p>}
       {q.data && !audit && <p className="mb-4 rounded-md border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">{t.activity.noAudit}</p>}
       {q.isPending ? (
         <Skeleton className="h-48 w-full" />
@@ -329,10 +352,11 @@ export default function Activity() {
       ) : (
         <>
           <Timeline items={items} audit={audit} />
+          {q.hasNextPage && emptyRun >= 3 && <p className="mt-6 text-center text-sm text-muted-foreground">{t.activity.nothingScanned(scanned)}</p>}
           {q.hasNextPage && (
             <div className="mt-6 flex justify-center">
               <Button variant="outline" disabled={q.isFetchingNextPage} onClick={() => void q.fetchNextPage()}>
-                {q.isFetchingNextPage ? t.activity.loading : t.activity.loadMore}
+                {q.isFetchingNextPage ? t.activity.loading : emptyRun >= 3 ? t.activity.keepSearching : t.activity.loadMore}
               </Button>
             </div>
           )}

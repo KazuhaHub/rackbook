@@ -2,6 +2,7 @@ package api_test
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -9,7 +10,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"testing/fstest"
 	"time"
@@ -44,6 +48,7 @@ type actOpts struct {
 	noAudit  bool
 	auditDir string // an audit log prepared by the test (it is opened here)
 	readOnly bool
+	runner   gitstore.Runner // runs the store's git commands (nil = the real git)
 	auditOpt audit.Options
 }
 
@@ -120,6 +125,9 @@ func newActEnv(t *testing.T, o actOpts) *actEnv {
 		op.Infra = &api.InfraOptions{Repo: repo, Admins: ia}
 		op.Audit = e.log
 	}, server, func(so *gitstore.Options) {
+		if o.runner != nil {
+			so.Runner = o.runner
+		}
 		so.OnCommit = func(hash string, who *auth.Identity, record string) {
 			ev := audit.Event{Event: "commit", Area: "ledger", Repo: "ledger", Hash: hash, Record: record}
 			ev.By(who)
@@ -832,5 +840,145 @@ func TestActivityAuditPagingResumesAfterTheScanBudget(t *testing.T) {
 	resp.Body.Close()
 	if !strings.HasSuffix(strings.TrimSpace(string(b)), `{"truncated":true}`) {
 		t.Fatalf("the export ran out of work and did not say so: %s", b)
+	}
+}
+
+// logRunner counts the activity walks (git log processes) a store starts.
+type logRunner struct {
+	next gitstore.Runner
+	mu   sync.Mutex
+	logs int
+}
+
+func (r *logRunner) Run(ctx context.Context, c gitstore.Cmd) (string, string, error) {
+	if len(c.Args) > 0 && c.Args[0] == "log" && slices.Contains(c.Args, "--name-only") {
+		r.mu.Lock()
+		r.logs++
+		r.mu.Unlock()
+	}
+	return r.next.Run(ctx, c)
+}
+
+func (r *logRunner) count() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.logs
+}
+
+// A request reads each repository through one git process, however small the
+// reads are and however little matches.
+func TestActivityRequestStartsOneGitProcessPerSource(t *testing.T) {
+	lr := &logRunner{next: gitstore.RealRunner()}
+	e := newActEnv(t, actOpts{runner: lr})
+	for i := 0; i < 12; i++ {
+		e.laptopCommit(t, "2026-03-01T10:00:00Z", "c"+strconv.Itoa(i), map[string]string{"f" + strconv.Itoa(i) + ".txt": "x\n"})
+	}
+	defer api.SetActivityChunk(api.SetActivityChunk(2))
+	before := lr.count()
+	_, out := e.get(t, viewerU, "/api/activity?since=2030-01-01&limit=5")
+	if len(items(t, out)) != 0 || out["cursor"] != nil {
+		t.Fatalf("%v", out)
+	}
+	if n := lr.count() - before; n != 1 {
+		t.Fatalf("%d git log processes for one request", n)
+	}
+	if out["scanned"].(float64) < 13 {
+		t.Fatalf("the walk covered every commit: %v", out["scanned"])
+	}
+}
+
+// With a since filter the walk gives up after a run of commits dated well
+// before it (a heuristic bound, documented); without one it never does.
+func TestActivitySinceStopsAfterARunOfOldCommits(t *testing.T) {
+	e := newActEnv(t, actOpts{})
+	e.laptopCommit(t, "2026-03-11T10:00:00Z", "skewed", map[string]string{"x.txt": "x\n"})
+	for i := 0; i < 5; i++ {
+		e.laptopCommit(t, "2025-01-0"+strconv.Itoa(i+1)+"T10:00:00Z", "old"+strconv.Itoa(i), map[string]string{"o" + strconv.Itoa(i) + ".txt": "x\n"})
+	}
+	e.laptopCommit(t, "2026-03-10T10:00:00Z", "recent", map[string]string{"r.txt": "x\n"})
+	defer api.SetSinceStopRun(api.SetSinceStopRun(3))
+	_, out := e.get(t, viewerU, "/api/activity?since=2026-03-01&until=2026-03-31&limit=50")
+	if find(items(t, out), "subject", "recent") == nil || find(items(t, out), "subject", "skewed") != nil {
+		t.Fatalf("the walk stops after 3 old commits in a row: %v", items(t, out))
+	}
+	_, out = e.get(t, viewerU, "/api/activity?until=2026-03-31&limit=50")
+	if find(items(t, out), "subject", "skewed") == nil {
+		t.Fatal("without since the walk goes on")
+	}
+}
+
+// The walk budget of a request ends a page, never the history: following the
+// cursor reaches every commit once.
+func TestActivityWalkBudgetPageResumes(t *testing.T) {
+	e := newActEnv(t, actOpts{})
+	for i := 0; i < 9; i++ {
+		e.laptopCommit(t, "2026-03-01T10:00:0"+strconv.Itoa(i)+"Z", "c"+strconv.Itoa(i), map[string]string{"f" + strconv.Itoa(i) + ".txt": "x\n"})
+	}
+	defer api.SetWalkBudget(api.SetWalkBudget(3))
+	seen := map[string]int{}
+	cursor := ""
+	empty := 0
+	for page := 0; ; page++ {
+		if page > 30 {
+			t.Fatal("does not end")
+		}
+		path := "/api/activity?since=2026-03-01&until=2026-03-01&limit=50"
+		if cursor != "" {
+			path += "&cursor=" + cursor
+		}
+		_, out := e.get(t, viewerU, path)
+		if len(items(t, out)) == 0 {
+			empty++
+		}
+		for _, it := range items(t, out) {
+			seen[it["subject"].(string)]++
+		}
+		c, _ := out["cursor"].(string)
+		if c == "" {
+			break
+		}
+		cursor = c
+	}
+	if len(seen) != 9 {
+		t.Fatalf("%v", seen)
+	}
+	for k, n := range seen {
+		if n != 1 {
+			t.Fatalf("%s %d", k, n)
+		}
+	}
+	_ = empty
+}
+
+// A cursor made up by the caller is refused: it would tell whether a commit
+// exists. One person's cursor is no use to another.
+func TestActivityCursorsAreAuthenticated(t *testing.T) {
+	e := newActEnv(t, actOpts{})
+	e.write(t, editorU, "one")
+	e.write(t, editorU, "two")
+	_, out := e.get(t, adminU, "/api/activity?limit=1")
+	cursor, _ := out["cursor"].(string)
+	if cursor == "" {
+		t.Fatalf("%v", out)
+	}
+	if code, out := e.get(t, adminU, "/api/activity?limit=1&cursor="+cursor); code != 200 || len(items(t, out)) != 1 {
+		t.Fatalf("%d %v", code, out)
+	}
+	payload, _, _ := strings.Cut(cursor, ".")
+	forged := base64.RawURLEncoding.EncodeToString([]byte(`{"ledger":{"t":"` + strings.Repeat("a", 40) + `","n":0}}`))
+	for name, c := range map[string]string{
+		"unsigned":      payload,
+		"made up":       forged,
+		"made up, mac":  forged + "." + forged,
+		"bad mac":       payload + ".AAAA",
+		"negative walk": base64.RawURLEncoding.EncodeToString([]byte(`{"ledger":{"n":-3}}`)) + ".AAAA",
+	} {
+		code, out := e.get(t, adminU, "/api/activity?cursor="+c)
+		if code != 400 || out["error"] != "cursor_invalid" {
+			t.Errorf("%s: %d %v", name, code, out)
+		}
+	}
+	if code, out := e.get(t, editorU, "/api/activity?limit=1&cursor="+cursor); code != 400 || out["error"] != "cursor_invalid" {
+		t.Fatalf("another person's cursor: %d %v", code, out)
 	}
 }

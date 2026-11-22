@@ -38,7 +38,7 @@ export type ActivityItem = {
   detail?: string[]
 }
 
-export type ActivityPage = { items: ActivityItem[]; cursor?: string; areas: ActivityArea[]; audit: boolean }
+export type ActivityPage = { items: ActivityItem[]; cursor?: string; areas: ActivityArea[]; audit: boolean; /** commits and log lines looked at to make this page */ scanned?: number }
 
 export type DiffFile = { status: string; path: string; patch?: string; truncated?: boolean; hidden?: boolean }
 export type CommitDiff = { area: ActivityArea; hash: string; files: DiffFile[]; moreFiles?: boolean }
