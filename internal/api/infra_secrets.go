@@ -303,7 +303,7 @@ func (s *server) infraReencryptSecrets(w http.ResponseWriter, r *http.Request) {
 	e := ansiblerepo.Edit{Scope: "secrets/" + host, Action: ansiblerepo.SecretsRekeyAction, Who: who, Files: []ansiblerepo.FileEdit{fe}}
 	o, err := repo.Apply(r.Context(), e, false)
 	if err != nil {
-		s.infraSecretsAudit(who, host, fe.Path, "reencrypt", "reencrypt_failed")
+		// failures are recorded by the shared write path (Repo.attempt)
 		s.writeInfraError(w, err)
 		return
 	}

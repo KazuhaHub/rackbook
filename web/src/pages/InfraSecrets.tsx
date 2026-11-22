@@ -66,6 +66,7 @@ export default function InfraSecrets() {
   const writable = !!q.data?.canWrite && !!file && (file.canDecrypt || !file.exists)
   // re-encrypting needs the file, a rule to follow and this server's key to read it
   const canReencrypt = !!q.data?.canWrite && !!file && file.exists && !file.problem && file.canDecrypt && !!file.rule && file.rule.length > 0
+  const ownKeyInRule = !!file?.rule && !!q.data?.publicKey && file.rule.includes(q.data.publicKey)
   const recipientsDiffer = !!file?.rule && [...file.recipients].sort().join(',') !== [...file.rule].sort().join(',')
 
   const reveal = async (key: string) => {
@@ -271,22 +272,28 @@ export default function InfraSecrets() {
 
           {canReencrypt && (
             <Section title={t.infra.secrets.reencryptTitle}>
-              {recipientsDiffer ? (
+              {!ownKeyInRule ? (
+                <p role="status" className="text-sm text-muted-foreground">
+                  {t.infra.secrets.reencryptNoOwnKey}
+                </p>
+              ) : recipientsDiffer ? (
                 <p role="status" className="mb-3 rounded-lg border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm">
                   {t.infra.secrets.reencryptDiffer}
                 </p>
               ) : (
                 <p className="mb-3 text-sm text-muted-foreground">{t.infra.secrets.reencryptSame}</p>
               )}
-              <Button
-                variant={recipientsDiffer ? 'default' : 'outline'}
-                disabled={busy || !!stale}
-                onClick={() => {
-                  if (window.confirm(t.infra.secrets.confirmReencrypt)) void reencrypt()
-                }}
-              >
-                <RefreshCw /> {t.infra.secrets.reencrypt}
-              </Button>
+              {ownKeyInRule && (
+                <Button
+                  variant={recipientsDiffer ? 'default' : 'outline'}
+                  disabled={busy || !!stale}
+                  onClick={() => {
+                    if (window.confirm(t.infra.secrets.confirmReencrypt)) void reencrypt()
+                  }}
+                >
+                  <RefreshCw /> {t.infra.secrets.reencrypt}
+                </Button>
+              )}
             </Section>
           )}
 

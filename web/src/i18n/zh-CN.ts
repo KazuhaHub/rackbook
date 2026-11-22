@@ -1136,7 +1136,8 @@ const messages = {
       reencryptTitle: '重新加密',
       reencrypt: '重新加密',
       reencryptDiffer: '此文件的接收者与 .sops.yaml 中它的规则不一致（例如主机重装或密钥轮换之后）。重新加密会让文件的接收者与规则完全一致，并换一个新的数据密钥。',
-      reencryptSame: '接收者已与 .sops.yaml 一致。重新加密仍会为文件换一个新的数据密钥，可在密钥可能泄露后使用。所有值都会重新加密，值本身不变。',
+      reencryptSame: '接收者已与 .sops.yaml 一致。重新加密只会为文件换一个新的数据密钥并采用当前的接收者。如果密钥或值可能已泄露，必须更换这些值本身：git 历史中的旧密文仍可用旧密钥解开。',
+      reencryptNoOwnKey: '本服务器的 age 密钥不在 .sops.yaml 中此文件的规则里。规则必须列出它，否则重新加密会把 Rackbook 锁在门外。',
       confirmReencrypt: '按 .sops.yaml 中的接收者重新加密此文件并换新的数据密钥？这会提交到 main。',
     },
     edit: {

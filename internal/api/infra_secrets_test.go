@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"os"
@@ -639,7 +640,8 @@ func TestSecretsReencryptChangesRecipientsAndDataKey(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := r.Decrypt(context.Background(), []byte(after), "cloudflare_dns_token"); (err == nil) != ok {
+		_, err = r.Decrypt(context.Background(), []byte(after), "cloudflare_dns_token")
+		if ok && err != nil || !ok && !errors.Is(err, sops.ErrCannotDecrypt) {
 			t.Errorf("%s: %v", who, err)
 		}
 	}
@@ -687,6 +689,10 @@ func TestSecretsReencryptRefusals(t *testing.T) {
 	refuse("pgp", "alpha", func(s *sEnv, seed map[string]string) {
 		seed["secrets/alpha.sops.yaml"] = strings.Replace(seed["secrets/alpha.sops.yaml"], "    age:\n", "    pgp:\n        - fp: ABCDEF0123456789\n          enc: x\n    age:\n", 1)
 	}, "not age keys")
+	// a rule with more than one key group
+	refuse("key groups", "alpha", func(s *sEnv, seed map[string]string) {
+		seed[".sops.yaml"] = "creation_rules:\n  - path_regex: ^secrets/alpha\\.sops\\.yaml$\n    key_groups:\n      - age: [" + s.sx.Pub("admin") + ", " + s.sx.Pub("server") + "]\n      - age: [" + s.sx.Pub("host") + "]\n"
+	}, "key_groups are not supported")
 }
 
 func strs(in []any) []string {

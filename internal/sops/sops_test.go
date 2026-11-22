@@ -202,6 +202,9 @@ func enclosingFunc(f *ast.File, pos token.Pos) string {
 	return ""
 }
 
+// A new data key on rotate is sops' documented behavior, verified by hand; the
+// MAC changes on every write anyway, so the MAC comparison below shows little
+// by itself. What matters is who can decrypt afterwards.
 func TestRotateChangesRecipientsAndDataKey(t *testing.T) {
 	e, r, enc, tmp := setup(t) // recipients: admin, server, host
 	ctx := context.Background()

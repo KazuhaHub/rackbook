@@ -700,11 +700,11 @@ decrypted and offers nothing but the key names.
   longer decrypt the new file). Use it after a host is reinstalled (new host key) or a key is rotated and
   the rule changed; the page offers it prominently when the file's recipients differ from the rule, and as a
   secondary action otherwise (it still makes a new data key). It needs a recent sign-in like every write.
-  It is refused when the file does not exist, when no rule lists age recipients, when the rule does not
+  The rule in `.sops.yaml` is the authority: if a commit removes the escrow key from a rule, re-encrypting removes it from the file. It is refused when the file does not exist, when the rule has more than one `key_groups` entry, when no rule lists age recipients, when the rule does not
   list Rackbook's own public key (Rackbook would lock itself out), and when the file has non-age
   recipients (pgp, kms, ...). A file Rackbook's key cannot decrypt cannot be re-encrypted here: another
   key holder must add the key (`sops updatekeys`) first. The request is audited (`reencrypt`: who, file,
-  outcome) and the commit subject is `infra(secrets/<host>): re-encrypt for the .sops.yaml recipients (new data key)`.
+  outcome `reencrypted`; failures are recorded by the shared write path under the commit subject) and the commit subject is `infra(secrets/<host>): re-encrypt for the .sops.yaml recipients (new data key)`.
 - **Feature secrets**: a `secret: true` setting of a feature is stored under the key
   `feature_<feature>_<setting>` in the host's SOPS file, in the same commit as the feature's other
   settings. Leaving its box empty keeps the stored value.

@@ -443,6 +443,39 @@ func rekeyPlan(want, have []string) (add, remove []string) {
 	return add, remove
 }
 
+// keyGroupCount is the number of key_groups entries of the creation rule that
+// matches file (0 when it has none).
+func keyGroupCount(t Tree, file string) int {
+	b, ok := t.Read(".sops.yaml")
+	if !ok {
+		return 0
+	}
+	_, root, err := parseDoc(b)
+	if err != nil || root == nil {
+		return 0
+	}
+	rules := mapGet(root, "creation_rules")
+	if rules == nil || rules.Kind != yaml.SequenceNode {
+		return 0
+	}
+	for _, rule := range rules.Content {
+		if rule.Kind != yaml.MappingNode {
+			continue
+		}
+		if re := mapGet(rule, "path_regex"); re != nil && re.Value != "" {
+			rx, err := regexp.Compile(re.Value)
+			if err != nil || !rx.MatchString(file) {
+				continue
+			}
+		}
+		if kg := mapGet(rule, "key_groups"); kg != nil && kg.Kind == yaml.SequenceNode {
+			return len(kg.Content)
+		}
+		return 0
+	}
+	return 0
+}
+
 // SecretsRekeyAction is the action of the commit subject of a re-encryption.
 const SecretsRekeyAction = "re-encrypt for the .sops.yaml recipients (new data key)"
 
@@ -473,6 +506,9 @@ func (r *Repo) SecretsRekeyEdit(host, base string) (FileEdit, error) {
 			if !sops.ValidRecipient(w) {
 				return nil, &EditError{Err: errors.New(".sops.yaml lists a recipient that is not an age public key")}
 			}
+		}
+		if keyGroupCount(dirTree{r}, p) > 1 {
+			return nil, &EditError{Err: errors.New("rules with key_groups are not supported: the rule for " + p + " has more than one key group")}
 		}
 		own := sp.PublicKey()
 		if !slices.Contains(want, own) {

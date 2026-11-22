@@ -1141,7 +1141,8 @@ const messages = {
       reencryptTitle: 'Re-encrypt',
       reencrypt: 'Re-encrypt',
       reencryptDiffer: 'The recipients of this file differ from its rule in .sops.yaml (for example after a host was reinstalled or a key was rotated). Re-encrypting gives the file exactly the rule’s recipients and a new data key.',
-      reencryptSame: 'The recipients already match .sops.yaml. Re-encrypting still makes a new data key for the file; use it after a key may have been exposed. Every value is re-encrypted; none changes.',
+      reencryptSame: 'The recipients already match .sops.yaml. Re-encrypting only gives the file a new data key and the current recipients. If a key or a value may have leaked, change the values themselves: the old ciphertext in git history stays readable with the old keys.',
+      reencryptNoOwnKey: 'This server’s age key is not in this file’s rule in .sops.yaml. The rule must list it, or re-encrypting would lock Rackbook out.',
       confirmReencrypt: 'Re-encrypt this file for the recipients in .sops.yaml with a new data key? This commits to main.',
     },
     edit: {
