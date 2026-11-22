@@ -319,6 +319,75 @@ export function mockApi(root: string): Plugin {
     return 'zh-CN'
   }
 
+  // ---- record history, restore and deleted records (docs/design-audit.md, 3.3) ----
+  // Every record has a made-up timeline: a hand edit nobody vouches for (unverified), a restore, nested
+  // changes, a hidden value and the creation. Restoring the version whose commit ends in "ee" is refused
+  // as "needs an edit" (it opens in the editor) and the one ending in "ff" asks for the secret-scan
+  // confirmation. Every collection has two deleted records (one deleted by a commit nobody vouches for).
+  const fakeHash = (seed: string, tail = '') => (createHash('sha1').update(seed).digest('hex') + createHash('sha1').update(seed + 'x').digest('hex')).slice(0, 40 - tail.length) + tail
+  type MockVersion = { hash: string; minsAgo: number; verified: boolean; who: string; subject: string; change: string; changes: any[]; recordHash: string; restoredFrom?: string; renamedFrom?: string; unreadable?: boolean; approximate?: boolean }
+  const restored = new Map<string, MockVersion[]>() // restores made in this session, newest first
+  const firstHash = new Map<string, string>()
+  const deleted = new Map<string, { id: string; data: Data; last: string; hash: string; minsAgo: number; verified: boolean }[]>()
+  const textKeys = (c: Coll, d: Data) => Object.keys(d).filter((k) => typeof d[k] === 'string' && !(c.cfg.key ?? []).includes(k))
+  const older = (v: unknown) => `${String(v)} (earlier)`
+  const commitItem = (c: Coll, v: { hash: string; minsAgo: number; verified: boolean; who: string; subject: string; restoredFrom?: string }, id: string) => ({
+    time: new Date(Date.now() - v.minsAgo * 60000).toISOString(), area: 'ledger', kind: 'commit', hash: v.hash, short: v.hash.slice(0, 7), subject: v.subject,
+    identity: v.verified ? user.id : 'lap@example.com', name: v.who, via: 'rackbook (oidc)', verified: v.verified, records: [`${c.name}/${id}`], ...(v.restoredFrom ? { restoredFrom: v.restoredFrom } : {}),
+  })
+  function timeline(c: Coll, rec: Rec): MockVersion[] {
+    const key = `${c.name}/${rec.id}`
+    if (!firstHash.has(key)) firstHash.set(key, rec.hash)
+    const [k1, k2] = textKeys(c, rec.data)
+    const first = (rec.data && k1) || 'notes'
+    const v1 = fakeHash(key + '1', 'ff')
+    const list: MockVersion[] = [
+      ...(restored.get(key) ?? []),
+      {
+        hash: fakeHash(key + '4'), minsAgo: 40, verified: false, who: 'Lap Top', subject: 'tidy up the notes', change: 'changed', recordHash: firstHash.get(key)!,
+        changes: [
+          { path: first, op: 'changed', old: older(rec.data[first]), new: rec.data[first] },
+          { path: 'notes', op: 'removed', old: 'A long note that nobody needs any more. '.repeat(8) + '\nSecond line\nThird line\nFourth line', new: null },
+        ],
+      },
+      {
+        hash: fakeHash(key + '3'), minsAgo: 3 * 60, verified: true, who: user.name, subject: `ledger(${c.name}): restore ${rec.id}`, change: 'changed', restoredFrom: v1, recordHash: fakeHash(key + 'h3').slice(0, 16),
+        changes: [
+          { path: k2 ?? first, op: 'changed', old: 'something else', new: rec.data[k2 ?? first] ?? 'value' },
+          { path: 'meta.owner', op: 'added', old: null, new: 'ann' },
+        ],
+      },
+      {
+        hash: fakeHash(key + '2', 'ee'), minsAgo: 26 * 60, verified: true, who: user.name, subject: `ledger(${c.name}): edit ${rec.id}`, change: 'changed', recordHash: fakeHash(key + 'h2').slice(0, 16),
+        changes: [
+          { path: 'ports[2].proto', op: 'changed', old: 'tcp', new: 'udp' },
+          { path: 'ports[3]', op: 'added', old: null, new: { port: 443, proto: 'tcp' } },
+          { path: 'meta.tags', op: 'removed', old: ['a', 'b'], new: null },
+          { path: 'token', op: 'changed', old: '(hidden)', new: '(hidden)', hidden: true },
+        ],
+      },
+      {
+        hash: fakeHash(key + 'u'), minsAgo: 3 * 24 * 60, verified: false, who: 'Lap Top', subject: 'import the whole inventory', change: 'changed', unreadable: true, changes: [], recordHash: '',
+      },
+      {
+        hash: v1, minsAgo: 5 * 24 * 60, verified: true, approximate: true, who: 'Mock Editor', subject: `ledger(${c.name}): add ${rec.id}`, change: 'created', recordHash: fakeHash(key + 'h1').slice(0, 16),
+        changes: textKeys(c, rec.data).slice(0, 3).map((k) => ({ path: k, op: 'added', old: null, new: older(rec.data[k]) })),
+      },
+    ]
+    return list
+  }
+  function deletedOf(c: Coll) {
+    if (!deleted.has(c.name)) {
+      const base = c.rows.slice(-2)
+      deleted.set(c.name, base.map((row, i) => {
+        const data = structuredClone(row)
+        for (const k of c.cfg.key ?? []) if (typeof data[k] === 'string') data[k] = `${data[k]} (old)`
+        return { id: idOf(c, data, 0), data, last: fakeHash(`${c.name}last${i}`), hash: fakeHash(`${c.name}del${i}`), minsAgo: (i + 1) * 90, verified: i === 0 }
+      }))
+    }
+    return deleted.get(c.name)!
+  }
+
   function meta(req: IncomingMessage) {
     return {
       locale: matchLocale(req.headers['accept-language']),
@@ -592,6 +661,71 @@ export function mockApi(root: string): Plugin {
       const start = Number(q.get('cursor') || 0)
       const page = items.slice(start, start + 5)
       return send(res, 200, { items: page, areas: ['ledger', 'infra', 'audit'], audit: true, ...(start + 5 < items.length ? { cursor: String(start + 5) } : {}) }), true
+    }
+    if (head === 'c' && cname && parts.length >= 3) {
+      const hc = colls.get(cname)
+      const [, , a, b, d] = parts
+      if (hc && method === 'GET' && a === 'deleted' && parts.length === 3) {
+        const list = deletedOf(hc).map((x) => ({
+          ...commitItem(hc, { hash: x.hash, minsAgo: x.minsAgo, verified: x.verified, who: x.verified ? user.name : 'Lap Top', subject: `ledger(${hc.name}): delete ${x.id}` }, x.id),
+          id: x.id, last: x.last, deletedAt: new Date(Date.now() - x.minsAgo * 60000).toISOString(),
+          summary: (hc.cfg.list ?? Object.keys(x.data)).slice(0, 3).filter((k: string) => x.data[k] !== undefined).map((k: string) => ({ field: k, value: String(x.data[k]) })),
+        }))
+        return send(res, 200, { records: list, complete: true, more: false, audit: true }), true
+      }
+      if (hc && method === 'GET' && b === 'history' && parts.length <= 5) {
+        const rec = records(hc).find((r) => r.id === a)
+        const gone = deletedOf(hc).find((x) => x.id === a)
+        if (d === undefined) {
+          if (!rec) return send(res, 200, { id: a, versions: [], audit: true }), true
+          const all = timeline(hc, rec).map((v) => ({ ...commitItem(hc, v, rec.id), change: v.change, recordHash: v.recordHash, changes: v.changes, ...(v.unreadable ? { unreadable: true } : {}), ...(v.approximate ? { approximate: true } : {}) }))
+          const start = Number(url.searchParams.get('cursor') || 0)
+          const page = all.slice(start, start + 3)
+          return send(res, 200, { id: rec.id, versions: page, audit: true, ...(start + 3 < all.length ? { cursor: String(start + 3) } : {}) }), true
+        }
+        if (gone && d === gone.last) {
+          return send(res, 200, { id: gone.id, commit: commitItem(hc, { hash: gone.last, minsAgo: gone.minsAgo + 60, verified: true, who: user.name, subject: `ledger(${hc.name}): edit ${gone.id}` }, gone.id), recordHash: hashOf(gone.data), data: gone.data, hidden: 0, exists: false, current: false, changes: [] }), true
+        }
+        if (!rec) return send(res, 404, { error: 'not_found', message: 'no such version of this record' }), true
+        const v = timeline(hc, rec).find((x) => x.hash === d)
+        if (!v) return send(res, 404, { error: 'not_found', message: 'no such version of this record' }), true
+        const [k1] = textKeys(hc, rec.data)
+        const data = k1 ? { ...rec.data, [k1]: older(rec.data[k1]) } : { ...rec.data }
+        return send(res, 200, {
+          id: rec.id, commit: commitItem(hc, v, rec.id), recordHash: v.recordHash, data, hidden: 0, exists: true, current: v.recordHash === rec.hash,
+          changes: k1 ? [{ path: k1, op: 'changed', old: rec.data[k1], new: older(rec.data[k1]) }, { path: 'meta.owner', op: 'removed', old: 'ann', new: null }] : [],
+        }), true
+      }
+      if (hc && method === 'POST' && b === 'restore' && parts.length === 4) {
+        if (readOnly || !user.canEdit) return send(res, 403, { error: 'read_only', message: 'read-only' }), true
+        const body = await readBody(req)
+        const rec = records(hc).find((r) => r.id === a)
+        const key = `${hc.name}/${a}`
+        const commitHash = String(body.commit ?? '')
+        if (!rec) {
+          const gone = deletedOf(hc).find((x) => x.id === a && x.last === commitHash)
+          if (!gone) return send(res, 404, { error: 'not_found', message: 'the record did not exist in that commit' }), true
+          if (body.hash) return send(res, 409, { error: 'conflict', message: 'record no longer exists', current: null }), true
+          const errors = tryWrite(hc, (rows) => void rows.push(structuredClone(gone.data)))
+          if (errors.length) return send(res, 409, { error: 'restore_needs_edit', message: 'that version no longer fits', data: gone.data, hidden: 0, hiddenPaths: [], commit: commitHash, errors }), true
+          deleted.set(hc.name, deletedOf(hc).filter((x) => x !== gone))
+          return send(res, 201, { id: gone.id, hash: hashOf(gone.data), data: gone.data, commit: commit(hc, 'restore', gone.id), restoredFrom: commitHash }), true
+        }
+        if (rec.hash !== body.hash) return send(res, 409, { error: 'conflict', message: 'record changed', current: rec }), true
+        const [k1] = textKeys(hc, rec.data)
+        const data = k1 ? { ...rec.data, [k1]: older(rec.data[k1]) } : { ...rec.data }
+        if (commitHash.endsWith('ee'))
+          return send(res, 409, { error: 'restore_needs_edit', message: 'that version no longer fits', data, hidden: 1, hiddenPaths: ['/token'], commit: commitHash, errors: k1 ? [{ collection: hc.name, id: rec.id, path: '/' + k1, rule: 'schema', message: 'no longer valid', keyword: 'format', params: {} }] : [] }), true
+        if (commitHash.endsWith('ff') && !body.confirm_not_secret)
+          return send(res, 422, { error: 'secret_suspected', message: 'looks like a secret', findings: [{ collection: hc.name, id: rec.id, path: '/' + (k1 ?? 'notes'), rule: 'secret-assignment', excerpt: 'pass…', tier: 'confirm' }] }), true
+        const idx = hc.rows.indexOf(rec.data)
+        const errors = tryWrite(hc, (rows) => void (rows[idx] = data))
+        if (errors.length) return send(res, 422, { error: 'invalid', message: 'invalid record', errors }), true
+        const sha = commit(hc, 'restore', rec.id)
+        restored.set(key, [{ hash: fakeHash(key + sha), minsAgo: 0, verified: true, who: user.name, subject: `ledger(${hc.name}): restore ${rec.id}`, change: 'changed', restoredFrom: commitHash, recordHash: hashOf(data), changes: k1 ? [{ path: k1, op: 'changed', old: rec.data[k1], new: data[k1] }] : [] }, ...(restored.get(key) ?? [])])
+        firstHash.set(key, fakeHash(key + 'old').slice(0, 16))
+        return send(res, 200, { id: rec.id, hash: hashOf(data), data, commit: sha, restoredFrom: commitHash }), true
+      }
     }
     if (head !== 'c') return send(res, 404, { error: 'not_found', message: 'no such endpoint' }), true
     const c = colls.get(cname)

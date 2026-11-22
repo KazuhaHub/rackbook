@@ -167,7 +167,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		defer auditLog.Close()
 	}
 
-	store, err := gitstore.Open(ctx, gitstore.Options{GitHubApp: appSource, OnCommit: commitHook(auditLog, "ledger", filepath.Base(cfg.Dir)),
+	store, err := gitstore.Open(ctx, gitstore.Options{GitHubApp: appSource, OnCommit: commitHook(auditLog, "ledger", filepath.Base(cfg.Dir)), StateDir: stateDir,
 		ConfigPath: path, NoGit: noGit, Committer: committer, PullInterval: interval,
 		GitHubToken: os.Getenv("RACKBOOK_GITHUB_TOKEN"), GitHubRepo: ghRepo, GitHubAPI: ghAPI, Logger: logger,
 	})

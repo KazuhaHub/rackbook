@@ -138,6 +138,7 @@ func New(o Options) http.Handler {
 	mux.HandleFunc("POST /api/c/{collection}", s.add)
 	mux.HandleFunc("PUT /api/c/{collection}/{id}", s.put)
 	mux.HandleFunc("DELETE /api/c/{collection}/{id}", s.del)
+	s.historyRoutes(mux) // history.go: versions, restore, deleted records
 	mux.HandleFunc("POST /api/admin/accept-remote", s.acceptRemote)
 	s.accountRoutes(mux)  // account.go
 	s.tokenRoutes(mux)    // tokens.go
@@ -601,14 +602,20 @@ func (s *server) permits(w http.ResponseWriter, r *http.Request, action, collect
 }
 
 func (s *server) apply(w http.ResponseWriter, r *http.Request, op edit.Op) *gitstore.WriteResult {
-	// Tokens are contributor level: their writes open pull requests unless granted otherwise.
-	opts := gitstore.WriteOptionsFor(s.who(r), s.o.Store.Config(), op.Kind, op.Collection)
-	res, err := s.o.Store.WriteFunc(r.Context(), gitstore.ApplyOpAs(s.who(r), op), s.who(r), opts)
+	res, err := s.applyOp(r, op)
 	if err == nil {
 		return res
 	}
 	s.writeFailure(w, err)
 	return nil
+}
+
+// applyOp is apply that hands the error back, for a caller that answers some of
+// them itself (a restore).
+func (s *server) applyOp(r *http.Request, op edit.Op) (*gitstore.WriteResult, error) {
+	// Tokens are contributor level: their writes open pull requests unless granted otherwise.
+	opts := gitstore.WriteOptionsFor(s.who(r), s.o.Store.Config(), op.Kind, op.Collection)
+	return s.o.Store.WriteFunc(r.Context(), gitstore.ApplyOpAs(s.who(r), op), s.who(r), opts)
 }
 
 // writeFailure answers a failed write with the status and code of apierr, so

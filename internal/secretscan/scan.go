@@ -249,6 +249,30 @@ func (s *Scanner) get() *Scanner {
 	return s
 }
 
+// RulesVersion is bumped whenever the behaviour of a built-in rule changes in a way its
+// pattern does not show (a filter, a procedure, a placeholder list).
+const RulesVersion = 1
+
+// Fingerprint identifies what this scanner flags: the rules version, its active rules
+// with their patterns and tiers, the allow list and the length limit. Something made
+// with one scanner (a redacted id, a summary) is made again when it differs.
+func (s *Scanner) Fingerprint() string {
+	s = s.get()
+	h := sha256.New()
+	fmt.Fprintf(h, "v%d enabled=%v min=%d\n", RulesVersion, s.enabled, s.minLen)
+	for _, r := range s.rules {
+		pat := ""
+		if r.re != nil { // a rule made of a procedure has none: RulesVersion stands for it
+			pat = r.re.String()
+		}
+		fmt.Fprintf(h, "%s|%s|%s|%d|%v|%v\n", r.id, r.tier, pat, r.group, r.hints, r.ci)
+	}
+	for _, a := range s.allow {
+		fmt.Fprintf(h, "allow|%s|%s|%s|%s\n", a.rule, a.collection, a.field, a.sha)
+	}
+	return hex.EncodeToString(h.Sum(nil))[:24]
+}
+
 // Enabled reports whether the scan runs at all.
 func (s *Scanner) Enabled() bool { return s.get().enabled }
 

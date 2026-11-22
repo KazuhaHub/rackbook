@@ -10,7 +10,7 @@ import {
   type VisibilityState,
   type Row as TRow,
 } from '@tanstack/react-table'
-import { ArrowDown, ArrowUp, ChevronsUpDown, Columns3, Plus, Search, X } from 'lucide-react'
+import { ArchiveRestore, ArrowDown, ArrowUp, ChevronsUpDown, Columns3, Plus, Search, X } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
@@ -257,11 +257,16 @@ function CollectionTable({ col }: { col: Collection }) {
         title={collectionTitle(col)}
         description={collectionDescription(col)}
         actions={
-          editable && (
-            <Button render={<Link to={`/c/${encodeURIComponent(col.name)}/-/new`} />}>
-              <Plus /> {t.list.create}
+          <>
+            <Button variant="outline" render={<Link to={`/c/${encodeURIComponent(col.name)}/-/deleted`} />}>
+              <ArchiveRestore /> {t.history.deletedLink}
             </Button>
-          )
+            {editable && (
+              <Button render={<Link to={`/c/${encodeURIComponent(col.name)}/-/new`} />}>
+                <Plus /> {t.list.create}
+              </Button>
+            )}
+          </>
         }
       />
       <NotesPanel notes={col.notes ?? []} />

@@ -230,6 +230,14 @@ carrying the trailer `Record: <collection>/<id>`, falling back to the
 collection file's history when none does. Empty list when the data directory
 is not a Git checkout.
 
+### Record history, restore and deleted records
+
+Described in the README, section *Record history, restore and deleted records*:
+`GET /api/c/{collection}/{id}/history`, `GET /api/c/{collection}/{id}/history/{commit}`,
+`POST /api/c/{collection}/{id}/restore` (`{"commit", "hash", "confirm_not_secret"}`; `409 restore_needs_edit`
+carries the old content) and `GET /api/c/{collection}/deleted`. Reading is open to every role; restoring has the
+gates of `PUT`.
+
 ## Write
 
 All writes: `403 {"error":"read_only"}` in read-only mode and
