@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -55,9 +56,23 @@ type commitIndex struct {
 }
 
 type indexState struct {
-	mu  sync.Mutex
-	idx *commitIndex
+	mu       sync.Mutex
+	idx      *commitIndex
+	rebuilds int // full rebuilds from the files (the first build counts)
+	// unvouched remembers the entries whose line is intact but that nothing after
+	// it vouches for (a chain break follows): keyed by seq, the line's hash and
+	// the successor's state, so a change of either is looked at again.
+	unvouched map[string]bool
 }
+
+// confirmation is the verdict of confirmCommit.
+type confirmation int
+
+const (
+	confirmed    confirmation = iota
+	inconsistent              // the index does not match the log: rebuild it
+	unvouched                 // the line is what the index says, but its successor does not chain to it
+)
 
 func newCommitIndex() *commitIndex {
 	return &commitIndex{Version: indexVersion, Commits: map[string]CommitRef{}}
@@ -111,10 +126,21 @@ func (l *Log) LookupCommits(keys []CommitKey) map[CommitKey]CommitRef {
 	var bad []CommitKey
 	for _, k := range keys {
 		if r, h, ok := l.index.idx.find(k); ok {
-			if l.confirmCommit(k, r, h) {
+			switch res, memo := l.confirmCommit(k, r, h); res {
+			case confirmed:
 				out[k] = r
-			} else {
+			case inconsistent:
 				bad = append(bad, k)
+			case unvouched:
+				// a break in the chain right after the line: this commit is unverified,
+				// and the index is fine
+				if !l.index.unvouched[memo] {
+					if l.index.unvouched == nil {
+						l.index.unvouched = map[string]bool{}
+					}
+					l.index.unvouched[memo] = true
+					l.log.Warn("audit log: a commit line is not vouched for by the chain; its commit shows as unverified", "seq", r.Seq)
+				}
 			}
 		}
 	}
@@ -125,8 +151,10 @@ func (l *Log) LookupCommits(keys []CommitKey) map[CommitKey]CommitRef {
 			return out
 		}
 		for _, k := range bad {
-			if r, h, ok := l.index.idx.find(k); ok && l.confirmCommit(k, r, h) {
-				out[k] = r
+			if r, h, ok := l.index.idx.find(k); ok {
+				if res, _ := l.confirmCommit(k, r, h); res == confirmed {
+					out[k] = r
+				}
 			}
 		}
 	}
@@ -134,55 +162,73 @@ func (l *Log) LookupCommits(keys []CommitKey) map[CommitKey]CommitRef {
 }
 
 // confirmCommit reads the line the entry points to and checks that it is a
-// commit line with this area, hash and identity, and that it belongs to the
-// chain: the next line's prev is its hash, or head.json says it is the last.
-func (l *Log) confirmCommit(k CommitKey, r CommitRef, storedHash string) bool {
+// commit line with this area, hash and identity (else the index is
+// inconsistent), and that it belongs to the chain: the next line's prev is its
+// hash, or head.json says it is the last (else it is unvouched, and memo names
+// that state).
+func (l *Log) confirmCommit(k CommitKey, r CommitRef, storedHash string) (confirmation, string) {
 	if !fileRe.MatchString(r.File) || r.Off < 0 {
-		return false
+		return inconsistent, ""
 	}
 	f, err := os.Open(filepath.Join(l.dir, r.File))
 	if err != nil {
-		return false
+		return inconsistent, ""
 	}
 	defer f.Close()
 	st, err := f.Stat()
 	if err != nil || r.Off >= st.Size() {
-		return false
+		return inconsistent, ""
 	}
 	br := bufio.NewReader(io.NewSectionReader(f, r.Off, st.Size()-r.Off))
 	line, err := br.ReadBytes('\n')
 	if err != nil {
-		return false
+		return inconsistent, ""
 	}
 	raw := bytes.TrimSuffix(line, []byte("\n"))
 	var e Event
 	if json.Unmarshal(raw, &e) != nil || e.Seq != r.Seq || e.Event != "commit" || e.Area != k.Area || e.Hash != storedHash || withPos(refOf(e), r.File, r.Off) != r {
-		return false
+		return inconsistent, ""
 	}
 	h := hashOf(raw)
+	memo := func(succ string) string { return strconv.FormatInt(r.Seq, 10) + "|" + h + "|" + succ }
+	vouch := func(prev string) (confirmation, string) {
+		if prev == h {
+			return confirmed, ""
+		}
+		return unvouched, memo(prev)
+	}
 	next, err := br.ReadBytes('\n')
 	if err == nil {
 		var n Event
-		return json.Unmarshal(bytes.TrimSuffix(next, []byte("\n")), &n) == nil && n.Prev == h
+		if json.Unmarshal(bytes.TrimSuffix(next, []byte("\n")), &n) != nil {
+			return unvouched, memo("unreadable")
+		}
+		return vouch(n.Prev)
 	}
 	// the last line of its file: the first line of the next file, or head.json
 	files, err := listFiles(l.dir)
 	if err != nil {
-		return false
+		return unvouched, memo("unlisted")
 	}
 	if i := slices.Index(files, r.File); i >= 0 && i+1 < len(files) {
 		nf, err := os.Open(filepath.Join(l.dir, files[i+1]))
 		if err != nil {
-			return false
+			return unvouched, memo("nofile")
 		}
 		defer nf.Close()
 		nl, err := bufio.NewReader(nf).ReadBytes('\n')
 		var n Event
-		return err == nil && json.Unmarshal(bytes.TrimSuffix(nl, []byte("\n")), &n) == nil && n.Prev == h
+		if err != nil || json.Unmarshal(bytes.TrimSuffix(nl, []byte("\n")), &n) != nil {
+			return unvouched, memo("unreadable")
+		}
+		return vouch(n.Prev)
 	}
 	hb, err := os.ReadFile(filepath.Join(l.dir, headName))
 	var hd head
-	return err == nil && json.Unmarshal(hb, &hd) == nil && hd.Seq == r.Seq && hd.Hash == h
+	if err != nil || json.Unmarshal(hb, &hd) != nil || hd.Seq != r.Seq {
+		return unvouched, memo("head")
+	}
+	return vouch(hd.Hash)
 }
 
 // syncIndex loads index.json once, checks that it still describes this log and
@@ -235,7 +281,7 @@ func (l *Log) readSince(files []string, x *commitIndex) (added, ok bool, err err
 			return false, false, oerr
 		}
 		file := files[i]
-		err = eachLineBackward(f, func(raw []byte, off int64) error {
+		err = eachLineBackward(f, -1, func(raw []byte, off int64) error {
 			var e Event
 			if json.Unmarshal(raw, &e) != nil {
 				return nil
@@ -267,6 +313,7 @@ func (l *Log) readSince(files []string, x *commitIndex) (added, ok bool, err err
 	}
 	if x.LastSeq == 0 {
 		// Rebuild: every line, newest first.
+		l.index.rebuilds++
 		fresh, newestSeq, newestHash = nil, 0, ""
 		for i := len(files) - 1; i >= 0; i-- {
 			f, oerr := os.Open(filepath.Join(l.dir, files[i]))
@@ -277,7 +324,7 @@ func (l *Log) readSince(files []string, x *commitIndex) (added, ok bool, err err
 				return false, false, oerr
 			}
 			file := files[i]
-			err = eachLineBackward(f, func(raw []byte, off int64) error {
+			err = eachLineBackward(f, -1, func(raw []byte, off int64) error {
 				var e Event
 				if json.Unmarshal(raw, &e) != nil {
 					return nil

@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"sync/atomic"
 	"time"
 )
 
@@ -118,11 +119,16 @@ func (l *Log) Read(q Query) (Page, error) {
 				continue
 			}
 		}
-		err = eachLineBackward(f, func(raw []byte, _ int64) error {
+		end := int64(-1)
+		if q.Before > 0 {
+			end = l.offsets.seekEnd(files[i], f, q.Before)
+		}
+		err = eachLineBackward(f, end, func(raw []byte, _ int64) error {
 			var e Event
 			if json.Unmarshal(raw, &e) != nil {
 				return nil
 			}
+			linesParsed.Add(1)
 			if q.Before > 0 && e.Seq >= q.Before {
 				return nil // already seen by the page before: not part of this scan's budget
 			}
@@ -154,17 +160,24 @@ func (l *Log) Read(q Query) (Page, error) {
 	return page, nil
 }
 
+// linesParsed counts the lines Read parsed (the tests check that a deep read does not parse the whole file).
+var linesParsed atomic.Int64
+
 const backBlock = 64 << 10
 
-// eachLineBackward calls fn with every complete line of f, the last one first.
+// eachLineBackward calls fn with every complete line of f before offset end
+// (a line start, or -1 for the whole file), the last one first.
 // A last line without a newline is not complete and is skipped, as are empty
 // lines. fn returns an error to stop; Read returns it.
-func eachLineBackward(f *os.File, fn func(line []byte, off int64) error) error {
+func eachLineBackward(f *os.File, end int64, fn func(line []byte, off int64) error) error {
 	st, err := f.Stat()
 	if err != nil {
 		return err
 	}
 	pos := st.Size()
+	if end >= 0 && end < pos {
+		pos = end // a line start: everything after it is left unread
+	}
 	var carry []byte
 	skip := true // the first piece from the end is empty, or a line cut short
 	for pos > 0 {

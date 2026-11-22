@@ -58,7 +58,8 @@ type Log struct {
 
 	stat func(*os.File) (os.FileInfo, error) // test seam: f.Stat
 
-	index indexState // the commit index (index.go); its own lock, never held with mu
+	offsets offsetIndex // sparse seq -> offset marks per month file (offsets.go)
+	index   indexState  // the commit index (index.go); its own lock, never held with mu
 
 	stop chan struct{}
 	wg   sync.WaitGroup

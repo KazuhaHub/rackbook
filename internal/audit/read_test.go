@@ -517,3 +517,64 @@ func TestReadResumesAfterTheScanBudgetAndSkipsNewerMonths(t *testing.T) {
 		}
 	}
 }
+
+// A chain break right after a commit line makes that one commit unverified; it
+// does not make every lookup rebuild the index.
+func TestChainBreakAfterACommitLineDoesNotRebuildTheIndexEveryTime(t *testing.T) {
+	l, dir := newLog(t, Options{})
+	l.Record(ev("login"))
+	l.Record(commitEv("ledger", hashA, "a@example.com"))
+	l.Record(ev("login"))
+	l.Record(commitEv("ledger", hashB, "b@example.com"))
+	l.Record(ev("login"))
+	l.Close()
+	p := filepath.Join(dir, "audit-2026-11.jsonl")
+	ls := lines(t, p)
+	ls[1] = bytes.Replace(ls[1], []byte(`"name":"N a@example.com"`), []byte(`"name":"N mallory"`), 1) // line 2 edited: line 3 no longer chains to it
+	write(t, p, ls)
+	l2, err := Open(dir, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l2.Close()
+	keys := []CommitKey{{"ledger", hashA}, {"ledger", hashB}}
+	for i := 0; i < 6; i++ {
+		got := l2.LookupCommits(keys)
+		if _, ok := got[keys[0]]; ok {
+			t.Fatalf("a commit line that nothing vouches for is unverified: %+v", got)
+		}
+		if got[keys[1]].Identity != "b@example.com" {
+			t.Fatalf("the other commit stays verified: %+v", got)
+		}
+	}
+	if l2.index.rebuilds > 1 {
+		t.Fatalf("the index was rebuilt %d times", l2.index.rebuilds)
+	}
+}
+
+// Reading deep into a big month file seeks near the cursor instead of parsing
+// every newer line.
+func TestDeepReadDoesNotParseTheNewerLines(t *testing.T) {
+	l, _ := newLog(t, Options{})
+	for i := 0; i < 5000; i++ {
+		l.Record(ev("login"))
+	}
+	linesParsed.Store(0)
+	p, err := l.Read(Query{Before: 120, Limit: 5})
+	if err != nil || seqs(p.Events) != "119,118,117,116,115" {
+		t.Fatalf("%v %+v", err, seqs(p.Events))
+	}
+	if n := linesParsed.Load(); n > 1200 {
+		t.Fatalf("%d lines parsed for a read at seq 120 of 5000", n)
+	}
+	// the file grows: the offsets follow
+	for i := 0; i < 700; i++ {
+		l.Record(ev("login"))
+	}
+	if p, _ := l.Read(Query{Before: 5600, Limit: 3}); seqs(p.Events) != "5599,5598,5597" {
+		t.Fatalf("%s", seqs(p.Events))
+	}
+	if p, _ := l.Read(Query{Before: 5200, Limit: 2}); seqs(p.Events) != "5199,5198" {
+		t.Fatalf("%s", seqs(p.Events))
+	}
+}
