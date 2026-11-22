@@ -41,6 +41,14 @@ function CloseMobileOnNavigate() {
   return null
 }
 
+/** The header's sidebar button: on phones always (it opens the sheet); on desktop only while the sidebar is collapsed,
+ * since an open sidebar has its own button in its header. */
+function OpenSidebarButton() {
+  const { isMobile, state } = useSidebar()
+  if (!isMobile && state === 'expanded') return null
+  return <SidebarTrigger aria-label={t.nav.toggleSidebar} />
+}
+
 function AppSidebar() {
   const { meta } = useMeta()
   const { pathname } = useLocation()
@@ -67,15 +75,19 @@ function AppSidebar() {
   return (
     <Sidebar>
       <SidebarHeader className="gap-3 p-4 pb-2">
-        <NavLink to="/" className="flex items-center gap-2.5">
-          <BrandMark logo={meta.branding?.logo} name={productName} className="size-8 rounded-lg" />
-          <span className="min-w-0">
-            <span className="block truncate text-sm leading-tight font-semibold">
-              {ledgerTitle(meta) || t.ledgerFallbackTitle}
+        <div className="flex items-center gap-2">
+          <NavLink to="/" className="flex min-w-0 flex-1 items-center gap-2.5">
+            <BrandMark logo={meta.branding?.logo} name={productName} className="size-8 shrink-0 rounded-lg" />
+            <span className="min-w-0">
+              <span className="block truncate text-sm leading-tight font-semibold">
+                {ledgerTitle(meta) || t.ledgerFallbackTitle}
+              </span>
+              <span className="block truncate text-xs text-muted-foreground">{productName}</span>
             </span>
-            <span className="block text-xs text-muted-foreground">{productName}</span>
-          </span>
-        </NavLink>
+          </NavLink>
+          {/* desktop: the collapse button lives in the sidebar it collapses (on phones the sidebar is a sheet) */}
+          <SidebarTrigger aria-label={t.nav.toggleSidebar} className="hidden text-muted-foreground md:inline-flex" />
+        </div>
         <CheckBadge className="self-start" />
       </SidebarHeader>
       <SidebarContent>
@@ -203,7 +215,7 @@ export function AppShell() {
       <SidebarInset className="min-w-0">
         <HistoryAlert />
         <header className="sticky top-0 z-30 flex h-14 items-center gap-2 border-b bg-background/80 px-4 backdrop-blur">
-          <SidebarTrigger aria-label={t.nav.toggleSidebar} />
+          <OpenSidebarButton />
           <div className="flex min-w-0 flex-1 items-center">
             <GlobalSearch />
           </div>
