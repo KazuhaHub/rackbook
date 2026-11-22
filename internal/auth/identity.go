@@ -54,6 +54,11 @@ type Identity struct {
 	// decisions; use EffectiveRole, Can or the package-level Can.
 	Role roles.Role
 
+	// Auditor is the auditor capability (auth.auditors), evaluated for the same
+	// subject as Role. It is not a role. Do not use it for access decisions;
+	// use IsAuditor, which also honours scope narrowing.
+	Auditor bool
+
 	// Narrow lowers the role for this credential. It receives Role and
 	// returns the role the credential may use; a result higher than the
 	// input is ignored, so a scope can never widen a role.
@@ -102,6 +107,15 @@ func (i *Identity) EffectiveRole() roles.Role {
 // Can reports whether the identity may perform a. A nil identity may not.
 func (i *Identity) Can(a roles.Action) bool { return i.EffectiveRole().Allows(a) }
 
+// IsAuditor reports whether the credential carries the auditor capability: the
+// subject is on auth.auditors and the credential may read at all (a scope that
+// narrows the role to nothing takes the capability with it). An admin is an
+// auditor only when listed. The capability adds reading the audit areas; it
+// never allows a write.
+func (i *Identity) IsAuditor() bool {
+	return i != nil && i.Auditor && i.EffectiveRole() >= roles.Viewer
+}
+
 // IDOrEmpty is the identity's ID, or "" for a nil identity.
 func (i *Identity) IDOrEmpty() string {
 	if i == nil {
@@ -134,3 +148,6 @@ func FromContext(ctx context.Context) *Identity {
 // Can reports whether the identity in ctx may perform a. Without an identity
 // in the context nothing is allowed.
 func Can(ctx context.Context, a roles.Action) bool { return FromContext(ctx).Can(a) }
+
+// IsAuditor reports whether the identity in ctx carries the auditor capability.
+func IsAuditor(ctx context.Context) bool { return FromContext(ctx).IsAuditor() }

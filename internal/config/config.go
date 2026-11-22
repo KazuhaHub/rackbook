@@ -318,7 +318,10 @@ type Auth struct {
 	Login   `yaml:",inline"` // mode, oidc, passkeys, session (login.go)
 	Editors []string         `yaml:"editors"`
 	Roles   *roles.Spec      `yaml:"roles"`
-	MCP     AuthMCP          `yaml:"mcp"`
+	// Auditors is the auditor capability (docs/design-audit.md, 3.4): entries
+	// in the syntax of a role list. It is not a role and not an admin list.
+	Auditors []string `yaml:"auditors"`
+	MCP      AuthMCP  `yaml:"mcp"`
 }
 
 // AuthMCP is the auth.mcp block (MCP over MCPHub tokens).
@@ -835,7 +838,7 @@ func (c *Config) finish() error {
 	if err := c.I18n.check("i18n", "title", "description"); err != nil {
 		return err
 	}
-	if _, err := roles.Compile(c.Auth.Roles, roles.Options{MCPMatchEmail: c.Auth.MCP.MatchEmail}, c.Auth.Editors...); err != nil {
+	if _, err := roles.CompileAuditors(c.Auth.Roles, c.Auth.Auditors, roles.Options{MCPMatchEmail: c.Auth.MCP.MatchEmail}, c.Auth.Editors...); err != nil {
 		return err
 	}
 	if err := c.Auth.Login.check(); err != nil {

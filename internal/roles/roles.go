@@ -36,6 +36,11 @@
 // editor (v0.1 behaviour); the v0.1 auth.editors list then makes the listed
 // identities editors and everyone else a viewer. With a roles block, an
 // identity that matches nothing has RoleNone and is refused.
+//
+// The auth.auditors list uses the same entries but grants a capability, not a
+// role (Policy.IsAuditor). The role scale and the capability are independent:
+// the viewer floor that gives an auditor read access is applied by the auth
+// package, which evaluates both.
 package roles
 
 import (
@@ -204,12 +209,14 @@ func parseEntry(s string) (entry, error) {
 	return entry{kind: kExact, value: s}, nil
 }
 
-func parseList(name string, in []string) ([]entry, error) {
+// parseList parses one list of entries; where names the config key for errors
+// (auth.roles.admin, auth.auditors).
+func parseList(where string, in []string) ([]entry, error) {
 	out := make([]entry, 0, len(in))
 	for _, s := range in {
 		e, err := parseEntry(s)
 		if err != nil {
-			return nil, fmt.Errorf("auth.roles.%s: %w", name, err)
+			return nil, fmt.Errorf("%s: %w", where, err)
 		}
 		out = append(out, e)
 	}
@@ -277,22 +284,32 @@ type Policy struct {
 	opt                 Options
 	explicit            bool // a roles block exists
 	admin, editor, view []entry
-	editorsOnly         bool // no roles block, but an editors list: others are viewers
+	auditors            []entry // auth.auditors: a capability, not a role
+	editorsOnly         bool    // no roles block, but an editors list: others are viewers
 }
 
 // Compile validates spec (nil = no roles block) and adds legacy to the editor
 // entries (v0.1 auth.editors and --editors).
 func Compile(spec *Spec, opt Options, legacyEditors ...string) (*Policy, error) {
+	return CompileAuditors(spec, nil, opt, legacyEditors...)
+}
+
+// CompileAuditors is Compile with the auth.auditors list. The entries use the
+// syntax and the validation of a role list in auth.roles.
+func CompileAuditors(spec *Spec, auditors []string, opt Options, legacyEditors ...string) (*Policy, error) {
 	p := &Policy{explicit: spec != nil, opt: opt}
+	var err error
+	if p.auditors, err = parseList("auth.auditors", auditors); err != nil {
+		return nil, err
+	}
 	if spec != nil {
-		var err error
-		if p.admin, err = parseList("admin", spec.Admin); err != nil {
+		if p.admin, err = parseList("auth.roles.admin", spec.Admin); err != nil {
 			return nil, err
 		}
-		if p.editor, err = parseList("editor", spec.Editor); err != nil {
+		if p.editor, err = parseList("auth.roles.editor", spec.Editor); err != nil {
 			return nil, err
 		}
-		if p.view, err = parseList("viewer", spec.Viewer); err != nil {
+		if p.view, err = parseList("auth.roles.viewer", spec.Viewer); err != nil {
 			return nil, err
 		}
 	}
@@ -335,4 +352,18 @@ func (p *Policy) Evaluate(s Subject) Role {
 		return Viewer
 	}
 	return Editor
+}
+
+// IsAuditor reports whether s is on the auth.auditors list. The auditor
+// capability is separate from the role scale: it does not depend on, and does
+// not change, the role Evaluate returns. An admin is an auditor only when the
+// list names them. s.ID must already be lowercased.
+func (p *Policy) IsAuditor(s Subject) bool {
+	s.ID = FoldASCII(s.ID)
+	for _, e := range p.auditors {
+		if e.matches(s, p.opt) {
+			return true
+		}
+	}
+	return false
 }

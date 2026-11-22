@@ -307,3 +307,24 @@ func TestServeInfraFlagsAreChecked(t *testing.T) {
 		}
 	}
 }
+
+func TestCheckValidatesAuthAuditors(t *testing.T) {
+	dir := testutil.CopyExample(t)
+	cfg := filepath.Join(dir, "rackbook.yml")
+	b, _ := os.ReadFile(cfg)
+	write := func(extra string) {
+		t.Helper()
+		if err := os.WriteFile(cfg, append(append([]byte{}, b...), extra...), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("\nauth:\n  auditors: ['group:audit', '*@audit.example.com', 'aud@example.com']\n")
+	if out, err := run(t, "check", "--config", cfg); err != nil || !strings.HasPrefix(out, "ok:") {
+		t.Fatalf("%v %s", err, out)
+	}
+	write("\nauth:\n  auditors: ['a*b']\n")
+	out, err := run(t, "check", "--config", cfg)
+	if err == nil || !strings.Contains(out+err.Error(), "auth.auditors") {
+		t.Fatalf("a bad entry must fail and name the key: %v %s", err, out)
+	}
+}

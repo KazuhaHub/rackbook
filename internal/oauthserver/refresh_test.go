@@ -437,3 +437,28 @@ func TestStartupDropsGrantsThatWentIdle(t *testing.T) {
 		t.Fatalf("the file still holds the idle grant: %s", raw)
 	}
 }
+
+// An auditor with no role at all gets the viewer floor, so a grant they approve
+// works; removing them from auth.auditors ends it like removing a role.
+func TestGrantOfAnAuditorLastsWhileTheyAreOnTheList(t *testing.T) {
+	e := newEnv(t, opts{})
+	const aud = "aud@example.com"
+	e.setAuditors([]string{aud})
+	cid, tok := e.login(aud, "Audit Client")
+	if e.mcpStatus(tok.access).StatusCode != 200 {
+		t.Fatal("an auditor's grant is refused")
+	}
+	names := e.toolSet(e.session(tok.access))
+	for _, w := range []string{"records_create", "records_update", "records_delete", "create_record", "update_record", "delete_record"} {
+		if names[w] {
+			t.Errorf("an auditor without a role sees the write tool %s", w)
+		}
+	}
+	e.setAuditors(nil)
+	if r := e.mcpStatus(tok.access); r.StatusCode != 401 {
+		t.Fatalf("access token after removal from the list: %d", r.StatusCode)
+	}
+	if r := e.refresh(cid, tok.refresh); r.str("error") != "invalid_grant" {
+		t.Fatalf("refresh after removal: %s", r.body)
+	}
+}

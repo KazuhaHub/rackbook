@@ -125,6 +125,15 @@ func (e *env) setRoles(spec *roles.Spec) {
 	e.cfg = &c
 }
 
+// setAuditors replaces auth.auditors from now on (a config reload).
+func (e *env) setAuditors(list []string) {
+	e.cfgMu.Lock()
+	defer e.cfgMu.Unlock()
+	c := *e.cfg
+	c.Auth.Auditors = list
+	e.cfg = &c
+}
+
 // setAllowed replaces auth.mcp.builtin_issuer.allowed_clients from now on.
 func (e *env) setAllowed(list []string) {
 	e.cfgMu.Lock()

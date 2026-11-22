@@ -1,6 +1,9 @@
 package roles
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func eval(t *testing.T, spec *Spec, s Subject, legacy ...string) Role {
 	t.Helper()
@@ -252,5 +255,73 @@ func TestOIDCSubjectEntries(t *testing.T) {
 	}
 	if got := eval(t, &Spec{Admin: []string{"oidc:sub-1"}}, Subject{ID: "oidc:sub-1", Method: "mcphub"}); got != None {
 		t.Fatalf("%v", got)
+	}
+}
+
+func TestAuditorsUseTheEntrySyntaxOfARoleList(t *testing.T) {
+	p, err := CompileAuditors(nil, []string{"Aud@Example.com", "*@audit.example.com", "group:Audit-Team", "oauth:acme:aud", "mcphub:aud", "oidc:sub-9"}, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		name string
+		s    Subject
+		want bool
+	}{
+		{"exact, folded", Subject{ID: "AUD@example.com", Method: "oidc"}, true},
+		{"domain", Subject{ID: "x@audit.example.com", Method: "passkey"}, true},
+		{"group", Subject{ID: "x@y.z", Method: "oidc", Groups: []string{"audit-team"}}, true},
+		{"oauth", Subject{ID: "aud", Method: "oauth", Issuer: "acme"}, true},
+		{"mcphub", Subject{ID: "aud", Method: "mcphub"}, true},
+		{"subject identity", Subject{ID: "oidc:sub-9", Method: "oidc"}, true},
+		{"nobody else", Subject{ID: "boss@example.com", Method: "oidc"}, false},
+		{"another group", Subject{ID: "x@y.z", Method: "oidc", Groups: []string{"ops"}}, false},
+		{"a token matches nothing itself", Subject{ID: "aud@example.com", Method: "token"}, false},
+		{"mcphub never matches an e-mail entry without match_email", Subject{ID: "aud@example.com", Email: "aud@example.com", Method: "mcphub"}, false},
+	} {
+		if got := p.IsAuditor(c.s); got != c.want {
+			t.Errorf("%s: %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+func TestAuditorIsNotARole(t *testing.T) {
+	spec := &Spec{Admin: []string{"boss@example.com"}, Viewer: []string{"vic@example.com"}}
+	p, err := CompileAuditors(spec, []string{"boss@example.com", "aud@example.com"}, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	boss, aud := Subject{ID: "boss@example.com", Method: "oidc"}, Subject{ID: "aud@example.com", Method: "oidc"}
+	// the list does not change the role scale: Evaluate knows nothing of it
+	if got := p.Evaluate(boss); got != Admin {
+		t.Fatalf("boss: %v", got)
+	}
+	if got := p.Evaluate(aud); got != None {
+		t.Fatalf("an auditor with no role has no role here (the viewer floor is the auth package's): %v", got)
+	}
+	// an admin is an auditor only when listed
+	p2, err := CompileAuditors(spec, []string{"aud@example.com"}, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p2.IsAuditor(boss) || !p2.IsAuditor(aud) {
+		t.Fatal("an admin is not automatically an auditor")
+	}
+	// no list, no auditors
+	p3, _ := Compile(spec, Options{})
+	if p3.IsAuditor(aud) || p3.IsAuditor(boss) {
+		t.Fatal("no auditors list")
+	}
+}
+
+func TestInvalidAuditorEntriesNameTheKey(t *testing.T) {
+	for _, bad := range []string{"", "a*b", "*@", "group:", "oauth:x", "oidc:", "mcphub:"} {
+		if _, err := CompileAuditors(nil, []string{bad}, Options{}); err == nil || !strings.Contains(err.Error(), "auth.auditors") {
+			t.Errorf("%q: %v", bad, err)
+		}
+	}
+	// the role lists keep their own names
+	if _, err := Compile(&Spec{Admin: []string{"a*b"}}, Options{}); err == nil || !strings.Contains(err.Error(), "auth.roles.admin") {
+		t.Fatal(err)
 	}
 }
