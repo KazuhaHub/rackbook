@@ -143,9 +143,12 @@ old file stays where it is.
 **Retention and privacy.** `--audit-retention-months` (default: keep everything) deletes month files older than
 the given number of months. It does not depend on the anchor. `audit/head.json` also records the first
 kept file and the `prev` its first line points to, so `verify` starts the chain there instead of reporting
-the deleted months as missing. `--audit-addr full|truncate|none` (default
+the deleted months as missing. In local mode retention never deletes the month that holds the account
+store's last change, whatever the setting ([design-local-accounts.md](design-local-accounts.md), section 3).
+`--audit-addr full|truncate|none` (default
 `truncate`: the last octet of IPv4, the last 80 bits of IPv6) controls how much of the client address is
-kept. Names are kept as the provider sent them. Both are server flags, not `rackbook.yml` keys:
+kept. `full` still keeps an IPv6 client as its /64, because `clientip.Of`, which the rate limits share,
+buckets it that way. Names are kept as the provider sent them. Both are server flags, not `rackbook.yml` keys:
 `rackbook.yml` lives in the data repository, so an admin who can edit it could otherwise shorten the
 retention and delete the log. The deployment decides.
 
@@ -352,7 +355,7 @@ provider. Keycloak needs an extension.
 
 - `/scim/v2/Users` and `/scim/v2/Groups`, with a bearer token per provider.
 - A disabled or deleted user goes into `audit/disabled.json` (mode 0600). Every request checks it, so
-  their sessions stop at once although the cookie is stateless. Their passkeys and API tokens stop too.
+  their sessions stop at once although the cookie is stateless. Their API tokens stop too.
 - Group membership pushed by SCIM replaces the claims at sign-in for that provider, so a change takes
   effect within the provider's sync cycle (Entra: about 40 minutes) instead of at the next sign-in. The
   same applies to token creators.
@@ -385,16 +388,21 @@ The open questions of the first draft, as the owner decided them:
    (TOTP or a passkey). Passwords are stored as argon2id, in the state dir, encrypted, never in Git.
    Per-account and per-address limits, lockout with backoff. No e-mail: a forgotten password or a lost second
    factor is an admin-issued one-time reset link. Every sign-in, failure, lockout, reset and invite is in the
-   audit log. Design: [design-local-accounts.md](design-local-accounts.md).
+   audit log. Design: [design-local-accounts.md](design-local-accounts.md), revised after review: a reset
+   replaces only the factor it names, locks are per (account, address) with a slowdown per account that never
+   fully closes, account changes and local sign-ins fail closed when the audit log cannot be written
+   (`RecordSync`), and the account store pins its audit month against retention.
 3. **Passkeys under SSO:** passkey sign-in is disabled when SSO is configured, which makes
    `auth.passkeys_oidc_max_age` moot; it is dropped (section 4). Not a config switch; existing passkeys stop
-   working, and their file stays until an admin removes it (design-local-accounts.md, section 10).
+   working, and their file stays until an admin removes it; admins are reminded until then, because it holds
+   personal data and a downgrade would make it usable again (design-local-accounts.md, section 10).
 4. **Daily anchor** (3.1): stays off.
-5. **Defaults:** this deployment runs with `--audit-addr full`; the default of the flag stays `truncate`.
+5. **Defaults:** this deployment runs with `--audit-addr full` (an IPv6 client is still kept as its /64);
+   the default of the flag stays `truncate`.
    Audit retention is forever (`--audit-retention-months 0`, the default), and stays configurable through that
    flag. `claims_absolute: 24h` stays.
 
-Still open: the questions of [design-local-accounts.md](design-local-accounts.md), section 13.
+Still open: the owner's decisions listed in [design-local-accounts.md](design-local-accounts.md), section 13.
 
 ## 8. In plain words
 
@@ -414,4 +422,5 @@ Still open: the questions of [design-local-accounts.md](design-local-accounts.md
   With SCIM (later), Entra tells Rackbook directly, and a disabled account stops at once.
 - **Teams without SSO** get local accounts: an admin sends an invite link, the person picks a password and
   adds a passkey or an authenticator app. Passwords are never in Git; they sit encrypted on the server, and a
-  forgotten password is a new link from an admin.
+  forgotten password is a new link from an admin, which still asks for the person's passkey or
+  authenticator app.
