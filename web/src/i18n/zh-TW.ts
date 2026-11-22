@@ -533,6 +533,7 @@ const messages = {
       heading: '其他語言',
       hint: (lang: string) => `預設語言（${lang}）的文字寫在上面的欄位裡；其他語言填在這裡，留空則顯示預設語言的文字。`,
       inLanguage: (field: string, lang: string) => `${field}（${lang}）`,
+      inDefault: (field: string, lang: string) => `${field}（${lang}，預設語言）`,
     },
     fieldTypeAdvanced: '進階',
     fieldTypes: {
@@ -636,7 +637,7 @@ const messages = {
       enumAdd: '新增值',
       enumValue: '代碼',
       enumColor: '顏色',
-      enumLabelDefault: (lang: string) => `顯示名稱（${lang}）`,
+      enumLabel: '顯示名稱',
       enumIcon: '圖示',
       iconPlaceholder: '圖示名稱，如 circle-check',
       iconUnknown: '未知的圖示名稱',

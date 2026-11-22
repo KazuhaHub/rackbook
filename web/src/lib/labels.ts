@@ -183,6 +183,15 @@ export const collectionTitleOf = (c: Titled | undefined, name: string, loc: stri
 export const collectionDescription = (c: Titled, loc: string = locale) => metaText(c.i18n, loc, 'description') ?? nonEmpty(c.description)
 export const collectionGroup = (c: Titled, loc: string = locale) => metaText(c.i18n, loc, 'group') ?? nonEmpty(c.group)
 
+// ---- type editor drafts (FieldDef / EnumItem / RefSpec of lib/typedef) ----------------------
+
+/** A field definition's title in `loc`: its translation, else the default-language title. */
+export const fieldDefTitle = (f: { title?: string; i18n?: MetaI18n }, loc: string = locale) => metaText(f.i18n, loc, 'title') ?? nonEmpty(f.title)
+/** An enum item's label in `loc`: its translation, else the default-language label. */
+export const enumItemLabel = (e: { label?: string; labels?: Record<string, string> }, loc: string = locale) => nonEmpty(e.labels?.[loc]) ?? nonEmpty(e.label)
+/** The backref section title of a ref rule in `loc`: its translation, else the default-language title. */
+export const refBackrefTitle = (r: { backrefTitle?: string; i18n?: MetaI18n }, loc: string = locale) => metaText(r.i18n, loc, 'backref_title') ?? nonEmpty(r.backrefTitle)
+
 export const ledgerTitle = (m: { title?: string; i18n?: MetaI18n }, loc: string = locale) => metaText(m.i18n, loc, 'title') ?? nonEmpty(m.title) ?? ''
 export const ledgerDescription = (m: { description?: string; i18n?: MetaI18n }, loc: string = locale) =>
   metaText(m.i18n, loc, 'description') ?? nonEmpty(m.description)

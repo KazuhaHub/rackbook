@@ -3,7 +3,8 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { NativeSelect } from '@/components/ui/native-select'
 import { Textarea } from '@/components/ui/textarea'
-import { t } from '@/i18n'
+import { LOCALE_NAMES, t } from '@/i18n'
+import { useDefaultLocale } from '@/lib/defaultLocale'
 import { iconChoices } from '@/lib/icons'
 import type { TypeDef } from '@/lib/typedef'
 import { cn } from 'cn'
@@ -32,6 +33,8 @@ export function BasicTab({
   dataDir: string
   schemaDir: string
 }) {
+  const def = useDefaultLocale()
+  const inDefault = (label: string) => t.types.i18n.inDefault(label, LOCALE_NAMES[def])
   const set = (patch: Partial<TypeDef>) => update((d) => ({ ...d, ...patch }))
   const names = draft.fields.map((f) => f.name).filter(Boolean)
   const defaultFile = `${dataDir}/${draft.name || t.types.basic.namePlaceholder}.yml`
@@ -48,14 +51,14 @@ export function BasicTab({
           onChange={(e) => set({ name: e.target.value.trim() })}
         />
       </Field>
-      <Field label={t.types.basic.title}>
-        <Input value={draft.title} onChange={(e) => set({ title: e.target.value })} />
+      <Field label={inDefault(t.types.basic.title)}>
+        <Input lang={def} value={draft.title} onChange={(e) => set({ title: e.target.value })} />
       </Field>
-      <Field label={t.types.basic.description} className="sm:col-span-2">
-        <Textarea rows={2} value={draft.description ?? ''} onChange={(e) => set({ description: e.target.value })} />
+      <Field label={inDefault(t.types.basic.description)} className="sm:col-span-2">
+        <Textarea lang={def} rows={2} value={draft.description ?? ''} onChange={(e) => set({ description: e.target.value })} />
       </Field>
-      <Field label={t.types.basic.group} hint={t.types.basic.groupHint}>
-        <Input value={draft.group ?? ''} onChange={(e) => set({ group: e.target.value })} />
+      <Field label={inDefault(t.types.basic.group)} hint={t.types.basic.groupHint}>
+        <Input lang={def} value={draft.group ?? ''} onChange={(e) => set({ group: e.target.value })} />
       </Field>
       <div className="sm:col-span-2">
         <OtherLanguages

@@ -533,6 +533,7 @@ const messages = {
       heading: '其他语言',
       hint: (lang: string) => `默认语言（${lang}）的文本写在上面的字段里；其他语言填在这里，留空则显示默认语言的文本。`,
       inLanguage: (field: string, lang: string) => `${field}（${lang}）`,
+      inDefault: (field: string, lang: string) => `${field}（${lang}，默认语言）`,
     },
     fieldTypeAdvanced: '高级',
     fieldTypes: {
@@ -636,7 +637,7 @@ const messages = {
       enumAdd: '添加值',
       enumValue: '代码',
       enumColor: '颜色',
-      enumLabelDefault: (lang: string) => `显示名称（${lang}）`,
+      enumLabel: '显示名称',
       enumIcon: '图标',
       iconPlaceholder: '图标名，如 circle-check',
       iconUnknown: '未知的图标名',
