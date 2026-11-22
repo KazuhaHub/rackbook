@@ -277,6 +277,9 @@ func (r *Repo) attempt(ctx context.Context, who *auth.Identity, scope, action st
 	}
 	r.head, r.syncedAt = hash, r.o.Now()
 	res.Commit = hash
+	if r.o.OnCommit != nil {
+		r.o.OnCommit(hash, who, scope)
+	}
 	return res, false, nil
 }
 

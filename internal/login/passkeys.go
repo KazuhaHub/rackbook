@@ -16,6 +16,7 @@ import (
 	"github.com/go-webauthn/webauthn/protocol"
 	"github.com/go-webauthn/webauthn/webauthn"
 
+	"github.com/kazuhahub/rackbook/internal/audit"
 	"github.com/kazuhahub/rackbook/internal/auth"
 	"github.com/kazuhahub/rackbook/internal/clientip"
 	"github.com/kazuhahub/rackbook/internal/gitstore"
@@ -291,9 +292,17 @@ func (p *passkeys) loginFinish(w http.ResponseWriter, r *http.Request) {
 		p.s.log.Warn("passkey login refused", append([]any{"reason", code, "remote", r.RemoteAddr}, args...)...)
 		writeErr(w, status, code, msg)
 	}
+	refused := func(reason string, id *auth.Identity) {
+		e := audit.Event{Event: "login_refused", Reason: reason, Method: auth.MethodPasskey}
+		if id != nil {
+			e.Identity, e.Name = id.ID, id.Name
+		}
+		p.s.record(r, e)
+	}
 	res, err := p.svc.FinishDiscoverableLogin(r.Context(), r.URL.Query().Get("ceremony"), r)
 	if err != nil {
 		fail(http.StatusUnauthorized, "passkey_failed", "passkey login failed", "err", sanitizeLog(err.Error()))
+		refused("passkey_failed", nil)
 		return
 	}
 	file, err := p.store.load()
@@ -305,18 +314,22 @@ func (p *passkeys) loginFinish(w http.ResponseWriter, r *http.Request) {
 	u := file.userByHandle(base64.RawURLEncoding.EncodeToString(res.UserHandle))
 	if u == nil {
 		fail(http.StatusUnauthorized, "passkey_failed", "passkey login failed", "err", "no user for handle")
+		refused("passkey_failed", nil)
 		return
 	}
 	id := &auth.Identity{ID: u.Identity, Name: u.Name, Method: auth.MethodPasskey}
 	if strings.Contains(u.Identity, "@") {
 		id.Email = u.Identity
 	}
-	if p.s.roleOf(id) == roles.None {
+	role := p.s.roleOf(id)
+	if role == roles.None {
 		fail(http.StatusForbidden, "no_role", "you are not allowed to use this ledger", "identity", id.ID)
+		refused("no_role", id)
 		return
 	}
 	p.s.issue(w, id, auth.MethodPasskey, base64.RawURLEncoding.EncodeToString(res.Credential.ID))
 	p.s.log.Info("login", "identity", id.ID, "method", auth.MethodPasskey, "remote", r.RemoteAddr)
+	p.s.record(r, audit.Event{Event: "login", Identity: id.ID, Name: id.Name, Method: auth.MethodPasskey, Role: role.String()})
 	writeJSON(w, http.StatusOK, map[string]string{"return": SafeReturn(r.URL.Query().Get("return"))})
 }
 

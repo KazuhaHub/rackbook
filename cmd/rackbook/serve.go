@@ -21,11 +21,11 @@ import (
 
 	"github.com/kazuhahub/rackbook/internal/ansiblerepo"
 	"github.com/kazuhahub/rackbook/internal/api"
+	"github.com/kazuhahub/rackbook/internal/audit"
 	"github.com/kazuhahub/rackbook/internal/auth"
 	"github.com/kazuhahub/rackbook/internal/auth/oauth"
 	"github.com/kazuhahub/rackbook/internal/clientip"
 	"github.com/kazuhahub/rackbook/internal/config"
-	"github.com/kazuhahub/rackbook/internal/fsutil"
 	"github.com/kazuhahub/rackbook/internal/githubapp"
 	"github.com/kazuhahub/rackbook/internal/gitstore"
 	"github.com/kazuhahub/rackbook/internal/login"
@@ -74,6 +74,8 @@ RACKBOOK_GITHUB_TOKEN.`,
 	f.Bool("read-only", false, "refuse all writes")
 	f.Bool("no-git", false, "edit files in place without Git, even inside a repository")
 	f.String("state-dir", "", "directory for runtime state kept across restarts (token last use, module runs, OAuth grants and signing key); outside the data repository; one server holds a lock on it; empty = memory only")
+	f.String("audit-addr", "truncate", "how much of the client address the audit log keeps: full, truncate (IPv4 without the last octet, IPv6 first 48 bits) or none; needs --state-dir")
+	f.Int("audit-retention-months", 0, "delete audit log months older than this many whole months before the current one (0 = keep everything); needs --state-dir")
 	f.Duration("pull-interval", time.Minute, "how often to fetch and fast-forward from origin (0 disables)")
 	f.String("committer", gitstore.DefaultCommitter.String(), `committer identity of server commits ("Name <email>")`)
 	f.String("base-url", "", "public URL of the console, used in /llms.txt (default: derived from the request)")
@@ -138,7 +140,34 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		appSource = app
 		logger.Info("GitHub App credentials on", "api", app.API())
 	}
-	store, err := gitstore.Open(ctx, gitstore.Options{GitHubApp: appSource,
+	// The state directory is prepared first: the audit log lives in it, and the
+	// store and the login record into the log from their first request on.
+	stateDir, _ := f.GetString("state-dir")
+	baseURL, _ := f.GetString("base-url")
+	if cfg.Auth.MCP.BuiltinIssuer.Enabled && (stateDir == "" || baseURL == "") {
+		return errors.New("auth.mcp.builtin_issuer needs --state-dir (it keeps the grants and the signing key there) and --base-url (the public URL, which is the issuer of its tokens)")
+	}
+	addrMode, retention, err := auditFlags(f)
+	if err != nil {
+		return err
+	}
+	var auditLog *audit.Log
+	if stateDir == "" {
+		warnAuditWithoutState(logger, addrMode, retention)
+	}
+	if stateDir != "" {
+		unlock, err := prepareStateDir(cfg, stateDir, cfg.Auth.MCP.BuiltinIssuer.Enabled, logger)
+		if err != nil {
+			return err
+		}
+		defer unlock()
+		if auditLog, err = audit.Open(filepath.Join(stateDir, "audit"), audit.Options{Addr: addrMode, RetentionMonths: retention, Logger: logger, InfraPath: filepath.Join(stateDir, "infra-audit.jsonl")}); err != nil {
+			return err
+		}
+		defer auditLog.Close()
+	}
+
+	store, err := gitstore.Open(ctx, gitstore.Options{GitHubApp: appSource, OnCommit: commitHook(auditLog, "ledger", filepath.Base(cfg.Dir)),
 		ConfigPath: path, NoGit: noGit, Committer: committer, PullInterval: interval,
 		GitHubToken: os.Getenv("RACKBOOK_GITHUB_TOKEN"), GitHubRepo: ghRepo, GitHubAPI: ghAPI, Logger: logger,
 	})
@@ -163,7 +192,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	if mode == "" {
 		mode = auth.ModeNone
 	}
-	infra, err := newInfra(ctx, f, cfg, mode, interval, appSource, committer, readOnlyFlag(f), logger)
+	infra, err := newInfra(ctx, f, cfg, mode, interval, appSource, committer, readOnlyFlag(f), auditLog, logger)
 	if err != nil {
 		return err
 	}
@@ -171,7 +200,6 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	aud, _ := f.GetString("cf-aud")
 	editor, _ := f.GetString("editor")
 	editors, _ := f.GetStringSlice("editors")
-	baseURL, _ := f.GetString("base-url")
 	readOnly, _ := f.GetBool("read-only")
 	var loginSvc *login.Service
 	// Per-person preferences; the file is set below once --state-dir is known
@@ -180,7 +208,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	acfg := auth.Config{Mode: mode, Team: team, Audience: aud, Editor: editor, Editors: editors, Config: store.Config, Degraded: func() bool { return store.ConfigProblem() != "" }}
 	if mode == auth.ModeOIDC {
 		caFile, _ := f.GetString("oidc-ca-file")
-		if loginSvc, err = newLogin(cfg, store, prefStore, baseURL, caFile, f, readOnly, logger); err != nil {
+		if loginSvc, err = newLogin(cfg, store, prefStore, baseURL, caFile, f, readOnly, auditLog, logger); err != nil {
 			return err
 		}
 		acfg.Sessions = loginSvc
@@ -215,41 +243,13 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	}
 	registry := &tokens.Registry{Store: store}
 	modState := &modules.State{}
-	stateDir, _ := f.GetString("state-dir")
 	builtin := cfg.Auth.MCP.BuiltinIssuer.Enabled
-	if builtin && (stateDir == "" || baseURL == "") {
-		return errors.New("auth.mcp.builtin_issuer needs --state-dir (it keeps the grants and the signing key there) and --base-url (the public URL, which is the issuer of its tokens)")
-	}
 	if dir := stateDir; dir != "" {
-		// a file inside the clone would make it dirty and stop every write
-		abs, _ := filepath.Abs(dir)
-		if rel, err := filepath.Rel(cfg.Dir, abs); err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-			return fmt.Errorf("--state-dir %s is inside the data repository; put it beside the clone", dir)
-		}
-		if err := os.MkdirAll(dir, 0o700); err != nil {
-			return fmt.Errorf("--state-dir: %w", err)
-		}
-		if err := secureStateDir(dir, builtin, logger); err != nil {
-			return err
-		}
-		// One server at a time owns the state directory: the grant file and the
-		// others are read once and rewritten whole.
-		unlock, err := fsutil.Lock(filepath.Join(dir, "rackbook.lock"))
-		if err != nil {
-			if errors.Is(err, fsutil.ErrLocked) {
-				return fmt.Errorf("another rackbook serve is already using --state-dir %s (%w)", dir, err)
-			}
-			return fmt.Errorf("--state-dir: %w", err)
-		}
-		defer unlock()
 		registry.UsePath = filepath.Join(dir, "token-use.json")
 		modState.Path = filepath.Join(dir, "modules.json")
 		prefStore.Path = filepath.Join(dir, "preferences.json")
 	}
 	if infra != nil && stateDir != "" {
-		if al, ok := infra.Audit.(*ansiblerepo.AuditLog); ok {
-			al.Path = filepath.Join(stateDir, "infra-audit.jsonl")
-		}
 		infra.RevealStatePath = filepath.Join(stateDir, "infra-reveals.json")
 	}
 	resource := &mcpauth.Resource{Config: store.Config, Auth: authn, Verifier: &oauth.Verifier{}, Tokens: registry, Limiter: &tokens.Limiter{}, TrustedProxies: proxies, Log: logger}
@@ -364,7 +364,7 @@ func consoleBuilt(dist fs.FS) bool {
 // newLogin builds the built-in login for --auth oidc: the OIDC client secret
 // comes only from RACKBOOK_OIDC_CLIENT_SECRET, the session key from
 // RACKBOOK_SESSION_KEY or --session-key-file.
-func newLogin(cfg *config.Config, store *gitstore.Store, prefStore *prefs.Store, baseURL, caFile string, f *pflag.FlagSet, readOnly bool, logger *slog.Logger) (*login.Service, error) {
+func newLogin(cfg *config.Config, store *gitstore.Store, prefStore *prefs.Store, baseURL, caFile string, f *pflag.FlagSet, readOnly bool, auditLog *audit.Log, logger *slog.Logger) (*login.Service, error) {
 	keyFile, _ := f.GetString("session-key-file")
 	key, err := login.LoadSessionKey(os.Getenv("RACKBOOK_SESSION_KEY"), keyFile)
 	if err != nil {
@@ -383,7 +383,7 @@ func newLogin(cfg *config.Config, store *gitstore.Store, prefStore *prefs.Store,
 	}
 	o := login.Options{
 		TrustedProxies: proxies, Login: cfg.Auth.Login, Config: store.Config, BaseURL: baseURL, Key: key, ClientSecret: secret, CAFile: caFile,
-		ReadOnly: readOnly, Logger: logger, Prefs: prefStore,
+		ReadOnly: readOnly, Logger: logger, Prefs: prefStore, Audit: auditLog,
 	}
 	if cfg.Auth.Passkeys.Enabled {
 		o.Files = store
@@ -393,7 +393,7 @@ func newLogin(cfg *config.Config, store *gitstore.Store, prefStore *prefs.Store,
 
 // newInfra sets up the read-only /infra pages from the --infra-* flags: nil
 // when --infra-repo is not given (and then none of the others may be).
-func newInfra(ctx context.Context, f *pflag.FlagSet, cfg *config.Config, mode string, interval time.Duration, app gitstore.TokenSource, committer gitstore.Identity, readOnly bool, logger *slog.Logger) (*api.InfraOptions, error) {
+func newInfra(ctx context.Context, f *pflag.FlagSet, cfg *config.Config, mode string, interval time.Duration, app gitstore.TokenSource, committer gitstore.Identity, readOnly bool, auditLog *audit.Log, logger *slog.Logger) (*api.InfraOptions, error) {
 	ledgerDir := cfg.Dir
 	dir, _ := f.GetString("infra-repo")
 	admins, _ := f.GetStringSlice("infra-admins")
@@ -444,8 +444,15 @@ func newInfra(ctx context.Context, f *pflag.FlagSet, cfg *config.Config, mode st
 	agentGroup, _ := f.GetString("infra-agent-group")
 	rules := ansiblerepo.DefaultRules()
 	rules.ManagedGroup, rules.AgentGroup = managed, agentGroup
-	audit := &ansiblerepo.AuditLog{Log: logger}
-	opts := ansiblerepo.Options{Dir: absDir, Branch: branch, Interval: interval, Logger: logger, Committer: committer, Rules: rules, Audit: audit}
+	// The entries stay in the server log (AuditLog); with --state-dir they also go to the audit log.
+	var infraAudit ansiblerepo.Auditor = &ansiblerepo.AuditLog{Log: logger}
+	if auditLog != nil {
+		infraAudit = &audit.InfraAuditor{Log: auditLog, Next: infraAudit}
+	}
+	opts := ansiblerepo.Options{Dir: absDir, Branch: branch, Interval: interval, Logger: logger, Committer: committer, Rules: rules, Audit: infraAudit,
+		OnCommit: func(hash string, who *auth.Identity, scope string) {
+			infraCommitHook(auditLog, filepath.Base(absDir), hash, who, scope)
+		}}
 	if write && app == nil {
 		return nil, errors.New("--infra-write needs --github-app-id: the editors push with an installation token that has Contents: write")
 	}
@@ -493,7 +500,7 @@ func newInfra(ctx context.Context, f *pflag.FlagSet, cfg *config.Config, mode st
 		repo.Run(ctx)
 	}()
 	logger.Info("infra pages on", "repo", absDir, "branch", branch, "admins", len(admins), "hubStatus", status != "", "editors", write && !readOnly, "issuer", issuer, "writeMaxAge", ia.WriteAge().String())
-	return &api.InfraOptions{Repo: repo, Admins: ia, StatusFile: status, Write: write, Audit: audit}, nil
+	return &api.InfraOptions{Repo: repo, Admins: ia, StatusFile: status, Write: write, Audit: infraAudit}, nil
 }
 
 // inside reports whether path is dir or below it.

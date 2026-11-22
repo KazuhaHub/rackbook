@@ -762,3 +762,27 @@ func TestRevertSubjectIsTruncatedByRunesNotBytes(t *testing.T) {
 		t.Fatalf("%q", got)
 	}
 }
+
+func TestOnCommitReportsPushedCommitsOnly(t *testing.T) {
+	w := newWFix(t, true)
+	type call struct{ hash, who, scope string }
+	var calls []call
+	w.repo.o.OnCommit = func(hash string, who *auth.Identity, scope string) { calls = append(calls, call{hash, who.ID, scope}) }
+	// refused by the checks: nothing is pushed
+	if _, err := w.repo.Apply(context.Background(), w.rawEdit(aPath, "ip: [\n"), false); err == nil {
+		t.Fatal("expected the edit to be refused")
+	}
+	if len(calls) != 0 {
+		t.Fatalf("%+v", calls)
+	}
+	if _, err := w.repo.Apply(context.Background(), w.rawEdit(aPath, wVarsA+"extra: 1\n"), false); err != nil {
+		t.Fatal(err)
+	}
+	if len(calls) != 1 || calls[0].hash != w.log(t, "%H") || calls[0].who != "me@kazuha.org" || calls[0].scope != "host_vars/a" {
+		t.Fatalf("want the full hash %s: %+v", w.log(t, "%H"), calls)
+	}
+	// a preview pushes nothing
+	if _, err := w.repo.Apply(context.Background(), w.rawEdit(aPath, wVarsA+"extra: 2\n"), true); err != nil || len(calls) != 1 {
+		t.Fatalf("%v %+v", err, calls)
+	}
+}

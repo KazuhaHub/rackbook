@@ -2,11 +2,8 @@ package ansiblerepo
 
 import (
 	"context"
-	"encoding/json"
 	"log/slog"
-	"os"
 	"sort"
-	"sync"
 	"time"
 )
 
@@ -25,47 +22,25 @@ type AuditEntry struct {
 // Auditor records an AuditEntry.
 type Auditor interface{ Record(AuditEntry) }
 
-// AuditLog appends entries to a JSON Lines file (Path may be empty: only the
-// log line is written) and logs each one.
+// AuditLog logs each entry. The audit file is kept by internal/audit, which wraps
+// this Auditor; this one only writes the server log lines.
 type AuditLog struct {
-	Path string
-	Log  *slog.Logger
-	mu   sync.Mutex
+	Log *slog.Logger
 }
 
-// Record implements Auditor. A failure to write the file is logged, never returned: the audit must not turn a refusal into an error.
+// Record implements Auditor.
 func (a *AuditLog) Record(e AuditEntry) {
-	if a == nil {
+	if a == nil || a.Log == nil {
 		return
 	}
 	if e.Time.IsZero() {
 		e.Time = time.Now().UTC()
 	}
-	if a.Log != nil {
-		level, msg := slog.LevelWarn, "infra edit not committed"
-		if e.Outcome == "revealed" {
-			level, msg = slog.LevelInfo, "infra secret revealed"
-		}
-		a.Log.Log(context.Background(), level, msg, "who", e.Who, "action", e.Action, "outcome", e.Outcome, "files", e.Files, "detail", e.Detail)
+	level, msg := slog.LevelWarn, "infra edit not committed"
+	if e.Outcome == "revealed" {
+		level, msg = slog.LevelInfo, "infra secret revealed"
 	}
-	if a.Path == "" {
-		return
-	}
-	b, err := json.Marshal(e)
-	if err != nil {
-		return
-	}
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	f, err := os.OpenFile(a.Path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
-	if err != nil {
-		if a.Log != nil {
-			a.Log.Error("could not write the infra audit file", "path", a.Path, "err", err)
-		}
-		return
-	}
-	defer f.Close()
-	_, _ = f.Write(append(b, '\n'))
+	a.Log.Log(context.Background(), level, msg, "who", e.Who, "action", e.Action, "outcome", e.Outcome, "files", e.Files, "detail", e.Detail)
 }
 
 func sortStrings(s []string) { sort.Strings(s) }

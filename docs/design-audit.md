@@ -95,8 +95,8 @@ Events (each with `time`, `identity`, `method` and `addr` where known):
 
 | Event | Extra fields |
 |---|---|
-| `login`, `logout` | `role` (the effective role at sign-in); `groups: overage` when the token's groups were cut off (3.1 below and 4) |
-| `login_refused` | `reason`: `no_role`, `tenant`, `claims`, `passkey_failed`, `passkey_needs_oidc` |
+| `login`, `logout` | `role` (the effective role at sign-in or sign-out); `groups: overage` when the token's groups were cut off (3.1 below and 4; phase 2a) |
+| `login_refused` | `reason`: `no_role`, `tenant`, `claims`, `passkey_failed`; `passkey_needs_oidc` (phase 2a) |
 | `role_changed` | `from`, `to`, `because`: `config` (a `rackbook.yml` commit) or `claims` (different groups or app roles) |
 | `write_refused` | `area` (ledger / infra), `code` (`conflict`, `stale_login`, `forbidden`, `checks_failed`, …) |
 | `secret_revealed`, `secret_reveal_refused`, `reencrypted` | `host`, `key` (never the value) |
@@ -137,12 +137,14 @@ day, so it is refused there.
 `files` and `detail` kept as fields of their own. `audit/migrated` is written so the copy happens once. The
 old file stays where it is.
 
-**Retention and privacy.** `audit.retention` (default: keep everything) deletes month files older than
+**Retention and privacy.** `--audit-retention-months` (default: keep everything) deletes month files older than
 the given number of months. It does not depend on the anchor. `audit/head.json` also records the first
 kept file and the `prev` its first line points to, so `verify` starts the chain there instead of reporting
-the deleted months as missing. `audit.addr: full | truncate | none` (default
+the deleted months as missing. `--audit-addr full|truncate|none` (default
 `truncate`: the last octet of IPv4, the last 80 bits of IPv6) controls how much of the client address is
-kept. Names are kept as the provider sent them.
+kept. Names are kept as the provider sent them. Both are server flags, not `rackbook.yml` keys:
+`rackbook.yml` lives in the data repository, so an admin who can edit it could otherwise shorten the
+retention and delete the log. The deployment decides.
 
 **Export.** `GET /api/activity?format=jsonl` (admin, auditor) streams the same items as the activity view,
 so the log can be fed to a SIEM or archived elsewhere.
@@ -322,7 +324,7 @@ the infra repository can do that.
    passkey. For teams with no SSO, one option is an admin-issued, single-use invite link that lets a person
    enrol a passkey directly. This needs its own design, and it interacts with `auth.passkeys_oidc_max_age`.
 3. **Daily anchor** (3.1): offered as off by default. Turn it on for this deployment?
-4. **Defaults**: `audit.addr: truncate`, `claims_absolute: 24h`, `passkeys_oidc_max_age: 7d`. Are these
+4. **Defaults**: `--audit-addr truncate` and `--audit-retention-months 0` (keep everything), `claims_absolute: 24h`, `passkeys_oidc_max_age: 7d`. Are these
    right for the team?
 
 ## 8. In plain words

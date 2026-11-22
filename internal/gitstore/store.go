@@ -47,6 +47,12 @@ type Options struct {
 	GitHubAPI   string       // REST base URL; default derived from the origin host
 	HTTPClient  *http.Client // default http.DefaultClient with a timeout
 	Logger      *slog.Logger
+
+	// OnCommit, when set, is called after this server's own commit reached the
+	// tracked branch (a pushed commit; not a pull request branch). hash is the
+	// full commit hash, who the caller (nil = anonymous) and record the Record
+	// trailer value ("" for none). It runs under the write lock: keep it short.
+	OnCommit func(hash string, who *auth.Identity, record string)
 }
 
 // Commit is one history entry.
@@ -494,6 +500,7 @@ func (s *Store) commitLoop(ctx context.Context, who *auth.Identity, opts WriteOp
 			s.discard(ctx, parent, ch.Files)
 			return "", false, err
 		}
+		full, _ := s.repo.Head(ctx)
 		if !s.HasRemote() {
 			if err := s.reload(); err != nil {
 				return "", false, err
@@ -523,6 +530,7 @@ func (s *Store) commitLoop(ctx context.Context, who *auth.Identity, opts WriteOp
 			if ferr == nil {
 				if _, aerr := s.repo.git(ctx, "merge-base", "--is-ancestor", "HEAD", "origin/"+s.branch); aerr == nil {
 					s.advanceToHead(ctx)
+					s.committed(full, who, ch.Record)
 					if err := s.reload(); err != nil {
 						return "", false, err
 					}
@@ -539,12 +547,20 @@ func (s *Store) commitLoop(ctx context.Context, who *auth.Identity, opts WriteOp
 			continue
 		}
 		s.advanceToHead(ctx)
+		s.committed(full, who, ch.Record)
 		if err := s.reload(); err != nil {
 			return "", false, err
 		}
 		return short, false, nil
 	}
 	return "", false, fmt.Errorf("giving up after %d attempts, the remote keeps changing: %w", MaxAttempts, lastErr)
+}
+
+// committed tells Options.OnCommit about a commit that reached the branch.
+func (s *Store) committed(hash string, who *auth.Identity, record string) {
+	if s.opts.OnCommit != nil && hash != "" {
+		s.opts.OnCommit(hash, who, record)
+	}
 }
 
 // discard drops our unpushed commit and restores only the files the edit

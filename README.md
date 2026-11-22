@@ -759,9 +759,9 @@ three times) if the files it touches did not change, never by rewriting history:
 plain fast-forward push of the ledger's guarded Git runner (see *Rackbook never force-pushes*).
 
 **Audit.** Actions that did not end in a commit (checks failed, conflicts, a push that failed, a refused
-revert, a write refused for a stale sign-in or for the wrong person) are appended to
-`infra-audit.jsonl` in `--state-dir` (one JSON object per line; issue codes, never values) and logged.
-Commits are their own record in Git.
+revert, a write refused for a stale sign-in or for the wrong person, a secret revealed) are logged and, with
+`--state-dir`, written to the [audit log](#audit-log) (issue codes, never values). Commits are their own
+record in Git; the audit log also holds one `commit` line for each commit Rackbook pushed.
 
 ## Built-in login (OIDC, passkeys)
 
@@ -865,9 +865,78 @@ delete passkeys. `.rackbook/` is not a collection: it is hidden from the console
 exports and MCP, and cannot be configured as a data file. If nobody can log in,
 edit `rackbook.yml` or `.rackbook/passkeys.yml` in Git.
 
-Logins, refusals and logouts go to the server log (stdout). Starting a login or a
+Logins, refusals and logouts go to the server log (stdout) and, with `--state-dir`, to the
+[audit log](#audit-log). Starting a login or a
 passkey ceremony is rate limited per client (the first `CF-Connecting-IP` /
 `X-Forwarded-For` address when the request comes from a loopback or private proxy).
+
+## Audit log
+
+With `--state-dir`, Rackbook keeps an append-only audit log in `<state-dir>/audit/`: one file per month
+(`audit-2026-11.jsonl`, UTC), one JSON object per line, mode 0600, and `head.json` beside them. Without
+`--state-dir` there is no audit file: the same events only go to the server log, as before.
+
+**What is recorded.**
+
+- Sign-ins: `login` and `logout` (identity, name, method, the effective role at sign-in, client address), and
+  `login_refused` with a `reason`: `no_role`, `tenant`, `claims` or `passkey_failed`.
+- Writes that did not end in a commit on `/infra`: `write_refused` (with the `area` and a `code` such as
+  `conflict`, `forbidden`, `validation_failed`).
+- Secrets: `secret_revealed`, `secret_reveal_refused` and `reencrypted`: who, which host and file, never a value.
+- `commit`: written after Rackbook's own push to the data repository (`area: ledger`) or the infra repository
+  (`area: infra`) succeeded. It holds the full commit hash, the repository name, the record and who made the
+  change (for an API token, the token's name is in `detail`). A write that opens a pull request, or fails, is not
+  a commit line.
+
+A successful write is not copied into the log: the commit is the record, and the `commit` line only says who
+made it. The client address comes from the same rules as the rate limits (`--trusted-proxy`), not from the
+proxy's address.
+
+| Flag | Meaning |
+|---|---|
+| `--audit-addr` | How much of the client address is kept: `truncate` (default: IPv4 without the last octet, IPv6 only the first 48 bits), `full` or `none`. `full` still keeps an IPv6 client as its /64, because the same function that rate-limits clients groups it that way. |
+| `--audit-retention-months` | Delete month files older than this many whole months before the current one. `0` (default) keeps everything. The current month is never deleted. |
+
+Both are server flags, not `rackbook.yml` keys: the data repository can be edited by people who must not be
+able to shorten the retention or widen the addresses, so the deployment decides.
+
+**The chain.** Every line carries `seq` (1, 2, 3, ...) and `prev`, the SHA-256 of the line before it, and
+`head.json` holds the `seq` and hash of the last line. Take out, change or reorder a line and the next one no
+longer fits; cut lines from the end and `head.json` no longer matches; a new month starts from the last line of
+the month before. Anyone who edits a line without rebuilding everything after it, and `head.json`, is caught.
+This does not protect against someone with root on the host: they can rewrite all the files and `head.json`
+together. It makes quiet edits visible; it does not make them impossible.
+
+**Crashes.** Each line is written with one `write` and then `fsync`. A crash can leave a last line without its
+newline (the server moves it to `audit/torn-<seq>.jsonl` and continues from the last complete line) or
+`head.json` one line behind (the server brings it up to date). Both are repaired at start and are not
+tampering. Any other mismatch is logged as an error; the server still starts and keeps appending, and
+repairs nothing. The first thing it appends is a `chain_problem` event for each problem (the kind in `code`, the
+broken `seq` and what `head.json` said before, in `detail`), so the evidence is inside the chain before
+`head.json` moves on. The problem stays listed, and the server reports the log as not OK, until recorded
+problems can be acknowledged; that comes with the Activity page (a later piece).
+A last line cut short while `head.json` does not show a crash is set aside in `torn-<seq>.jsonl` too, and recorded
+as a `chain_problem` event (code `edited`, with the file name); auditing continues. Only if the partial line cannot
+be set aside, or a failed write cannot be undone, does the server write nothing more: it logs an error and reports
+the log as failed, because appending would glue a line onto a partial one.
+
+**Checking.** `rackbook audit verify --state-dir <dir>` reads the log and prints what it found: the number of
+lines and files, and each problem (`edited`, `missing`, `reordered`, `cut_from_end`, `head_mismatch`) with the
+`seq` it starts at. A problem the server already wrote down is listed as `recorded at seq N` and still counts. It never changes a file. It exits 1 on any problem, and 0 when the chain is intact; a torn
+last line or a `head.json` one line behind alone are warnings and exit 0. `--json` prints the report as JSON.
+
+**Retention.** With `--audit-retention-months`, old month files are deleted at start and once a day. Before a
+file goes, `head.json` records the first file kept and the `prev` of its first line, so `verify` starts there and
+does not report the deleted months as missing. Nothing is deleted while the chain has a problem that is not yet recorded in it. After a recorded chain
+problem, retention keeps the month that holds the `chain_problem` event and every later month, until recorded problems
+can be acknowledged (that comes with the Activity page, a later piece); older months are still deleted. Each skipped
+run logs a warning with the reason. If a start or crash left months behind that `head.json` already says are gone,
+they are not a problem, and the next retention run deletes them.
+
+**Migration.** Earlier versions wrote the `/infra` audit to `infra-audit.jsonl` in `--state-dir`. At the first
+start with the audit log, its entries are copied into the log with their original times (`audit/migrated` marks it
+done). If a start is cut short in the middle, the next start finishes the copy without repeating lines. The old
+file stays where it is and is no longer written to.
 
 ## Expiry tracking and modules
 
