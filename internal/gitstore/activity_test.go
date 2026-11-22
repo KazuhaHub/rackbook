@@ -33,6 +33,15 @@ func commitAt(t *testing.T, e env, when, msg string, files map[string]string) {
 	sh(t, e.laptop, "push", "--quiet", "origin", "main")
 }
 
+func act(t *testing.T, s *Store, q ActivityQuery) []ActivityCommit {
+	t.Helper()
+	pg, err := s.Activity(context.Background(), q)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pg.Commits
+}
+
 func subjects(cs []ActivityCommit) string {
 	var s []string
 	for _, c := range cs {
@@ -49,9 +58,9 @@ func TestActivityListsCommitsWithTheirTrailers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cs, err := s.Activity(ctx, ActivityQuery{})
-	if err != nil || len(cs) != 2 {
-		t.Fatalf("%v %+v", err, cs)
+	cs := act(t, s, ActivityQuery{})
+	if len(cs) != 2 {
+		t.Fatalf("%+v", cs)
 	}
 	c := cs[0]
 	if len(c.Hash) != 40 || !strings.HasPrefix(c.Hash, res.Commit) || c.Short != res.Commit || c.Author != "Ann Editor" || c.Email != "ann@example.com" ||
@@ -62,7 +71,7 @@ func TestActivityListsCommitsWithTheirTrailers(t *testing.T) {
 	if cs[1].Subject != "seed" || cs[1].EditedBy != "" || len(cs[1].Records) != 0 {
 		t.Fatalf("%+v", cs[1])
 	}
-	if cs, _ := s.Activity(ctx, ActivityQuery{Limit: 1}); len(cs) != 1 {
+	if cs := act(t, s, ActivityQuery{Limit: 1}); len(cs) != 1 {
 		t.Fatal(len(cs))
 	}
 }
@@ -74,45 +83,74 @@ func TestActivityFilters(t *testing.T) {
 	commitAt(t, e, "2026-03-05T10:00:00Z", "state only", map[string]string{".rackbook/x.yml": "a: 1\n"})
 	commitAt(t, e, "2026-03-09T10:00:00Z", "both", map[string]string{".rackbook/x.yml": "a: 2\n", "notes.txt": "b\n"})
 	s := open(t, e.server, nil)
-	ctx := context.Background()
 
-	cs, _ := s.Activity(ctx, ActivityQuery{})
+	cs := act(t, s, ActivityQuery{})
 	if subjects(cs) != "both|same second|edit todo|seed" {
 		t.Fatalf("a commit that touches only .rackbook/ is not listed without includeState: %s", subjects(cs))
 	}
-	cs, _ = s.Activity(ctx, ActivityQuery{IncludeState: true})
+	if cs[0].State != StateNone {
+		t.Fatalf("an ordinary caller is not told which commits touch state files: %+v", cs[0])
+	}
+	cs = act(t, s, ActivityQuery{IncludeState: true})
 	if len(cs) != 5 || cs[0].Subject != "both" || cs[0].State != StateSome || cs[1].Subject != "state only" || cs[1].State != StateOnly || cs[4].State != StateNone {
 		t.Fatalf("%+v", cs)
 	}
-	for _, c := range cs {
-		if c.Subject == "edit todo" && c.State != StateNone {
-			t.Fatalf("%+v", c)
+	// a collection: the commits that touched its file
+	cs = act(t, s, ActivityQuery{Collection: "todo"})
+	if subjects(cs) != "edit todo|seed" { // the seed added the file
+		t.Fatalf("%s", subjects(cs))
+	}
+	for _, q := range []ActivityQuery{{Collection: "nope"}, {ID: "x"}, {Tip: "nothex"}, {Tip: strings.Repeat("0", 40)}} {
+		if _, err := s.Activity(context.Background(), q); err == nil {
+			t.Fatalf("%+v accepted", q)
 		}
 	}
-	d := func(s string) time.Time { x, _ := time.Parse(time.RFC3339, s); return x }
-	// both ends are inclusive to the second
-	cs, _ = s.Activity(ctx, ActivityQuery{IncludeState: true, Since: d("2026-03-01T10:00:00Z"), Until: d("2026-03-05T10:00:00Z")})
-	if len(cs) != 3 || cs[0].Subject != "state only" {
-		t.Fatalf("%s", subjects(cs))
+}
+
+// Paging is by position in git's walk from a pinned tip, so a history whose
+// committer dates are out of order loses nothing, and commits that land between
+// two pages change nothing.
+func TestActivityPagesByWalkPositionUnderClockSkew(t *testing.T) {
+	e := newEnv(t)
+	for i, d := range []string{"09:00", "12:00", "10:00", "10:30"} {
+		commitAt(t, e, "2026-03-01T"+d+":00Z", "at "+d, map[string]string{"f" + string(rune('a'+i)) + ".txt": d + "\n"})
 	}
-	cs, _ = s.Activity(ctx, ActivityQuery{Until: d("2026-03-01T09:59:59Z")})
-	if len(cs) != 0 { // the seed commit is dated today
-		t.Fatalf("%s", subjects(cs))
+	s := open(t, e.server, nil)
+	ctx := context.Background()
+	if all := subjects(act(t, s, ActivityQuery{Limit: 50})); all != "at 10:30|at 10:00|at 12:00|at 09:00|seed" {
+		t.Fatalf("the walk is children first: %s", all)
 	}
-	cs, _ = s.Activity(ctx, ActivityQuery{Until: d("2026-03-01T10:00:00Z")})
-	if subjects(cs) != "same second|edit todo" {
-		t.Fatalf("%s", subjects(cs))
-	}
-	// a collection: the commits that touched its file
-	cs, err := s.Activity(ctx, ActivityQuery{Collection: "todo"})
-	if err != nil || subjects(cs) != "edit todo|seed" { // the seed added the file
-		t.Fatalf("%v %s", err, subjects(cs))
-	}
-	if _, err := s.Activity(ctx, ActivityQuery{Collection: "nope"}); err == nil {
-		t.Fatal("unknown collection")
-	}
-	if _, err := s.Activity(ctx, ActivityQuery{ID: "x"}); err == nil {
-		t.Fatal("id needs a collection")
+	for _, n := range []int{1, 2, 3} {
+		all := subjects(act(t, s, ActivityQuery{Limit: 50})) // what the first page sees now
+		var got []string
+		q := ActivityQuery{Limit: n}
+		for i := 0; ; i++ {
+			if i > 10 {
+				t.Fatal("does not end")
+			}
+			pg, err := s.Activity(ctx, q)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(pg.Commits) == 0 {
+				break
+			}
+			got = append(got, subjects(pg.Commits))
+			if i == 0 {
+				// a commit lands after the first page: the pinned walk does not see it
+				commitAt(t, e, "2026-03-02T10:00:00Z", "landed "+string(rune('0'+n)), map[string]string{"late" + string(rune('0'+n)) + ".txt": "x\n"})
+				if err := s.Pull(ctx); err != nil {
+					t.Fatal(err)
+				}
+				if first := act(t, s, ActivityQuery{Limit: 1}); !strings.HasPrefix(first[0].Subject, "landed") {
+					t.Fatalf("a first page starts at the current tip: %+v", first)
+				}
+			}
+			q = ActivityQuery{Limit: n, Tip: pg.Tip, Skip: q.Skip + len(pg.Commits)}
+		}
+		if strings.Join(got, "|") != all {
+			t.Fatalf("n=%d: %v, want %s", n, got, all)
+		}
 	}
 }
 
@@ -123,18 +161,22 @@ func TestActivityByRecordIsAnExactTrailerMatchWithoutFallback(t *testing.T) {
 	if _, err := s.Write(ctx, sshEdit(t, s, "TCP 22"), editor); err != nil {
 		t.Fatal(err)
 	}
-	cs, err := s.Activity(ctx, ActivityQuery{Collection: "services", ID: "web-hostco-ashburn-va-us-dc/SSH"})
-	if err != nil || len(cs) != 1 || cs[0].EditedBy != "ann@example.com" {
-		t.Fatalf("%v %+v", err, cs)
+	cs := act(t, s, ActivityQuery{Collection: "services", ID: "web-hostco-ashburn-va-us-dc/SSH"})
+	if len(cs) != 1 || cs[0].EditedBy != "ann@example.com" {
+		t.Fatalf("%+v", cs)
 	}
 	// the prefix of an id is another record; the file history is not used instead
-	cs, err = s.Activity(ctx, ActivityQuery{Collection: "services", ID: "web-hostco-ashburn-va-us-dc/SS"})
-	if err != nil || len(cs) != 0 {
-		t.Fatalf("%v %+v", err, cs)
+	// the prefix of an id is another record: git's text search finds the commit, the exact check excludes it
+	cs = act(t, s, ActivityQuery{Collection: "services", ID: "web-hostco-ashburn-va-us-dc/SS"})
+	for _, c := range cs {
+		if !c.Excluded {
+			t.Fatalf("%+v", c)
+		}
 	}
-	cs, _ = s.Activity(ctx, ActivityQuery{Collection: "todo", ID: "whatever"})
-	if len(cs) != 0 {
-		t.Fatalf("%+v", cs)
+	for _, c := range act(t, s, ActivityQuery{Collection: "todo", ID: "whatever"}) {
+		if !c.Excluded {
+			t.Fatalf("%+v", c)
+		}
 	}
 }
 
@@ -145,9 +187,10 @@ func TestMirrorActivity(t *testing.T) {
 	if _, err := m.Sync(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	cs, err := m.Activity(context.Background(), ActivityQuery{IncludeState: false})
-	if err != nil || subjects(cs) != "infra a|seed" || cs[0].State != StateNone {
-		t.Fatalf("the mirror has no state directory: %v %+v", err, cs)
+	pg, err := m.Activity(context.Background(), ActivityQuery{IncludeState: false})
+	cs := pg.Commits
+	if err != nil || subjects(cs) != "infra a|seed" || len(pg.Tip) != 40 {
+		t.Fatalf("%v %+v", err, pg)
 	}
 }
 
@@ -160,7 +203,7 @@ func TestCommitDiff(t *testing.T) {
 	s := open(t, e.server, nil)
 	ctx := context.Background()
 	hashOf := func(subject string) string {
-		cs, _ := s.Activity(ctx, ActivityQuery{IncludeState: true, Limit: 20})
+		cs := act(t, s, ActivityQuery{IncludeState: true, Limit: 20})
 		for _, c := range cs {
 			if c.Subject == subject {
 				return c.Hash
@@ -246,5 +289,86 @@ func TestMirrorCommitDiffAppliesTheOptions(t *testing.T) {
 	}
 	if f := d.Files[1]; f.Path != "secrets/a.sops.yaml" || f.Patch != "" || !f.Hidden || f.Status != "A" {
 		t.Fatalf("%+v", f)
+	}
+}
+
+// git appends the nearest top-level line above a hunk to its header; for a
+// YAML file that can be a secret.
+func TestCommitDiffDropsTheFunctionContextOfHunkHeaders(t *testing.T) {
+	e := newEnv(t)
+	var body strings.Builder
+	body.WriteString("ansible_become_password: hunter2hunter2\n")
+	for i := 1; i <= 12; i++ {
+		body.WriteString("  filler" + string(rune('a'+i)) + ": 1\n")
+	}
+	commitAt(t, e, "2026-03-01T10:00:00Z", "add", map[string]string{"conf.yml": body.String()})
+	commitAt(t, e, "2026-03-02T10:00:00Z", "edit", map[string]string{"conf.yml": strings.Replace(body.String(), "fillerj: 1", "fillerj: 2", 1)})
+	s := open(t, e.server, nil)
+	ctx := context.Background()
+	cs := act(t, s, ActivityQuery{})
+	d, err := s.CommitDiff(ctx, cs[0].Hash, false)
+	if err != nil || len(d.Files) != 1 {
+		t.Fatalf("%v %+v", err, d)
+	}
+	p := d.Files[0].Patch
+	if strings.Contains(p, "hunter2") {
+		t.Fatalf("the hunk header leaks the line above it:\n%s", p)
+	}
+	if !strings.Contains(p, "+  fillerj: 2") || !strings.Contains(p, "@@ -") {
+		t.Fatalf("%s", p)
+	}
+	for _, l := range strings.Split(p, "\n") {
+		if strings.HasPrefix(l, "@@") && !strings.HasSuffix(l, " @@") {
+			t.Fatalf("hunk header with context: %q", l)
+		}
+	}
+}
+
+// recordRunner counts the git commands a store runs.
+type recordRunner struct {
+	next Runner
+	cmds [][]string
+	max  []int
+}
+
+func (r *recordRunner) Run(ctx context.Context, c Cmd) (string, string, error) {
+	r.cmds = append(r.cmds, c.Args)
+	r.max = append(r.max, c.MaxStdout)
+	return r.next.Run(ctx, c)
+}
+
+// One process reads the patches, through a limit, however many files changed.
+func TestCommitDiffRunsOneLimitedGitProcess(t *testing.T) {
+	e := newEnv(t)
+	files := map[string]string{}
+	for _, n := range []string{"a", "b", "c", "d", "e"} {
+		files[n+".txt"] = n + "\n"
+	}
+	commitAt(t, e, "2026-03-01T10:00:00Z", "many", files)
+	rr := &recordRunner{next: RealRunner()}
+	s := open(t, e.server, func(o *Options) { o.Runner = rr })
+	ctx := context.Background()
+	cs := act(t, s, ActivityQuery{})
+	rr.cmds, rr.max = nil, nil
+	d, err := s.CommitDiff(ctx, cs[0].Hash, false)
+	if err != nil || len(d.Files) != 5 {
+		t.Fatalf("%v %+v", err, d)
+	}
+	patches := 0
+	for i, c := range rr.cmds {
+		if strings.Contains(strings.Join(c, " "), "--patch") {
+			patches++
+			if rr.max[i] != MaxDiffBytes {
+				t.Errorf("the patch process has no output limit: %d", rr.max[i])
+			}
+		}
+	}
+	if patches != 1 {
+		t.Fatalf("%d patch processes", patches)
+	}
+	for _, f := range d.Files {
+		if !strings.Contains(f.Patch, "+"+strings.TrimSuffix(f.Path, ".txt")) {
+			t.Fatalf("%+v", f)
+		}
 	}
 }

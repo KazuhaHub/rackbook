@@ -41,3 +41,11 @@ func TestRedactPatchHidesSecretLookingValuesAndKeepsTheHeaders(t *testing.T) {
 		t.Fatalf("%s", got)
 	}
 }
+
+func TestRedactPatchDropsTheFunctionContextOfHunkHeaders(t *testing.T) {
+	patch := "diff --git a/x.yml b/x.yml\n--- a/x.yml\n+++ b/x.yml\n@@ -7,5 +7,5 @@ ansible_become_password: hunter2hunter2\n a: 1\n-b: 2\n+b: 3\n"
+	got := redactPatch(patch)
+	if strings.Contains(got, "hunter2") || !strings.Contains(got, "@@ -7,5 +7,5 @@\n") {
+		t.Fatalf("%s", got)
+	}
+}

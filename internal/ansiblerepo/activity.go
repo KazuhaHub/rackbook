@@ -9,7 +9,7 @@ import (
 )
 
 // Activity lists the newest commits of the branch for the activity view.
-func (r *Repo) Activity(ctx context.Context, q gitstore.ActivityQuery) ([]gitstore.ActivityCommit, error) {
+func (r *Repo) Activity(ctx context.Context, q gitstore.ActivityQuery) (gitstore.ActivityPage, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return r.mirror.Activity(ctx, q)
@@ -49,6 +49,7 @@ func IsSecretFile(p string) bool {
 // redactPatch hides what looks like a secret in the changed and context lines
 // of a unified diff; the file headers and hunk headers stay.
 func redactPatch(patch string) string {
+	patch = gitstore.StripHunkContext(patch)
 	lines := strings.Split(patch, "\n")
 	var at []int
 	var body []string

@@ -79,7 +79,7 @@ var allowedOptions = map[string][]string{
 	"diff-tree":  {"--no-commit-id", "--name-status", "-r", "-z", "--root", "--no-renames", "--patch", "--no-ext-diff", "--no-color"},
 	"commit":     {"--quiet", "--no-verify", "-F", "-", "--only", "--"},
 	"fetch":      {"--quiet"},
-	"log":        {"-n", "--format=*", "--fixed-strings", "--grep=*", "--since=*", "--until=*", "--date-order", "--"},
+	"log":        {"-n", "--format=*", "--fixed-strings", "--grep=*", "--skip=*", "--name-only", "--date-order", "--"},
 	"merge":      {"--quiet", "--ff-only"},
 	"merge-base": {"--is-ancestor"},
 	"push":       {},

@@ -103,6 +103,9 @@ type Cmd struct {
 	Stdin string
 	// IgnoreUserConfig sets GIT_CONFIG_GLOBAL to the null device.
 	IgnoreUserConfig bool
+	// MaxStdout, when positive, limits the output read: past it the process is
+	// killed and Run returns what was read with ErrOutputLimit.
+	MaxStdout int
 }
 
 // Runner runs git. It is the only place in rackbook that starts a git
@@ -137,6 +140,8 @@ func (execRunner) Run(ctx context.Context, c Cmd) (string, string, error) {
 	if c.IgnoreUserConfig {
 		full = append(full, "-c", "safe.directory=*")
 	}
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	cmd := exec.CommandContext(ctx, "git", append(full, c.Args...)...)
 	cmd.Env = append(inheritedEnv(os.Environ()), "GIT_TERMINAL_PROMPT=0", "LC_ALL=C")
 	if c.IgnoreUserConfig {
@@ -147,9 +152,60 @@ func (execRunner) Run(ctx context.Context, c Cmd) (string, string, error) {
 		cmd.Stdin = strings.NewReader(c.Stdin)
 	}
 	var out, errb bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &out, &errb
+	cmd.Stderr = &errb
+	if c.MaxStdout > 0 {
+		lw := &limitWriter{max: c.MaxStdout, stop: cancel}
+		cmd.Stdout = lw
+		err := cmd.Run()
+		if lw.hit {
+			// the process was killed once the limit was passed: that is no failure
+			return lw.buf.String(), errb.String(), ErrOutputLimit
+		}
+		return lw.buf.String(), errb.String(), err
+	}
+	cmd.Stdout = &out
 	err := cmd.Run()
 	return out.String(), errb.String(), err
+}
+
+// ErrOutputLimit is returned by a Runner with Cmd.MaxStdout set when the
+// command wrote more than that: it was stopped, and the output returned is the
+// first MaxStdout bytes of it.
+var ErrOutputLimit = errors.New("git output limit reached")
+
+// limitWriter keeps the first max bytes written to it and, on the first byte
+// past them, calls stop (which kills the process).
+type limitWriter struct {
+	buf  bytes.Buffer
+	max  int
+	hit  bool
+	stop func()
+}
+
+func (w *limitWriter) Write(p []byte) (int, error) {
+	if room := w.max - w.buf.Len(); len(p) > room {
+		w.buf.Write(p[:room])
+		w.hit = true
+		w.stop()
+		return 0, ErrOutputLimit
+	}
+	return w.buf.Write(p)
+}
+
+// runLimited is runRaw with the output cut at max bytes; truncated says it was.
+func (r *Repo) runLimited(ctx context.Context, max int, args ...string) (out string, truncated bool, err error) {
+	rn := r.Runner
+	if rn == nil {
+		rn = defaultRunner
+	}
+	out, errOut, err := rn.Run(ctx, Cmd{Dir: r.Dir, Args: args, IgnoreUserConfig: r.IgnoreUserConfig, MaxStdout: max})
+	if errors.Is(err, ErrOutputLimit) {
+		return out, true, nil
+	}
+	if err != nil {
+		return "", false, &GitError{Args: args, Stderr: errOut, Err: err}
+	}
+	return out, false, nil
 }
 
 // run executes git with the given extra environment and stdin.
