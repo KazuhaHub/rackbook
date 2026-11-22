@@ -453,3 +453,64 @@ func toJSON(v any) string {
 	b, _ := json.Marshal(v)
 	return string(b)
 }
+
+// The validation issues of a restore name where and which rule, never a value quoted from the old content.
+func TestRestoreNeedsEditNeverQuotesTheOldContent(t *testing.T) {
+	e := newActEnv(t, actOpts{})
+	e.addTodo(t, editorU, todo("Q1", "clean", "待办"))
+	hand := e.laptopEdit(t, "2026-03-01T10:00:00Z", "hand edit", "docs/ledger/todo.yml", func(s string) string {
+		return strings.Replace(s, "{item: Q1, scope: clean, status: 待办}", `{item: Q1, scope: "password: hunter2hunter2", status: 待办}`, 1)
+	})
+	e.putTodo(t, editorU, "Q1", todo("Q1", "fine", "待办"))
+	// the type now wants lower-case words only, so the old scope fails the pattern: the validator's message quotes it
+	e.laptopEdit(t, "2026-03-02T10:00:00Z", "pattern", "schemas/todo.json", func(s string) string {
+		return strings.Replace(s, `"scope": {"type": "string", "title": "涉及"}`, `"scope": {"type": "string", "title": "涉及", "pattern": "^[a-z ]+$"}`, 1)
+	})
+	_, cur := e.getAs(t, viewerU, "/api/c/todo/Q1")
+	head := e.head(t)
+	code, out := e.post(t, editorU, "/api/c/todo/Q1/restore", map[string]any{"commit": hand, "hash": cur["hash"], "confirm_not_secret": true})
+	if code != 409 || out["error"] != "restore_needs_edit" {
+		t.Fatalf("%d %v", code, out)
+	}
+	raw := toJSON(out)
+	if strings.Contains(raw, "hunter2") {
+		t.Fatalf("the 409 body quotes the old value: %s", raw)
+	}
+	errs := arr(t, out["errors"])
+	if len(errs) == 0 || errs[0].(map[string]any)["path"] != "/scope" || errs[0].(map[string]any)["rule"] != "schema" {
+		t.Fatalf("%v", out["errors"])
+	}
+	for _, e := range errs {
+		if p, has := e.(map[string]any)["params"].(map[string]any); has {
+			if _, bad := p["value"]; bad {
+				t.Fatalf("%v", p)
+			}
+		}
+	}
+	// the value that was left out is named, so that the console can ask about it
+	hp := arr(t, out["hiddenPaths"])
+	if len(hp) != 1 || hp[0] != "/scope" || out["hidden"] != float64(1) {
+		t.Fatalf("%v", out)
+	}
+	if _, has := out["data"].(map[string]any)["scope"]; has {
+		t.Fatalf("%v", out["data"])
+	}
+	if e.head(t) != head {
+		t.Fatal("nothing is written")
+	}
+}
+
+// A hand edit without the trailer is a version too, and nothing vouches for it.
+func TestRecordHistoryHasHandEditsWithoutTheTrailer(t *testing.T) {
+	e := newActEnv(t, actOpts{})
+	e.addTodo(t, editorU, todo("H2", "gw", "待办"))
+	e.laptopEdit(t, "2026-03-01T10:00:00Z", "by hand, no trailer", "docs/ledger/todo.yml", func(s string) string {
+		return strings.Replace(s, "{item: H2, scope: gw, status: 待办}", "{item: H2, scope: gw, status: 推迟}", 1)
+	})
+	e.putTodo(t, editorU, "H2", todo("H2", "gw", "完成"))
+	_, out := e.getAs(t, viewerU, "/api/c/todo/H2/history")
+	vs := versionsOf(t, out)
+	if len(vs) != 3 || vs[1]["subject"] != "by hand, no trailer" || vs[1]["verified"] != false || changeAt(vs[1], "status")["new"] != "推迟" {
+		t.Fatalf("%v", out)
+	}
+}

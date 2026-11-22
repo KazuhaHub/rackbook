@@ -52,7 +52,6 @@ type streamCursor struct {
 	N      int    `json:"n,omitempty"` // git: commits of the walk consumed
 	Resume int64  `json:"r,omitempty"` // audit: the lines read so far are those with seq >= Resume
 	Done   bool   `json:"d,omitempty"`
-	Mode   string `json:"m,omitempty"` // a record's versions: how its commits are found
 }
 
 type activityCursor map[string]streamCursor
@@ -96,7 +95,7 @@ func (s *server) decodeCursor(who, v string) (activityCursor, error) {
 	}
 	// a guard in depth: what is signed was made by this server, but a position is never negative
 	for _, sc := range c {
-		if sc.N < 0 || sc.Resume < 0 || (sc.Tip != "" && !gitstore.ValidRev(sc.Tip)) || (sc.Mode != "" && sc.Mode != gitstore.ModeRecord && sc.Mode != gitstore.ModeFile) {
+		if sc.N < 0 || sc.Resume < 0 || (sc.Tip != "" && !gitstore.ValidRev(sc.Tip)) {
 			return nil, errCursor
 		}
 	}

@@ -39,6 +39,8 @@ type versionOut struct {
 	RecordHash  string                 `json:"recordHash"`
 	Changes     []gitstore.FieldChange `json:"changes"`
 	MoreChanges bool                   `json:"moreChanges,omitempty"`
+	Unreadable  bool                   `json:"unreadable,omitempty"`
+	Approximate bool                   `json:"approximate,omitempty"`
 }
 
 // commitItem makes the activity item of one commit, verified as in the activity view.
@@ -83,7 +85,7 @@ func (s *server) versions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sc := cur["versions"]
-	pg, err := s.o.Store.RecordVersions(r.Context(), gitstore.VersionQuery{Collection: c.Name, ID: id, Tip: sc.Tip, Mode: sc.Mode, Skip: sc.N, Limit: limit})
+	pg, err := s.o.Store.RecordVersions(r.Context(), gitstore.VersionQuery{Collection: c.Name, ID: id, Tip: sc.Tip, Skip: sc.N, Limit: limit})
 	if errors.Is(err, gitstore.ErrBadTip) {
 		writeError(w, http.StatusBadRequest, "cursor_invalid", "the cursor no longer fits this history; start again without it")
 		return
@@ -100,11 +102,11 @@ func (s *server) versions(w http.ResponseWriter, r *http.Request) {
 	out := make([]versionOut, len(pg.Versions))
 	for i, v := range pg.Versions {
 		out[i] = versionOut{activityItem: items[i], Change: v.Kind, RenamedFrom: v.RenamedFrom, RenamedTo: v.RenamedTo,
-			RecordHash: v.Hash, Changes: v.Changes, MoreChanges: v.MoreChanges}
+			RecordHash: v.Hash, Changes: v.Changes, MoreChanges: v.MoreChanges, Unreadable: v.Unreadable, Approximate: v.Approximate}
 	}
 	body := map[string]any{"id": pg.ID, "versions": out, "audit": s.o.Audit != nil}
 	if !pg.Done {
-		body["cursor"] = s.encodeCursor(binding, activityCursor{"versions": {Tip: pg.Tip, N: pg.Skip, Mode: pg.Mode}})
+		body["cursor"] = s.encodeCursor(binding, activityCursor{"versions": {Tip: pg.Tip, N: pg.Skip}})
 	}
 	writeJSON(w, http.StatusOK, body)
 }
@@ -141,7 +143,11 @@ type restoreBody struct {
 // content is returned (without the values the secret scan flags) so that the
 // console opens it in the editor, to be fixed and saved as an ordinary edit.
 func restoreNeedsEdit(w http.ResponseWriter, src *gitstore.RestoreSource, msg string, extra ...any) {
-	extra = append([]any{"data", src.Visible, "hidden", src.Hidden, "commit", src.Commit}, extra...)
+	paths := src.HiddenPaths
+	if paths == nil {
+		paths = []string{}
+	}
+	extra = append([]any{"data", src.Visible, "hidden", src.Hidden, "hiddenPaths", paths, "commit", src.Commit}, extra...)
 	writeError(w, http.StatusConflict, "restore_needs_edit", msg, extra...)
 }
 
@@ -217,7 +223,7 @@ func (s *server) restore(w http.ResponseWriter, r *http.Request) {
 	res, err := s.applyOp(r, s.confirmed(r, op, b.ConfirmNotSecret || b.ConfirmNotSecretCamel))
 	var ie *edit.InvalidError
 	if errors.As(err, &ie) {
-		restoreNeedsEdit(w, src, "that version no longer fits the current schema or references: fix it and save it as an edit", "errors", ie.Issues)
+		restoreNeedsEdit(w, src, "that version no longer fits the current schema or references: fix it and save it as an edit", "errors", s.safeIssues(ie.Issues))
 		return
 	}
 	if err != nil {
@@ -257,7 +263,7 @@ func (s *server) deleted(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "bad_request", "limit must be a positive whole number")
 			return
 		}
-		limit = min(n, 200)
+		limit = min(n, 100)
 	}
 	res, err := s.o.Store.DeletedRecords(r.Context(), c.Name)
 	if err != nil {
@@ -266,11 +272,6 @@ func (s *server) deleted(w http.ResponseWriter, r *http.Request) {
 	}
 	more := len(res.Records) > limit
 	recs := res.Records[:min(len(res.Records), limit)]
-	sums, err := s.o.Store.Summaries(r.Context(), c.Name, recs)
-	if err != nil {
-		s.internal(w, err)
-		return
-	}
 	cs := make([]gitstore.ActivityCommit, len(recs))
 	for i, e := range recs {
 		cs[i] = e.ActivityCommit()
@@ -278,11 +279,46 @@ func (s *server) deleted(w http.ResponseWriter, r *http.Request) {
 	items := s.commitItems(r, cs)
 	out := make([]deletedOut, len(recs))
 	for i, e := range recs {
-		fields := sums[i].Fields
+		fields := e.Fields
 		if fields == nil {
 			fields = []gitstore.SummaryField{}
 		}
 		out[i] = deletedOut{activityItem: items[i], ID: e.ID, Last: e.Last, DeletedAt: items[i].Time, Summary: fields}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"records": out, "complete": res.Complete, "more": more, "audit": s.o.Audit != nil})
+}
+
+// issueOut is a validation problem as a restore reports it: where it is and which rule
+// failed, and nothing the validator quoted from the old content (its message and
+// params carry values, which may be ones the secret scan hides).
+type issueOut struct {
+	Collection string         `json:"collection"`
+	ID         string         `json:"id,omitempty"`
+	Path       string         `json:"path"`
+	Rule       string         `json:"rule"`
+	Keyword    string         `json:"keyword,omitempty"`
+	Message    string         `json:"message"`
+	Params     map[string]any `json:"params,omitempty"`
+}
+
+// safeParams are the params of an issue that name fields, limits and rules, never a value of the record.
+var safeParams = map[string]bool{"missing": true, "format": true, "limit": true, "fields": true, "key": true, "target": true, "side": true, "left": true, "right": true}
+
+func (s *server) safeIssues(in []ledger.Issue) []issueOut {
+	cfg := s.o.Store.Config()
+	out := make([]issueOut, 0, len(in))
+	for _, i := range in {
+		o := issueOut{Collection: i.Collection, ID: ledger.SafeID(cfg, i.Collection, i.ID), Path: i.Path, Rule: i.Rule, Keyword: i.Keyword,
+			Message: "this version does not pass the current check (" + i.Rule + ")"}
+		for k, v := range i.Params {
+			if safeParams[k] {
+				if o.Params == nil {
+					o.Params = map[string]any{}
+				}
+				o.Params[k] = v
+			}
+		}
+		out = append(out, o)
+	}
+	return out
 }
