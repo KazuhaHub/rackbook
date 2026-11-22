@@ -398,10 +398,12 @@ The open questions of the first draft, as the owner decided them:
    shared office NAT or an account under attack gets a CAPTCHA instead of a lockout. The provider and its secret are deployment flags, not
    `rackbook.yml` keys. Passwordless passkey sign-in is an option, off by default.
    After the third review: a token CAPTCHA (Turnstile, hCaptcha or reCAPTCHA) is required in local mode, and the
-   image CAPTCHA only with an explicit weak flag; the NIST SP 800-63B cap is back (100 consecutive failures make
-   an account *restricted*: known networks or a passkey second factor only, a bounded denial of service);
+   image CAPTCHA only with an explicit weak flag; the NIST SP 800-63B cap is back (at most 100 consecutive failed password
+   checks, counted across all networks; then known networks or a passkey second factor only, and after the 100th
+   the passkey only: a bounded denial of service);
    password and second factor are checked in one step with one answer; sign-in attempts are stateless tokens that
-   cannot be evicted; and any unexplained file next to a store that lacks an audited change stops the server.
+   cannot be evicted, and only a verified CAPTCHA can occupy the bounded set of used attempts; and any
+   unexplained file next to a store that lacks an audited change stops the server.
 3. **Passkeys under SSO:** passkey sign-in is disabled when SSO is configured, which makes
    `auth.passkeys_oidc_max_age` moot; it is dropped (section 4). Not a config switch; existing passkeys stop
    working, and their file stays until an admin removes it; admins are reminded until then, because it holds

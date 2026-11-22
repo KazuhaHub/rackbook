@@ -57,7 +57,7 @@ secret values never appear in Git, a diff, a log or the audit log, and the ledge
 | Threat | Defence | What is left |
 |---|---|---|
 | **Phishing** (real-time relay of password and code) | A second factor is mandatory; passkeys are origin-bound and offered first; `second_factor: passkey` turns TOTP off. | Password + TOTP can be relayed. |
-| **Online password guessing** (stuffing, spraying, a targeted account) | A token CAPTCHA (Turnstile, hCaptcha, reCAPTCHA) once failures pile up, checked before any hash. **NIST SP 800-63B §5.2.2 cap**: 100 consecutive failed sign-ins put the account into **restricted** (7.4). Password and second factor are checked **in one step** with one undifferentiated answer, so a guess never learns whether the password alone was right (4.6). 12 characters minimum and a blocklist. | Up to 100 guesses per holder sign-in, each costing a CAPTCHA solve. A restricted account is a bounded denial of service, accepted as NIST intends (7.4). |
+| **Online password guessing** (stuffing, spraying, a targeted account) | A token CAPTCHA (Turnstile, hCaptcha, reCAPTCHA) once failures pile up, checked before any hash. **NIST SP 800-63B §5.2.2 cap**: at most 100 consecutive failed password checks, counted across all networks, then **restricted** and **passkey only** (7.4). Password and second factor are checked **in one step** with one undifferentiated answer, so a guess never learns whether the password alone was right (4.6). 12 characters minimum and a blocklist. | Up to 100 guesses per holder sign-in, each costing a CAPTCHA solve. A restricted account is a bounded denial of service, accepted as NIST intends (7.4). |
 | **Lockout of a legitimate user** | No hard lock from new networks before the NIST cap; CAPTCHA instead of refusals; stateless attempts that cannot be evicted; reserved capacity for the holder's known networks (section 7). | Stated exactly in 7.7, by where the holder signs in from. |
 | **An offline copy of the state dir** (a backup, a lost disk, a sidecar with the volume mounted) | The store is encrypted, `usernames` is MACed, and the admin socket is mutually authenticated and encrypted (sections 3, 9), all under a key that is not in the state dir. Without the key a copy reveals nothing and can do nothing; a planted or torn file stops the server instead of rolling anything back (3.2). | A copy *with* the key gives argon2id hashes, TOTP secrets and session secrets. Response in 4.10. |
 | **A stolen session cookie** | `Secure`, `HttpOnly`, `SameSite=Lax`, `__Host-`; fresh password and second factor for sensitive actions; three failed re-authentications end every session; *Sign out everywhere* and *Disable* end sessions at once. | Reading and ordinary edits until expiry or revocation. |
@@ -158,8 +158,10 @@ is always complete.
    Otherwise move it aside as evidence (`accounts.enc.next.evidence-<time>`).
 5. **`accounts.enc.pending`**: if it decrypts **and** its `change` is exactly `E`'s **and** the store lacks `E`,
    finish step 3 from it and reload (`account_store_problem`, `code: recovered`): the change was audited, so it is
-   applied. If it decrypts and its `change` is in no event, delete it: it was never audited or answered. Anything
-   else (it does not decrypt, or names another change) is moved aside as evidence.
+   applied. If it decrypts, names `E`, and the store **already has** `E`, delete it silently: a crash after the
+   rename and before its deletion, not evidence. If it decrypts and its `change` is in no event, delete it: it was
+   never audited or answered. Anything else (it does not decrypt, or names another audited change) is moved aside as
+   evidence.
 6. **Gap check**, always, after any rename: if the store's `change` is not `E`'s, the store lacks audited changes.
    That is a **gap**: stop (3.3). This includes the case of a store lacking `E` next to a missing, torn or
    undecryptable `.pending`: a crash cannot produce that (files are complete once named), so it is treated as
@@ -293,12 +295,14 @@ for use elsewhere.
    about the account is revealed).
 2. One request, `POST /auth/local/login`, with the attempt token, the CAPTCHA solve if required, the username, the
    password, and **either** a 6-digit code **or** the passkey assertion.
-3. The server spends the attempt (7.2), then verifies the CAPTCHA. If the CAPTCHA turns out to be required by the
-   name's counters (7.4) and was not solved, the answer is `401 captcha_required` and nothing else is checked.
+3. The server opens the attempt token and checks that its nonce is unused (7.2), then verifies the CAPTCHA if one
+   was solved, and only then records the nonce: in the **solved set** if the CAPTCHA verified, otherwise in the
+   **replay set**. If the CAPTCHA turns out to be required by the name's counters (7.4) and was not solved, or the
+   replay set has no room for this bucket, the answer is `401 captcha_required` and nothing else is checked.
 4. With a passkey assertion it is verified **first** (no hash yet): it must be valid and belong to the named
    account. Then the password, by argon2id, in a slot (7.6). With a code, the password first, then the code.
-5. Unknown, `invited`, `reset_pending`, `disabled` or `removed`: a **dummy argon2id**, then the same answer as any
-   failure.
+5. Unknown, `invited`, `reset_pending`, `disabled` or `removed`, or refused by `restricted`, `passkey_only` or
+   `locked` (7.4): a **dummy argon2id**, then the same answer as any failure, so timing does not reveal the state.
 6. Any failure: `401 sign_in_failed`, "username, password or code is wrong", whatever failed. It adds one to the
    name's failure counters (7.3) and, for an existing account, to `consecutive_failures`; a right password with a
    wrong code also adds to `totp_failures` and sets `last_second_factor_failure`, which *My account* shows: someone
@@ -450,22 +454,25 @@ username with no account is kept with a warning. The last-admin rule counts only
   admin must keep domain verification on; the docs say so.
 - **Failures fail closed.** `ErrDecodeResponse`, `ErrBadStatus` and `ErrNetwork` on an attempt refuse that attempt
   (`503 captcha_unavailable`, retry). There is **no fallback per attempt**.
-- **Concurrency.** At most 32 siteverify calls at once; beyond that the attempt gets `503 busy` with `Retry-After`,
-  not a fallback.
+- **Concurrency.** At most 32 siteverify calls for attempts at once; beyond that the attempt gets `503 busy` with
+  `Retry-After`, not a fallback. The health probe (below) has a dedicated slot of its own outside this cap.
 - **The image CAPTCHA** (authcore's five distorted digits, no outbound call) is allowed only with
   `--captcha image --captcha-image-weak-ok`, and the server logs a warning at every start: "the image CAPTCHA is
   solved by OCR and has no audio alternative; sign-in is protected mainly by the NIST cap". It is for deployments
   that cannot call out.
-- **Outage fallback**, only where `--captcha-image-weak-ok` is set: a health probe (one siteverify call with a
-  dummy token every 30 seconds) that sees at least 5 consecutive network failures over at least 2 minutes declares
-  an outage; image CAPTCHAs are used until the probe succeeds 3 times in a row. Start and end write
+- **Outage fallback**, only where `--captcha-image-weak-ok` is set: a health probe sends one siteverify call with
+  a dummy token every 30 seconds from its own slot. A **probe failure** is only a network error, a timeout or a 5xx
+  answer on the probe's own request; a 200 answer refusing the dummy token is a success. Nothing from user attempts
+  counts: not `busy`, not their `ErrBadStatus` or timeouts, so a server that is merely overloaded never declares an
+  outage. At least 5 consecutive probe failures over at least 2 minutes declare an outage; image CAPTCHAs are used
+  until the probe succeeds 3 times in a row. Start and end write
   `captcha_outage` and show admins a banner. Without the flag, an outage means that sign-ins needing a CAPTCHA wait
   ("try again shortly"); sign-ins that need none go on.
 
 The `remoteIP` passed to `Verify` is the client address by the trusted-proxy rules, unbucketed (a new
 `clientip.Addr`).
 
-### 7.2 Attempts: stateless, quota'd, never evicted
+### 7.2 Attempts: stateless tokens, two sets, and admission
 
 An attempt is a token, not server state:
 
@@ -474,26 +481,41 @@ attempt = base64(nonce(16) || bucket || issued || expires || flags || [image ans
           sealed with AES-256-GCM under the attempts subkey
 ```
 
-- It expires after 5 minutes and binds the bucket it was issued to (a request from another bucket is refused). The
-  image answer and the WebAuthn challenge, when present, travel inside the sealed token, so the server keeps no
-  image-challenge store and no ceremony store for sign-in; authcore's image driver is used only to render.
-- **Single use** is enforced by a **spent-set** of nonces, each kept until its token expires. The spent-set is the
-  only state an attempt creates, and only when the attempt is used.
-- **Quotas.** Per bucket at most 30 spent entries (that is, 30 attempts per 5 minutes); at the quota the bucket's
-  next attempt is refused with "try again shortly". Globally 300 000 entries, of which 50 000 are **reserved** for
-  attempts whose bucket is in the named account's `good_buckets` (known at spend time, from the username).
-- **Never evicted.** Evicting a spent nonce would let its token be replayed, and evicting fairly across buckets is
-  what lets a flood push the holder out. So at a cap, new spends are **refused** for the bucket that holds the most
-  entries first, never evicted from another. A bucket with few entries (a person signing in) is the last to be
-  refused.
-- **Image rendering** has a global budget of 50 images per second and a per-bucket share of 10 per minute; over it,
-  "try again shortly".
-- **Counters** (7.3) live in a table bounded at 100 000 entries; when it is full, entries are dropped from the
-  bucket holding the most entries. Dropping a counter can only make CAPTCHA triggers fire later for that bucket's
-  own names, never refuse anyone.
+It expires after 5 minutes and binds the bucket it was issued to (a request from another bucket is refused). The
+image answer and the WebAuthn challenge, when present, travel inside the sealed token, so the server keeps no
+image-challenge store and no ceremony store for sign-in; authcore's image driver is used only to render. Minting an
+attempt is free, so **nothing an attempt costs the server may be held before a CAPTCHA has verified**. Single use is
+enforced by two sets of nonces, each entry kept until its token expires, and checked together (a nonce in either is
+used):
 
-One solve counts for one attempt: the attempt is spent before the solve is verified, the provider refuses a token
-used twice, and an image answer can be checked once.
+**The replay set**, for attempts used **without** a verified CAPTCHA (no CAPTCHA was required, or a solve failed).
+Small: 20 000 entries, at most 20 per bucket. When a bucket is at its quota, or the set is full, the **newest** use
+is not recorded and the answer is `401 captcha_required`: the attempt is refused, and the caller retries with a
+CAPTCHA, which goes to the other set. So filling the replay set, which costs nothing, only makes everyone solve a
+CAPTCHA; it never blocks a solved attempt.
+
+**The solved set**, for attempts whose CAPTCHA **verified**: an entry is added only after the provider (or the image
+answer) has accepted the solve, so every entry costs the attacker one CAPTCHA solve. 300 000 entries in three
+partitions, with a quota of 30 entries per bucket (6 solved attempts per minute):
+
+| Partition | Size | Admits a spend when |
+|---|---|---|
+| **good** | 50 000 | the bucket is in the named account's `good_buckets` (known at spend time, from the username) |
+| **headroom** | 30 000 | the bucket holds fewer than 3 entries in the solved set |
+| **general** | 220 000 | any bucket under its quota |
+
+Admission at spend time: a good-bucket spend goes to *good* (then *general*); a spend from a bucket with fewer than
+3 entries goes to *general* while it has room, else *headroom*; any other spend goes to *general*. When the
+partition it needs is full, the spend is refused (`try again shortly`), and the attempt is not recorded. Nothing is
+evicted: evicting a solved entry would let an image answer be replayed. A test fills *general* from many buckets and
+checks that a new bucket still spends into *headroom* and a good bucket into *good*.
+
+**Image rendering** has a global budget of 50 images per second and a per-bucket share of 10 per minute; over it,
+"try again shortly". **Counters** have their own bounds (7.3).
+
+One solve counts for one attempt: the nonce is recorded right after the solve verifies (the record and the check
+are one atomic step, so two concurrent uses of one token cannot both pass), the provider refuses a token used twice,
+and an image answer can be checked once.
 
 ### 7.3 Counters
 
@@ -504,8 +526,8 @@ Buckets: a new `clientip.Bucket(r, trusted, 48)`, IPv6 by /48, IPv4 by the full 
 | attempts per bucket | memory | burst 10, 1 per minute |
 | passkey ceremony attempts per bucket, **its own bucket** | memory | 30 per minute, burst 10 |
 | link opens per bucket | memory | burst 5, 1 per minute |
-| failures per (name, bucket), for **every** typed name | memory, keyed by HMAC(per-start key, name) | consecutive, cleared on success |
-| failures per name, all buckets | memory, same table | last hour |
+| failures per (name, bucket), for **every** typed name | memory, the **pair table**, keyed by (HMAC(per-start key, name), bucket) | consecutive, cleared on success |
+| failures per name, all buckets | memory, the **name table**, keyed by HMAC(name) | last hour |
 | dummy hashes | memory, global | 30 per minute |
 | `consecutive_failures`, `totp_failures` | the store, existing accounts only | 7.4 |
 
@@ -514,6 +536,14 @@ unknown name alike (same keys, same windows, same loss on restart), so whether a
 a name exists. The store counters affect only *which* answer follows a fully checked request, and every such answer
 is the same `sign_in_failed` (4.6), so they reveal nothing either. Basing triggers on bucket counts alone would also
 be uniform but would let a slow distributed attack on one name avoid every CAPTCHA.
+
+**Bounds.** The pair table holds 100 000 rows, at most 1 000 per bucket; the name table holds 50 000 rows, and one
+bucket may create at most 200 new name rows per hour. On overflow, each table drops the rows with the **fewest
+failures** first, and never a row at or above its CAPTCHA threshold (3 for a pair, 20 for a name). If a table is
+full of rows at or above the threshold, a name that cannot get a row is treated as **over** the threshold, so its
+attempts need a CAPTCHA. Residual: in such a flood every sign-in needs a CAPTCHA (good buckets still skip the name
+trigger), and a dropped low row can let a name with a few failures avoid the CAPTCHA for a little longer; neither
+refuses anyone, and both treat existing and unknown names alike.
 
 ### 7.4 When the CAPTCHA is required, and the hard limits
 
@@ -529,31 +559,37 @@ bucket is over its rate.
 
 Two hard limits remain, both per account and both in the store:
 
-- **Restricted** (NIST SP 800-63B §5.2.2, at most 100 consecutive failed attempts): at 100 `consecutive_failures`
-  the account becomes `restricted` (`account_restricted`; the holder and admins are told). While restricted, a
-  sign-in is accepted only:
-  - from one of its `good_buckets` (password plus code or passkey, CAPTCHA as usual), or
-  - from any network **with a passkey second factor**: the assertion is checked before the password (4.6), so a
-    guess without the passkey never reaches the password check and restricted guessing is impossible, or
-  - after an admin **Unlock**.
+- **The NIST cap** (SP 800-63B §5.2.2: at most 100 consecutive failed attempts). `consecutive_failures` counts
+  every failed password check of the account **across all buckets**, good ones included, and is cleared only by a
+  successful sign-in or an admin *Unlock*. A refused attempt that never reaches the password check (a failed passkey
+  assertion, a refusal by the states below) does not count; it is not a guess.
+  - At **99** the account becomes `restricted`. A password check then runs only for an attempt from one of its
+    `good_buckets`, or after a verified passkey assertion (4.6), so a guess without the passkey from a new network
+    never reaches the password.
+  - The **100th** failure, which can therefore only come from a good bucket (or with the passkey), makes it
+    `passkey_only`: a password check runs only after a verified passkey assertion. This also covers an attacker who
+    sits in a good bucket (a NAT neighbour): from there too, the 100th failure closes the password path.
+  - A failed password check after a verified passkey (someone with the device but not the password) makes it
+    `locked`: only an admin *Unlock*.
 
-  From a good bucket, failures go on counting: at 200 consecutive failures the account allows only the passkey path
-  and Unlock. A successful sign-in clears the count and ends `restricted`. This is a **bounded denial of service,
-  accepted as NIST intends**: at most 100 guesses per holder sign-in, and the holder keeps a path from their known
-  networks and with a passkey.
+  Each step writes `account_restricted` (`code`: `restricted`, `passkey_only`, `locked`) and tells the holder and
+  admins. Refusals by these states run the same dummy argon2id as every other refusal (7.5). So **at most 100
+  password guesses can be made per holder sign-in** without the passkey, which is the NIST cap; this is a **bounded
+  denial of service, accepted as NIST intends**, and the holder keeps a path from known networks until the 100th
+  failure, and with a passkey after it.
 - **TOTP limit:** 10 `totp_failures` in 24 hours (a right password with a wrong code, so only someone who knows the
   password can cause it) stops TOTP for the account (`account_locked`, `code: totp`) and tells the holder and admins
   that someone knows the password. A **passkey second factor still works** (the default, with passwordless off).
   Without a passkey, the way back is an admin *Unlock* followed by a `password` reset.
 
-*Unlock* (console, or `rackbook accounts unlock` online) clears the store counters, ends `restricted` and the TOTP
+*Unlock* (console, or `rackbook accounts unlock` online) clears the store counters, ends `restricted`, `passkey_only`, `locked` and the TOTP
 limit, and clears the account's entries in the memory table.
 
 ### 7.5 Uniform answers
 
 Unknown, invited, reset-pending, disabled and removed accounts get exactly the answers an existing account gets:
 the same CAPTCHA triggers (7.3), then `401 sign_in_failed` after one argon2id run against a fixed dummy hash. A
-restricted account's refusals are the same `sign_in_failed`. Real and dummy runs use the same parameters in the same
+restricted, passkey-only or locked account's refusals are the same `sign_in_failed`, after the same dummy argon2id. Real and dummy runs use the same parameters in the same
 slots; the residual is the variance of one argon2id run (a few percent, more under load), accepted: averaging many
 samples might reveal that a username exists, and usernames are not secret here.
 
@@ -569,14 +605,18 @@ verified before a caller queues for a slot.
 For a holder who has their password and their second factor, and whose password nobody else knows:
 
 - **From a network they used in the last 30 days** (`good_buckets`): they can always sign in, with at most one
-  CAPTCHA per attempt, at any botnet size. Their attempts use the reserved spent-set share and the reserved hashing
-  slot, skip the "under attack" and budget triggers, and are accepted while the account is restricted (up to the
-  200 mark above, and with a passkey beyond it). What can still stop them: a flood from inside their own bucket over
-  the bucket's attempt quota (30 per 5 minutes, then "try again shortly"), and the audit log failing (fail closed).
-- **From a new network**: they can sign in with a CAPTCHA per attempt unless (a) the account is restricted and they
-  have no passkey (then: a known network, or an admin Unlock), (b) a botnet occupies more than about 250 000 spent
-  entries, i.e. some 8 000 distinct /48 buckets each solving a CAPTCHA every 10 seconds, which makes new networks
-  wait, or (c) the CAPTCHA provider is out (7.1).
+  CAPTCHA per attempt, at any botnet size. Their solved attempts use the *good* partition and the reserved hashing
+  slot, skip the "under attack" and budget triggers, and are accepted while the account is `restricted`. What can
+  still stop them: the account reaching `passkey_only` when they have no passkey (100 failures; then an admin
+  Unlock), a flood from inside their own bucket over its quota (30 solved attempts per 5 minutes, then "try again
+  shortly"), and the audit log failing (fail closed).
+- **From a new network**: they can sign in with a CAPTCHA per attempt unless (a) the account is `restricted` or
+  beyond and they have no passkey (then: a known network, or an admin Unlock), (b) the CAPTCHA provider is out (7.1),
+  or (c) an attacker keeps both the *general* and the *headroom* partitions full. Every entry there is a **verified
+  CAPTCHA solve** that lives 5 minutes, so (c) costs about 250 000 solves every 5 minutes: some 830 a second, 72
+  million a day, or roughly $70 000–220 000 a day at solver-farm prices of $1–3 per thousand, from at least about
+  8 500 distinct buckets (the per-bucket quota), and at least 10 000 of them holding fewer than 3 entries each to keep
+  *headroom* full. Filling the replay set or minting attempts costs nothing and only makes people solve a CAPTCHA.
 - **Someone who knows the password** can trigger the TOTP limit; a passkey still works.
 
 ### 7.8 Someone who cannot solve the CAPTCHA
@@ -620,7 +660,7 @@ Passwords, codes, tokens, CAPTCHA answers, secrets and typed unknown usernames a
 | `captcha_outage` | none | `code`: `start` or `end`; `detail: ["failures:<n>"]` |
 | `logout` | the account | `role`, `addr` |
 | `reauth` | the account | `addr`, `detail: ["factor:…"]` |
-| `account_restricted` | the account | `detail: ["failures:<n>"]`, `code`: `restricted` or `passkey_only` |
+| `account_restricted` | the account | `detail: ["failures:<n>"]`, `code`: `restricted`, `passkey_only` or `locked` |
 | `account_locked` | the account | `code: totp`, `detail: ["failures:<n>"]` |
 | `account_unlocked` | the admin | `target` |
 | `account_invited` | the admin | `target`, `detail: ["expires:<time>"]` |
@@ -768,7 +808,7 @@ Each ships with a demo in three languages before merge.
   last sign-in and from where; warnings when someone entered the password but failed the code, when the TOTP limit
   was reached, and when the account was restricted; notices of admin actions until dismissed.
 - **Users** (admin): username, name, role ("no role" with *Assign*), state (invited until, link held until, active,
-  restricted, passkey only, TOTP locked, reset pending, disabled), factors, last sign-in, pending revocations, and a
+  restricted, passkey only, locked, TOTP locked, reset pending, disabled), factors, last sign-in, pending revocations, and a
   warning when evidence files from a refused start exist. Actions: *Invite*, *Copy a new link*, *Revoke invite*,
   *Reset password*, *Reset second factor*, *Full reset…* (separate, with the warning), *Unlock*, *Disable* /
   *Enable*, *Remove*. Before *Disable*, *Remove* or a reset, the dialog lists the tokens and app connections it
@@ -791,7 +831,7 @@ Each ships with a demo in three languages before merge.
    the codec with the per-account MAC key, `local:` entries, `policyRole` on all three paths, token creator method,
    the `target` audit field.
 4. **Sign-in, CAPTCHA and setup:** the separate sign-in, setup and re-authentication pages with their own CSP
-   (`securityHeaders` per path); the one-step sign-in; stateless attempt tokens, the spent-set with quotas and
+   (`securityHeaders` per path); the one-step sign-in; stateless attempt tokens, the replay and solved sets with quotas and
    reservations; `clientip.Bucket` and `clientip.Addr`; the counter table; the token verifier with the hostname
    requirement, concurrency bound and health probe; restricted, the TOTP limit; aggregated events; the admin socket
    protocol and the online CLI.
@@ -819,9 +859,9 @@ Piece 1 goes first and can ship on its own. Pieces 2 to 6 are in order.
    optionally an AAGUID allow list), at the cost of excluding synced passkeys.
 2. **CAPTCHA provider**: proposed Turnstile for this deployment. The image CAPTCHA only with
    `--captcha-image-weak-ok`; confirm that it should exist at all, since it has no audio alternative.
-3. **The NIST cap and restricted mode** (7.4): 100 consecutive failures restrict the account to known networks or
-   a passkey second factor; 200 leave only the passkey path and Unlock. A bounded denial of service, accepted as
-   NIST intends. Confirm the thresholds.
+3. **The NIST cap and restricted mode** (7.4): failures counted across all networks; at 99 the account accepts
+   password checks only from known networks or after a passkey; the 100th failure leaves only the passkey path and
+   Unlock. A bounded denial of service, accepted as NIST intends. Confirm the thresholds.
 4. **Recovery codes:** proposed none (4.4).
 5. **`second_factor` default:** proposed `any` (TOTP allowed); `passkey` is safer against phishing and keeps every
    holder on the passkey path of 7.4.
