@@ -32,7 +32,7 @@ var (
 	maxDeletedList   = 200  // records one answer lists
 )
 
-const deletedCacheVersion = 1
+const deletedCacheVersion = 2
 
 // DeletedEvent is one record removed by one commit. ID is the id as it is shown
 // (redacted when its key holds a secret): the cache never holds a secret.
@@ -136,9 +136,8 @@ func (st *deletedState) clone() *deletedState {
 // deletedFingerprint is what the cached ids and summaries depend on besides the history.
 func (s *Store) deletedFingerprint(col *ledger.Collection) string {
 	cfg := s.Config()
-	sc, _ := json.Marshal(cfg.SecretScan)
 	h := sha256.New()
-	for _, part := range [][]byte{sc, col.SchemaRaw, []byte(strings.Join(col.Key, "\x01")), []byte(strings.Join(col.List, "\x01")), []byte(col.Label)} {
+	for _, part := range [][]byte{[]byte(cfg.SecretScanner().Fingerprint()), col.SchemaRaw, []byte(strings.Join(col.Key, "\x01")), []byte(strings.Join(col.List, "\x01")), []byte(col.Label)} {
 		h.Write(part)
 		h.Write([]byte{0})
 	}

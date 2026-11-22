@@ -54,12 +54,18 @@ type treeInfo struct {
 	schemaBlob  string
 }
 
+// schemaEntry is the annotations of one blob of a type; known is false when it could not be read.
+type schemaEntry struct {
+	ann   secretscan.Annotations
+	known bool
+}
+
 // histCache is shared by all the requests of a store.
 type histCache struct {
 	mu      sync.Mutex
 	configs *lru.Cache[string, *histConfig]
 	files   *lru.Cache[string, *parsedFile]
-	schemas *lru.Cache[string, secretscan.Annotations]
+	schemas *lru.Cache[string, schemaEntry]
 	trees   *lru.Cache[string, *treeInfo]
 }
 
@@ -67,7 +73,7 @@ func newHistCache() *histCache {
 	return &histCache{
 		configs: lru.New[string, *histConfig](histSmallCache),
 		files:   lru.New[string, *parsedFile](histFileCache),
-		schemas: lru.New[string, secretscan.Annotations](histSmallCache),
+		schemas: lru.New[string, schemaEntry](histSmallCache),
 		trees:   lru.New[string, *treeInfo](histCommitCache),
 	}
 }
@@ -87,6 +93,7 @@ type snapshot struct {
 	recs        []*ledger.Record
 	byID        map[string]*ledger.Record
 	ann         secretscan.Annotations
+	annKnown    bool // the type could be read (ann may still be empty)
 }
 
 // find returns the record with the id, or the one whose redacted id (what the
@@ -262,24 +269,24 @@ func (rd *snapReader) fileOf(blob string, col *config.Collection) (*parsedFile, 
 	return pf, true, nil
 }
 
-func (rd *snapReader) annotationsOf(blob string) secretscan.Annotations {
+func (rd *snapReader) annotationsOf(blob string) (secretscan.Annotations, bool) {
 	if blob == "" {
-		return nil
+		return nil, false
 	}
 	rd.hc.mu.Lock()
-	a, ok := rd.hc.schemas.Get(blob)
+	e, ok := rd.hc.schemas.Get(blob)
 	rd.hc.mu.Unlock()
 	if ok {
-		return a
+		return e.ann, e.known
 	}
 	if data, truncated, err := rd.s.repo.catBlob(rd.ctx, blob, maxBlobBytes); err == nil && !truncated {
 		histStats.blobReads.Add(1)
-		a = secretscan.AnnotationsOf(data)
+		e = schemaEntry{ann: secretscan.AnnotationsOf(data), known: true}
 	}
 	rd.hc.mu.Lock()
-	rd.hc.schemas.Put(blob, a)
+	rd.hc.schemas.Put(blob, e)
 	rd.hc.mu.Unlock()
-	return a
+	return e.ann, e.known
 }
 
 // at reads the collection at the commit (a full hash; "" = before the first commit).
@@ -310,6 +317,6 @@ func (rd *snapReader) at(commit string) (*snapshot, error) {
 		return sn, nil
 	}
 	sn.recs, sn.byID = pf.recs, pf.byID
-	sn.ann = rd.annotationsOf(t.schemaBlob)
+	sn.ann, sn.annKnown = rd.annotationsOf(t.schemaBlob)
 	return sn, nil
 }

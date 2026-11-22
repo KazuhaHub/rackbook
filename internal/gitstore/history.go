@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -111,8 +112,10 @@ type VersionQuery struct {
 type VersionPage struct {
 	Tip string
 	// Skip is where the next page resumes; Done says there is no next page.
-	Skip     int
-	Done     bool
+	Skip int
+	Done bool
+	// Scanned is how many commits of the history this page looked at.
+	Scanned  int
 	ID       string // the id as it is shown (redacted when it holds a secret)
 	Versions []RecordVersion
 }
@@ -192,7 +195,7 @@ func (s *Store) RecordVersions(ctx context.Context, q VersionQuery) (*VersionPag
 	if err != nil {
 		return nil, err
 	}
-	pg.Skip = q.Skip + consumed
+	pg.Skip, pg.Scanned = q.Skip+consumed, consumed
 	pg.Done = !stopped && consumed < budget
 	return pg, nil
 }
@@ -214,7 +217,7 @@ func (rd *snapReader) version(c ActivityCommit, id string, named bool) (*RecordV
 	} else {
 		pt = &treeInfo{}
 	}
-	if ct.found == pt.found && ct.fileBlob == pt.fileBlob {
+	if ct.found == pt.found && ct.fileBlob == pt.fileBlob && (!named || sameKey(ct.col, pt.col)) {
 		return nil, nil // the file is the same blob: the record did not change, and nothing is parsed
 	}
 	cur, err := rd.at(c.Hash)
@@ -268,6 +271,15 @@ func (rd *snapReader) version(c ActivityCommit, id string, named bool) (*RecordV
 	return v, nil
 }
 
+// sameKey says two definitions of a collection have the same key fields. A commit that names
+// the record and changed the key leaves the file as it was and still renames the record.
+func sameKey(a, b *config.Collection) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return slices.Equal(a.Key, b.Key)
+}
+
 // renamedFrom finds the record that became rec when its key fields were edited:
 // the one at the same position of the list whose id is gone (an edit keeps the
 // position).
@@ -318,8 +330,9 @@ func (s *Store) diffRecords(coll string, cfg *config.Config, fromSn *snapshot, f
 
 // findingsOf are the findings that decide which values of a version are hidden: what
 // the secret scan flags with the type of the version's own commit, and with today's
-// type, and with no type at all (so that a type that exempts a value today or then
-// does not make a value visible that a plainer reading flags).
+// type (a type that exempts a value as public now must not make visible what the other
+// reading flags). Only when neither type can be read is the value scanned with no
+// type at all.
 func (s *Store) findingsOf(coll string, sn *snapshot, rec *ledger.Record) []secretscan.Finding {
 	if rec == nil || sn == nil {
 		return nil
@@ -331,12 +344,21 @@ func (s *Store) findingsOf(coll string, sn *snapshot, rec *ledger.Record) []secr
 	}
 	id := ledger.SafeID(cfg, coll, rec.ID)
 	var today secretscan.Annotations
-	if c := s.cur.Load().Collection(coll); c != nil {
-		today = secretscan.AnnotationsOf(c.SchemaRaw)
+	todayKnown := false
+	if c := s.cur.Load().Collection(coll); c != nil && len(c.SchemaRaw) > 0 {
+		today, todayKnown = secretscan.AnnotationsOf(c.SchemaRaw), true
 	}
-	fs := sc.ScanRecordWith(coll, id, rec.Data, sn.ann)
-	fs = append(fs, sc.ScanRecordWith(coll, id, rec.Data, today)...)
-	return append(fs, sc.ScanRecordWith(coll, id, rec.Data, nil)...)
+	if !sn.annKnown && !todayKnown {
+		return sc.ScanRecordWith(coll, id, rec.Data, nil)
+	}
+	var fs []secretscan.Finding
+	if sn.annKnown {
+		fs = sc.ScanRecordWith(coll, id, rec.Data, sn.ann)
+	}
+	if todayKnown {
+		fs = append(fs, sc.ScanRecordWith(coll, id, rec.Data, today)...)
+	}
+	return fs
 }
 
 // The value shown in place of a hidden one, and what stands for it while two
@@ -587,6 +609,8 @@ type VersionDetail struct {
 	Data map[string]any
 	// Hidden counts the values left out of Data.
 	Hidden int
+	// Approximate says the commit's rackbook.yml could not be read, so the collection is taken as it is today.
+	Approximate bool
 	// Exists says the record exists now; Current that it is the same as this version.
 	Exists, Current bool
 	// Changes are what restoring would change: from today's record to this
@@ -609,6 +633,8 @@ type RestoreSource struct {
 	// many were left out: it is what may be shown to the caller.
 	Visible map[string]any
 	Hidden  int
+	// Approximate says the commit's rackbook.yml could not be read, so the collection is taken as it is today.
+	Approximate bool
 	// HiddenPaths are where the left out values were, as JSON pointers: a left out
 	// field of a map is missing from Visible and an element of a list is "" there.
 	HiddenPaths []string
@@ -678,7 +704,7 @@ func (s *Store) RestoreSourceAt(ctx context.Context, collection, id, rev string)
 		return nil, err
 	}
 	hidden, paths := hideAt(rec.Data, s.findingsOf(collection, sn, rec))
-	out := &RestoreSource{Commit: full, Data: rec.Data, Hash: ledger.Hash(rec.Data), ID: rec.ID, Hidden: len(paths), HiddenPaths: paths}
+	out := &RestoreSource{Commit: full, Data: rec.Data, Hash: ledger.Hash(rec.Data), ID: rec.ID, Hidden: len(paths), HiddenPaths: paths, Approximate: sn.approximate}
 	out.Visible = dropHidden(hidden).(map[string]any)
 	return out, nil
 }
@@ -694,6 +720,7 @@ func (s *Store) VersionAt(ctx context.Context, collection, id, rev string) (*Ver
 	d := &VersionDetail{ID: ledger.SafeID(cfg, collection, rec.ID), Hash: ledger.Hash(rec.Data), Changes: []FieldChange{}}
 	hidden, hpaths := hideAt(rec.Data, s.findingsOf(collection, sn, rec))
 	d.Hidden = len(hpaths)
+	d.Approximate = sn.approximate
 	scrubbed, _ := scrub(hidden)
 	d.Data = scrubbed.(map[string]any)
 	found := false

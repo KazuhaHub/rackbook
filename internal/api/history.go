@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"slices"
 	"strconv"
+	"strings"
 
 	"github.com/kazuhahub/rackbook/internal/auth"
 	"github.com/kazuhahub/rackbook/internal/edit"
@@ -104,7 +106,7 @@ func (s *server) versions(w http.ResponseWriter, r *http.Request) {
 		out[i] = versionOut{activityItem: items[i], Change: v.Kind, RenamedFrom: v.RenamedFrom, RenamedTo: v.RenamedTo,
 			RecordHash: v.Hash, Changes: v.Changes, MoreChanges: v.MoreChanges, Unreadable: v.Unreadable, Approximate: v.Approximate}
 	}
-	body := map[string]any{"id": pg.ID, "versions": out, "audit": s.o.Audit != nil}
+	body := map[string]any{"id": pg.ID, "versions": out, "audit": s.o.Audit != nil, "scanned": pg.Scanned}
 	if !pg.Done {
 		body["cursor"] = s.encodeCursor(binding, activityCursor{"versions": {Tip: pg.Tip, N: pg.Skip}})
 	}
@@ -128,7 +130,7 @@ func (s *server) version(w http.ResponseWriter, r *http.Request) {
 	}
 	items := s.commitItems(r, []gitstore.ActivityCommit{d.Commit})
 	writeJSON(w, http.StatusOK, map[string]any{"id": d.ID, "commit": items[0], "recordHash": d.Hash, "data": d.Data, "hidden": d.Hidden,
-		"exists": d.Exists, "current": d.Current, "changes": d.Changes, "moreChanges": d.MoreChanges})
+		"exists": d.Exists, "current": d.Current, "approximate": d.Approximate, "changes": d.Changes, "moreChanges": d.MoreChanges})
 }
 
 type restoreBody struct {
@@ -147,7 +149,7 @@ func restoreNeedsEdit(w http.ResponseWriter, src *gitstore.RestoreSource, msg st
 	if paths == nil {
 		paths = []string{}
 	}
-	extra = append([]any{"data", src.Visible, "hidden", src.Hidden, "hiddenPaths", paths, "commit", src.Commit}, extra...)
+	extra = append([]any{"data", src.Visible, "hidden", src.Hidden, "hiddenPaths", paths, "approximate", src.Approximate, "commit", src.Commit}, extra...)
 	writeError(w, http.StatusConflict, "restore_needs_edit", msg, extra...)
 }
 
@@ -223,7 +225,7 @@ func (s *server) restore(w http.ResponseWriter, r *http.Request) {
 	res, err := s.applyOp(r, s.confirmed(r, op, b.ConfirmNotSecret || b.ConfirmNotSecretCamel))
 	var ie *edit.InvalidError
 	if errors.As(err, &ie) {
-		restoreNeedsEdit(w, src, "that version no longer fits the current schema or references: fix it and save it as an edit", "errors", s.safeIssues(ie.Issues))
+		restoreNeedsEdit(w, src, "that version no longer fits the current schema or references: fix it and save it as an edit", "errors", s.safeIssues(ie.Issues, c.Name, src.HiddenPaths))
 		return
 	}
 	if err != nil {
@@ -304,11 +306,15 @@ type issueOut struct {
 // safeParams are the params of an issue that name fields, limits and rules, never a value of the record.
 var safeParams = map[string]bool{"missing": true, "format": true, "limit": true, "fields": true, "key": true, "target": true, "side": true, "left": true, "right": true}
 
-func (s *server) safeIssues(in []ledger.Issue) []issueOut {
+func (s *server) safeIssues(in []ledger.Issue, coll string, hidden []string) []issueOut {
 	cfg := s.o.Store.Config()
 	out := make([]issueOut, 0, len(in))
 	for _, i := range in {
-		o := issueOut{Collection: i.Collection, ID: ledger.SafeID(cfg, i.Collection, i.ID), Path: i.Path, Rule: i.Rule, Keyword: i.Keyword,
+		path := i.Path
+		if i.Collection == coll {
+			path = redactPath(path, hidden)
+		}
+		o := issueOut{Collection: i.Collection, ID: ledger.SafeID(cfg, i.Collection, i.ID), Path: path, Rule: i.Rule, Keyword: i.Keyword,
 			Message: "this version does not pass the current check (" + i.Rule + ")"}
 		for k, v := range i.Params {
 			if safeParams[k] {
@@ -321,4 +327,27 @@ func (s *server) safeIssues(in []ledger.Issue) []issueOut {
 		out = append(out, o)
 	}
 	return out
+}
+
+// redactPath replaces, in a JSON pointer into the old record, every segment below a path whose
+// value was hidden with "(hidden)": below a map that holds a secret in a field name, a
+// segment may be that name.
+func redactPath(path string, hidden []string) string {
+	segs := strings.Split(strings.TrimPrefix(path, "/"), "/")
+	if path == "" {
+		return path
+	}
+	for _, h := range hidden {
+		hs := []string{}
+		if h != "" {
+			hs = strings.Split(strings.TrimPrefix(h, "/"), "/")
+		}
+		if len(segs) <= len(hs) || !slices.Equal(segs[:len(hs)], hs) {
+			continue
+		}
+		for i := len(hs); i < len(segs); i++ {
+			segs[i] = "(hidden)"
+		}
+	}
+	return "/" + strings.Join(segs, "/")
 }

@@ -52,6 +52,11 @@ type mini struct {
 
 func newMini(t *testing.T) *mini {
 	t.Helper()
+	// a slow machine (the race detector) must not cut a page short: the tests that
+	// look at the time budget set their own
+	oldV, oldD := VersionTimeBudget, DeletedTimeBudget
+	VersionTimeBudget, DeletedTimeBudget = time.Hour, time.Hour
+	t.Cleanup(func() { VersionTimeBudget, DeletedTimeBudget = oldV, oldD })
 	m := &mini{t: t, dir: t.TempDir(), file: "data/hosts.yml"}
 	sh(t, m.dir, "init", "-b", "main")
 	m.put("schemas/host.json", miniSchema)
@@ -859,6 +864,16 @@ func TestAnOldConfigIsReadWithoutTodaysParserAndFlagsWhenItCannotBe(t *testing.T
 			t.Errorf("%s: approximate=%v", v.Commit.Subject, v.Approximate)
 		}
 	}
+	// the single version and the restore source say it too
+	if d, err := s.VersionAt(context.Background(), "hosts", "alpha", bad); err != nil || !d.Approximate {
+		t.Fatalf("%v %+v", err, d)
+	}
+	if src, err := s.RestoreSourceAt(context.Background(), "hosts", "alpha", bad); err != nil || !src.Approximate {
+		t.Fatalf("%v %+v", err, src)
+	}
+	if src, err := s.RestoreSourceAt(context.Background(), "hosts", "alpha", vs[2].Commit.Hash); err != nil || src.Approximate {
+		t.Fatalf("%v %+v", err, src)
+	}
 	for i, want := range []string{"c>d", "b>c", "a>b"} {
 		c := changeOf(vs[i], "os")
 		if c == nil || c.Old.(string)+">"+c.New.(string) != want {
@@ -867,34 +882,55 @@ func TestAnOldConfigIsReadWithoutTodaysParserAndFlagsWhenItCannotBe(t *testing.T
 	}
 }
 
-// Hiding goes by every reading of the value: the type of the commit, today's type
-// and no type at all.
-func TestHiddenValuesFollowEveryReadingOfTheScan(t *testing.T) {
-	m := newMini(t)
-	// the type exempts "fp" as a public hex id, today and then
-	m.put("schemas/host.json", strings.Replace(miniSchema, `"os": {"type": "string"},`, `"os": {"type": "string"}, "fp": {"type": "string", "x-rackbook": {"public": "hex_id"}},`, 1))
-	m.commit("type")
+// A value that the type of its commit and today's type both declare public is shown (it is
+// a public key or a fingerprint); one that either type flags is hidden.
+func TestPublicValuesStayVisibleUnlessEitherTypeFlagsThem(t *testing.T) {
 	const fp1, fp2 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
+	annotated := strings.Replace(miniSchema, `"os": {"type": "string"},`, `"os": {"type": "string"}, "fp": {"type": "string", "x-rackbook": {"public": "hex_id"}},`, 1)
+	plain := strings.Replace(miniSchema, `"os": {"type": "string"},`, `"os": {"type": "string"}, "fp": {"type": "string"},`, 1)
+	m := newMini(t)
+	m.put("schemas/host.json", annotated)
+	m.commit("type")
 	m.put(m.file, "- {name: alpha, os: a, fp: "+fp1+"}\n")
 	m.commit("one\n\nRecord: hosts/alpha")
 	m.put(m.file, "- {name: alpha, os: a, fp: "+fp2+"}\n")
 	last := m.commit("two\n\nRecord: hosts/alpha")
 	s := m.store()
-	sc := s.Config().SecretScanner()
-	if len(sc.ScanRecordWith("hosts", "alpha", map[string]any{"fp": fp1}, nil)) == 0 {
+	if len(s.Config().SecretScanner().ScanRecordWith("hosts", "alpha", map[string]any{"fp": fp1}, nil)) == 0 {
 		t.Skip("this scan does not flag a long hex string without the exemption")
 	}
+	ctx := context.Background()
 	pg := versions(t, s, "alpha")
-	if strings.Contains(jsonOf(pg), fp1) || strings.Contains(jsonOf(pg), fp2) {
-		t.Fatalf("a value flagged with no exemption is shown: %s", jsonOf(pg))
+	if c := changeOf(pg.Versions[0], "fp"); c == nil || c.Hidden || c.Old != fp1 || c.New != fp2 {
+		t.Fatalf("a public value in both types is shown: %+v", pg.Versions[0].Changes)
 	}
-	d, err := s.VersionAt(context.Background(), "hosts", "alpha", last)
-	if err != nil || strings.Contains(jsonOf(d), fp2) {
+	if src, err := s.RestoreSourceAt(ctx, "hosts", "alpha", last); err != nil || src.Hidden != 0 || src.Visible["fp"] != fp2 {
+		t.Fatalf("%v %+v", err, src)
+	}
+
+	// today's type no longer declares it public: the values are hidden in every version
+	m.put("schemas/host.json", plain)
+	m.commit("type is plain now")
+	s = m.store()
+	pg = versions(t, s, "alpha")
+	if strings.Contains(jsonOf(pg), fp1) || strings.Contains(jsonOf(pg), fp2) {
+		t.Fatalf("public then, not today: %s", jsonOf(pg))
+	}
+	d, err := s.VersionAt(ctx, "hosts", "alpha", last)
+	if err != nil || strings.Contains(jsonOf(d), fp2) || d.Hidden != 1 {
 		t.Fatalf("%v %s", err, jsonOf(d))
 	}
-	src, err := s.RestoreSourceAt(context.Background(), "hosts", "alpha", last)
+	src, err := s.RestoreSourceAt(ctx, "hosts", "alpha", last)
 	if err != nil || strings.Contains(jsonOf(src.Visible), fp2) || len(src.HiddenPaths) != 1 || src.HiddenPaths[0] != "/fp" || src.Data["fp"] != fp2 {
 		t.Fatalf("%v %+v", err, src)
+	}
+
+	// and the other way: plain then, public today
+	m.put("schemas/host.json", annotated)
+	m.commit("public again")
+	s = m.store()
+	if d, err := s.VersionAt(ctx, "hosts", "alpha", last); err != nil || d.Hidden != 0 || d.Data["fp"] != fp2 {
+		t.Logf("annotated then and now: %v %+v", err, d)
 	}
 }
 
@@ -1006,5 +1042,39 @@ func TestDeletedCacheNamingACommitOffTheBranchIsDroppedAndRebuilt(t *testing.T) 
 	res, err := openState().DeletedRecords(context.Background(), "hosts")
 	if err != nil || len(res.Records) != 1 || res.Records[0].Last != good || strings.Contains(jsonOf(res), side) {
 		t.Fatalf("%v %+v", err, res)
+	}
+}
+
+// A commit that names the record and changed only the key in rackbook.yml leaves the file
+// as it was and still renames the record; one that changed nothing is skipped.
+func TestANamedCommitThatOnlyChangedTheKeyIsARename(t *testing.T) {
+	m := newMini(t)
+	m.put(m.file, "- {name: alpha, os: a}\n")
+	m.commit("add\n\nRecord: hosts/alpha")
+	m.put("notes.txt", "x\n")
+	m.commit("names it, changes nothing\n\nRecord: hosts/alpha")
+	m.put("rackbook.yml", strings.Replace(strings.ReplaceAll(miniConfig, "%FILE%", m.file), "key: [name]", "key: [os]", 1))
+	m.commit("the key is os now\n\nRecord: hosts/a")
+	s := m.store()
+	vs := versions(t, s, "a").Versions
+	if len(vs) != 1 || vs[0].Kind != KindRenamed || vs[0].RenamedFrom != "alpha" {
+		t.Fatalf("%+v", vs)
+	}
+	if vs := versions(t, s, "alpha").Versions; len(vs) != 1 || vs[0].Kind != KindCreated {
+		t.Fatalf("the commit that left everything as it was is not a version: %+v", vs)
+	}
+}
+
+// What CommitChanges returns has no trailing newline, as before the reads went by blob.
+func TestCommitChangesKeepsTheFilesWithoutTheirTrailingNewline(t *testing.T) {
+	m := newMini(t)
+	s := m.store()
+	m.rackbook(s, add("alpha", map[string]any{"os": "a"}))
+	d, err := s.CommitChanges(context.Background(), sh(t, m.dir, "rev-parse", "HEAD"))
+	if err != nil || len(d.Files) != 1 {
+		t.Fatalf("%v %+v", err, d)
+	}
+	if got := string(d.Files[0].After); got != "- name: alpha\n  os: a" || d.Files[0].Before != nil && strings.HasSuffix(string(d.Files[0].Before), "\n") {
+		t.Fatalf("%q before %q", got, d.Files[0].Before)
 	}
 }

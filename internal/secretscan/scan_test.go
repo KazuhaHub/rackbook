@@ -1188,3 +1188,21 @@ func TestRackbookYmlTranslationsAreScanned(t *testing.T) {
 		t.Fatalf("%+v", fs)
 	}
 }
+
+func TestFingerprintChangesWithWhatTheScannerFlags(t *testing.T) {
+	a, b := mustNew(Config{}), mustNew(Config{})
+	if a.Fingerprint() != b.Fingerprint() || a.Fingerprint() != (*Scanner)(nil).Fingerprint() {
+		t.Fatal("the same rules, the same fingerprint")
+	}
+	off := false
+	for name, c := range map[string]Config{
+		"disabled":      {Enabled: &off},
+		"extra pattern": {ExtraPatterns: []ExtraPattern{{ID: "mine", Pattern: `zz[0-9]{9}`}}},
+		"allow":         {Allow: []Allow{{Rule: "github-token", Collection: "x"}}},
+		"disabled rule": {DisableRules: []string{"github-token"}},
+	} {
+		if mustNew(c).Fingerprint() == a.Fingerprint() {
+			t.Errorf("%s does not change the fingerprint", name)
+		}
+	}
+}

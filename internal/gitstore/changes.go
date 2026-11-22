@@ -1,6 +1,7 @@
 package gitstore
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -78,11 +79,11 @@ func (s *Store) CommitChanges(ctx context.Context, rev string) (*CommitDetail, e
 		f := FileVersions{Path: c.File}
 		if parent != "" {
 			if b, ok, err := s.repo.fileAt(ctx, parent+":./"+c.File); err == nil && ok {
-				f.Before = b
+				f.Before = bytes.TrimRight(b, "\n") // as git() trimmed it before, so nothing changes for callers
 			}
 		}
 		if b, ok, err := s.repo.fileAt(ctx, full+":./"+c.File); err == nil && ok {
-			f.After = b
+			f.After = bytes.TrimRight(b, "\n")
 		}
 		if string(f.Before) != string(f.After) || (f.Before == nil) != (f.After == nil) {
 			d.Files = append(d.Files, f)
