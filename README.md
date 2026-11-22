@@ -1017,16 +1017,31 @@ shows that too).
 
 **What is read, and from where.** A version is read from the collection file *as it was at that commit*, with the
 collection's file path, key and type definition of that commit, not today's, so a collection file that moved or a key
-that changed does not break the older versions. The commits are those with the exact `Record: <collection>/<id>`
-trailer; a record that no commit names (edited by hand, or before the trailer existed) falls back to the commits that
-touched the collection's file, and those in which the record did not change are left out. Reading follows the paging
-model of Activity: the first page pins the current tip, the cursor holds the commit the walk is pinned to and how many
-commits of it were consumed, a request walks at most 400 commits (a page can be short or empty while the cursor
-goes on) and returns at most 50 versions. Nothing hidden elsewhere is shown here: ids that hold a secret are shown
-redacted, `.rackbook/` is never read, and a value that the secret scan flags (as it would for the record today, with
-the type definition of that commit) is not returned, neither in the timeline nor in what *Restore* sends back to the
-editor: it is shown as `(hidden)` and a change between two hidden values is still a change. The old values are read
-with `git cat-file blob <commit>:./<path>` only (the guarded runner allows exactly one blob argument, never an option).
+that changed does not break the older versions. Only what history needs is taken from an old `rackbook.yml` (each
+collection's file, list path, type and key); it is not parsed like today's file, touches no file (no branding) and
+ignores fields it does not know. If it cannot be read, the collection is taken as it is today and the version says
+`approximate`. The commits are those with the exact `Record: <collection>/<id>` trailer, together with those that
+changed the collection's file and the record's content in it without naming the record (a hand edit, or one from before
+the trailer); those show as unverified. A commit whose collection file is the very blob of its parent's is not read at
+all.
+
+*What it costs.* Nothing is parsed by commit but by blob. A commit is resolved to the ids of its `rackbook.yml`,
+collection file and type with one `git ls-tree`, the blobs are read by id, and what is parsed from a blob is kept in
+small caches shared by all requests (12 collection files, 64 `rackbook.yml` and type files, 2 048 resolved
+commits), so each distinct file is parsed once. A request walks at most 1 000 commits (most are skipped without
+reading anything) and works at most 0.7 s; when that is used up the page ends, possibly with no version, and the
+cursor goes on. Reading follows the paging model of Activity: the first page pins the current tip, the cursor holds the
+commit the walk is pinned to and how many commits of it were consumed, and a page has at most 50 versions. A file that
+is too large (8 MiB), cannot be read or does not parse at a commit makes that version `unreadable`: it is listed
+without changes, and the request goes on.
+
+Nothing hidden elsewhere is shown here: ids that hold a secret are shown redacted, `.rackbook/` is never read, and a
+value is hidden when the secret scan flags it with the type of that commit, with today's type, or with no type at all
+(a type's exemption does not make a value visible that a plainer reading flags). That holds in the timeline, in
+the single version, in what *Restore* sends back to the editor and in the summaries of deleted records. A hidden value is
+shown as `(hidden)`, and a change between two hidden values is still a change. The old values are read through
+`git rev-parse <commit>:./<path>` and `git cat-file blob <object id>` only: the guarded runner allows `cat-file`
+only with a bare object id and `ls-tree` only as `ls-tree -z <commit> -- <paths>`, never an option or a name.
 
 **Restore this version** (editors; not on the current version) is done by the server: it reads the record at the
 commit itself (the browser never gets the hidden values) and writes it as **one new commit** through the ordinary
@@ -1037,25 +1052,33 @@ first and shows what would change from the current record to that version. If th
 confirmation, the editor is asked again, as for any write. If the old content no longer fits the current schema or
 references, or its key fields give another id than the record's, nothing is written: the server answers `409
 restore_needs_edit` with the old content and the console opens it in the editor, to be fixed and saved as an ordinary
-edit. A collection without a key always needs this step (ids are positions there). `hash` is the current record's
-hash, so a change made in the meantime is the usual conflict.
+edit. A collection without a key always needs this step (ids are positions there). The 409 gives the old content
+without the values the scan flags and says where they were (`hiddenPaths`, JSON pointers); its `errors` are rebuilt
+from where and which rule failed, never the validator's message, which quotes values. The console opens the form with
+the old content and lists each hidden value: it will not save until, for each, a new value was entered, or *keep the
+current value* (from the current record, which the edit form shows anyway) or *leave empty* was chosen. `hash` is the
+current record's hash, so a change made in the meantime is the usual conflict.
 
 **Deleted records.** On a collection's page, *Deleted records* lists the records whose last change removed them: the
 id (redacted if needed), when, by whom (verified or not), a few fields of the last version, and *Restore*, which
 brings the record back as an add with `Restored-from`. A record that was deleted and added again is not listed; a
-rename is not a deletion. Finding them reads the collection file's whole history, so the result is kept: with
+rename is not a deletion. Finding them reads the collection file's whole history, so the result is kept, with the
+summary fields already hidden and redacted in each entry, so that serving the list reads nothing from Git except
+checking, once per commit, that the commits it names are on the tracked branch (an entry that is not drops the cache and
+rebuilds it). With
 `--state-dir` in `<state-dir>/history/deleted-<collection>.json` (`0600`), without it in memory. The cache is keyed by
 the commit the history was read to and extended from there with only the new commits; if that commit is no longer an
-ancestor of the tip (the history was rewritten) it is built again, and deleting the file is always safe. A first build is
-spread over requests, 200 commits each: until it is finished the answer says `"complete": false` with what is known,
-and the console asks again. The cache holds commit hashes, times, ids (redacted where needed) and the author and subject of the deleting commit, never record values.
+ancestor of the tip (the history was rewritten), or the secret scan, the collection's type, key or list fields changed
+since it was made, it is built again, and deleting the file is always safe. A first build is
+spread over requests, 200 commits or 0.7 s each: until it is finished the answer says `"complete": false` with what is known,
+and the console asks again. The cache holds commit hashes, times, ids (redacted where needed), the author and subject of the deleting commit and a few summary fields without hidden values.
 
 | Request | Meaning |
 |---|---|
-| `GET /api/c/{collection}/{id}/history` | `limit` (default 20, at most 50), `cursor`. `{"id", "versions": [...], "cursor"?, "audit"}`. A version has the fields of an Activity row (`time`, `hash`, `short`, `subject`, `identity`, `name`, `via`, `verified`, `token`, `restoredFrom`) and `change` (`created`, `changed`, `deleted`, `renamed`), `renamedFrom`/`renamedTo`, `recordHash` (the record's hash at that commit, `""` when deleted) and `changes`: `[{"path", "op": "added"\|"removed"\|"changed", "old", "new", "hidden"?, "truncated"?}]` (at most 200 per version, a value is cut at 8 KiB). Every role may read it. Cursors are signed like Activity's, bound to the record and the person; `400 cursor_invalid` when one no longer fits. |
+| `GET /api/c/{collection}/{id}/history` | `limit` (default 20, at most 50), `cursor`. `{"id", "versions": [...], "cursor"?, "audit"}`. A version has the fields of an Activity row (`time`, `hash`, `short`, `subject`, `identity`, `name`, `via`, `verified`, `token`, `restoredFrom`) and `change` (`created`, `changed`, `deleted`, `renamed`), `renamedFrom`/`renamedTo`, `recordHash` (the record's hash at that commit, `""` when deleted), `unreadable`, `approximate` and `changes`: `[{"path", "op": "added"\|"removed"\|"changed", "old", "new", "hidden"?, "truncated"?}]` (at most 200 per version, a value is cut at 8 KiB). Every role may read it. Cursors are signed like Activity's, bound to the record and the person; `400 cursor_invalid` when one no longer fits. |
 | `GET /api/c/{collection}/{id}/history/{commit}` | One version: `{"id", "commit", "recordHash", "data", "hidden", "exists", "current", "changes"}`; `changes` go from today's record to that version (what a restore would change). `404` when the commit is not on the tracked branch or the record did not exist in it. |
-| `POST /api/c/{collection}/{id}/restore` | `{"commit": "<hash, 7 or more digits>", "hash": "<current record hash>", "confirm_not_secret": false}` (`confirmNotSecret` is accepted too). Editors, with the gates of `PUT` (read-only mode, role, token narrowing, same-origin, PR write mode). `200` as a `PUT` plus `"restoredFrom"`. `hash: ""` is for a record that does not exist now and makes it a `201` add (it needs create permission too); `400` for an empty hash when the record exists, `409 conflict` for a hash that does not match. `404` for a commit that is not on the tracked branch, or in which the record did not exist; `409 already_current`; `409 restore_needs_edit` `{"data", "hidden", "commit", "errors"}`; `422 secret_suspected` / `secret_detected` as for any write. |
-| `GET /api/c/{collection}/deleted` | `limit` (default 50, at most 200). `{"records": [{...commit fields of the deleting commit..., "id", "last", "deletedAt", "summary": [{"field", "value"}]}], "complete", "more"}`; `last` is the commit that still had the record (pass it to restore). A record whose id is `deleted` cannot be fetched with `GET /api/c/{collection}/deleted`, which is this list. |
+| `POST /api/c/{collection}/{id}/restore` | `{"commit": "<hash, 7 or more digits>", "hash": "<current record hash>", "confirm_not_secret": false}` (`confirmNotSecret` is accepted too). Editors, with the gates of `PUT` (read-only mode, role, token narrowing, same-origin, PR write mode). `200` as a `PUT` plus `"restoredFrom"`. `hash: ""` is for a record that does not exist now and makes it a `201` add (it needs create permission too); `400` for an empty hash when the record exists, `409 conflict` for a hash that does not match. `404` for a commit that is not on the tracked branch, or in which the record did not exist; `409 already_current`; `409 restore_needs_edit` `{"data", "hidden", "hiddenPaths", "commit", "errors"}`; `422 secret_suspected` / `secret_detected` as for any write. |
+| `GET /api/c/{collection}/deleted` | `limit` (default 50, at most 100). `{"records": [{...commit fields of the deleting commit..., "id", "last", "deletedAt", "summary": [{"field", "value"}]}], "complete", "more"}`; `last` is the commit that still had the record (pass it to restore). A record whose id is `deleted` cannot be fetched with `GET /api/c/{collection}/deleted`, which is this list. |
 
 ## Expiry tracking and modules
 

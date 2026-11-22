@@ -290,27 +290,39 @@ must not decide who sees infra.
 3. Field-level record history, the restore endpoint, deleted records. **Done** (README, "Record history, restore and
    deleted records"). As built, and where it differs from 3.3:
    - The timeline is `GET /api/c/{collection}/{id}/history` (paged like Activity: pinned tip, walk position, signed
-     cursor bound to the record and the person; a walk budget of 400 commits and at most 50 versions per request) and
+     cursor bound to the record and the person; at most 1 000 commits walked, 0.7 s and 50 versions per request) and
      one version with the diff against today's record is `GET .../history/{commit}`, which the restore dialog uses.
-     Commits are the ones with the exact `Record` trailer, else the collection-file fallback with unchanged commits
-     dropped (the mode is chosen on the first page and kept in the cursor). Trailer commits are kept even when the
-     record's content did not change in them.
-   - The old record is read with `git cat-file blob <commit>:./<path>` (hash validated, path literal, relative, not
-     in `.rackbook/` or `.git/`); the runner now allows `cat-file` only as `cat-file blob <one argument>`. The
-     collection's file, key and schema come from the `rackbook.yml` of that commit; when that file does not load, the
-     collection is assumed to have been as it is now. A rename of the key fields (same list position, old id gone) is
-     marked `renamed`, not `created` and `deleted`.
+     Commits are those with the exact `Record` trailer plus those that changed the collection's file and the
+     record's content without naming it (hand edits, shown unverified); a commit whose file is the blob of its
+     parent's is skipped without reading it, so trailer commits that left the file as it was are not versions.
+   - Cost. Nothing is read or parsed by commit but by blob: `git ls-tree -z <commit> -- <paths>` gives the blob ids of
+     `rackbook.yml`, the collection file and the type, the blobs are read by id, and the parsed `rackbook.yml`
+     collection definitions, collection files and type annotations are kept in bounded LRUs shared across requests
+     (`internal/lru`). A file over 8 MiB, unreadable or not valid at a commit gives an `unreadable` version, not an
+     error. A walk of 400 commits of a 2 200-record file takes about 0.7 s for the first page instead of 29 s.
+   - The old record is read with `git rev-parse <commit>:./<path>` and `git cat-file blob <object id>`; the runner
+     allows `cat-file` only with a bare 40 or 64 digit id and `ls-tree` only as `ls-tree -z <commit> -- <paths>`
+     (plain relative paths, none in `.rackbook/` or `.git/`). Only the collection's file, list path, type and key are
+     taken from the `rackbook.yml` of that commit (`config.ParseHistoric`: no file is touched, unknown fields are
+     ignored); when it cannot be read, today's definition is used and the version is `approximate`. A rename of
+     the key fields (same list position, old id gone) is marked `renamed`, not `created` and `deleted`.
    - What "the same hiding as for the current record" means: the record `GET` returns the stored values as they are, so
-     the check made is the one the writes make. Any value that the secret scan flags for that version (with the type
-     definition of that commit) is returned as `(hidden)`, in the diff, in the single version and in the content that
-     comes back with `restore_needs_edit`, which also counts them (`hidden`). A restore itself uses the full old content.
+     the check made is the one the writes make. A value is hidden when the secret scan flags it with the type of that
+     commit, with today's type or with no type, in the diff, the single version, the content that comes back with
+     `restore_needs_edit` (which names the places, `hiddenPaths`) and the deleted summaries. A restore itself uses the
+     full old content. The validation issues of a refused restore are rebuilt from path and rule, since the
+     validator's messages quote values. The form refuses to save until each hidden value has a decision (new value,
+     keep the current one, leave empty); "keep the current value" is taken from the current record that the form
+     already loaded, not from history.
    - Restore is `POST .../restore` as designed, through `s.apply` and `edit.Op` (`RestoredFrom` adds the trailer and the
      subject `restore`). Beyond the design: `already_current` when the version is the current one, a collection without a
      key always answers `restore_needs_edit` (ids are positions), and restoring a deleted record needs create as well as
      update permission. The body key is `confirm_not_secret` as for `PUT`; `confirmNotSecret` is accepted too.
    - Deleted records: `GET /api/c/{collection}/deleted`, with the cache `<state-dir>/history/deleted-<collection>.json`
-     (memory without `--state-dir`), a work budget of 200 commits per request and `complete:false` until the history is
-     read. It reads the history of the collection's current file path only, so deletions from before the file was
+     (memory without `--state-dir`), a work budget of 200 commits or 0.7 s per request and `complete:false` until the
+     history is read. Each entry holds the redacted id and summary fields without hidden values, so the list is served
+     with no Git reads; the cache carries a fingerprint of the secret scan, the type, key and list fields and is made
+     again when it changes, and every commit it names is checked to be on the tracked branch. It reads the history of the collection's current file path only, so deletions from before the file was
      moved are not found; collections without a key are skipped. The list shows the commit that removed the record
      and the commit before it (`last`), not the last commit that changed the record.
    - The Activity page shows `Restored-from` (`restoredFrom` on a ledger commit item).

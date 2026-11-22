@@ -20,7 +20,7 @@ import type { Collection } from '@/lib/types'
 import { useAfterWrite } from '@/providers/meta'
 
 /** What the editor form is opened with when a version cannot be restored as it is. */
-export type RestoreDraft = { data: Record<string, unknown>; commit: string; hidden: number; issues: ApiError['errors'] }
+export type RestoreDraft = { data: Record<string, unknown>; commit: string; /** JSON pointers of the values the old version hid */ hiddenPaths: string[]; issues: ApiError['errors'] }
 
 /**
  * Asks before a version is restored, shows what would change from the current record, and does it. `hash` is
@@ -78,7 +78,7 @@ export function RestoreDialog({
           break
         case 'edit': {
           // the old content is opened in the editor, to be fixed and saved as an ordinary edit
-          const draft: RestoreDraft = { data: e.body?.data ?? {}, commit: e.body?.commit ?? commit, hidden: e.body?.hidden ?? 0, issues: e.errors }
+          const draft: RestoreDraft = { data: e.body?.data ?? {}, commit: e.body?.commit ?? commit, hiddenPaths: Array.isArray(e.body?.hiddenPaths) ? e.body.hiddenPaths : [], issues: e.errors }
           onClose()
           navigate(deleted ? `/c/${encodeURIComponent(col.name)}/-/new` : `${recordHref(col.name, id)}/edit`, { state: { restore: draft } })
           break

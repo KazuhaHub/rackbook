@@ -325,7 +325,7 @@ export function mockApi(root: string): Plugin {
   // as "needs an edit" (it opens in the editor) and the one ending in "ff" asks for the secret-scan
   // confirmation. Every collection has two deleted records (one deleted by a commit nobody vouches for).
   const fakeHash = (seed: string, tail = '') => (createHash('sha1').update(seed).digest('hex') + createHash('sha1').update(seed + 'x').digest('hex')).slice(0, 40 - tail.length) + tail
-  type MockVersion = { hash: string; minsAgo: number; verified: boolean; who: string; subject: string; change: string; changes: any[]; recordHash: string; restoredFrom?: string; renamedFrom?: string }
+  type MockVersion = { hash: string; minsAgo: number; verified: boolean; who: string; subject: string; change: string; changes: any[]; recordHash: string; restoredFrom?: string; renamedFrom?: string; unreadable?: boolean; approximate?: boolean }
   const restored = new Map<string, MockVersion[]>() // restores made in this session, newest first
   const firstHash = new Map<string, string>()
   const deleted = new Map<string, { id: string; data: Data; last: string; hash: string; minsAgo: number; verified: boolean }[]>()
@@ -367,7 +367,10 @@ export function mockApi(root: string): Plugin {
         ],
       },
       {
-        hash: v1, minsAgo: 5 * 24 * 60, verified: true, who: 'Mock Editor', subject: `ledger(${c.name}): add ${rec.id}`, change: 'created', recordHash: fakeHash(key + 'h1').slice(0, 16),
+        hash: fakeHash(key + 'u'), minsAgo: 3 * 24 * 60, verified: false, who: 'Lap Top', subject: 'import the whole inventory', change: 'changed', unreadable: true, changes: [], recordHash: '',
+      },
+      {
+        hash: v1, minsAgo: 5 * 24 * 60, verified: true, approximate: true, who: 'Mock Editor', subject: `ledger(${c.name}): add ${rec.id}`, change: 'created', recordHash: fakeHash(key + 'h1').slice(0, 16),
         changes: textKeys(c, rec.data).slice(0, 3).map((k) => ({ path: k, op: 'added', old: null, new: older(rec.data[k]) })),
       },
     ]
@@ -675,7 +678,7 @@ export function mockApi(root: string): Plugin {
         const gone = deletedOf(hc).find((x) => x.id === a)
         if (d === undefined) {
           if (!rec) return send(res, 200, { id: a, versions: [], audit: true }), true
-          const all = timeline(hc, rec).map((v) => ({ ...commitItem(hc, v, rec.id), change: v.change, recordHash: v.recordHash, changes: v.changes }))
+          const all = timeline(hc, rec).map((v) => ({ ...commitItem(hc, v, rec.id), change: v.change, recordHash: v.recordHash, changes: v.changes, ...(v.unreadable ? { unreadable: true } : {}), ...(v.approximate ? { approximate: true } : {}) }))
           const start = Number(url.searchParams.get('cursor') || 0)
           const page = all.slice(start, start + 3)
           return send(res, 200, { id: rec.id, versions: page, audit: true, ...(start + 3 < all.length ? { cursor: String(start + 3) } : {}) }), true
@@ -704,7 +707,7 @@ export function mockApi(root: string): Plugin {
           if (!gone) return send(res, 404, { error: 'not_found', message: 'the record did not exist in that commit' }), true
           if (body.hash) return send(res, 409, { error: 'conflict', message: 'record no longer exists', current: null }), true
           const errors = tryWrite(hc, (rows) => void rows.push(structuredClone(gone.data)))
-          if (errors.length) return send(res, 409, { error: 'restore_needs_edit', message: 'that version no longer fits', data: gone.data, hidden: 0, commit: commitHash, errors }), true
+          if (errors.length) return send(res, 409, { error: 'restore_needs_edit', message: 'that version no longer fits', data: gone.data, hidden: 0, hiddenPaths: [], commit: commitHash, errors }), true
           deleted.set(hc.name, deletedOf(hc).filter((x) => x !== gone))
           return send(res, 201, { id: gone.id, hash: hashOf(gone.data), data: gone.data, commit: commit(hc, 'restore', gone.id), restoredFrom: commitHash }), true
         }
@@ -712,7 +715,7 @@ export function mockApi(root: string): Plugin {
         const [k1] = textKeys(hc, rec.data)
         const data = k1 ? { ...rec.data, [k1]: older(rec.data[k1]) } : { ...rec.data }
         if (commitHash.endsWith('ee'))
-          return send(res, 409, { error: 'restore_needs_edit', message: 'that version no longer fits', data, hidden: 1, commit: commitHash, errors: k1 ? [{ collection: hc.name, id: rec.id, path: '/' + k1, rule: 'schema', message: 'no longer valid', keyword: 'format', params: {} }] : [] }), true
+          return send(res, 409, { error: 'restore_needs_edit', message: 'that version no longer fits', data, hidden: 1, hiddenPaths: ['/token'], commit: commitHash, errors: k1 ? [{ collection: hc.name, id: rec.id, path: '/' + k1, rule: 'schema', message: 'no longer valid', keyword: 'format', params: {} }] : [] }), true
         if (commitHash.endsWith('ff') && !body.confirm_not_secret)
           return send(res, 422, { error: 'secret_suspected', message: 'looks like a secret', findings: [{ collection: hc.name, id: rec.id, path: '/' + (k1 ?? 'notes'), rule: 'secret-assignment', excerpt: 'pass…', tier: 'confirm' }] }), true
         const idx = hc.rows.indexOf(rec.data)

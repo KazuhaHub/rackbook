@@ -14,6 +14,10 @@ export type RecordVersion = ActivityItem & {
   recordHash: string
   changes: FieldChange[]
   moreChanges?: boolean
+  /** the file is too large, cannot be read or does not parse at that commit: nothing is said */
+  unreadable?: boolean
+  /** that commit's collection settings could not be read; today's were used */
+  approximate?: boolean
 }
 
 export type VersionsPage = { id: string; versions: RecordVersion[]; cursor?: string; audit: boolean }

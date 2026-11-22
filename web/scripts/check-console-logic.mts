@@ -15,7 +15,7 @@ import {
   PORT_PATTERN,
 } from '../src/lib/fieldKind.ts'
 import { customFormats } from '../src/lib/formats.ts'
-import { isLongValue, restoreStep, shortHash, shortValue, valueText } from '../src/lib/versionValue.ts'
+import { getAtPath, isLongValue, pointerSegments, restoreStep, setAtPath, shortHash, shortValue, unresolvedHidden, valueText } from '../src/lib/versionValue.ts'
 import { isSecretName } from '../src/lib/secretName.ts'
 import { formatItem, formatPlain, isScalarObject, objectItems } from '../src/lib/objectItems.ts'
 import {
@@ -462,6 +462,22 @@ eq('restore: unchanged', restoreStep({ statusCode: 409, code: 'already_current' 
 eq('restore: refused', restoreStep({ statusCode: 403, code: 'forbidden' }), 'refused')
 eq('restore: a block-tier secret is a failure', restoreStep({ statusCode: 422, code: 'secret_detected' }), 'failed')
 eq('restore: not found', restoreStep({ statusCode: 404, code: 'not_found' }), 'failed')
+// values an old version hid: where they were, and what still needs a decision
+eq('pointer', pointerSegments('/ports/1/a~1b'), ['ports', '1', 'a/b'])
+eq('pointer of the record', pointerSegments(''), [])
+const hcur = { name: 'x', ports: [{ proto: 'tcp' }, { proto: 'udp', key: 'k' }], token: 'now' }
+eq('get at path', getAtPath(hcur, ['ports', '1', 'key']), 'k')
+eq('get at a missing path', getAtPath(hcur, ['ports', '5', 'key']), undefined)
+eq('set a field', setAtPath(hcur, ['token'], 'new').token, 'new')
+eq('set leaves the original alone', hcur.token, 'now')
+eq('remove a field', Object.keys(setAtPath(hcur, ['token'], undefined)).includes('token'), false)
+eq('set a nested field', (setAtPath(hcur, ['ports', '1', 'key'], 'z') as typeof hcur).ports[1].key, 'z')
+eq('remove a list element leaves the others in place', (setAtPath(hcur, ['ports', '0'], undefined) as typeof hcur).ports.length, 2)
+const hdraft = { name: 'x', ports: [{ proto: 'tcp' }, { proto: '' }] }
+eq('nothing entered: both need a decision', unresolvedHidden(['/token', '/ports/1/proto'], {}, hdraft, hdraft), ['/token', '/ports/1/proto'])
+eq('entered a value', unresolvedHidden(['/token', '/ports/1/proto'], {}, { ...hdraft, token: 'typed' }, hdraft), ['/ports/1/proto'])
+eq('chose', unresolvedHidden(['/token', '/ports/1/proto'], { '/token': 'keep', '/ports/1/proto': 'empty' }, hdraft, hdraft), [])
+eq('typed and cleared again is not a decision', unresolvedHidden(['/token'], {}, { ...hdraft, token: undefined }, hdraft), ['/token'])
 
 if (failed) process.exit(1)
 console.log('console logic: ok')

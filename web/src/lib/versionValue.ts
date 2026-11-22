@@ -48,3 +48,61 @@ export function restoreStep(e: { statusCode: number; code: string }): RestoreSte
   if (e.statusCode === 403) return 'refused'
   return 'failed'
 }
+
+/** The segments of a JSON pointer ("" is the whole record). */
+export function pointerSegments(p: string): string[] {
+  if (p === '' || p === '/') return []
+  return p
+    .replace(/^\//, '')
+    .split('/')
+    .map((x) => x.replace(/~1/g, '/').replace(/~0/g, '~'))
+}
+
+/** The value at a path of a record, undefined when there is none. */
+export function getAtPath(data: unknown, segs: string[]): unknown {
+  let cur: unknown = data
+  for (const seg of segs) {
+    if (Array.isArray(cur)) cur = /^\d+$/.test(seg) ? cur[Number(seg)] : undefined
+    else if (cur && typeof cur === 'object') cur = Object.hasOwn(cur, seg) ? (cur as Record<string, unknown>)[seg] : undefined
+    else return undefined
+  }
+  return cur
+}
+
+/**
+ * A copy of data with the value at the path set. Undefined removes the field of a map; an element of a list
+ * is set to "" instead (the others keep their place). An empty path replaces the whole record.
+ */
+export function setAtPath<T>(data: T, segs: string[], value: unknown): T {
+  if (segs.length === 0) return (value === undefined ? {} : structuredClone(value)) as T
+  const [head, ...rest] = segs
+  if (Array.isArray(data)) {
+    const out = [...data]
+    const i = Number(head)
+    if (Number.isInteger(i) && i >= 0 && i < out.length) out[i] = rest.length ? setAtPath(out[i], rest, value) : value === undefined ? '' : structuredClone(value)
+    return out as T
+  }
+  if (data && typeof data === 'object') {
+    const out = { ...(data as Record<string, unknown>) }
+    if (rest.length) out[head] = setAtPath(out[head], rest, value)
+    else if (value === undefined) delete out[head]
+    else out[head] = structuredClone(value)
+    return out as T
+  }
+  return data
+}
+
+/** What a person decided about a value that the old version hid. */
+export type HiddenChoice = 'keep' | 'empty'
+
+/**
+ * The hidden paths that still need a decision: those with no choice and a value in the form that is still what
+ * the draft had (nothing was entered).
+ */
+export function unresolvedHidden(paths: string[], choices: Record<string, HiddenChoice>, data: unknown, draft: unknown): string[] {
+  return paths.filter((p) => {
+    if (choices[p]) return false
+    const segs = pointerSegments(p)
+    return JSON.stringify(getAtPath(data, segs) ?? null) === JSON.stringify(getAtPath(draft, segs) ?? null)
+  })
+}

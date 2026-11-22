@@ -19,7 +19,7 @@ import type { CheckError, Collection, LedgerRecord } from '@/lib/types'
 import { useAfterWrite, useCollection, useMeta } from '@/providers/meta'
 import { issueText } from '@/lib/issues'
 import { displayId } from '@/lib/recordId'
-import { shortHash } from '@/lib/versionValue'
+import { getAtPath, pointerSegments, setAtPath, shortHash, unresolvedHidden, type HiddenChoice } from '@/lib/versionValue'
 import { collectionDescription, collectionTitle, collectionTitleOf } from '@/lib/labels'
 
 export default function RecordFormPage({ mode }: { mode: 'create' | 'edit' }) {
@@ -145,6 +145,10 @@ function Editor({
     return pre
   })
   const [hash, setHash] = useState(initial?.hash ?? '')
+  // what was decided about each value the old version hid
+  const [choices, setChoices] = useState<Record<string, HiddenChoice>>({})
+  const hiddenPaths = restore?.hiddenPaths ?? []
+  const undecided = restore ? unresolvedHidden(hiddenPaths, choices, data, restore.data) : []
   const [serverErrors, setServerErrors] = useState<CheckError[]>(() => restore?.issues ?? [])
   // the problems of an old version, shown before anything was sent
   const [fromRestore, setFromRestore] = useState(() => !!restore?.issues?.length)
@@ -183,6 +187,11 @@ function Editor({
   }
 
   const submit = (d: Record<string, unknown>) => {
+    if (restore && unresolvedHidden(hiddenPaths, choices, d, restore.data).length > 0) {
+      setBanner(t.history.hiddenBlocked)
+      showAlerts()
+      return
+    }
     setFromRestore(false)
     setClientInvalid(null)
     setServerErrors([])
@@ -228,7 +237,53 @@ function Editor({
           <AlertTitle>{t.history.needsEditTitle}</AlertTitle>
           <AlertDescription>
             <p>{t.history.needsEdit(shortHash(restore.commit))}</p>
-            {restore.hidden > 0 && <p className="mt-1">{t.history.needsEditHidden(restore.hidden)}</p>}
+            {restore.hiddenPaths.length > 0 && <p className="mt-1">{t.history.needsEditHidden(restore.hiddenPaths.length)}</p>}
+          </AlertDescription>
+        </Alert>
+      )}
+      {restore && hiddenPaths.length > 0 && (
+        <Alert className="mb-4">
+          <AlertTriangle />
+          <AlertTitle>{t.history.hiddenTitle}</AlertTitle>
+          <AlertDescription>
+            <p>{t.history.hiddenBody}</p>
+            <ul className="mt-2 space-y-2">
+              {hiddenPaths.map((p) => {
+                const segs = pointerSegments(p)
+                const entered = !undecided.includes(p) && !choices[p]
+                const state = choices[p] ?? (entered ? 'entered' : 'pending')
+                return (
+                  <li key={p} className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
+                    <code className="min-w-0 font-mono text-xs break-all">{segs.length ? segs.join(' › ') : t.history.hiddenWhole}</code>
+                    <span className="text-xs">{t.history.hiddenState[state]}</span>
+                    {mode === 'edit' && (
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        onClick={() => {
+                          setData((d) => setAtPath(d, segs, getAtPath(initial?.data, segs)))
+                          setChoices((c) => ({ ...c, [p]: 'keep' }))
+                        }}
+                      >
+                        {t.history.hiddenKeep}
+                      </Button>
+                    )}
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      onClick={() => {
+                        setData((d) => setAtPath(d, segs, getAtPath(restore.data, segs)))
+                        setChoices((c) => ({ ...c, [p]: 'empty' }))
+                      }}
+                    >
+                      {t.history.hiddenEmpty}
+                    </Button>
+                  </li>
+                )
+              })}
+            </ul>
           </AlertDescription>
         </Alert>
       )}
@@ -330,7 +385,7 @@ function Editor({
         <Button variant="ghost" render={<Link to={cancelTo} />}>
           {t.form.cancel}
         </Button>
-        <Button type="submit" form="rb-record-form" disabled={pending}>
+        <Button type="submit" form="rb-record-form" disabled={pending || undecided.length > 0}>
           <Save /> {pending ? t.form.saving : t.form.save}
         </Button>
       </div>

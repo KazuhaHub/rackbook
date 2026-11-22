@@ -90,9 +90,10 @@ export function RecordHistory({
                 </div>
                 <p className="mt-1 min-w-0 text-sm break-words">{v.subject}</p>
                 <div className="mt-2">
-                  <FieldChanges changes={v.changes} more={v.moreChanges} />
+                  {v.unreadable ? <p className="text-xs text-muted-foreground">{t.history.unreadable}</p> : <FieldChanges changes={v.changes} more={v.moreChanges} />}
+                  {v.approximate && <p className="mt-1 text-xs text-muted-foreground">{t.history.approximate}</p>}
                 </div>
-                {editable && !current && v.change !== 'deleted' && v.hash && (
+                {editable && !current && !v.unreadable && v.change !== 'deleted' && v.hash && (
                   <Button variant="outline" size="sm" className="mt-2" onClick={() => setRestoring(v)}>
                     <RotateCcw /> {t.history.restore}
                   </Button>
