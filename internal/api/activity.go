@@ -108,14 +108,6 @@ type activityItem struct {
 	src int       // ledger, infra, audit: the tie-break after the time
 }
 
-// key names an item for the cursor.
-func (it *activityItem) key() string {
-	if it.Kind != "commit" {
-		return "audit:" + strconv.FormatInt(it.Seq, 10)
-	}
-	return it.Area + ":" + it.Hash
-}
-
 // newer orders items: time, then the source, then audit seq or hash, newest
 // first, so that equal times always come out in the same order.
 func newer(a, b *activityItem) bool {
