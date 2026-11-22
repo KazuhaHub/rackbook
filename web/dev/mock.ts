@@ -574,7 +574,7 @@ export function mockApi(root: string): Plugin {
       let items: Record<string, unknown>[] = history.map((h, i) => ({
         time: h.date, area: 'ledger', kind: 'commit', hash: h.hash.padEnd(40, '0'), short: h.hash, subject: h.subject,
         identity: i === 3 ? 'mallory@example.com' : user.id, name: i === 3 ? 'Mallory' : user.name, verified: i !== 3, via: 'rackbook (oidc)',
-        records: [`${h.collection}/${h.subject.split(' ').slice(1).join(' ')}`], ...(i === 1 ? { token: 'ci-bot' } : {}), collection: h.collection,
+        records: [`${h.collection}/${h.subject.split(' ').slice(2).join(' ')}`], ...(i === 1 ? { token: 'ci-bot' } : {}), collection: h.collection,
       }))
       items.push(
         { time: ago(2), area: 'audit', kind: 'login', seq: 51, identity: user.id, name: user.name, method: 'oidc', role: 'admin', addr: '203.0.113.0' },
