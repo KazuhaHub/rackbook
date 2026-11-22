@@ -143,8 +143,9 @@ old file stays where it is.
 **Retention and privacy.** `--audit-retention-months` (default: keep everything) deletes month files older than
 the given number of months. It does not depend on the anchor. `audit/head.json` also records the first
 kept file and the `prev` its first line points to, so `verify` starts the chain there instead of reporting
-the deleted months as missing. In local mode retention never deletes the month that holds the account
-store's last change, whatever the setting ([design-local-accounts.md](design-local-accounts.md), section 3).
+the deleted months as missing. In local mode retention does not delete the month that holds the account
+store's last change; a monthly checkpoint keeps that pin to at most about one month past the configured
+retention, and a delayed prune is logged ([design-local-accounts.md](design-local-accounts.md), section 3.5).
 `--audit-addr full|truncate|none` (default
 `truncate`: the last octet of IPv4, the last 80 bits of IPv6) controls how much of the client address is
 kept. `full` still keeps an IPv6 client as its /64, because `clientip.Of`, which the rate limits share,
@@ -388,10 +389,15 @@ The open questions of the first draft, as the owner decided them:
    (TOTP or a passkey). Passwords are stored as argon2id, in the state dir, encrypted, never in Git.
    Per-account and per-address limits, lockout with backoff. No e-mail: a forgotten password or a lost second
    factor is an admin-issued one-time reset link. Every sign-in, failure, lockout, reset and invite is in the
-   audit log. Design: [design-local-accounts.md](design-local-accounts.md), revised after review: a reset
-   replaces only the factor it names, locks are per (account, address) with a slowdown per account that never
-   fully closes, account changes and local sign-ins fail closed when the audit log cannot be written
-   (`RecordSync`), and the account store pins its audit month against retention.
+   audit log. Design: [design-local-accounts.md](design-local-accounts.md), revised after two reviews: a reset
+   replaces only the factor it names; account changes and local sign-ins fail closed when the audit log cannot
+   be written (`RecordSync`); the store's write protocol detects crashes and restores; the admin socket needs
+   the account key.
+   The owner added an **adaptive login CAPTCHA** (authcore `captcha`; Turnstile preferred, a self-hosted image
+   CAPTCHA as fallback). It replaces every hard refusal and slowdown on password attempts, so a shared office
+   NAT or an account under attack gets a CAPTCHA instead of a lockout; the only hard limit left is on
+   second-factor failures, which needs the password. The provider and its secret are deployment flags, not
+   `rackbook.yml` keys. Passwordless passkey sign-in is an option, off by default.
 3. **Passkeys under SSO:** passkey sign-in is disabled when SSO is configured, which makes
    `auth.passkeys_oidc_max_age` moot; it is dropped (section 4). Not a config switch; existing passkeys stop
    working, and their file stays until an admin removes it; admins are reminded until then, because it holds
@@ -423,4 +429,5 @@ Still open: the owner's decisions listed in [design-local-accounts.md](design-lo
 - **Teams without SSO** get local accounts: an admin sends an invite link, the person picks a password and
   adds a passkey or an authenticator app. Passwords are never in Git; they sit encrypted on the server, and a
   forgotten password is a new link from an admin, which still asks for the person's passkey or
-  authenticator app.
+  authenticator app. When someone keeps guessing, Rackbook asks for a CAPTCHA instead of locking the account,
+  so the real owner can always get in.
