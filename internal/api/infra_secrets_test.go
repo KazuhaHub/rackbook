@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -441,10 +443,11 @@ func TestSecretsAuthorizationMatrix(t *testing.T) {
 		body         map[string]any
 	}
 	reqs := map[string]req{
-		"list":   {"GET", s.secretsPath("alpha", ""), nil},
-		"reveal": {"POST", s.secretsPath("alpha", "/reveal"), map[string]any{"key": "cloudflare_dns_token"}},
-		"set":    {"POST", s.secretsPath("alpha", "/set"), map[string]any{"base": base, "key": "k", "value": sNewValue}},
-		"unset":  {"POST", s.secretsPath("alpha", "/unset"), map[string]any{"base": base, "key": "cloudflare_dns_token"}},
+		"list":      {"GET", s.secretsPath("alpha", ""), nil},
+		"reveal":    {"POST", s.secretsPath("alpha", "/reveal"), map[string]any{"key": "cloudflare_dns_token"}},
+		"set":       {"POST", s.secretsPath("alpha", "/set"), map[string]any{"base": base, "key": "k", "value": sNewValue}},
+		"unset":     {"POST", s.secretsPath("alpha", "/unset"), map[string]any{"base": base, "key": "cloudflare_dns_token"}},
+		"reencrypt": {"POST", s.secretsPath("alpha", "/reencrypt"), map[string]any{"base": base}},
 	}
 	denied := map[string]map[string]string{
 		"not an infra admin": {"X-User": "editor@kazuha.org"},
@@ -471,7 +474,7 @@ func TestSecretsAuthorizationMatrix(t *testing.T) {
 	}
 	// a session older than the window may list but not reveal or change anything
 	stale := map[string]string{"X-User": "me@kazuha.org", "X-Signed-In-Age": "46800"}
-	for _, rn := range []string{"reveal", "set", "unset"} {
+	for _, rn := range []string{"reveal", "set", "unset", "reencrypt"} {
 		r := reqs[rn]
 		if code, body, _ := s.do(t, r.method, r.path, r.body, stale); code != http.StatusForbidden || body["error"] != "reauth_required" {
 			t.Errorf("%s with a stale session: %d %v", rn, code, body)
@@ -500,7 +503,7 @@ func TestSecretsOffWithoutAKeyFile(t *testing.T) {
 	if code != 200 || body["enabled"] != false || body["publicKey"] != "" {
 		t.Fatalf("%d %v", code, body)
 	}
-	for _, p := range []string{"/reveal", "/set", "/unset"} {
+	for _, p := range []string{"/reveal", "/set", "/unset", "/reencrypt"} {
 		if code, body, _ := e.do(t, "POST", "/api/infra/hosts/alpha/secrets"+p, map[string]any{"key": "k", "value": "v", "base": ""}, me); code != http.StatusForbidden || body["error"] != "secrets_off" {
 			t.Errorf("%s: %d %v", p, code, body)
 		}
@@ -600,4 +603,103 @@ func TestSecretsMultilineValuesAreKeptExactly(t *testing.T) {
 	if _, b, _ := s.reveal(t, "alpha", "feature_demo_token", me); b["value"] != pem {
 		t.Fatalf("%q", b["value"])
 	}
+}
+
+func TestSecretsReencryptChangesRecipientsAndDataKey(t *testing.T) {
+	// the file is encrypted for admin, server and host; the rule now wants admin, server and other
+	s := newSEnv(t, nil, func(s *sEnv, seed map[string]string) {
+		seed[".sops.yaml"] = s.sx.Config(map[string][]string{"secrets/alpha.sops.yaml": {"admin", "server", "other"}, "secrets/beta.sops.yaml": {"admin", "server", "other"}})
+	})
+	f := s.file(t, "alpha")["file"].(map[string]any)
+	if len(arr(t, f["recipients"])) != 3 || len(arr(t, f["rule"])) != 3 || strings.Join(strs(arr(t, f["recipients"])), ",") == strings.Join(strs(arr(t, f["rule"])), ",") {
+		t.Fatalf("the listing does not show the difference: %v", f)
+	}
+	before := sh(t, s.bare, "show", "HEAD:secrets/alpha.sops.yaml")
+	base := s.base(t, "alpha")
+	code, res, _ := s.do(t, "POST", s.secretsPath("alpha", "/reencrypt"), map[string]any{"base": base}, me)
+	if code != 200 || res["commit"] == "" {
+		t.Fatalf("%d %v", code, res)
+	}
+	if subj := s.remote(t, "%s"); subj != "infra(secrets/alpha): re-encrypt for the .sops.yaml recipients (new data key)" {
+		t.Fatalf("subject %q", subj)
+	}
+	after := sh(t, s.bare, "show", "HEAD:secrets/alpha.sops.yaml")
+	if after == before || strings.Contains(after, s.sx.Pub("host")) || !strings.Contains(after, s.sx.Pub("other")) || strings.Contains(after, sAlphaToken) {
+		t.Fatalf("recipients or data key not changed:\n%s", after)
+	}
+	f = s.file(t, "alpha")["file"].(map[string]any)
+	if strings.Join(strs(arr(t, f["recipients"])), ",") != strings.Join(strs(arr(t, f["rule"])), ",") || f["canDecrypt"] != true {
+		t.Fatalf("%v", f)
+	}
+	if _, b, _ := s.reveal(t, "alpha", "cloudflare_dns_token", me); b["value"] != sAlphaToken {
+		t.Fatalf("%v", b)
+	}
+	// the removed recipient cannot read it any more, the new one can
+	for who, ok := range map[string]bool{"host": false, "other": true} {
+		r, err := sops.New(context.Background(), sops.Options{KeyFile: s.sx.KeyFile(who), Sops: s.sx.Sops, AgeKeygen: s.sx.AgeKeygen, Tmp: s.tmp})
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = r.Decrypt(context.Background(), []byte(after), "cloudflare_dns_token")
+		if ok && err != nil || !ok && !errors.Is(err, sops.ErrCannotDecrypt) {
+			t.Errorf("%s: %v", who, err)
+		}
+	}
+	// it is audited (who, what, files), without a value
+	var found bool
+	for _, e := range s.audit.e {
+		if e.Action == "infra(secrets/alpha): reencrypt" && e.Outcome == "reencrypted" && e.Who == "me@kazuha.org" && len(e.Files) == 1 && e.Files[0] == "secrets/alpha.sops.yaml" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("not audited: %+v", s.audit.e)
+	}
+	// a stale base is a conflict
+	head := s.remote(t, "%H")
+	if code, res, _ := s.do(t, "POST", s.secretsPath("alpha", "/reencrypt"), map[string]any{"base": base}, me); code != http.StatusConflict || s.remote(t, "%H") != head {
+		t.Fatalf("%d %v", code, res)
+	}
+	// with the recipients already right it still makes a new data key
+	code, _, _ = s.do(t, "POST", s.secretsPath("alpha", "/reencrypt"), map[string]any{"base": s.base(t, "alpha")}, me)
+	if code != 200 || sh(t, s.bare, "show", "HEAD:secrets/alpha.sops.yaml") == after {
+		t.Fatalf("%d: no new data key", code)
+	}
+}
+
+func TestSecretsReencryptRefusals(t *testing.T) {
+	refuse := func(name string, host string, tweak func(s *sEnv, seed map[string]string), want string) {
+		t.Run(name, func(t *testing.T) {
+			s := newSEnv(t, nil, tweak)
+			head := s.remote(t, "%H")
+			code, res, _ := s.do(t, "POST", s.secretsPath(host, "/reencrypt"), map[string]any{"base": s.base(t, host)}, me)
+			raw, _ := json.Marshal(res)
+			if code != http.StatusUnprocessableEntity || !strings.Contains(string(raw), want) || s.remote(t, "%H") != head {
+				t.Fatalf("%d %s", code, raw)
+			}
+		})
+	}
+	// the rule does not list the server's own key
+	refuse("own key missing", "alpha", func(s *sEnv, seed map[string]string) {
+		seed[".sops.yaml"] = s.sx.Config(map[string][]string{"secrets/alpha.sops.yaml": {"admin", "host"}, "secrets/beta.sops.yaml": {"admin", "server"}})
+	}, "lock it out")
+	// no file yet
+	refuse("no file", "beta", nil, "does not exist")
+	// a file with a pgp recipient besides age
+	refuse("pgp", "alpha", func(s *sEnv, seed map[string]string) {
+		seed["secrets/alpha.sops.yaml"] = strings.Replace(seed["secrets/alpha.sops.yaml"], "    age:\n", "    pgp:\n        - fp: ABCDEF0123456789\n          enc: x\n    age:\n", 1)
+	}, "not age keys")
+	// a rule with more than one key group
+	refuse("key groups", "alpha", func(s *sEnv, seed map[string]string) {
+		seed[".sops.yaml"] = "creation_rules:\n  - path_regex: ^secrets/alpha\\.sops\\.yaml$\n    key_groups:\n      - age: [" + s.sx.Pub("admin") + ", " + s.sx.Pub("server") + "]\n      - age: [" + s.sx.Pub("host") + "]\n"
+	}, "key_groups are not supported")
+}
+
+func strs(in []any) []string {
+	var out []string
+	for _, v := range in {
+		out = append(out, v.(string))
+	}
+	sort.Strings(out)
+	return out
 }

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router'
 import { useQueryClient } from '@tanstack/react-query'
-import { ArrowLeft, Eye, EyeOff, KeyRound, Trash2 } from 'lucide-react'
+import { ArrowLeft, Eye, EyeOff, KeyRound, RefreshCw, Trash2 } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -64,6 +64,10 @@ export default function InfraSecrets() {
   const notFound = q.error instanceof ApiError && q.error.statusCode === 404
   const file = q.data?.file
   const writable = !!q.data?.canWrite && !!file && (file.canDecrypt || !file.exists)
+  // re-encrypting needs the file, a rule to follow and this server's key to read it
+  const canReencrypt = !!q.data?.canWrite && !!file && file.exists && !file.problem && file.canDecrypt && !!file.rule && file.rule.length > 0
+  const ownKeyInRule = !!file?.rule && !!q.data?.publicKey && file.rule.includes(q.data.publicKey)
+  const recipientsDiffer = !!file?.rule && [...file.recipients].sort().join(',') !== [...file.rule].sort().join(',')
 
   const reveal = async (key: string) => {
     hide()
@@ -98,6 +102,22 @@ export default function InfraSecrets() {
       await qc.invalidateQueries({ queryKey: ['rb', 'infra'] })
     } catch (e) {
       setFlow({ phase: 'idle', key, problem: problemOf(e) })
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const reencrypt = async () => {
+    if (!file) return
+    hide()
+    setBusy(true)
+    setFlow({ phase: 'committing', key: 'reencrypt' })
+    try {
+      const outcome = await apiFetch<Outcome>(`${base}/reencrypt`, { method: 'POST', body: JSON.stringify({ base: file.base }) })
+      setFlow({ phase: 'done', key: 'reencrypt', outcome })
+      await qc.invalidateQueries({ queryKey: ['rb', 'infra'] })
+    } catch (e) {
+      setFlow({ phase: 'idle', key: 'reencrypt', problem: problemOf(e) })
     } finally {
       setBusy(false)
     }
@@ -249,6 +269,33 @@ export default function InfraSecrets() {
               </div>
             )}
           </Section>
+
+          {canReencrypt && (
+            <Section title={t.infra.secrets.reencryptTitle}>
+              {!ownKeyInRule ? (
+                <p role="status" className="text-sm text-muted-foreground">
+                  {t.infra.secrets.reencryptNoOwnKey}
+                </p>
+              ) : recipientsDiffer ? (
+                <p role="status" className="mb-3 rounded-lg border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm">
+                  {t.infra.secrets.reencryptDiffer}
+                </p>
+              ) : (
+                <p className="mb-3 text-sm text-muted-foreground">{t.infra.secrets.reencryptSame}</p>
+              )}
+              {ownKeyInRule && (
+                <Button
+                  variant={recipientsDiffer ? 'default' : 'outline'}
+                  disabled={busy || !!stale}
+                  onClick={() => {
+                    if (window.confirm(t.infra.secrets.confirmReencrypt)) void reencrypt()
+                  }}
+                >
+                  <RefreshCw /> {t.infra.secrets.reencrypt}
+                </Button>
+              )}
+            </Section>
+          )}
 
           {writable && (
             <Section title={t.infra.secrets.addTitle} hint={t.infra.secrets.addHint}>

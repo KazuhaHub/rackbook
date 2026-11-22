@@ -30,6 +30,7 @@ func (s *server) infraSecretsRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/infra/hosts/{name}/secrets/reveal", s.infraRevealSecret)
 	mux.HandleFunc("POST /api/infra/hosts/{name}/secrets/set", s.infraSetSecret)
 	mux.HandleFunc("POST /api/infra/hosts/{name}/secrets/unset", s.infraUnsetSecret)
+	mux.HandleFunc("POST /api/infra/hosts/{name}/secrets/reencrypt", s.infraReencryptSecrets)
 }
 
 // secretsOn: Rackbook has an age key to edit the SOPS files with.
@@ -280,4 +281,34 @@ func (s *server) changeSecret(w http.ResponseWriter, r *http.Request, del bool) 
 	}
 	e := ansiblerepo.Edit{Scope: "secrets/" + host, Action: ansiblerepo.SecretsAction([]ansiblerepo.SecretOp{op}), Who: who, Files: []ansiblerepo.FileEdit{fe}}
 	s.finishEdit(w, r, e, false)
+}
+
+// infraReencryptSecrets re-encrypts the file for the recipients of its rule in
+// .sops.yaml with a new data key: one commit, no value touched.
+func (s *server) infraReencryptSecrets(w http.ResponseWriter, r *http.Request) {
+	who, ok := s.infraSecretsGate(w, r, true)
+	if !ok {
+		return
+	}
+	var b secretBody
+	if !readSecretBody(w, r, &b) {
+		return
+	}
+	repo, host := s.o.Infra.Repo, r.PathValue("name")
+	fe, err := repo.SecretsRekeyEdit(host, b.Base)
+	if err != nil {
+		s.writeInfraError(w, err)
+		return
+	}
+	e := ansiblerepo.Edit{Scope: "secrets/" + host, Action: ansiblerepo.SecretsRekeyAction, Who: who, Files: []ansiblerepo.FileEdit{fe}}
+	o, err := repo.Apply(r.Context(), e, false)
+	if err != nil {
+		// failures are recorded by the shared write path (Repo.attempt)
+		s.writeInfraError(w, err)
+		return
+	}
+	if o.Commit != "" {
+		s.infraSecretsAudit(who, host, fe.Path, "reencrypt", "reencrypted")
+	}
+	s.outcome(w, o)
 }

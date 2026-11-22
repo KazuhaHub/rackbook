@@ -694,6 +694,17 @@ decrypted and offers nothing but the key names.
   never the value. Key names are `^[a-z0-9_-]+$` (not `sops`, not ending in `_unencrypted`), values
   non-empty UTF-8 text of at most 16 KiB, entered in a multi-line box with line breaks kept exactly; a
   PEM block whose BEGIN and END are on one line (lost line breaks) is refused.
+- **Re-encrypt** (`POST /api/infra/hosts/<host>/secrets/reencrypt`, body `{base}`) is one commit that
+  re-encrypts the file for exactly the recipients of its creation rule in `.sops.yaml` and gives it a new
+  data key (`sops rotate --add-age/--rm-age`: every value and the MAC change; a removed recipient can no
+  longer decrypt the new file). Use it after a host is reinstalled (new host key) or a key is rotated and
+  the rule changed; the page offers it prominently when the file's recipients differ from the rule, and as a
+  secondary action otherwise (it still makes a new data key). It needs a recent sign-in like every write.
+  The rule in `.sops.yaml` is the authority: if a commit removes the escrow key from a rule, re-encrypting removes it from the file. It is refused when the file does not exist, when the rule has more than one `key_groups` entry, when no rule lists age recipients, when the rule does not
+  list Rackbook's own public key (Rackbook would lock itself out), and when the file has non-age
+  recipients (pgp, kms, ...). A file Rackbook's key cannot decrypt cannot be re-encrypted here: another
+  key holder must add the key (`sops updatekeys`) first. The request is audited (`reencrypt`: who, file,
+  outcome `reencrypted`; failures are recorded by the shared write path under the commit subject) and the commit subject is `infra(secrets/<host>): re-encrypt for the .sops.yaml recipients (new data key)`.
 - **Feature secrets**: a `secret: true` setting of a feature is stored under the key
   `feature_<feature>_<setting>` in the host's SOPS file, in the same commit as the feature's other
   settings. Leaving its box empty keeps the stored value.
@@ -701,7 +712,7 @@ decrypted and offers nothing but the key names.
   the file must have SOPS metadata, every value `ENC[...]`, and exactly the recipients of its
   creation rule in `.sops.yaml`, or nothing is committed. A host with no file yet gets one made from the rule.
 - **No plaintext on disk.** `sops` and `age-keygen` are started only by `internal/sops`, only for
-  `decrypt --extract`, `set --value-stdin`, `unset`, `encrypt` (new file, from standard input) and
+  `decrypt --extract`, `set --value-stdin`, `unset`, `encrypt` (new file, from standard input), `rotate` and
   `age-keygen -y`, with an empty environment but the key file and a scratch `HOME`. The files they get are
   ciphertext, in a 0700 directory (`/dev/shm` when there is one) removed afterwards.
 
