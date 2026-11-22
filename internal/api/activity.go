@@ -1,12 +1,10 @@
 package api
 
 import (
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"slices"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -42,6 +40,7 @@ const (
 	seeState                    // .rackbook/ commits (tokens, passkeys)
 	seeAudit                    // audit events about sign-ins and the ledger
 	seeInfra                    // infra commits and infra audit events
+	seeExport                   // the JSONL export of everything the caller may see
 )
 
 // canSee is the one place that says who may see which kind of activity.
@@ -52,7 +51,7 @@ func (s *server) canSee(r *http.Request, v visibility) bool {
 	switch v {
 	case seeLedger:
 		return true
-	case seeState, seeAudit:
+	case seeState, seeAudit, seeExport:
 		return auth.Can(r.Context(), roles.Manage)
 	case seeInfra:
 		return s.canInfra(r)
@@ -141,241 +140,18 @@ type activityFilter struct {
 
 func (f *activityFilter) has(area string) bool { return slices.Contains(f.areas, area) }
 
-// activitySource is one of the three places activity comes from.
-type activitySource struct {
-	// fetch returns up to n raw items in the range (both ends inclusive, to the
-	// second), newest first or nearly so.
-	fetch func(since, until time.Time, n int) ([]*activityItem, error)
-	// finish adds what is known about the raw items and drops those the filter
-	// does not match.
-	finish func(raw []*activityItem) []*activityItem
-}
-
-const (
-	// scanCap bounds how many raw items one request looks at per source.
-	scanCap = gitstore.MaxActivity
-	// tieCap bounds how many items of one second are read to complete a page edge.
-	tieCap = 1000
-)
-
-type pulled struct {
-	items  []*activityItem
-	oldest time.Time
-	// cut says the source has older items that were not looked at and fewer than
-	// asked for matched: nothing older than oldest can be trusted to be complete.
-	cut bool
-}
-
-func oldestOf(items []*activityItem) time.Time {
-	t := items[0].at
-	for _, it := range items {
-		if it.at.Before(t) {
-			t = it.at
-		}
-	}
-	return t
-}
-
-// pull reads at least need matching items of one source, or all it has, or as
-// many as scanCap allows.
-func pull(src activitySource, since, until time.Time, need int) (pulled, error) {
-	n := min(need, scanCap)
-	for {
-		raw, err := src.fetch(since, until, n)
-		if err != nil {
-			return pulled{}, err
-		}
-		if len(raw) < n {
-			return pulled{items: src.finish(raw)}, nil
-		}
-		// The oldest second may go on past the page edge: read all of it, so that
-		// the order inside it, and the cursor, are exact.
-		tmin := oldestOf(raw)
-		ties, err := src.fetch(tmin, tmin, tieCap)
-		if err != nil {
-			return pulled{}, err
-		}
-		kept := raw[:0:0]
-		for _, it := range raw {
-			if it.at.After(tmin) {
-				kept = append(kept, it)
-			}
-		}
-		raw = append(kept, ties...)
-		items := src.finish(raw)
-		if len(items) >= need || n >= scanCap {
-			return pulled{items: items, oldest: tmin, cut: len(items) < need}, nil
-		}
-		n = min(n*4, scanCap)
-	}
-}
-
-// Cursor: the second of the last item of the page and the keys already shown
-// in that second.
-type activityCursor struct {
-	T    int64    `json:"t"`
-	Keys []string `json:"k,omitempty"`
-}
-
-func decodeCursor(s string) (*activityCursor, error) {
-	if s == "" {
-		return nil, nil
-	}
-	b, err := base64.RawURLEncoding.DecodeString(s)
-	if err != nil {
-		return nil, err
-	}
-	var c activityCursor
-	if err := json.Unmarshal(b, &c); err != nil {
-		return nil, err
-	}
-	return &c, nil
-}
-
-func (c activityCursor) encode() string {
-	b, _ := json.Marshal(c)
-	return base64.RawURLEncoding.EncodeToString(b)
-}
-
-// page returns the next limit items after cur (nil = from the newest) and the
-// cursor for the one after, "" at the end.
-func (s *server) activityPage(r *http.Request, f *activityFilter, cur *activityCursor, limit int) ([]*activityItem, string, error) {
-	until := f.until
-	var emitted map[string]bool
-	if cur != nil {
-		t := time.Unix(cur.T, 0).UTC()
-		if until.IsZero() || t.Before(until) {
-			until = t
-		}
-		emitted = map[string]bool{}
-		for _, k := range cur.Keys {
-			emitted[k] = true
-		}
-	}
-	need := limit + 1
-	if cur != nil {
-		need += len(cur.Keys)
-	}
-	var cands []*activityItem
-	var horizon time.Time
-	for _, src := range s.activitySources(r, f) {
-		p, err := pull(src, f.since, until, need)
-		if err != nil {
-			return nil, "", err
-		}
-		cands = append(cands, p.items...)
-		if p.cut && p.oldest.After(horizon) {
-			horizon = p.oldest
-		}
-	}
-	keep := cands[:0]
-	for _, it := range cands {
-		switch {
-		case cur != nil && it.at.Unix() == cur.T && emitted[it.key()]:
-		case !horizon.IsZero() && it.at.Before(horizon):
-		default:
-			keep = append(keep, it)
-		}
-	}
-	cands = keep
-	sort.SliceStable(cands, func(i, j int) bool { return newer(cands[i], cands[j]) })
-	more := len(cands) > limit || !horizon.IsZero()
-	page := cands[:min(limit, len(cands))]
-	if !more {
-		return page, "", nil
-	}
-	next := activityCursor{}
-	if len(page) > 0 {
-		t := page[len(page)-1].at
-		next.T = t.Unix()
-		for _, it := range page {
-			if it.at.Equal(t) {
-				next.Keys = append(next.Keys, it.key())
-			}
-		}
-	} else {
-		next.T = horizon.Unix()
-	}
-	if cur != nil && cur.T == next.T {
-		next.Keys = append(next.Keys, cur.Keys...)
-	}
-	return page, next.encode(), nil
-}
-
-// activitySources are the places the caller's filter reads from.
-func (s *server) activitySources(r *http.Request, f *activityFilter) []activitySource {
-	var out []activitySource
-	ctx := r.Context()
-	admin := auth.Can(ctx, roles.Manage)
-	if f.has(areaLedger) {
-		out = append(out, activitySource{
-			fetch: func(since, until time.Time, n int) ([]*activityItem, error) {
-				cs, err := s.o.Store.Activity(ctx, gitstore.ActivityQuery{Since: since, Until: until, Collection: f.collection, ID: f.id,
-					IncludeState: s.canSee(r, seeState), Limit: n})
-				if err != nil {
-					return nil, err
-				}
-				return commitItems(areaLedger, 0, cs, admin), nil
-			},
-			finish: func(raw []*activityItem) []*activityItem { return s.verify(raw, f) },
-		})
-	}
-	// An infra commit or an audit event belongs to no collection.
-	if f.collection != "" {
-		return out
-	}
-	if f.has(areaInfra) && s.canSee(r, seeInfra) {
-		out = append(out, activitySource{
-			fetch: func(since, until time.Time, n int) ([]*activityItem, error) {
-				cs, err := s.o.Infra.Repo.Activity(ctx, gitstore.ActivityQuery{Since: since, Until: until, Limit: n})
-				if err != nil {
-					return nil, err
-				}
-				return commitItems(areaInfra, 1, cs, admin), nil
-			},
-			finish: func(raw []*activityItem) []*activityItem { return s.verify(raw, f) },
-		})
-	}
-	wantInfra, wantAudit := f.has(areaInfra) && s.canSee(r, seeInfra), f.has(areaAudit) && s.canSee(r, seeAudit)
-	if s.o.Audit != nil && (wantInfra || wantAudit) {
-		out = append(out, activitySource{
-			fetch: func(since, until time.Time, n int) ([]*activityItem, error) {
-				q := audit.Query{Since: since, Identity: f.identity, Limit: n, Filter: func(e audit.Event) bool {
-					switch {
-					case e.Event == "commit":
-						return false // it only verifies a commit
-					case e.Area == areaInfra:
-						return wantInfra
-					}
-					return wantAudit
-				}}
-				if !until.IsZero() {
-					q.Until = until.Add(time.Second - time.Nanosecond)
-				}
-				pg, err := s.o.Audit.Read(q)
-				if err != nil {
-					return nil, err
-				}
-				return eventItems(pg.Events, admin), nil
-			},
-			finish: func(raw []*activityItem) []*activityItem { return raw },
-		})
-	}
-	return out
-}
-
-func commitItems(area string, src int, cs []gitstore.ActivityCommit, admin bool) []*activityItem {
-	out := make([]*activityItem, 0, len(cs))
+func commitItems(area string, src int, cs []gitstore.ActivityCommit, admin bool) []walkEntry {
+	out := make([]walkEntry, 0, len(cs))
 	for _, c := range cs {
 		it := &activityItem{Area: area, Kind: "commit", Hash: c.Hash, Short: c.Short, Commit: c.Short, Subject: c.Subject,
 			Records: c.Records, Via: c.EditedVia, at: c.Time.Truncate(time.Second), src: src,
-			// as written in the commit: nothing here proves it (see verify)
+			// as written in the commit: nothing here proves it (see markVerified)
 			Identity: c.EditedBy, Name: c.Author}
 		it.Time = it.at.Format(time.RFC3339)
 		if admin && (c.State == gitstore.StateOnly || c.State == gitstore.StateSome) {
 			it.State = c.State
 		}
-		out = append(out, it)
+		out = append(out, walkEntry{item: it, match: !c.Excluded})
 	}
 	return out
 }
@@ -401,31 +177,6 @@ func eventItems(es []audit.Event, admin bool) []*activityItem {
 			it.Addr = e.Addr
 		}
 		it.Time = it.at.Format(time.RFC3339)
-		out = append(out, it)
-	}
-	return out
-}
-
-// verify marks the commits this server made (its audit log has a line for the
-// hash) and takes who made them from that line. The identity filter keeps only
-// those: anybody with push access can write any author or trailer.
-func (s *server) verify(raw []*activityItem, f *activityFilter) []*activityItem {
-	keys := make([]audit.CommitKey, len(raw))
-	for i, it := range raw {
-		keys[i] = audit.CommitKey{Area: it.Area, Hash: it.Hash}
-	}
-	refs := s.o.Audit.LookupCommits(keys)
-	out := raw[:0]
-	for i, it := range raw {
-		ref, ok := refs[keys[i]]
-		v := ok
-		it.Verified = &v
-		if ok {
-			it.Identity, it.Name, it.Method, it.Token = ref.Identity, ref.Name, ref.Method, ref.Token
-		}
-		if f.identity != "" && !(ok && it.Identity == f.identity) {
-			continue
-		}
 		out = append(out, it)
 	}
 	return out
@@ -512,6 +263,10 @@ func (s *server) activity(w http.ResponseWriter, r *http.Request) {
 	switch q.Get("format") {
 	case "":
 	case "jsonl":
+		if !s.canSee(r, seeExport) {
+			writeError(w, http.StatusForbidden, "forbidden", "only administrators may export the activity")
+			return
+		}
 		s.activityExport(w, r, f)
 		return
 	default:
@@ -532,7 +287,11 @@ func (s *server) activity(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_request", "unusable cursor")
 		return
 	}
-	items, next, err := s.activityPage(r, f, cur, limit)
+	items, next, _, err := s.activityPage(r, f, cur, limit)
+	if errors.Is(err, gitstore.ErrBadTip) {
+		writeError(w, http.StatusBadRequest, "bad_request", "the cursor no longer fits this history; start again without it")
+		return
+	}
 	if err != nil {
 		s.internal(w, err)
 		return
@@ -555,18 +314,20 @@ func (s *server) activityExport(w http.ResponseWriter, r *http.Request, f *activ
 	h.Set("Cache-Control", "no-store")
 	enc := json.NewEncoder(w)
 	enc.SetEscapeHTML(false)
-	var cur *activityCursor
-	sent := 0
+	var cur activityCursor
+	sent, work := 0, 0
+	truncated := func() { _ = enc.Encode(map[string]bool{"truncated": true}) }
 	for {
-		items, next, err := s.activityPage(r, f, cur, 500)
+		items, next, w1, err := s.activityPage(r, f, cur, 500)
 		if err != nil {
 			s.log.Error("activity export failed", "err", err)
 			_ = enc.Encode(map[string]any{"error": "internal"})
 			return
 		}
+		work += w1
 		for _, it := range items {
 			if sent >= maxExportItems {
-				_ = enc.Encode(map[string]bool{"truncated": true})
+				truncated()
 				return
 			}
 			if err := enc.Encode(it); err != nil {
@@ -577,8 +338,8 @@ func (s *server) activityExport(w http.ResponseWriter, r *http.Request, f *activ
 		if next == "" {
 			return
 		}
-		if sent >= maxExportItems {
-			_ = enc.Encode(map[string]bool{"truncated": true})
+		if sent >= maxExportItems || work >= exportWorkBudget {
+			truncated()
 			return
 		}
 		if cur, err = decodeCursor(next); err != nil {

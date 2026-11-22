@@ -974,14 +974,21 @@ them, `audit/index.json`, is updated as the log grows; it can be deleted at any 
 | Request | Meaning |
 |---|---|
 | `GET /api/activity` | `since`, `until` (RFC 3339 or `YYYY-MM-DD`; a date for `until` includes that whole day, UTC), `identity`, `area` (`ledger`, `infra`, `audit`; repeat it or separate with commas), `collection`, `id` (needs `collection`; commits with that exact `Record` trailer), `limit` (default 50, at most 200), `cursor`. Answers `{"items": [...], "cursor": "...", "areas": [...], "audit": true}`; `cursor` is absent on the last page. `collection` leaves out infra and audit rows, which belong to no collection. |
-| `GET /api/activity?format=jsonl` | The same filters, no cursor: every match, one JSON object per line, as `application/x-ndjson` with `Content-Disposition: attachment`. It stops at 50 000 rows with a last line `{"truncated":true}`. |
+| `GET /api/activity?format=jsonl` | Admins only. The same filters, no cursor: every match, one JSON object per line, as `application/x-ndjson` with `Content-Disposition: attachment`. It stops at 50 000 rows, or when its work budget is spent, with a last line `{"truncated":true}`. |
 | `GET /api/activity/commit/{area}/{hash}` | What a commit changed (`ledger` or `infra`): the files with status and unified patch. The patches together are capped at 256 KiB (a file that crosses it says `truncated`), at most 200 files. Files under `.rackbook/` are left out for non-admins, and a commit with nothing else is a `404`. In the infra repository SOPS and vault files, and anything under `secrets/`, are listed as changed without a patch, and values that look like secrets are hidden in the others. |
 | `GET /api/audit/status` | Admins: `{"enabled", "ok", "problems": [...], "lastSeq"}`: the recorded chain problems nobody has acknowledged. |
 | `POST /api/audit/ack` | Admins, signed in (not with an API token), not on a read-only server: `{"through": <seq>}` acknowledges the recorded problems whose `chain_problem` line has that seq or a lower one. `409` when there is no audit log or nothing waits to be acknowledged. |
 
-Ordering is by time (to the second), newest first, and ties come out in a fixed order, so a page never repeats or skips
-a row. Commits are ordered by committer date, audit lines by their time. If commit dates go backwards along the
-history (a clock set wrong), such a commit can show up late.
+**Paging.** The three sources (data repository, infra repository, audit log) are read as three streams, each in
+its own order, and merged by taking the newest of their heads. The cursor holds, per stream, where it has got to:
+for a repository the commit its walk is pinned to and how many commits of the walk were consumed (so pages stay
+stable while new commits land, and a commit whose committer date is older than its parent's is not lost); for the
+audit log the seq it has come down to. The `since`, `until`, person and record filters are applied to what a stream
+reads, never as limits on the walk. Every request has a work budget per stream; when it runs out, the page ends (it
+can hold no row at all) and the cursor carries on from there, so keep following `cursor` until it is absent. The
+result is ordered by time, newest first, except where a repository's commit dates go backwards along its history or
+audit lines were written with an old explicit time: such a row comes at its position in its stream, not at its
+date. Nothing is lost or shown twice. A cursor from before a history rewrite was accepted is refused with `400`.
 
 **Acknowledging a chain problem.** While the audit log has a recorded problem nobody has acknowledged, admins see a
 red banner on every page, with the kinds of problem and the first affected line. *I have checked — acknowledge*

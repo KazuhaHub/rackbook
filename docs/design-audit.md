@@ -238,20 +238,38 @@ must not decide who sees infra.
 2. `GET /api/activity` (with `format=jsonl`) and the Activity page. **Done** (README, "Activity"). As built:
    - Acknowledging a chain problem is part of this piece: `POST /api/audit/ack` records a
      `chain_problem_ack` event, and retention stops keeping the month of an acknowledged problem. It is for
-     admins, refused on a read-only server and for API tokens.
+     admins, refused on a read-only server and for API tokens. A `chain_problem` event carries a fingerprint of
+     the evidence (the lines involved, or head.json and where the files end), and an acknowledgement covers only
+     the fingerprints it saw: the same old break stays acknowledged, a line rewritten later or a new garbage
+     head.json or a new cut is recorded again and shows the banner.
+   - `audit/index.json` is a map to the `commit` lines (file and offset), not a source of truth: every hit is
+     checked against the chain (the line is a `commit` event with that area, hash and identity, and the next
+     line's `prev`, or head.json, vouches for it), and a hit that fails rebuilds the index.
    - The `canSee` function in `internal/api/activity.go` is the one place that decides who sees which area;
      piece 4 (auditors) only changes it. Until then the audit areas are admin-only.
    - Audit events are shown under the area `audit`, except the infra ones, which are shown under `infra`.
      The `ledger` area holds commits only, so `write_refused` for the ledger is an `audit` row.
-   - The cursor merges the three sources by time to the second, with a fixed order inside a second; it holds
-     the keys already shown in the last second. It does not use the audit `seq`, because lines copied from the
-     old infra audit file carry old times with new seqs.
+   - Paging model. Each source is a stream with its own resume position, and the cursor holds all of them: for
+     a repository, the commit the walk is pinned to (the first page pins the current tip, so new commits do not
+     shift later pages) and the number of commits of that `git log --date-order` walk already consumed
+     (`--skip=N -n M`); for the audit log, the seq it has come down to. The time, person, record and state
+     filters are applied in Go to what a stream reads and never as git options, because git stops a
+     time-limited walk at the first old commit, which loses commits whose committer dates are out of order. The
+     merge takes the newest head of the three streams. Each request has a work budget per stream (commits
+     walked, audit lines looked at); when it is spent the page ends, possibly without a row, and the cursor
+     resumes there. So the output is complete and has no repeats, but it is sorted only as far as each stream
+     is: a repository whose dates go backwards along its history, or audit lines written with an old explicit
+     time (the copy of the old infra audit file), show at their position in the stream. The JSONL export walks
+     the same pages up to 50 000 rows or its work budget, then ends with `{"truncated":true}`.
+   - `format=jsonl` is for admins (design 3.1); `canSee` has a `seeExport` class so piece 4 only adds the
+     auditors. The list itself is open to every role, limited by area.
    - A `collection` or `id` filter leaves out infra and audit rows. `id` matches the exact `Record` trailer; it
      does not fall back to the collection's file history as the record page's History does, because a page of the
      timeline must not change meaning when an older page has no such commit.
-   - Commits are listed with `git log --date-order` and `-n`, which takes the first commits in Git's order, so a
-     commit whose committer date is older than its parent's can show up late. Rackbook's own commits never do.
-   - The patch of a commit is capped at 256 KiB (200 files); `.rackbook/` files are shown to admins in full
+   - The patch of a commit comes from one `git diff-tree --patch` process whose output is cut at 256 KiB (the
+     process is killed there; the files not read in full are marked truncated), 200 files at most. Every hunk
+     header is rewritten to `@@ -a,b +c,d @@`, because git appends the nearest line above the hunk (for YAML, a
+     top-level key and value) and that line can be a secret. `.rackbook/` files are shown to admins in full
      (they hold public keys, ids and hashes by design), secret files of the infra repository are listed as
      changed without a patch.
    - `/api/meta` carries `auditAlert` for admins while recorded problems are not acknowledged; the console's red

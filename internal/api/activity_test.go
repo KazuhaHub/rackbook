@@ -477,10 +477,10 @@ func TestActivityPagesHaveNoDuplicatesOrGapsAcrossEqualTimes(t *testing.T) {
 		e.laptopCommit(t, same, "same second "+n, map[string]string{n + ".txt": n + "\n"})
 	}
 	at := time.Date(2026, 3, 1, 10, 0, 0, 0, time.UTC)
-	for i := 0; i < 4; i++ { // the same second as the commits, in the audit log
+	e.log.Record(audit.Event{Event: "logout", Identity: adminU, Time: at.Add(-time.Hour)}) // in time order: the audit log is read by seq
+	for i := 0; i < 4; i++ {                                                               // the same second as the commits, in the audit log
 		e.log.Record(audit.Event{Event: "login", Identity: adminU, Time: at.Add(time.Duration(i) * 100 * time.Millisecond)})
 	}
-	e.log.Record(audit.Event{Event: "logout", Identity: adminU, Time: at.Add(-time.Hour)})
 
 	_, full := e.get(t, adminU, "/api/activity?limit=200&since=2026-03-01&until=2026-03-01")
 	all := items(t, full)
@@ -601,13 +601,14 @@ func TestActivityJSONLExport(t *testing.T) {
 			t.Fatalf("line %d: %v %s", i, err, l)
 		}
 	}
-	// the same visibility rules: a viewer's export has no audit line
-	req.Header.Set("X-User", viewerU)
-	resp2, _ := http.DefaultClient.Do(req)
-	b2, _ := io.ReadAll(resp2.Body)
-	resp2.Body.Close()
-	if strings.Contains(string(b2), `"login"`) {
-		t.Fatalf("%s", b2)
+	// the export is for administrators (design 3.1); piece 4 adds the auditors in canSee
+	for _, who := range []string{viewerU, editorU, infraU} {
+		req.Header.Set("X-User", who)
+		resp2, _ := http.DefaultClient.Do(req)
+		resp2.Body.Close()
+		if resp2.StatusCode != 403 {
+			t.Fatalf("%s: %d", who, resp2.StatusCode)
+		}
 	}
 	// the hard cap ends the file with a marker
 	old := api.SetMaxExportItems(2)
@@ -717,5 +718,119 @@ func TestAckNeedsAWritableServer(t *testing.T) {
 	e := newActEnv(t, actOpts{readOnly: true})
 	if code, out, _ := e.do(t, "POST", "/api/audit/ack", map[string]any{"through": 1}, map[string]string{"X-User": adminU}); code != 403 || out["error"] != "read_only" {
 		t.Fatalf("%d %v", code, out)
+	}
+}
+
+// A parent with a newer committer date than its child used to be lost when the
+// next page asked for "until the last date seen". Paging is by position in the
+// walk now: every commit appears exactly once.
+func TestActivityPagingUnderClockSkewLosesNothing(t *testing.T) {
+	e := newActEnv(t, actOpts{})
+	for i, d := range []string{"09:00", "12:00", "10:00", "10:30"} {
+		e.laptopCommit(t, "2026-03-01T"+d+":00Z", "at "+d, map[string]string{"f" + string(rune('a'+i)) + ".txt": d + "\n"})
+	}
+	_, out := e.get(t, viewerU, "/api/activity?limit=200")
+	want := map[string]bool{}
+	for _, it := range items(t, out) {
+		want[it["hash"].(string)] = true
+	}
+	if len(want) != 5 {
+		t.Fatalf("%v", want)
+	}
+	for _, n := range []string{"1", "2"} {
+		seen := map[string]int{}
+		cursor := ""
+		for page := 0; ; page++ {
+			if page > 20 {
+				t.Fatal("does not end")
+			}
+			path := "/api/activity?limit=" + n
+			if cursor != "" {
+				path += "&cursor=" + cursor
+			}
+			_, out := e.get(t, viewerU, path)
+			for _, it := range items(t, out) {
+				seen[it["hash"].(string)]++
+			}
+			if page == 0 {
+				// a commit lands between two requests: the cursor keeps its walk
+				e.laptopCommit(t, "2026-03-02T10:00:00Z", "landed "+n, map[string]string{"late" + n + ".txt": "x\n"})
+			}
+			c, _ := out["cursor"].(string)
+			if c == "" {
+				break
+			}
+			cursor = c
+		}
+		if len(seen) != len(want) {
+			t.Fatalf("n=%s: %v", n, seen)
+		}
+		for h, c := range seen {
+			if !want[h] || c != 1 {
+				t.Fatalf("n=%s: %s seen %d times", n, h, c)
+			}
+		}
+		_, out = e.get(t, viewerU, "/api/activity?limit=200")
+		want = map[string]bool{}
+		for _, it := range items(t, out) {
+			want[it["hash"].(string)] = true
+		}
+	}
+}
+
+// Audit lines are read within a budget; running out of it is a position to
+// resume from, not the end of the log.
+func TestActivityAuditPagingResumesAfterTheScanBudget(t *testing.T) {
+	e := newActEnv(t, actOpts{})
+	for i := 1; i <= 60; i++ {
+		who := adminU
+		if i%25 == 0 {
+			who = "rare@example.com"
+		}
+		e.log.Record(audit.Event{Event: "login", Identity: who, Time: time.Date(2026, 3, 1, 10, 0, i, 0, time.UTC)})
+	}
+	defer api.SetAuditBudget(api.SetAuditBudget(8))
+	defer api.SetActivityChunk(api.SetActivityChunk(3))
+	got := map[string]bool{}
+	cursor := ""
+	for page := 0; ; page++ {
+		if page > 100 {
+			t.Fatal("does not end")
+		}
+		path := "/api/activity?area=audit&identity=rare@example.com"
+		if cursor != "" {
+			path += "&cursor=" + cursor
+		}
+		code, out := e.get(t, adminU, path)
+		if code != 200 {
+			t.Fatalf("%d %v", code, out)
+		}
+		for _, it := range items(t, out) {
+			got[it["time"].(string)] = true
+		}
+		c, _ := out["cursor"].(string)
+		if c == "" {
+			break
+		}
+		cursor = c
+	}
+	if len(got) != 2 {
+		t.Fatalf("older audit events disappeared: %v", got)
+	}
+	// the export carries on across the resumes, and says when it ran out of work
+	req, _ := http.NewRequest("GET", e.ts.URL+"/api/activity?format=jsonl&area=audit&identity=rare@example.com", nil)
+	req.Header.Set("X-User", adminU)
+	resp, _ := http.DefaultClient.Do(req)
+	b, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if n := strings.Count(string(b), `"kind":"login"`); n != 2 || strings.Contains(string(b), "truncated") {
+		t.Fatalf("%s", b)
+	}
+	defer api.SetExportWorkBudget(api.SetExportWorkBudget(5))
+	resp, _ = http.DefaultClient.Do(req)
+	b, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if !strings.HasSuffix(strings.TrimSpace(string(b)), `{"truncated":true}`) {
+		t.Fatalf("the export ran out of work and did not say so: %s", b)
 	}
 }

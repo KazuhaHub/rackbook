@@ -1,4 +1,4 @@
-import { Fragment, useState, type FormEvent } from 'react'
+import { Fragment, useEffect, useState, type FormEvent } from 'react'
 import { Link, useSearchParams } from 'react-router'
 import { Activity as ActivityIcon, ChevronDown, ChevronRight, Download, GitCommitHorizontal, ShieldCheck, ShieldQuestion } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
@@ -290,11 +290,18 @@ function Timeline({ items, audit }: { items: ActivityItem[]; audit: boolean }) {
 }
 
 export default function Activity() {
+  const { meta } = useMeta()
   const [sp, setSp] = useSearchParams()
   const filters = filtersFromParams(sp)
   const q = useActivity(filters)
   const items = q.data?.pages.flatMap((p) => p.items) ?? []
   const audit = q.data?.pages[0]?.audit ?? true
+  // a page can come back empty with a cursor (the server's work budget ran out before it found a row): go on
+  const lastEmpty = !!q.data && q.data.pages[q.data.pages.length - 1].items.length === 0
+  const { hasNextPage, isFetchingNextPage, fetchNextPage } = q
+  useEffect(() => {
+    if (lastEmpty && hasNextPage && !isFetchingNextPage) void fetchNextPage()
+  }, [lastEmpty, hasNextPage, isFetchingNextPage, fetchNextPage])
   const setFilters = (f: ActivityFilters) => setSp(filterQuery(f), { replace: false })
   return (
     <div>
@@ -303,10 +310,12 @@ export default function Activity() {
         title={t.activity.title}
         description={t.activity.description}
         actions={
-          <Button variant="outline" size="sm" title={t.activity.exportHint} render={<a href={exportHref(filters)} download />}>
-            <Download />
-            {t.activity.export}
-          </Button>
+          meta.user?.canAdmin && (
+            <Button variant="outline" size="sm" title={t.activity.exportHint} render={<a href={exportHref(filters)} download />}>
+              <Download />
+              {t.activity.export}
+            </Button>
+          )
         }
       />
       <Filters value={filters} onChange={setFilters} />
@@ -315,7 +324,7 @@ export default function Activity() {
         <Skeleton className="h-48 w-full" />
       ) : q.isError ? (
         <p className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">{errorMessage(q.error)}</p>
-      ) : items.length === 0 ? (
+      ) : items.length === 0 && !q.hasNextPage ? (
         <EmptyState title={t.activity.empty} />
       ) : (
         <>
