@@ -11,6 +11,7 @@ import { Label } from '@/components/ui/label'
 import { Skeleton } from '@/components/ui/skeleton'
 import { NotFound, PageHeader } from '@/components/common'
 import { RecordForm } from '@/components/RecordForm'
+import type { RestoreDraft } from '@/components/RestoreDialog'
 import { t } from '@/i18n'
 import { ApiError, errorMessage } from '@/lib/api'
 import { canEdit, fieldTitle, idFromPath, moduleFor, pointerToPath, recordHref, recordLabel, schemaProps, str } from '@/lib/ledger'
@@ -18,6 +19,7 @@ import type { CheckError, Collection, LedgerRecord } from '@/lib/types'
 import { useAfterWrite, useCollection, useMeta } from '@/providers/meta'
 import { issueText } from '@/lib/issues'
 import { displayId } from '@/lib/recordId'
+import { getAtPath, pointerSegments, setAtPath, shortHash, unresolvedHidden, type HiddenChoice } from '@/lib/versionValue'
 import { collectionDescription, collectionTitle, collectionTitleOf } from '@/lib/labels'
 
 export default function RecordFormPage({ mode }: { mode: 'create' | 'edit' }) {
@@ -132,7 +134,10 @@ function Editor({
   const { meta, byName } = useMeta()
   const managedBy = mode === 'edit' ? moduleFor(meta, col.name, initial?.data.source) : undefined
   const [sp] = useSearchParams()
+  // a version that could not be restored as it is arrives here to be fixed and saved as an ordinary edit
+  const restore = (useLocation().state as { restore?: RestoreDraft } | null)?.restore
   const [data, setData] = useState<Record<string, unknown>>(() => {
+    if (restore) return structuredClone(restore.data)
     if (initial) return structuredClone(initial.data)
     // ?field=value pre-fills a new record (used by "add related" on a detail page)
     const pre: Record<string, unknown> = {}
@@ -140,7 +145,13 @@ function Editor({
     return pre
   })
   const [hash, setHash] = useState(initial?.hash ?? '')
-  const [serverErrors, setServerErrors] = useState<CheckError[]>([])
+  // what was decided about each value the old version hid
+  const [choices, setChoices] = useState<Record<string, HiddenChoice>>({})
+  const hiddenPaths = restore?.hiddenPaths ?? []
+  const undecided = restore ? unresolvedHidden(hiddenPaths, choices, data, restore.data) : []
+  const [serverErrors, setServerErrors] = useState<CheckError[]>(() => restore?.issues ?? [])
+  // the problems of an old version, shown before anything was sent
+  const [fromRestore, setFromRestore] = useState(() => !!restore?.issues?.length)
   const [conflict, setConflict] = useState<ApiError | null>(null)
   const [banner, setBanner] = useState<string | null>(null)
   // the server held the write: it looks like a secret (heuristic); the editor may confirm it is not
@@ -176,6 +187,12 @@ function Editor({
   }
 
   const submit = (d: Record<string, unknown>) => {
+    if (restore && unresolvedHidden(hiddenPaths, choices, d, restore.data).length > 0) {
+      setBanner(t.history.hiddenBlocked)
+      showAlerts()
+      return
+    }
+    setFromRestore(false)
     setClientInvalid(null)
     setServerErrors([])
     setConflict(null)
@@ -214,6 +231,62 @@ function Editor({
           </AlertDescription>
         </Alert>
       )}
+      {restore && (
+        <Alert className="mb-4">
+          <AlertTriangle />
+          <AlertTitle>{t.history.needsEditTitle}</AlertTitle>
+          <AlertDescription>
+            <p>{t.history.needsEdit(shortHash(restore.commit))}</p>
+            {restore.hiddenPaths.length > 0 && <p className="mt-1">{t.history.needsEditHidden(restore.hiddenPaths.length)}</p>}
+          </AlertDescription>
+        </Alert>
+      )}
+      {restore && hiddenPaths.length > 0 && (
+        <Alert className="mb-4">
+          <AlertTriangle />
+          <AlertTitle>{t.history.hiddenTitle}</AlertTitle>
+          <AlertDescription>
+            <p>{t.history.hiddenBody}</p>
+            <ul className="mt-2 space-y-2">
+              {hiddenPaths.map((p) => {
+                const segs = pointerSegments(p)
+                const entered = !undecided.includes(p) && !choices[p]
+                const state = choices[p] ?? (entered ? 'entered' : 'pending')
+                return (
+                  <li key={p} className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
+                    <code className="min-w-0 font-mono text-xs break-all">{segs.length ? segs.join(' › ') : t.history.hiddenWhole}</code>
+                    <span className="text-xs">{t.history.hiddenState[state]}</span>
+                    {mode === 'edit' && (
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        onClick={() => {
+                          setData((d) => setAtPath(d, segs, getAtPath(initial?.data, segs)))
+                          setChoices((c) => ({ ...c, [p]: 'keep' }))
+                        }}
+                      >
+                        {t.history.hiddenKeep}
+                      </Button>
+                    )}
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      onClick={() => {
+                        setData((d) => setAtPath(d, segs, getAtPath(restore.data, segs)))
+                        setChoices((c) => ({ ...c, [p]: 'empty' }))
+                      }}
+                    >
+                      {t.history.hiddenEmpty}
+                    </Button>
+                  </li>
+                )
+              })}
+            </ul>
+          </AlertDescription>
+        </Alert>
+      )}
       <div ref={alertsRef} className="scroll-mt-20" />
       {conflict && (
         <ConflictPanel
@@ -243,9 +316,9 @@ function Editor({
       {serverErrors.length > 0 && (
         <Alert variant="destructive" className="mb-4">
           <AlertTriangle />
-          <AlertTitle>{suspected ? t.errors.suspectedTitle : t.errors.summaryTitle}</AlertTitle>
+          <AlertTitle>{suspected ? t.errors.suspectedTitle : fromRestore ? t.history.issuesTitle : t.errors.summaryTitle}</AlertTitle>
           <AlertDescription>
-            <p>{suspected ? t.errors.suspectedBody : t.errors.summaryBody}</p>
+            <p>{suspected ? t.errors.suspectedBody : fromRestore ? t.history.issuesBody : t.errors.summaryBody}</p>
             {suspected && (
               <div className="mt-2 flex items-center gap-2">
                 <Checkbox id="not-a-secret" checked={notSecret} onCheckedChange={(v) => setNotSecret(v === true)} />
@@ -312,7 +385,7 @@ function Editor({
         <Button variant="ghost" render={<Link to={cancelTo} />}>
           {t.form.cancel}
         </Button>
-        <Button type="submit" form="rb-record-form" disabled={pending}>
+        <Button type="submit" form="rb-record-form" disabled={pending || undecided.length > 0}>
           <Save /> {pending ? t.form.saving : t.form.save}
         </Button>
       </div>

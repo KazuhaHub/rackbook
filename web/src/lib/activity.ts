@@ -19,6 +19,8 @@ export type ActivityItem = {
   via?: string
   subject?: string
   records?: string[]
+  /** the full hash of the commit a restore took the record from */
+  restoredFrom?: string
   /** the audit log confirms this server made the commit */
   verified?: boolean
   /** the API token the commit was made with */

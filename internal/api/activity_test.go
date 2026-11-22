@@ -57,6 +57,10 @@ type actOpts struct {
 // that the store's commit hook writes to, as `rackbook serve` wires it.
 func newActEnv(t *testing.T, o actOpts) *actEnv {
 	t.Helper()
+	// a slow machine (the race detector) must not cut a page of versions short
+	oldV, oldD := gitstore.VersionTimeBudget, gitstore.DeletedTimeBudget
+	gitstore.VersionTimeBudget, gitstore.DeletedTimeBudget = time.Hour, time.Hour
+	t.Cleanup(func() { gitstore.VersionTimeBudget, gitstore.DeletedTimeBudget = oldV, oldD })
 	e := &actEnv{root: t.TempDir()}
 	e.bare, e.laptop = filepath.Join(e.root, "origin.git"), filepath.Join(e.root, "laptop")
 	seed := withRoles(t, testutil.CopyExample(t))

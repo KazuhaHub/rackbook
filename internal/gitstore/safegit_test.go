@@ -250,6 +250,34 @@ func TestRuntimeGuardRefusesDestructiveCommands(t *testing.T) {
 		{"diff-tree", "-p", "HEAD"},
 		{"diff-tree", "--no-patch", "--ext-diff", "HEAD"},
 		{"log", "-n", "1", "--textconv"},
+		// cat-file reads one blob, and only that (a record at a commit)
+		{"cat-file", "-p", "HEAD:rackbook.yml"},
+		{"cat-file", "--batch"},
+		{"cat-file", "--batch-all-objects"},
+		{"cat-file", "--textconv", "HEAD:a.yml"},
+		{"cat-file", "--filters", "HEAD:a.yml"},
+		{"cat-file", "-e", "HEAD"},
+		{"cat-file", "blob"},
+		{"cat-file", "blob", "a", "b"},
+		{"cat-file", "blob", "--textconv"},
+		{"cat-file", "blob", "-x"},
+		{"cat-file", "commit", "HEAD"},
+		{"cat-file", "blob", "HEAD:rackbook.yml"},
+		{"cat-file", "blob", "0123456789abcdef0123456789abcdef01234567:./a.yml"},
+		{"cat-file", "blob", "0123456789abcdef0123456789abcdef0123456"},
+		{"cat-file", "blob", "0123456789ABCDEF0123456789abcdef01234567"},
+		{"ls-tree", "-r", "HEAD"},
+		{"ls-tree", "HEAD", "--", "a.yml"},
+		{"ls-tree", "-z", "HEAD", "--", "a.yml"},
+		{"ls-tree", "-z", "0123456789abcdef0123456789abcdef01234567", "a.yml"},
+		{"ls-tree", "-z", "0123456789abcdef0123456789abcdef01234567", "--"},
+		{"ls-tree", "-z", "0123456789abcdef0123456789abcdef01234567", "--", "../x"},
+		{"ls-tree", "-z", "0123456789abcdef0123456789abcdef01234567", "--", ".rackbook/tokens.yml"},
+		{"ls-tree", "-z", "0123456789abcdef0123456789abcdef01234567", "--", ".git/config"},
+		{"ls-tree", "-z", "0123456789abcdef0123456789abcdef01234567", "--", "-x"},
+		{"ls-tree", "-z", "0123456789abcdef0123456789abcdef01234567", "--", "a", "b", "c", "d", "e"},
+		{"ls-tree", "--full-tree", "-z", "0123456789abcdef0123456789abcdef01234567", "--", "a"},
+		{"cat-file", "--path=x", "blob", "HEAD:a.yml"},
 		{"merge", "--quiet", "--ff-only", "-o", "x", "origin/main"},
 		{"reset", "--quiet", "--hard", "--push-option=x", "origin/main"},
 		{"status", "--porcelain", "-uall", "--output=x"},
@@ -269,7 +297,9 @@ func TestRuntimeGuardRefusesDestructiveCommands(t *testing.T) {
 	}
 	for _, args := range [][]string{{"fetch", "--quiet", "origin"}, {"reset", "--quiet", "--hard", "origin/main"}, {"-C", "d", "log", "-n", "1"}, {"-c", "commit.gpgsign=false", "-C", "d", "status"}, {"-c", "core.autocrlf=false", "status"}, {"--no-pager", "log"}, {"config", "user.name"}, {"remote", "get-url", "origin"}, {"log", "-n", "5", "--format=%h", "--fixed-strings", "--grep=Record: x", "--", "--weird-file"}, {"commit", "--quiet", "--no-verify", "-F", "-", "--only", "--", "-f"},
 		{"log", "--date-order", "--skip=10", "-n", "5", "--name-only", "--format=%H", "HEAD", "--", ".", ":(exclude).rackbook"},
-		{"diff-tree", "--patch", "--no-ext-diff", "--no-color", "--no-commit-id", "-r", "--root", "--no-renames", "abc1234", "--", ":(top,literal)a.yml"}} {
+		{"diff-tree", "--patch", "--no-ext-diff", "--no-color", "--no-commit-id", "-r", "--root", "--no-renames", "abc1234", "--", ":(top,literal)a.yml"},
+		{"cat-file", "blob", "0123456789abcdef0123456789abcdef01234567"}, {"ls-tree", "-z", "0123456789abcdef0123456789abcdef01234567", "--", "rackbook.yml", "data/a.yml"},
+		{"log", "--format=%H", "--date-order", "--skip=1", "-n", "5", "0123456789abcdef0123456789abcdef01234567", "^0123456789abcdef0123456789abcdef01234568", "--", "data/a.yml"}} {
 		if err := refuseDestructive(args); err != nil {
 			t.Errorf("%v refused: %v", args, err)
 		}

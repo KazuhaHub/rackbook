@@ -482,11 +482,14 @@ func (r *Repo) configLoadsAt(ctx context.Context, ref, configPath string) error 
 	if err != nil {
 		return err
 	}
-	data, err := r.git(ctx, "cat-file", "blob", ref+":"+prefix+filepath.Base(configPath))
+	data, ok, err := r.fileAt(ctx, ref+":"+prefix+filepath.Base(configPath))
 	if err != nil {
 		return fmt.Errorf("the config file is not in the accepted commit: %w", err)
 	}
-	_, err = config.Parse([]byte(data), configPath)
+	if !ok {
+		return errors.New("the config file is not in the accepted commit")
+	}
+	_, err = config.Parse(data, configPath)
 	return err
 }
 
