@@ -3,7 +3,8 @@
 Status: design. Decided by the owner on 2026-11-22, reviewed six times, then restructured the same day to follow
 the owner's own products, Passwall-Sub-Panel (PSP) and StockAnalysisPrediction-Report-Portal (RP). Nothing here is
 built yet. Builds on [design-audit.md](design-audit.md) (the audit log, phase 2a) and
-[design-v0.2.md](design-v0.2.md) (the built-in login). Section 14 lists what is still open.
+[design-v0.2.md](design-v0.2.md) (the built-in login). Section 14 records the owner's last answers; nothing is
+open.
 
 What this adds:
 
@@ -102,8 +103,8 @@ way in. RP's `sso_only` covers the same need and degrades safely. Rackbook there
 ### 2.2 Second factors
 
 - **Local accounts:** a second factor is **mandatory**, TOTP or passkey, both always available (owner decision 5).
-  That local accounts keep the passkey even when SSO is configured is our reading of the owner's rule "no passkey
-  sign-in when SSO is configured", which we apply to SSO identities; it awaits confirmation (section 14).
+  Local accounts keep the passkey as a second factor even when SSO is configured; the owner's rule "no passkey
+  sign-in when SSO is configured" applies to SSO identities (confirmed, section 14).
 - **SSO identities:** none from Rackbook. Their second factor is the identity provider's (as in PSP, where only
   local-password accounts are gated: `psp/internal/service/authpolicy/authpolicy.go:44-50`). Rackbook offers SSO
   identities neither a passkey sign-in nor TOTP.
@@ -588,6 +589,13 @@ Matched to PSP (`psp/internal/ports/repos.go:1270-1295`) and RP (`rp/internal/ap
 - **The image CAPTCHA warning**, shown whenever it is selected: "Image CAPTCHAs are read by OCR software and have no
   audio version, so they slow automated guessing only a little and some people cannot solve them. Prefer Turnstile,
   hCaptcha or reCAPTCHA where outside services are allowed." It replaces the earlier deployment flag.
+- **Turnstile `action` and `cdata`.** The sealed attempt token (8.7) is the primary binding of a solve to one
+  attempt. As an extra check, the sign-in page renders the Turnstile widget with `action: "login"` (or `"link"`)
+  and `cdata` set to the attempt's id (its nonce, hex), and the server, after siteverify, requires the returned
+  `action` and `cdata` to equal what it expects, as Cloudflare recommends; a mismatch is `captcha_failed` (`reason:
+  binding`). This relies on an additive authcore change, made separately, that exposes `Action` and `CData` on
+  `Result` (one file per provider is fine). For reCAPTCHA v2 and hCaptcha, which return no `cdata`, the attempt
+  token alone binds.
 - `remoteIP` passed to `Verify` is the client address by the trusted-proxy rules, unbucketed (`clientip.Addr`).
 
 ### 8.6 Counters
@@ -849,7 +857,7 @@ recorded. New field **`target`**: the account acted on when that is not the acto
 |---|---|---|
 | `login` | the account | `role`, `addr`, `detail: ["factor:totp"]`, `["factor:passkey"]` or `["factor:passkey", "passwordless"]` |
 | `login_refused` | the account, empty if unknown | `addr`; `reason`: `unknown_account`, `bad_credentials`, `sso_required`, `throttled`, `locked`, `restricted`, `totp_locked`, `passkey_path_limit`, `disabled`, `not_set_up`, `reset_pending`, `no_role`, `quota`, `busy` (hashing slots or siteverify full, never the dummy-hash budget), `invite_invalid`, `invite_expired`, `invite_claimed`; `code: reauth`; `code: summary` for an aggregate |
-| `captcha_failed` | the account, empty if unknown | `addr`; `reason`: `wrong_answer`, `rejected`, `hostname_mismatch`, `hostname_missing`, `expired`, `unavailable`; `detail`: provider error codes; `code: summary` |
+| `captcha_failed` | the account, empty if unknown | `addr`; `reason`: `wrong_answer`, `rejected`, `hostname_mismatch`, `hostname_missing`, `binding`, `expired`, `unavailable`; `detail`: provider error codes; `code: summary` |
 | `captcha_outage` | none | `code`: `start` or `end` |
 | `logout`, `reauth` | the account | `addr` |
 | `account_restricted` | the account | `code`: `restricted` or `passkey_only`; `detail: ["failures:<n>"]` |
@@ -988,18 +996,18 @@ Piece 1 can ship on its own. The others are in order; piece 6 needs phase 2a's `
 
 ---
 
-## 14. Still open
+## 14. Decisions on the last open points (2026-11-22)
 
-The owner's decisions of 2026-11-22 settle everything that was open before. What remains:
+The owner answered the remaining questions as proposed:
 
-1. **The lock's default scope** is `ip_account`, as in RP. Confirm, given the trade-offs in 8.3.
-2. **CAPTCHA default when enabled:** `image`, as in PSP and RP (no outside calls). For this deployment, behind
-   Cloudflare, Turnstile is the better choice; it is a one-time console setting.
-3. **`sso_redirect` and admins:** the break-glass form is reached with `/auth/login?local=1`. Confirm that this
-   documented URL is acceptable; RP relies on the admin exemption and the page showing SSO only.
-4. **Passkeys for local accounts beside SSO.** The owner's rule was "no passkey sign-in when SSO is configured".
-   This design reads it as applying to SSO identities (they get no Rackbook passkey or TOTP), while local accounts
-   keep the passkey as one of their two allowed second factors even when SSO is configured (2.2). That reading is
-   ours; please confirm it, or say whether local accounts beside SSO should use TOTP only.
-5. **Turnstile `cdata`:** an optional, additive authcore change that would bind the attempt id into the token. Not
-   required by this design.
+1. **Lock scope:** `ip_account` is the default (8.3).
+2. **CAPTCHA default when enabled:** `image`, as in PSP and RP. For this deployment the owner chose Cloudflare
+   Turnstile, a one-time console setting.
+3. **`sso_redirect` and admins:** admins reach the local form at `/auth/login?local=1` (section 12).
+4. **Passkeys for local accounts beside SSO:** allowed as a second factor. The rule "no passkey sign-in when SSO is
+   configured" applies to SSO identities (2.2).
+5. **Turnstile `cdata`:** to be exposed in authcore as additive fields on `Result`, in a separate change; Rackbook
+   then validates `action` and `cdata` server-side as an extra check, with the sealed attempt token as the primary
+   binding (8.5).
+
+Nothing is open.

@@ -323,7 +323,7 @@ This builds on what exists: the role is computed from the identity and the claim
   TOTP: their second factor is the provider's (Entra supports passkeys itself). `auth.passkeys_oidc_max_age`,
   the `passkey_needs_oidc` refusal and `last_oidc` are dropped, and `auth.passkeys` with SSO is ignored with a
   warning. Passkeys were never enabled in this deployment, so there is nothing to migrate. Passkeys remain, as
-  a second factor, for local accounts, which is our reading of the owner's rule and awaits confirmation
+  a second factor, for local accounts, as the owner confirmed
   ([design-local-accounts.md](design-local-accounts.md), sections 2.2 and 14).
 - **How fast a removal takes effect.** Claims are read only at sign-in. `auth.session.claims_absolute`
   (default 24 h) shortens the absolute lifetime of a session whose role came from claims. Removing someone
@@ -428,7 +428,17 @@ items 2 and 3 above as follows; the rest stands.
 
 Design: [design-local-accounts.md](design-local-accounts.md).
 
-Still open: [design-local-accounts.md](design-local-accounts.md), section 14.
+**The last open points (2026-11-22), answered by the owner as proposed:**
+
+12. **Lock scope:** `ip_account` by default.
+13. **CAPTCHA:** `image` is the default when enabled; this deployment uses Cloudflare Turnstile.
+14. **`sso_redirect`:** admins reach the local form at `/auth/login?local=1`.
+15. **Passkeys for local accounts beside SSO:** allowed as a second factor, which settles the reading noted under
+    item 7; the rule of item 3 applies to SSO identities.
+16. **Turnstile `cdata`:** authcore exposes `action` and `cdata` as additive fields on `Result`, in a separate
+    change; Rackbook validates both server-side as an extra check beside the sealed attempt token.
+
+Nothing is open.
 
 ## 8. In plain words
 
