@@ -394,10 +394,14 @@ The open questions of the first draft, as the owner decided them:
    be written (`RecordSync`); the store's write protocol detects crashes and restores; the admin socket needs
    the account key.
    The owner added an **adaptive login CAPTCHA** (authcore `captcha`; Turnstile preferred, a self-hosted image
-   CAPTCHA as fallback). It replaces every hard refusal and slowdown on password attempts, so a shared office
-   NAT or an account under attack gets a CAPTCHA instead of a lockout; the only hard limit left is on
-   second-factor failures, which needs the password. The provider and its secret are deployment flags, not
+   CAPTCHA only with an explicit weak flag). It replaces the refusals and slowdowns of the earlier drafts, so a
+   shared office NAT or an account under attack gets a CAPTCHA instead of a lockout. The provider and its secret are deployment flags, not
    `rackbook.yml` keys. Passwordless passkey sign-in is an option, off by default.
+   After the third review: a token CAPTCHA (Turnstile, hCaptcha or reCAPTCHA) is required in local mode, and the
+   image CAPTCHA only with an explicit weak flag; the NIST SP 800-63B cap is back (100 consecutive failures make
+   an account *restricted*: known networks or a passkey second factor only, a bounded denial of service);
+   password and second factor are checked in one step with one answer; sign-in attempts are stateless tokens that
+   cannot be evicted; and any unexplained file next to a store that lacks an audited change stops the server.
 3. **Passkeys under SSO:** passkey sign-in is disabled when SSO is configured, which makes
    `auth.passkeys_oidc_max_age` moot; it is dropped (section 4). Not a config switch; existing passkeys stop
    working, and their file stays until an admin removes it; admins are reminded until then, because it holds
@@ -429,5 +433,6 @@ Still open: the owner's decisions listed in [design-local-accounts.md](design-lo
 - **Teams without SSO** get local accounts: an admin sends an invite link, the person picks a password and
   adds a passkey or an authenticator app. Passwords are never in Git; they sit encrypted on the server, and a
   forgotten password is a new link from an admin, which still asks for the person's passkey or
-  authenticator app. When someone keeps guessing, Rackbook asks for a CAPTCHA instead of locking the account,
-  so the real owner can always get in.
+  authenticator app. When someone keeps guessing, Rackbook first asks for a CAPTCHA; after 100 wrong tries
+  in a row the account only accepts sign-ins from networks its owner used recently, or with a passkey, until the
+  owner signs in or an admin unlocks it.
