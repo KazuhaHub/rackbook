@@ -165,6 +165,14 @@ func (execRunner) Run(ctx context.Context, c Cmd) (string, string, error) {
 		if err := cmd.Start(); err != nil {
 			return "", "", err
 		}
+		// a panic in Each (or anywhere below) must not leave the child running or unreaped
+		waited := false
+		defer func() {
+			if !waited {
+				cancel()
+				_ = cmd.Wait()
+			}
+		}()
 		buf := make([]byte, 32<<10)
 		stopped := false
 		for {
@@ -178,6 +186,7 @@ func (execRunner) Run(ctx context.Context, c Cmd) (string, string, error) {
 				break
 			}
 		}
+		waited = true
 		werr := cmd.Wait()
 		if stopped {
 			return "", errb.String(), ErrOutputLimit

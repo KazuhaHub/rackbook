@@ -446,3 +446,30 @@ func TestCommitDiffArgumentsStayBoundedForAHugeCommit(t *testing.T) {
 		}
 	}
 }
+
+// A panic in the callback of a streaming git command reaps the child.
+func TestStreamingRunnerReapsTheChildOnAPanic(t *testing.T) {
+	e := newEnv(t)
+	func() {
+		defer func() { _ = recover() }()
+		_, _, _ = execRunner{}.Run(context.Background(), Cmd{Dir: e.server, Args: []string{"log", "--format=%H"}, Each: func([]byte) bool { panic("boom") }})
+	}()
+	ents, err := os.ReadDir("/proc")
+	if err != nil {
+		t.Skip("no /proc")
+	}
+	me := strconv.Itoa(os.Getpid())
+	for _, en := range ents {
+		b, err := os.ReadFile("/proc/" + en.Name() + "/stat")
+		if err != nil {
+			continue
+		}
+		// pid (comm) state ppid ...
+		if i := strings.LastIndex(string(b), ")"); i > 0 {
+			f := strings.Fields(string(b)[i+1:])
+			if len(f) > 1 && f[1] == me {
+				t.Fatalf("child %s left behind in state %s", en.Name(), f[0])
+			}
+		}
+	}
+}

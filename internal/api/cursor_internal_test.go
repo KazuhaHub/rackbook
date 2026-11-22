@@ -1,6 +1,8 @@
 package api
 
 import (
+	"context"
+	"github.com/kazuhahub/rackbook/internal/gitstore"
 	"strings"
 	"testing"
 )
@@ -31,5 +33,19 @@ func TestCursorIsSignedBoundToItsOwnerAndChecked(t *testing.T) {
 		if _, err := s.decodeCursor("oidc:boss", s.encodeCursor("oidc:boss", neg)); err == nil {
 			t.Fatalf("%+v accepted", neg)
 		}
+	}
+}
+
+// A panic in the walk goroutine is the request's error; the stream does not hang.
+func TestPanickingWalkBecomesARequestError(t *testing.T) {
+	g := &gitStream{ctx: context.Background(),
+		walk: func(ctx context.Context, tip string, skip int, onStart func(string), each func(gitstore.ActivityCommit) bool) error {
+			onStart(strings.Repeat("a", 40))
+			panic("boom")
+		},
+		convert: func([]gitstore.ActivityCommit) []walkEntry { return nil }}
+	defer g.close()
+	if _, err := g.peek(); err == nil || !strings.Contains(err.Error(), "boom") {
+		t.Fatalf("%v", err)
 	}
 }

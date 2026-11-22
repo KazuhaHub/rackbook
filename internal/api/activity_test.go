@@ -982,3 +982,23 @@ func TestActivityCursorsAreAuthenticated(t *testing.T) {
 		t.Fatalf("another person's cursor: %d %v", code, out)
 	}
 }
+
+// A cursor is bound to the filters it was made for.
+func TestActivityCursorIsBoundToItsFilters(t *testing.T) {
+	e := newActEnv(t, actOpts{})
+	e.write(t, editorU, "one")
+	e.write(t, editorU, "two")
+	_, out := e.get(t, adminU, "/api/activity?limit=1&area=ledger")
+	cursor, _ := out["cursor"].(string)
+	if cursor == "" {
+		t.Fatalf("%v", out)
+	}
+	if code, _ := e.get(t, adminU, "/api/activity?limit=1&area=ledger&cursor="+cursor); code != 200 {
+		t.Fatal(code)
+	}
+	for _, q := range []string{"area=ledger,audit", "area=ledger&collection=todo", "area=ledger&since=2020-01-01", "area=ledger&identity=x", ""} {
+		if code, out := e.get(t, adminU, "/api/activity?limit=1&"+q+"&cursor="+cursor); code != 400 || out["error"] != "cursor_invalid" {
+			t.Errorf("%q: %d %v", q, code, out)
+		}
+	}
+}

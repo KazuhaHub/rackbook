@@ -282,12 +282,12 @@ func (s *server) activity(w http.ResponseWriter, r *http.Request) {
 		}
 		limit = min(n, maxActivityLimit)
 	}
-	cur, err := s.decodeCursor(s.cursorWho(r), q.Get("cursor"))
+	cur, err := s.decodeCursor(s.cursorBinding(r, f), q.Get("cursor"))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "cursor_invalid", "the cursor is not valid (it does not survive a restart, and is for the person who got it); start again without it")
 		return
 	}
-	items, next, work, err := s.activityPage(r, s.cursorWho(r), f, cur, limit)
+	items, next, work, err := s.activityPage(r, s.cursorBinding(r, f), f, cur, limit)
 	if errors.Is(err, gitstore.ErrBadTip) {
 		writeError(w, http.StatusBadRequest, "cursor_invalid", "the cursor no longer fits this history; start again without it")
 		return
@@ -318,7 +318,7 @@ func (s *server) activityExport(w http.ResponseWriter, r *http.Request, f *activ
 	sent, work := 0, 0
 	truncated := func() { _ = enc.Encode(map[string]bool{"truncated": true}) }
 	for {
-		items, next, w1, err := s.activityPage(r, s.cursorWho(r), f, cur, 500)
+		items, next, w1, err := s.activityPage(r, s.cursorBinding(r, f), f, cur, 500)
 		if err != nil {
 			s.log.Error("activity export failed", "err", err)
 			_ = enc.Encode(map[string]any{"error": "internal"})
@@ -342,7 +342,7 @@ func (s *server) activityExport(w http.ResponseWriter, r *http.Request, f *activ
 			truncated()
 			return
 		}
-		if cur, err = s.decodeCursor(s.cursorWho(r), next); err != nil {
+		if cur, err = s.decodeCursor(s.cursorBinding(r, f), next); err != nil {
 			return
 		}
 	}
@@ -457,10 +457,16 @@ func (s *server) auditAck(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// cursorWho is the identity a cursor is bound to.
-func (s *server) cursorWho(r *http.Request) string {
+// cursorBinding is what a cursor is signed together with: who the caller is, the
+// filters in effect and what the caller may see. A cursor used with other
+// filters, or after a role change, no longer verifies.
+func (s *server) cursorBinding(r *http.Request, f *activityFilter) string {
+	who := ""
 	if id := s.who(r); id != nil {
-		return id.Method + ":" + id.ID
+		who = id.Method + ":" + id.ID
 	}
-	return ""
+	areas := slices.Clone(f.areas)
+	slices.Sort(areas)
+	return strings.Join([]string{who, strings.Join(areas, ","), f.collection, f.id, strconv.FormatInt(f.since.Unix(), 10), strconv.FormatInt(f.until.Unix(), 10), f.identity,
+		strconv.FormatBool(s.canSee(r, seeState)), strconv.FormatBool(s.canSee(r, seeInfra)), strconv.FormatBool(s.canSee(r, seeAudit))}, "\x00")
 }

@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -150,6 +151,12 @@ func startFeed(parent context.Context, walk gitWalk, tip string, skip int, conve
 	}
 	go func() {
 		defer close(f.ch)
+		// a panic in the walk or in turning commits into entries is the request's error, not the server's end
+		defer func() {
+			if r := recover(); r != nil {
+				send(feedMsg{err: fmt.Errorf("activity walk failed: %v", r)})
+			}
+		}()
 		var batch []gitstore.ActivityCommit
 		flush := func() bool {
 			ents := convert(batch)
