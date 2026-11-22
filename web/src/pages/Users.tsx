@@ -79,6 +79,11 @@ export default function Users() {
                     </td>
                     <td className="px-4 py-2.5 whitespace-nowrap">
                       <Badge variant={u.role === 'admin' ? 'default' : u.role === 'none' ? 'destructive' : 'secondary'}>{roleLabel(u.role)}</Badge>
+                      {u.auditor && (
+                        <Badge variant="outline" className="ml-1.5" title={t.auth.auditor.users}>
+                          {t.auth.auditor.label}
+                        </Badge>
+                      )}
                     </td>
                     <td className="px-4 py-2.5 whitespace-nowrap">{u.method ? (t.auth.method[u.method] ?? u.method) : '—'}</td>
                     <td className="px-4 py-2.5 whitespace-nowrap text-muted-foreground">

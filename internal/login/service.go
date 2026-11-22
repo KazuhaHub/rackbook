@@ -521,6 +521,11 @@ func (s *Service) roleOf(id *auth.Identity) roles.Role {
 	return s.authn.Evaluate(id).EffectiveRole()
 }
 
+// auditorOf says whether the identity is on auth.auditors in the current config.
+func (s *Service) auditorOf(id *auth.Identity) bool {
+	return s.authn != nil && s.authn.Evaluate(id).IsAuditor()
+}
+
 func decodeJSON(r *http.Request, v any) error {
 	dec := json.NewDecoder(r.Body)
 	return dec.Decode(v)

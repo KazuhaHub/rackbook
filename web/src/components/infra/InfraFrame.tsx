@@ -1,5 +1,6 @@
 import { NavLink } from 'react-router'
 import { Server, ShieldAlert } from 'lucide-react'
+import { Badge } from '@/components/ui/badge'
 import { EmptyState, PageHeader } from '@/components/common'
 import { t } from '@/i18n'
 import { formatDateTime } from '@/i18n/format'
@@ -60,7 +61,14 @@ export function InfraFrame({ children, header = true }: { children: React.ReactN
   if (!meta.user?.canInfra) return <EmptyState icon={<ShieldAlert />} title={t.infra.adminOnly} body={t.infra.adminOnlyBody} />
   return (
     <div>
-      {header && <PageHeader icon={<Server />} title={t.infra.title} description={meta.user?.canInfraWrite ? t.infra.subtitleWrite : t.infra.subtitle} />}
+      {header && (
+        <PageHeader
+          icon={<Server />}
+          title={t.infra.title}
+          description={meta.user?.canInfraWrite ? t.infra.subtitleWrite : meta.user?.infraAuditor ? t.infra.subtitleAuditor : t.infra.subtitle}
+          actions={meta.user?.infraAuditor && <Badge variant="outline">{t.infra.auditorBadge}</Badge>}
+        />
+      )}
       <nav className="mb-6 flex flex-wrap gap-1 border-b" aria-label={t.infra.title}>
         {tabs.filter((tab) => !tab.write || meta.user?.canInfraWrite).map((tab) => (
           <NavLink

@@ -765,3 +765,40 @@ func TestBrandingImagesNeedNoLogin(t *testing.T) {
 		t.Fatalf("config: %s", r.Body)
 	}
 }
+
+// auth.auditors takes group: entries like a role list. An auditor with no role
+// signs in as a viewer (the floor) and is told so; removing the group's entry
+// locks them out at once, like removing a role.
+func TestAuditorByGroupSignsInWithTheViewerFloor(t *testing.T) {
+	const withAuditors = "  roles:\n    admin: [kazuha@kazuha.org]\n  auditors: [\"group:audit\"]\n"
+	e := newEnv(t, options{roles: withAuditors, nogit: true})
+	e.idp.Users["editor"]["groups"] = []string{"audit"}
+	b := e.browser()
+	if r := b.login("editor", ""); r.StatusCode != 303 || r.Loc() != "/" {
+		t.Fatalf("an auditor with no role is refused: %d %q", r.StatusCode, r.Loc())
+	}
+	_, m := b.meta()
+	u := userOf(t, m)
+	if u["role"] != "viewer" || u["auditor"] != true || u["canEdit"] != false || u["canAdmin"] != false {
+		t.Fatalf("%v", u)
+	}
+	if r := b.get("/api/account"); !strings.Contains(r.Body, `"auditor":true`) {
+		t.Fatalf("%s", r.Body)
+	}
+	// somebody without the group has no role and is refused as before
+	e.idp.Users["viewer"]["groups"] = []string{"dev"}
+	if r := e.browser().login("viewer", ""); r.Loc() != "/auth/login?error=no_role" {
+		t.Fatalf("%d %q", r.StatusCode, r.Loc())
+	}
+	// the administrator is not an auditor
+	ba := e.browser()
+	ba.login("admin", "")
+	if _, m := ba.meta(); userOf(t, m)["role"] != "admin" || userOf(t, m)["auditor"] != nil {
+		t.Fatalf("%v", m)
+	}
+	// removing the entry takes the capability and the floor away
+	e.rewriteRoles("  roles:\n    admin: [kazuha@kazuha.org]\n")
+	if r := b.get("/api/meta"); r.StatusCode != 403 || !strings.Contains(r.Body, "no_role") {
+		t.Fatalf("after removal from the list: %d %s", r.StatusCode, r.Body)
+	}
+}

@@ -284,6 +284,9 @@ func TestServeInfraFlagsAreChecked(t *testing.T) {
 		want string
 	}{
 		"admins without a repo":            {[]string{"--infra-admins", "a@x.org"}, "--infra-admins needs --infra-repo"},
+		"auditors without a repo":          {[]string{"--infra-auditors", "a@x.org"}, "--infra-auditors needs --infra-repo"},
+		"wildcard auditor":                 {append([]string{"--auth", "oidc", "--infra-repo", other, "--infra-admins", "a@x.org", "--infra-auditors", "*@x.org"}, pin...), "--infra-auditors"},
+		"empty auditors":                   {append([]string{"--auth", "oidc", "--infra-repo", other, "--infra-admins", "a@x.org", "--infra-auditors", ""}, pin...), "--infra-auditors names nobody"},
 		"status file without repo":         {[]string{"--hub-status-file", "/run/hub/status.json"}, "--hub-status-file needs --infra-repo"},
 		"repo without oidc":                {[]string{"--infra-repo", other, "--infra-admins", "a@x.org"}, "needs --auth oidc"},
 		"oidc without admins":              {[]string{"--auth", "oidc", "--infra-repo", other}, "names nobody"},

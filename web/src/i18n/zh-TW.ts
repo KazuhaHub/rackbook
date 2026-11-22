@@ -5,6 +5,7 @@ const messages = {
   // login, the account page and the users page
   auth: {
     role: { admin: '管理員', editor: '編輯', viewer: '唯讀', none: '無權限' } as Record<string, string>,
+    auditor: { label: '稽核員', hint: '稽核員是獨立於角色的能力，由 rackbook.yml 的 auth.auditors 授予：可以檢視並匯出「活動」裡的稽核區域和稽核紀錄狀態，但不能顯示密鑰，也不能修改任何內容；只有角色同時是編輯以上才能還原版本。管理員不會自動成為稽核員。', users: '稽核員在 auth.auditors 裡設定，和角色分開。' },
     method: {
       oidc: '單一登入（OIDC）',
       passkey: '通行密鑰',
@@ -944,6 +945,7 @@ const messages = {
         first_file_mismatch: '第一個檔案不一致',
       } as Record<string, string>,
       acknowledge: '我已檢查，確認',
+      adminsAcknowledge: '只有管理員可以確認。',
       confirmTitle: '確認這些問題？',
       confirmBody: '這會在稽核紀錄中記下你已檢視這些問題。問題本身仍保留在紀錄與驗證報告中；確認後不再顯示此橫幅，也不會再阻止保留期設定刪除舊月份。',
       working: '處理中…',
@@ -1186,8 +1188,10 @@ const messages = {
     title: '基礎設施',
     subtitle: '唯讀：每台機器的設定與套用狀態、憑證、IP 清單和設定儲存庫的提交。這裡不能改任何東西。',
     subtitleWrite: '每台機器的設定與套用狀態、憑證、IP 清單和設定儲存庫的提交。管理員可以編輯變數、功能開關和群組；每次儲存就是一個提交到 main 的提交。',
-    adminOnly: '只有基礎設施管理員能看這個頁面',
-    adminOnlyBody: '需要列在 --infra-admins 裡，並且用主控台登入（單一登入）進入；權杖和 MCP 不行。',
+    adminOnly: '只有基礎設施管理員和稽核員能看這個頁面',
+    adminOnlyBody: '需要列在 --infra-admins 或 --infra-auditors 裡，並且用主控台登入（單一登入）進入；權杖和 MCP 不行。',
+    subtitleAuditor: '唯讀：每台機器的設定與套用狀態、憑證、IP 清單和設定儲存庫的提交。這裡不能改任何東西，也看不到密鑰。',
+    auditorBadge: '稽核員 · 唯讀',
     loadFailed: '無法載入',
     tabs: { hosts: '主機', certs: '憑證', iplists: 'IP 清單', commits: '提交', groups: '群組' },
     seconds: (n: number) => `${n} 秒前`,

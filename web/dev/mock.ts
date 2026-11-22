@@ -1,7 +1,9 @@
 // Dev-only mock of docs/api.md, served from the example ledger YAML.
 // Enabled by `npm run dev:mock` (vite --mode mock); never imported by a production build.
 // Writes are kept in memory and are lost on restart. MOCK_READONLY=1 simulates read-only mode,
-// MOCK_PROBLEMS=1 seeds records that fail validation.
+// MOCK_PROBLEMS=1 seeds records that fail validation. MOCK_ROLE=admin|editor|viewer|auditor|auditor-editor
+// picks whose view the demo shows (auditor = viewer plus the auditor capability, auditor-editor = editor plus it);
+// MOCK_INFRA_AUDITOR=1 makes the user an infra auditor (read-only /infra, no secrets) instead of an infra admin.
 import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
@@ -294,9 +296,25 @@ export function mockApi(root: string): Plugin {
   const passkeys: { id: string; name: string; created: string }[] = [
     { id: 'pk1', name: 'MacBook Pro', created: new Date(Date.now() - 3 * 86400000).toISOString() },
   ]
+  const mockRole = process.env.MOCK_ROLE ?? 'admin'
+  const infraAuditor = process.env.MOCK_INFRA_AUDITOR === '1'
+  const roleOf = mockRole.startsWith('auditor') ? (mockRole === 'auditor-editor' ? 'editor' : 'viewer') : mockRole
   const user = readOnly
     ? { id: 'viewer@example.com', email: 'viewer@example.com', name: 'viewer', role: 'viewer', authMethod: 'none', canEdit: false, canAdmin: false, canInfra: false }
-    : { id: 'editor@example.com', email: 'editor@example.com', name: 'Mock Editor', role: 'admin', authMethod: login ? 'oidc' : 'none', canEdit: true, canAdmin: true, canInfra: true, canInfraWrite: true }
+    : {
+        id: process.env.MOCK_ROLE ? `${mockRole}@example.com` : 'editor@example.com',
+        email: process.env.MOCK_ROLE ? `${mockRole}@example.com` : 'editor@example.com',
+        name: process.env.MOCK_ROLE ? `Mock ${mockRole}` : 'Mock Editor',
+        role: roleOf,
+        authMethod: login ? 'oidc' : 'none',
+        canEdit: roleOf === 'admin' || roleOf === 'editor',
+        canAdmin: roleOf === 'admin',
+        ...(mockRole.startsWith('auditor') ? { auditor: true } : {}),
+        // an administrator is an infra admin unless MOCK_INFRA_AUDITOR is set; the others see no infra
+        canInfra: infraAuditor || roleOf === 'admin',
+        ...(infraAuditor ? { infraAuditor: true } : roleOf === 'admin' ? { canInfraWrite: true } : {}),
+      }
+  const seesAudit = user.canAdmin || ('auditor' in user && user.auditor === true)
   // MOCK_ALERT=1 shows the "history rewritten" banner until it is accepted.
   let alert: { kind: string; lastGood: string; remote: string } | undefined =
     process.env.MOCK_ALERT === '1'
@@ -399,7 +417,7 @@ export function mockApi(root: string): Plugin {
       writeMode: cfg.write?.mode ?? 'push',
       user: { ...user, ...(userLocale ? { locale: userLocale } : {}) },
       ...(alert ? { alert } : {}),
-      ...(auditProblem ? { auditAlert: { problems: 1, firstSeq: 41 } } : {}),
+      ...(auditProblem && seesAudit ? { auditAlert: { problems: 1, firstSeq: 41 } } : {}),
       modules,
       collections: [...colls.values()].map((c) => ({
         expiryField: expiryFields[c.name]?.expiryField ?? '',
@@ -480,7 +498,7 @@ export function mockApi(root: string): Plugin {
       return send(res, 200, { locale: l }), true
     }
     if (login && head === 'account' && !cname && method === 'GET') {
-      return send(res, 200, { id: user.id, name: user.name, email: user.email, role: user.role, authMethod: 'oidc', ...(userLocale ? { locale: userLocale } : {}), passkeysEnabled: true, canEnrol: true, enrolUntil: new Date(Date.now() + 600000).toISOString(), passkeys }), true
+      return send(res, 200, { id: user.id, name: user.name, email: user.email, role: user.role, ...('auditor' in user ? { auditor: true } : {}), authMethod: 'oidc', ...(userLocale ? { locale: userLocale } : {}), passkeysEnabled: true, canEnrol: true, enrolUntil: new Date(Date.now() + 600000).toISOString(), passkeys }), true
     }
     if (login && head === 'account' && cname === 'passkeys' && method === 'DELETE') {
       const i = passkeys.findIndex((k) => k.id === rest[0])
@@ -491,7 +509,8 @@ export function mockApi(root: string): Plugin {
       return send(res, 200, {
         passkeysEnabled: true,
         users: [
-          { id: user.id, name: user.name, method: 'oidc', role: 'admin', seen: true, lastSeen: new Date().toISOString(), passkeys },
+          { id: user.id, name: user.name, method: 'oidc', role: user.role, ...('auditor' in user ? { auditor: true } : {}), seen: true, lastSeen: new Date().toISOString(), passkeys },
+          { id: 'audie@example.com', name: 'Audie', method: 'oidc', role: 'viewer', auditor: true, seen: true, lastSeen: new Date(Date.now() - 7200000).toISOString(), passkeys: [] },
           { id: 'ed@kazuha.org', name: 'Ed', method: 'passkey', role: 'editor', seen: true, lastSeen: new Date(Date.now() - 3600000).toISOString(), passkeys: [] },
           { id: 'former@example.com', role: 'none', seen: false, passkeys: [{ id: 'pk9', name: 'old phone', created: new Date(Date.now() - 40 * 86400000).toISOString() }] },
         ],
@@ -502,6 +521,10 @@ export function mockApi(root: string): Plugin {
       if (!alert || body.commit !== alert.remote) return send(res, 409, { error: 'not_remote_tip', message: 'not the remote tip' }), true
       alert = undefined
       return send(res, 200, { ok: true }), true
+    }
+    // an infra auditor reads; the secrets, the raw vars and every write are the infra administrators'
+    if (head === 'infra' && user.canInfra && 'infraAuditor' in user && (method !== 'GET' || (cname === 'hosts' && (rest[1] === 'secrets' || rest[1] === 'vars')))) {
+      return send(res, 403, { error: 'forbidden', message: 'this is for the infra administrators who signed in with the console login' }), true
     }
     if (head === 'infra' && method === 'POST' && user.canInfra) {
       const body = await readBody(req)
@@ -562,7 +585,7 @@ export function mockApi(root: string): Plugin {
         { name: 'cloudflare', version: 'v42', entries: 22, warnings: [] },
         { name: 'office', version: 'v7', entries: 3, warnings: ['the list shrank by 40%'] },
       ] }), true
-      if (cname === 'write') return send(res, 200, { enabled: true, secrets: true, fresh: true, maxAgeSeconds: 43200, signedInAt: ago(600) }), true
+      if (cname === 'write') return send(res, 200, 'infraAuditor' in user ? { enabled: false, secrets: false, fresh: false, auditor: true, maxAgeSeconds: 43200 } : { enabled: true, secrets: true, fresh: true, maxAgeSeconds: 43200, signedInAt: ago(600) }), true
       if (cname === 'features') return send(res, 200, { invalid: [], features: [{ name: 'beszel-agent', description: 'Monitoring agent', settings: [
         { name: 'mode', type: 'enum', enum: ['websocket', 'listen'], default: 'websocket', description: 'How the agent connects' },
         { name: 'hub_url', type: 'string', description: 'Address of the hub', required: true },
@@ -572,7 +595,7 @@ export function mockApi(root: string): Plugin {
       ] }] }), true
       if (cname === 'groups') return send(res, 200, { base: 'b'.repeat(40), membership: { groups: ['hub', 'managed'], hosts: ['alpha-host', 'beta-host'], direct: { 'alpha-host': ['hub', 'managed'], 'beta-host': ['managed'] } } }), true
       if (cname === 'hosts' && rest[1] === 'vars') return send(res, 200, { path: 'inventory/host_vars/' + rest[0] + '.yml', exists: true, base: 'a'.repeat(40), hidden: 0, content: 'tailscale_ip: 100.64.0.1\nfeatures: {}\n' }), true
-      if (cname === 'commits') return send(res, 200, { repo, canRevert: true, commits: [
+      if (cname === 'commits') return send(res, 200, { repo, canRevert: !('infraAuditor' in user), commits: [
         { hash: infraHead, author: 'Mock Editor', time: ago(3600), subject: 'infra(host_vars/alpha-host): enable beszel-agent', files: ['inventory/host_vars/alpha-host.yml'], revertible: true },
         { hash: '0123456789abcdef0123456789abcdef01234567', author: 'Mock Editor', time: ago(86400 * 2), subject: 'certs: add beta.example.org', files: ['roles/hub/files/certs.yml'], revertible: false, reason: 'not_editable' },
       ] }), true
@@ -615,11 +638,13 @@ export function mockApi(root: string): Plugin {
       const commits = history.filter((h) => !col || h.collection === col).slice(0, limit).map((h) => ({ hash: h.hash, author: h.author, email: h.email, date: h.date, subject: h.subject }))
       return send(res, 200, { commits }), true
     }
+    if (head === 'audit' && !seesAudit) return send(res, 403, { error: 'forbidden', message: 'only administrators and auditors may see the audit log status' }), true
     if (head === 'audit' && cname === 'status' && method === 'GET') {
       const problems = auditProblem ? [{ kind: 'cut_from_end', seq: 41, file: 'audit-2026-11.jsonl', recordedAt: 44 }] : []
       return send(res, 200, { enabled: true, ok: !auditProblem, problems, lastSeq: 52 }), true
     }
     if (head === 'audit' && cname === 'ack' && method === 'POST') {
+      if (!user.canAdmin) return send(res, 403, { error: 'forbidden', message: 'only administrators may acknowledge the audit log status' }), true
       auditProblem = false
       return send(res, 200, { enabled: true, ok: true, problems: [], lastSeq: 53 }), true
     }
@@ -639,7 +664,9 @@ export function mockApi(root: string): Plugin {
     if (head === 'activity' && method === 'GET') {
       const q = url.searchParams
       const ago = (m: number) => new Date(Date.now() - m * 60000).toISOString()
+      const visible = ['ledger', ...(user.canInfra ? ['infra'] : []), ...(seesAudit ? ['audit'] : [])]
       const areas = q.getAll('area').flatMap((a) => a.split(','))
+      if (areas.some((a) => !visible.includes(a))) return send(res, 403, { error: 'forbidden', message: 'you may not see that activity' }), true
       let items: Record<string, unknown>[] = history.map((h, i) => ({
         time: h.date, area: 'ledger', kind: 'commit', hash: h.hash.padEnd(40, '0'), short: h.hash, subject: h.subject,
         identity: i === 3 ? 'mallory@example.com' : user.id, name: i === 3 ? 'Mallory' : user.name, verified: i !== 3, via: 'rackbook (oidc)',
@@ -656,11 +683,11 @@ export function mockApi(root: string): Plugin {
       const col = q.get('collection')
       const who = q.get('identity')
       items = items
-        .filter((it) => (!areas.length || areas.includes(String(it.area))) && (!col || it.collection === col) && (!who || (it.identity === who && it.verified !== false)))
+        .filter((it) => (areas.length ? areas.includes(String(it.area)) : visible.includes(String(it.area))) && (seesAudit || it.state === undefined) && (!col || it.collection === col) && (!who || (it.identity === who && it.verified !== false)))
         .sort((a, b) => String(b.time).localeCompare(String(a.time)))
       const start = Number(q.get('cursor') || 0)
       const page = items.slice(start, start + 5)
-      return send(res, 200, { items: page, areas: ['ledger', 'infra', 'audit'], audit: true, ...(start + 5 < items.length ? { cursor: String(start + 5) } : {}) }), true
+      return send(res, 200, { items: page, areas: visible, audit: true, ...(start + 5 < items.length ? { cursor: String(start + 5) } : {}) }), true
     }
     if (head === 'c' && cname && parts.length >= 3) {
       const hc = colls.get(cname)

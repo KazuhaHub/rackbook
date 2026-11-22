@@ -16,18 +16,20 @@ import { ackThrough, acknowledgeAudit, useAuditStatus } from '@/lib/activity'
 import { useMeta } from '@/providers/meta'
 
 /**
- * Red banner for administrators while the audit log has recorded chain problems nobody
- * acknowledged. It sits where the other admin banners do (the top of every page, so it is
- * also on the Activity page); acknowledging records that the administrator has looked.
+ * Red banner for administrators and auditors while the audit log has recorded chain problems
+ * nobody acknowledged. It sits where the other admin banners do (the top of every page, so it is
+ * also on the Activity page). Only an administrator can acknowledge, which records that they
+ * have looked; an auditor sees the same banner without the button.
  */
 export function AuditAlert() {
   const { meta, refresh } = useMeta()
   const alert = meta.auditAlert
-  const status = useAuditStatus(!!alert && !!meta.user?.canAdmin)
+  const canAck = !!meta.user?.canAdmin
+  const status = useAuditStatus(!!alert && (canAck || !!meta.user?.auditor))
   const [confirm, setConfirm] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
-  if (!alert || !meta.user?.canAdmin) return null
+  if (!alert || !(canAck || meta.user?.auditor)) return null
 
   const problems = status.data?.problems ?? []
   const kinds = [...new Set(problems.map((p) => p.kind))].map((k) => t.activity.banner.kinds[k] ?? k).join(', ')
@@ -57,11 +59,12 @@ export function AuditAlert() {
       ) : (
         status.isSuccess && <span className="min-w-0 text-xs opacity-90">{t.activity.banner.failed}</span>
       )}
-      {through > 0 && (
+      {through > 0 && canAck && (
         <Button size="sm" variant="secondary" className="ml-auto" onClick={() => setConfirm(true)}>
           {t.activity.banner.acknowledge}
         </Button>
       )}
+      {!canAck && <span className="ml-auto text-xs opacity-90">{t.activity.banner.adminsAcknowledge}</span>}
       <AlertDialog open={confirm} onOpenChange={setConfirm}>
         <AlertDialogContent>
           <AlertDialogHeader>

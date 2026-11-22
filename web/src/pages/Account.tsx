@@ -111,7 +111,13 @@ export default function Account() {
             {u?.name && <Field label={A.name}>{u.name}</Field>}
             <Field label={A.role}>
               <Badge variant={u?.role === 'admin' ? 'default' : 'secondary'}>{roleLabel(u?.role) || '—'}</Badge>
+              {u?.auditor && (
+                <Badge variant="outline" className="ml-1.5" title={t.auth.auditor.hint}>
+                  {t.auth.auditor.label}
+                </Badge>
+              )}
               <span className="ml-2 text-xs text-muted-foreground">{A.roleHint}</span>
+              {u?.auditor && <p className="mt-1.5 text-xs text-muted-foreground">{t.auth.auditor.hint}</p>}
             </Field>
             <Field label={A.method}>{t.auth.method[method] ?? method}</Field>
           </dl>

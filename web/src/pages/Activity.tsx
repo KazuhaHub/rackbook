@@ -33,7 +33,7 @@ import { useMeta } from '@/providers/meta'
 /** The areas this person may name; the server refuses the others. */
 function useVisibleAreas(): ActivityArea[] {
   const { meta } = useMeta()
-  return AREAS.filter((a) => a === 'ledger' || (a === 'infra' && !!meta.user?.canInfra) || (a === 'audit' && !!meta.user?.canAdmin))
+  return AREAS.filter((a) => a === 'ledger' || (a === 'infra' && !!meta.user?.canInfra) || (a === 'audit' && (!!meta.user?.canAdmin || !!meta.user?.auditor)))
 }
 
 function Filters({ value, onChange }: { value: ActivityFilters; onChange: (f: ActivityFilters) => void }) {
@@ -299,7 +299,7 @@ export default function Activity() {
         title={t.activity.title}
         description={t.activity.description}
         actions={
-          meta.user?.canAdmin && (
+          (meta.user?.canAdmin || meta.user?.auditor) && (
             <Button variant="outline" size="sm" title={t.activity.exportHint} render={<a href={exportHref(filters)} download />}>
               <Download />
               {t.activity.export}
