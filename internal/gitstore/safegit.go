@@ -118,6 +118,10 @@ func refuseDestructive(args []string) error {
 		if len(rest) != 2 || rest[0] != "get-url" || rest[1] != "origin" {
 			return fmt.Errorf("%w: remote %s", errDestructive, strings.Join(rest, " "))
 		}
+	case "cat-file": // read only: one blob, named as <rev>:<path>, never an option
+		if len(rest) != 2 || rest[0] != "blob" || rest[1] == "" || strings.HasPrefix(rest[1], "-") {
+			return fmt.Errorf("%w: cat-file %s (only \"cat-file blob <object>\")", errDestructive, strings.Join(rest, " "))
+		}
 	case "config": // read only, fixed keys
 		if len(rest) != 1 || (rest[0] != "user.name" && rest[0] != "user.email") {
 			return fmt.Errorf("%w: config %s", errDestructive, strings.Join(rest, " "))

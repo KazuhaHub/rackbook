@@ -54,6 +54,10 @@ type Op struct {
 	// that becomes a pull request). ConfirmedBy names who confirmed.
 	ConfirmNotSecret bool
 	ConfirmedBy      string
+	// RestoredFrom (add, edit) marks the change as the restore of a version of the
+	// record from that commit (the full hash): the commit subject says "restore" and
+	// the commit carries a "Restored-from:" trailer.
+	RestoredFrom string
 	// Module, when set, applies the write rules of a module token (ModuleRule).
 	Module *ModuleRule
 	// DryRun runs every check but writes nothing: Result.Before and Result.After
@@ -134,6 +138,9 @@ type Result struct {
 	// or its redacted form when the key fields hold a secret.
 	SubjectID string
 
+	// Restored is the commit a restore took the record from (Op.RestoredFrom).
+	Restored string
+
 	// SubjectText and RecordText replace the commit subject and the Record
 	// trailer for changes that are not record edits (data type changes).
 	SubjectText string
@@ -153,7 +160,11 @@ func (r *Result) Subject() string {
 	if r.SubjectText != "" {
 		return r.SubjectText
 	}
-	return fmt.Sprintf("ledger(%s): %s %s", r.Collection, r.Kind, sanitizeSubject(r.shownID()))
+	kind := string(r.Kind)
+	if r.Restored != "" {
+		kind = "restore"
+	}
+	return fmt.Sprintf("ledger(%s): %s %s", r.Collection, kind, sanitizeSubject(r.shownID()))
 }
 
 // Record is the value of the "Record:" commit trailer for this change.
@@ -409,6 +420,10 @@ func Apply(cfg *config.Config, op Op) (*Result, error) {
 	res := &Result{Kind: op.Kind, Collection: op.Collection, ID: newID, Data: op.Data, Cleared: cleared, SubjectID: ledger.SafeID(cfg, op.Collection, newID), Trailers: confirmed}
 	if op.Module != nil {
 		res.Trailers = append(res.Trailers, "Source: "+op.Module.Name)
+	}
+	if op.RestoredFrom != "" && op.Kind != Delete {
+		res.Restored = op.RestoredFrom
+		res.Trailers = append(res.Trailers, "Restored-from: "+op.RestoredFrom)
 	}
 	if string(out) == string(src) && len(files) == 0 {
 		res.Hash = ledger.Hash(op.Data)

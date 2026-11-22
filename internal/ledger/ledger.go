@@ -226,6 +226,31 @@ func (l *Ledger) loadRecords(c *Collection, doc func(string) (*yamledit.Doc, err
 	}
 }
 
+// ParseRecords reads the records of one collection from the contents of its
+// file, with the id rule of Load (Hash is left empty: compute it with Hash when it
+// is needed). It is for a file as it was in an
+// older commit (the history view): items that are not mappings are skipped and
+// the file is not checked against anything.
+func ParseRecords(c *config.Collection, src []byte) ([]*Record, error) {
+	d, err := yamledit.Parse(src)
+	if err != nil {
+		return nil, err
+	}
+	list, err := d.Records(c.Path)
+	if err != nil {
+		return nil, err
+	}
+	var out []*Record
+	for i := range list.Items {
+		data, ok := list.Value(i).(map[string]any)
+		if !ok {
+			continue
+		}
+		out = append(out, &Record{ID: ID(c, i, data), Data: data, Index: i})
+	}
+	return out, nil
+}
+
 // Collection returns a collection by name, or nil.
 func (l *Ledger) Collection(name string) *Collection { return l.byName[name] }
 

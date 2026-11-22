@@ -49,9 +49,12 @@ type ActivityQuery struct {
 	IncludeState bool
 	// Tip is the commit the walk is pinned to, as a previous page returned it
 	// ("" = the current tip of the tracked branch). It must be on that branch.
-	Tip   string
-	Skip  int // commits of the walk already consumed
-	Limit int // at most MaxActivity, 50 when 0
+	Tip string
+	// Exclude (a full commit hash) leaves out the commits reachable from it: only what
+	// is new since that commit is walked.
+	Exclude string
+	Skip    int // commits of the walk already consumed
+	Limit   int // at most MaxActivity, 50 when 0
 }
 
 // ActivityPage is what Activity returns: Tip is what to pass on the next call.
@@ -74,7 +77,11 @@ type ActivityCommit struct {
 	EditedBy  string    `json:"editedBy,omitempty"`
 	EditedVia string    `json:"editedVia,omitempty"`
 	Records   []string  `json:"records,omitempty"`
-	State     string    `json:"state"` // StateNone, StateSome or StateOnly
+	// RestoredFrom is the commit a restore took the record from (Restored-from trailer).
+	RestoredFrom string `json:"restoredFrom,omitempty"`
+	State        string `json:"state"` // StateNone, StateSome or StateOnly
+	// Parent is the first parent ("" for a root commit).
+	Parent string `json:"-"`
 	// Excluded: the commit is part of the walk (it counts for Skip) but does not
 	// match the record filter exactly.
 	Excluded bool `json:"-"`
@@ -83,17 +90,19 @@ type ActivityCommit struct {
 const activityFormat = "--format=%x1d%H%x1f%h%x1f%an%x1f%ae%x1f%cI%x1f%s" +
 	"%x1f%(trailers:key=Edited-by,valueonly,separator=%x1e)" +
 	"%x1f%(trailers:key=Edited-via,valueonly,separator=%x1e)" +
-	"%x1f%(trailers:key=Record,valueonly,separator=%x1e)%x1c"
+	"%x1f%(trailers:key=Record,valueonly,separator=%x1e)" +
+	"%x1f%(trailers:key=Restored-from,valueonly,separator=%x1e)" +
+	"%x1f%P%x1c"
 
 // parseActivityRecord reads one record of activityFormat plus its file names.
 func parseActivityRecord(rec, prefix, record string) (ActivityCommit, error) {
 	head, names, ok := strings.Cut(rec, "\x1c")
 	f := strings.Split(head, "\x1f")
-	if !ok || len(f) != 9 {
+	if !ok || len(f) != 11 {
 		return ActivityCommit{}, errors.New("unreadable commit record")
 	}
 	c := ActivityCommit{Hash: strings.TrimSpace(f[0]), Short: f[1], Author: f[2], Email: f[3], Subject: f[5],
-		EditedBy: firstValue(f[6]), EditedVia: firstValue(f[7]), State: StateNone}
+		EditedBy: firstValue(f[6]), EditedVia: firstValue(f[7]), RestoredFrom: fullHash(firstValue(f[9])), Parent: firstWord(f[10]), State: StateNone}
 	for _, v := range strings.Split(f[8], "\x1e") {
 		if v = strings.TrimSpace(v); v != "" {
 			c.Records = append(c.Records, v)
@@ -145,6 +154,12 @@ func activityLog(ctx context.Context, r *Repo, tip string, q ActivityQuery, path
 		args = append(args, "--fixed-strings", "--grep=Record: "+record)
 	}
 	args = append(args, tip)
+	if q.Exclude != "" {
+		if !ValidRev(q.Exclude) {
+			return ErrBadTip
+		}
+		args = append(args, "^"+q.Exclude)
+	}
 	if len(paths) > 0 {
 		args = append(append(args, "--"), paths...)
 	}
@@ -214,6 +229,24 @@ func contains(l []string, s string) bool {
 		}
 	}
 	return false
+}
+
+// fullHash is s when it is a full commit hash, else "": the Restored-from trailer
+// is text anybody can write.
+func fullHash(s string) string {
+	if fullHashRe.MatchString(s) {
+		return s
+	}
+	return ""
+}
+
+var fullHashRe = regexp.MustCompile(`^([0-9a-f]{40}|[0-9a-f]{64})$`)
+
+func firstWord(s string) string {
+	if f := strings.Fields(s); len(f) > 0 {
+		return f[0]
+	}
+	return ""
 }
 
 func firstValue(s string) string {

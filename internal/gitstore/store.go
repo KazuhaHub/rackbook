@@ -53,6 +53,10 @@ type Options struct {
 	// full commit hash, who the caller (nil = anonymous) and record the Record
 	// trailer value ("" for none). It runs under the write lock: keep it short.
 	OnCommit func(hash string, who *auth.Identity, record string)
+
+	// StateDir is the server's --state-dir ("" = none): the deleted-records cache
+	// is kept under history/ there. It is outside the data repository.
+	StateDir string
 }
 
 // Commit is one history entry.
@@ -99,6 +103,11 @@ type Store struct {
 	lastGood string                 // last accepted remote commit; guarded by mu
 	alert    atomic.Pointer[Alert]  // set while the remote history is rewritten
 	cfgErr   atomic.Pointer[string] // why the latest config failed to load
+
+	// deleted-records cache (deleted.go): memory when there is no state directory
+	delMu    sync.Mutex
+	delMem   map[string]*deletedState
+	delBuild sync.Mutex
 }
 
 // Open loads the config and ledger and detects Git. Inside a repository with
