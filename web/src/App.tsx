@@ -21,6 +21,7 @@ const Dashboard = lazy(retryImport(() => import('@/pages/Dashboard')))
 const CollectionList = lazy(retryImport(() => import('@/pages/CollectionList')))
 const RecordShow = lazy(retryImport(() => import('@/pages/RecordShow')))
 const RecordFormPage = lazy(retryImport(() => import('@/pages/RecordFormPage')))
+const DeletedRecords = lazy(retryImport(() => import('@/pages/DeletedRecords')))
 const Activity = lazy(retryImport(() => import('@/pages/Activity')))
 const Problems = lazy(retryImport(() => import('@/pages/Problems')))
 const Expiring = lazy(retryImport(() => import('@/pages/Expiring')))
@@ -91,6 +92,7 @@ function RefineApp() {
           <Route index element={<Dashboard />} />
           <Route path="c/:collection" element={<CollectionList />} />
           <Route path="c/:collection/-/new" element={<RecordFormPage mode="create" />} />
+          <Route path="c/:collection/-/deleted" element={<DeletedRecords />} />
           <Route path="c/:collection/:id" element={<RecordShow />} />
           <Route path="c/:collection/:id/edit" element={<RecordFormPage mode="edit" />} />
           <Route path="check" element={<Problems />} />

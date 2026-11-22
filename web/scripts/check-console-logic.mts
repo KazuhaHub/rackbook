@@ -15,6 +15,7 @@ import {
   PORT_PATTERN,
 } from '../src/lib/fieldKind.ts'
 import { customFormats } from '../src/lib/formats.ts'
+import { isLongValue, restoreStep, shortHash, shortValue, valueText } from '../src/lib/versionValue.ts'
 import { isSecretName } from '../src/lib/secretName.ts'
 import { formatItem, formatPlain, isScalarObject, objectItems } from '../src/lib/objectItems.ts'
 import {
@@ -441,5 +442,26 @@ eq('allowed values without a schema', enumChoices(undefined, ['a'], 'en-US'), ['
   }
   await activateLocale('zh-CN')
 }
+// version diffs: how values are shown, and what a refused restore leads to
+eq('value text string', valueText('a b'), 'a b')
+eq('value text number', valueText(0), '0')
+eq('value text false', valueText(false), 'false')
+eq('value text list', valueText([1, { a: 'x' }]), '[1,{"a":"x"}]')
+eq('value text null', valueText(null), '')
+eq('long: short one line', isLongValue('abc'), false)
+eq('long: many characters', isLongValue('x'.repeat(161)), true)
+eq('long: many lines', isLongValue('a\nb\nc\nd'), true)
+eq('short value cuts lines', shortValue('a\nb\nc\nd\ne'), 'a\nb\nc…')
+eq('short value cuts characters', shortValue('测'.repeat(200)), '测'.repeat(160) + '…')
+eq('short value of a short one', shortValue('ab'), 'ab')
+eq('short hash', shortHash('0123456789abcdef'), '0123456')
+eq('restore: secret', restoreStep({ statusCode: 422, code: 'secret_suspected' }), 'secret')
+eq('restore: edit', restoreStep({ statusCode: 409, code: 'restore_needs_edit' }), 'edit')
+eq('restore: conflict', restoreStep({ statusCode: 409, code: 'conflict' }), 'conflict')
+eq('restore: unchanged', restoreStep({ statusCode: 409, code: 'already_current' }), 'unchanged')
+eq('restore: refused', restoreStep({ statusCode: 403, code: 'forbidden' }), 'refused')
+eq('restore: a block-tier secret is a failure', restoreStep({ statusCode: 422, code: 'secret_detected' }), 'failed')
+eq('restore: not found', restoreStep({ statusCode: 404, code: 'not_found' }), 'failed')
+
 if (failed) process.exit(1)
 console.log('console logic: ok')

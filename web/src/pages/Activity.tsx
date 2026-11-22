@@ -1,14 +1,14 @@
 import { Fragment, useEffect, useState, type FormEvent } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { Link, useSearchParams } from 'react-router'
-import { Activity as ActivityIcon, ChevronDown, ChevronRight, Download, GitCommitHorizontal, ShieldCheck, ShieldQuestion } from 'lucide-react'
+import { Activity as ActivityIcon, ChevronDown, ChevronRight, Download, GitCommitHorizontal } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { NativeSelect } from '@/components/ui/native-select'
 import { Skeleton } from '@/components/ui/skeleton'
-import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { DiffView } from '@/components/types/DiffView'
+import { VerifiedBadge, Who } from '@/components/CommitWho'
 import { EmptyState, PageHeader } from '@/components/common'
 import { t } from '@/i18n'
 import { formatDateTime, formatDay, formatTime } from '@/i18n/format'
@@ -28,7 +28,6 @@ import {
 import { collectionTitle } from '@/lib/labels'
 import { recordHref } from '@/lib/recordUrl'
 import { displayId } from '@/lib/recordId'
-import { cn } from '@/lib/utils'
 import { useMeta } from '@/providers/meta'
 
 /** The areas this person may name; the server refuses the others. */
@@ -134,29 +133,6 @@ function Filters({ value, onChange }: { value: ActivityFilters; onChange: (f: Ac
   )
 }
 
-function VerifiedBadge({ verified, audit }: { verified: boolean; audit: boolean }) {
-  const hint = verified ? t.activity.verifiedHint : audit ? t.activity.unverifiedHint : t.activity.noAudit
-  return (
-    <Tooltip>
-      <TooltipTrigger
-        render={
-          <span
-            tabIndex={0}
-            className={cn(
-              'inline-flex h-5 items-center gap-1 rounded-4xl border px-2 text-xs font-medium whitespace-nowrap [&>svg]:size-3',
-              verified ? 'border-transparent bg-success/10 text-success' : 'border-border text-muted-foreground',
-            )}
-          />
-        }
-      >
-        {verified ? <ShieldCheck /> : <ShieldQuestion />}
-        {verified ? t.activity.verified : t.activity.unverified}
-      </TooltipTrigger>
-      <TooltipContent className="max-w-xs">{hint}</TooltipContent>
-    </Tooltip>
-  )
-}
-
 function DiffPanel({ item }: { item: ActivityItem }) {
   const q = useCommitDiff(item.area, item.hash ?? '', true)
   if (q.isPending) return <Skeleton className="h-20 w-full" />
@@ -183,16 +159,6 @@ function DiffPanel({ item }: { item: ActivityItem }) {
       ))}
       {q.data.moreFiles && <p className="text-xs text-muted-foreground">{t.activity.diff.moreFiles}</p>}
     </div>
-  )
-}
-
-function Who({ item }: { item: ActivityItem }) {
-  const shown = item.name || item.identity || t.activity.system
-  return (
-    <span className="min-w-0 break-words">
-      <span className="font-medium">{shown}</span>
-      {item.identity && item.identity !== shown && <span className="ml-1 font-mono text-xs text-muted-foreground">{item.identity}</span>}
-    </span>
   )
 }
 
@@ -234,6 +200,7 @@ function Row({ item, audit }: { item: ActivityItem; audit: boolean }) {
           <Who item={item} />
           <VerifiedBadge verified={!!item.verified} audit={audit} />
           {item.token && <span>{t.activity.viaToken(item.token)}</span>}
+          {item.restoredFrom && <span>{t.history.restoredFrom(item.restoredFrom.slice(0, 7))}</span>}
           {item.records?.map((r) => {
             const [coll, ...rest] = r.split('/')
             const rid = rest.join('/')

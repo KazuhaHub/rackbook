@@ -21,7 +21,7 @@ import { BackrefTable } from '@/components/BackrefTable'
 import { CollectionIcon } from '@/components/CollectionIcon'
 import { CellValue } from '@/components/CellValue'
 import { NotFound, PageHeader } from '@/components/common'
-import { HistoryList } from '@/components/HistoryList'
+import { RecordHistory } from '@/components/RecordHistory'
 import { t } from '@/i18n'
 import { ApiError, errorMessage } from '@/lib/api'
 import { pickTab, splitGeneric, tabHash, type GenericRule } from '@/lib/backrefs'
@@ -198,17 +198,17 @@ function Show({ col, id }: { col: Collection; id: string }) {
             </CardContent>
           </Card>
 
-        </div>
-
-        <div className="space-y-5">
           <Card>
             <CardHeader>
               <CardTitle>{t.show.historyRecord}</CardTitle>
             </CardHeader>
             <CardContent>
-              <HistoryList collection={col.name} recordId={id} />
+              <RecordHistory col={col} id={id} hash={rec.hash} editable={editable} onRestored={() => void query.refetch()} />
             </CardContent>
           </Card>
+        </div>
+
+        <div className="space-y-5">
           <div className="rounded-xl border p-4 text-xs text-muted-foreground">
             {showSource && (
               <div className="flex items-center justify-between gap-3 py-0.5">
