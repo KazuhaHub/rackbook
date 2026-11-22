@@ -1,6 +1,6 @@
 # Audit history and roles from the identity provider
 
-Status: design, agreed 2026-11-22. Phase 1 pieces 1, 2 and 3 are built (3.5); the rest is not. Phase 2
+Status: design, agreed 2026-11-22. Phase 1 pieces 1 to 4 are built (3.5); the rest is not. Phase 2
 starts with the light version (2a); SCIM (2b) comes later. Phase 3 still needs a decision (section 7).
 
 The team is growing. Two things are needed:
@@ -246,7 +246,7 @@ must not decide who sees infra.
      checked against the chain (the line is a `commit` event with that area, hash and identity, and the next
      line's `prev`, or head.json, vouches for it), and a hit that fails rebuilds the index.
    - The `canSee` function in `internal/api/activity.go` is the one place that decides who sees which area;
-     piece 4 (auditors) only changes it. Until then the audit areas are admin-only.
+     piece 4 (auditors) changed only it and the inputs it reads (see piece 4 below).
    - Audit events are shown under the area `audit`, except the infra ones, which are shown under `infra`.
      The `ledger` area holds commits only, so `write_refused` for the ledger is an `audit` row.
    - Paging model. Each source is a stream with its own resume position, and the cursor holds all of them: for
@@ -271,8 +271,7 @@ must not decide who sees infra.
      is: a repository whose dates go backwards along its history, or audit lines written with an old explicit
      time (the copy of the old infra audit file), show at their position in the stream. The JSONL export walks
      the same pages up to 50 000 rows or its work budget, then ends with `{"truncated":true}`.
-   - `format=jsonl` is for admins (design 3.1); `canSee` has a `seeExport` class so piece 4 only adds the
-     auditors. The list itself is open to every role, limited by area.
+   - `format=jsonl` is for admins and, since piece 4, auditors (design 3.1); `canSee` has a `seeExport` class. The list itself is open to every role, limited by area.
    - A `collection` or `id` filter leaves out infra and audit rows. `id` matches the exact `Record` trailer; it
      does not fall back to the collection's file history as the record page's History does, because a page of the
      timeline must not change meaning when an older page has no such commit.
@@ -326,7 +325,48 @@ must not decide who sees infra.
      moved are not found; collections without a key are skipped. The list shows the commit that removed the record
      and the commit before it (`last`), not the last commit that changed the record.
    - The Activity page shows `Restored-from` (`restoredFrom` on a ledger commit item).
-4. `auth.auditors` and `--infra-auditors`.
+4. `auth.auditors` and `--infra-auditors`. **Done** (README, "Auditors" and "Activity"; docs/api.md, "Activity and the audit
+   log"). As built, and where it differs from 3.4:
+   - `auth.auditors` is `config.Auth.Auditors`, compiled by `roles.CompileAuditors` with the parser and the validation of a
+     role list (errors name `auth.auditors`; `rackbook check` reports them through `config.Load`). It lives in the
+     `roles.Policy` next to the role lists, so a config reload (pull) recompiles both together. `Policy.IsAuditor` knows
+     nothing about roles.
+   - The capability is computed in one place, `Authenticator.evaluate`, which `Evaluate`, `EvaluateSubject` (sessions, API
+     tokens, built-in OAuth grants, external-issuer tokens: the same paths that compute roles) and `RoleForVia` /
+     `CapabilitiesForVia` (a token's creator, as the token list shows it) all use. The result is `Identity.Auditor`; every
+     decision goes through `Identity.IsAuditor()` or `auth.IsAuditor(ctx)`, which also require that the credential can
+     read at all (a scope that narrows the role to nothing takes the capability with it).
+   - The viewer floor is applied in `evaluate`: on the list with no role gives viewer, with a role keeps it. The "no role"
+     login refusal and the 403 `no_role` therefore do not apply to an auditor. A degraded config still caps the role at
+     viewer.
+   - An admin is not an auditor unless listed. Nothing else in the code treats "admin" as "auditor", so the only visible
+     difference is `user.auditor` in `/api/meta`, the badge, and `creatorAuditor` in the token list.
+   - `canSee`: `seeState`, `seeAudit` and `seeExport` are admin or auditor; `seeInfra` is infra administrator or infra
+     auditor. `activityStreams` takes the state marker from `seeState` and the client address from `seeAudit` instead of
+     asking for the admin role. `GET /api/audit/status` follows `seeAudit`; `POST /api/audit/ack` asks for the admin role
+     itself and does not go through `canSee`.
+   - **Tokens and grants.** An API token or OAuth grant created by an auditor carries the capability while its creator
+     is on the list, because it is evaluated for the creator's subject on every request. API tokens can only reach record
+     paths, so the capability shows there as `user.auditor` in `/api/meta` and in the history timeline's state marker;
+     the activity and audit routes stay out of a token's reach, as they were. Removal from the list takes effect on the
+     next request.
+   - `--infra-auditors` reuses `auth.InfraAdmins` (`NewInfraAuditors`), pinned with the same issuer, client, claim and
+     tenant, OIDC sessions only. It needs `--infra-admins`: a deployment with auditors and no administrator is refused at
+     start. `InfraOptions.Auditors` is nil without the flag.
+   - **Every `/api/infra` route is classed** (`infraRouteClass` in `internal/api/auditor_test.go`; a new route fails the
+     test until it is classified): *read* (`infraReader`: hosts, host, certs, iplists, commits, groups, features, write
+     state), *secret* and *write* (`infraAdmin`).
+   - The API routes are registered through `routeMux`, which records the patterns; `api.RoutePatterns` (a test hook) lists
+     them, so the write-route test and the infra table walk the mux itself. OAuth and login routes are mounted by their own
+     packages and are not in that list.
+   - Deviations from the brief: (1) `GET /api/infra/hosts/{name}/vars` is in the secret class, not read. It is the raw
+     file for the editor and, unlike the host page, is not redacted: a value the scan does not recognise would reach an
+     auditor. (2) `--infra-auditors` grants nothing in the ledger: an infra auditor needs a ledger role (or a place on
+     `auth.auditors`) of their own to sign in at all. (3) The only write an auditor can make is `PUT /api/account/preferences` (their own
+     language, a state file, not the ledger), so the "never 200 on a write route" test exempts it by name. (4) The Groups
+     tab stays an edit page; infra auditors see group membership on the host pages and through `GET /api/infra/groups`,
+     but the console has no read-only groups view. (5) The audit `login` event still records the role (`viewer` for an
+     auditor with no role); the capability is not in the event.
 5. The optional daily anchor.
 
 Each UI piece gets a demo with example data in three languages before merge.
