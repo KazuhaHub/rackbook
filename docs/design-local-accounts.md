@@ -106,7 +106,7 @@ Per account:
 | Field | Notes |
 |---|---|
 | `username`, `name` | `local:<username>` is the identity |
-| `state` | `invited`, `active`, `restricted` (7.4), `reset_pending`, `disabled`, `removed` (a tombstone) |
+| `state` | `invited`, `active`, `restricted` and `passkey_only` (sign-in restrictions, 7.4), `reset_pending`, `disabled`, `removed` (a tombstone) |
 | `created`, `created_by` | |
 | `password` | PHC string, `$argon2id$v=19$m=65536,t=3,p=4$<salt>$<hash>` |
 | `totp` | secret (20 bytes), `last_step`, `added` |
@@ -301,8 +301,8 @@ for use elsewhere.
    replay set has no room for this bucket, the answer is `401 captcha_required` and nothing else is checked.
 4. With a passkey assertion it is verified **first** (no hash yet): it must be valid and belong to the named
    account. Then the password, by argon2id, in a slot (7.6). With a code, the password first, then the code.
-5. Unknown, `invited`, `reset_pending`, `disabled` or `removed`, or refused by `restricted`, `passkey_only` or
-   `locked` (7.4): a **dummy argon2id**, then the same answer as any failure, so timing does not reveal the state.
+5. Unknown, `invited`, `reset_pending`, `disabled` or `removed`, or refused by `restricted` or `passkey_only`
+   (7.4): a **dummy argon2id**, then the same answer as any failure, so timing does not reveal the state.
 6. Any failure: `401 sign_in_failed`, "username, password or code is wrong", whatever failed. It adds one to the
    name's failure counters (7.3) and, for an existing account, to `consecutive_failures`; a right password with a
    wrong code also adds to `totp_failures` and sets `last_second_factor_failure`, which *My account* shows: someone
@@ -391,7 +391,9 @@ HKDF-SHA256(ikm = session key, salt = account.session_secret, info = "rackbook.s
 ```
 
 The codec reads the (unverified) username, looks the account up in memory, derives the key, then verifies. The
-account must exist, be `active` or `restricted`, and have the same `sid`.
+account must exist, be `active`, `restricted` or `passkey_only`, and have the same `sid`. `restricted` and
+`passkey_only` limit **how a new sign-in may happen**; they are not revocations, so live sessions keep working.
+Only `disabled`, `removed` and `reset_pending` (and the invite state) end sessions.
 
 **Re-authentication.** Sensitive actions need `aat` within `auth.local.reauth_window` (default 10 minutes,
 1 minute to 1 hour), otherwise `403 reauth_required`. Sensitive: *My account* (password, factors, sign out
@@ -424,8 +426,10 @@ auth:
 - **One check on every path.** A private helper `(*Authenticator).policyRole(s roles.Subject)` replaces the direct
   `Policy().Evaluate(s)` calls in `RoleForVia` and `EvaluateSubject` (and so in `Evaluate`). It gates on the
   **identity**: for any subject whose ID starts with `local:`, the role is none unless the method is `local` and
-  `localAccountActive(s.ID)` says the account is `active` or `restricted` (not pending a reset, disabled or
-  removed). That covers sessions (`Evaluate`), token creators (`RoleForVia`, `internal/api/tokens.go:68`) and OAuth
+  `localAccountActive(s.ID)` says the account is `active`, `restricted` or `passkey_only`. The two restricted
+  states only limit new sign-ins (7.4); the account's tokens and grants keep their role in them, so an attacker who
+  drives an account into `passkey_only` cannot revoke anything. Only `disabled`, `removed` and `reset_pending`
+  (and `invited`) give no role. That covers sessions (`Evaluate`), token creators (`RoleForVia`, `internal/api/tokens.go:68`) and OAuth
   grants, OAuth access tokens and API tokens on `/mcp` (`EvaluateSubject`, `internal/oauthserver/token.go:75`,
   `internal/mcpauth/mcpauth.go:233` and `:265`). A test walks all three with a disabled account and with a look-alike
   identity from another method.
@@ -435,8 +439,8 @@ auth:
 
 **With phase 2a's role editor:** in local mode it offers the accounts by name for `local:` entries and marks
 `group:`, `app-role:`, `*@domain` and `oidc:` entries as having no effect (the reverse under SSO). An entry for a
-username with no account is kept with a warning. The last-admin rule counts only `local:` entries of `active` or
-`restricted` accounts, and still refuses removing the editing admin's own entry.
+username with no account is kept with a warning. The last-admin rule counts only `local:` entries of `active`,
+`restricted` or `passkey_only` accounts, and still refuses removing the editing admin's own entry.
 
 ---
 
@@ -513,6 +517,11 @@ checks that a new bucket still spends into *headroom* and a good bucket into *go
 **Image rendering** has a global budget of 50 images per second and a per-bucket share of 10 per minute; over it,
 "try again shortly". **Counters** have their own bounds (7.3).
 
+**An image is checked once.** Before an image answer is checked, a replay-set entry for its nonce is reserved, so
+a failed solve is always recorded before the answer goes out (a correct one moves to the solved set). If no entry can
+be reserved (the bucket is at its replay quota or the set is full), the token is refused without checking the answer: `401 captcha_required` with a new attempt and a new image. An image whose failure was not
+recorded is never checked again, so one image never yields more than one guess at its digits.
+
 One solve counts for one attempt: the nonce is recorded right after the solve verifies (the record and the check
 are one atomic step, so two concurrent uses of one token cannot both pass), the provider refuses a token used twice,
 and an image answer can be checked once.
@@ -569,10 +578,12 @@ Two hard limits remain, both per account and both in the store:
   - The **100th** failure, which can therefore only come from a good bucket (or with the passkey), makes it
     `passkey_only`: a password check runs only after a verified passkey assertion. This also covers an attacker who
     sits in a good bucket (a NAT neighbour): from there too, the 100th failure closes the password path.
-  - A failed password check after a verified passkey (someone with the device but not the password) makes it
-    `locked`: only an admin *Unlock*.
+  - A failed password check after a verified passkey counts toward `consecutive_failures` like any other failure,
+    in every state; in `passkey_only` the account simply stays `passkey_only`. There is no further lock: a holder's
+    typo never needs an admin, and someone who has the passkey but not the password still needs one guess per
+    passkey use, with a CAPTCHA once the counters trigger it.
 
-  Each step writes `account_restricted` (`code`: `restricted`, `passkey_only`, `locked`) and tells the holder and
+  Each step writes `account_restricted` (`code`: `restricted` or `passkey_only`) and tells the holder and
   admins. Refusals by these states run the same dummy argon2id as every other refusal (7.5). So **at most 100
   password guesses can be made per holder sign-in** without the passkey, which is the NIST cap; this is a **bounded
   denial of service, accepted as NIST intends**, and the holder keeps a path from known networks until the 100th
@@ -582,14 +593,14 @@ Two hard limits remain, both per account and both in the store:
   that someone knows the password. A **passkey second factor still works** (the default, with passwordless off).
   Without a passkey, the way back is an admin *Unlock* followed by a `password` reset.
 
-*Unlock* (console, or `rackbook accounts unlock` online) clears the store counters, ends `restricted`, `passkey_only`, `locked` and the TOTP
+*Unlock* (console, or `rackbook accounts unlock` online) clears the store counters, ends `restricted`, `passkey_only` and the TOTP
 limit, and clears the account's entries in the memory table.
 
 ### 7.5 Uniform answers
 
 Unknown, invited, reset-pending, disabled and removed accounts get exactly the answers an existing account gets:
 the same CAPTCHA triggers (7.3), then `401 sign_in_failed` after one argon2id run against a fixed dummy hash. A
-restricted, passkey-only or locked account's refusals are the same `sign_in_failed`, after the same dummy argon2id. Real and dummy runs use the same parameters in the same
+restricted or passkey-only account's refusals are the same `sign_in_failed`, after the same dummy argon2id. Real and dummy runs use the same parameters in the same
 slots; the residual is the variance of one argon2id run (a few percent, more under load), accepted: averaging many
 samples might reveal that a username exists, and usernames are not secret here.
 
@@ -660,7 +671,7 @@ Passwords, codes, tokens, CAPTCHA answers, secrets and typed unknown usernames a
 | `captcha_outage` | none | `code`: `start` or `end`; `detail: ["failures:<n>"]` |
 | `logout` | the account | `role`, `addr` |
 | `reauth` | the account | `addr`, `detail: ["factor:…"]` |
-| `account_restricted` | the account | `detail: ["failures:<n>"]`, `code`: `restricted`, `passkey_only` or `locked` |
+| `account_restricted` | the account | `detail: ["failures:<n>"]`, `code`: `restricted` or `passkey_only` |
 | `account_locked` | the account | `code: totp`, `detail: ["failures:<n>"]` |
 | `account_unlocked` | the admin | `target` |
 | `account_invited` | the admin | `target`, `detail: ["expires:<time>"]` |
@@ -747,7 +758,7 @@ operator's terminal only. Each writes its audit event with `method: cli` and `op
 | `list` | yes | yes | usernames, state, factors, counters, evidence files, pending revocations, whether a role entry matches |
 | `invite <username> [--name] [--ttl]` | yes | yes | the first admin, or anyone |
 | `reset <username> --scope password\|second_factor\|all`, `reset --all --scope …` | yes | yes | break-glass, also for the last admin |
-| `unlock <username>` | yes | yes | clears counters, `restricted` and the TOTP limit |
+| `unlock <username>` | yes | yes | clears counters, `restricted`, `passkey_only` and the TOTP limit |
 | `disable`, `enable <username>` | yes | yes | |
 | `end-sessions <username>\|--all` | yes | yes | renews session secrets |
 | `rekey --new-key-file` | no | yes | 3.6 |
@@ -808,7 +819,7 @@ Each ships with a demo in three languages before merge.
   last sign-in and from where; warnings when someone entered the password but failed the code, when the TOTP limit
   was reached, and when the account was restricted; notices of admin actions until dismissed.
 - **Users** (admin): username, name, role ("no role" with *Assign*), state (invited until, link held until, active,
-  restricted, passkey only, locked, TOTP locked, reset pending, disabled), factors, last sign-in, pending revocations, and a
+  restricted, passkey only, TOTP locked, reset pending, disabled), factors, last sign-in, pending revocations, and a
   warning when evidence files from a refused start exist. Actions: *Invite*, *Copy a new link*, *Revoke invite*,
   *Reset password*, *Reset second factor*, *Full reset…* (separate, with the warning), *Unlock*, *Disable* /
   *Enable*, *Remove*. Before *Disable*, *Remove* or a reset, the dialog lists the tokens and app connections it
