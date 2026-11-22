@@ -457,13 +457,13 @@ export function mockApi(root: string): Plugin {
       ]
       if (cname === 'hosts' && rest[1] === 'vars') return send(res, 200, { path: 'inventory/host_vars/' + rest[0] + '.yml', exists: true, base: 'a'.repeat(40), hidden: 0, content: 'tailscale_ip: 100.64.0.1\nfeatures: {}\n' }), true
       if (cname === 'hosts' && rest[1] === 'secrets') {
-        const pub = 'age1l5nse49qke8sne9fsawpm6vvjpw5kxq7t0a62cx46js54tdnv53svqgf2k'
+        const pub = 'age1nat457r4f36vu5h6v48g4t4g39lua8md7er754fzvnxxrmhdh6mzpwl58u'
         return send(res, 200, {
           enabled: true, canWrite: true, publicKey: pub,
           file: {
             host: rest[0], path: 'secrets/' + rest[0] + '.sops.yaml', exists: true, base: 'c'.repeat(40),
             keys: [{ name: 'cloudflare_dns_token', editable: true }, { name: 'feature_beszel-agent_token', editable: true }, { name: 'Legacy_Key', editable: false }],
-            recipients: [pub, 'age1uyhyewqasw0dgv8zalj57qd3jq3r5s5dlzd5wnvquzrazsk2k5ms3qpjck'], rule: [pub], canDecrypt: true, lastModified: ago(3600),
+            recipients: [pub, 'age1uyhyewqasw0dgv8zalj57qd3jq3r5s5dlzd5wnvquzrazsk2k5ms3qpjck'], rule: [pub, 'age1cpazu35npqzx56ky54mwlsq2xqc8z4fl9httz6cwtk9vkuqsga6dagg0zd'], canDecrypt: true, lastModified: ago(3600),
           },
         }), true
       }

@@ -201,3 +201,63 @@ func enclosingFunc(f *ast.File, pos token.Pos) string {
 	}
 	return ""
 }
+
+func TestRotateChangesRecipientsAndDataKey(t *testing.T) {
+	e, r, enc, tmp := setup(t) // recipients: admin, server, host
+	ctx := context.Background()
+	rotated, err := r.Rotate(ctx, []byte(enc), []string{e.Pub("other")}, []string{e.Pub("host")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(rotated)
+	if !strings.Contains(s, e.Pub("other")) || strings.Contains(s, e.Pub("host")) || !strings.Contains(s, e.Pub("admin")) || !strings.Contains(s, e.Pub("server")) {
+		t.Fatalf("recipients:\n%s", s)
+	}
+	field := func(doc, prefix string) string {
+		for _, l := range strings.Split(doc, "\n") {
+			if strings.HasPrefix(strings.TrimSpace(l), prefix) {
+				return strings.TrimSpace(l)
+			}
+		}
+		return ""
+	}
+	if field(s, "mac:") == "" || field(s, "mac:") == field(enc, "mac:") || field(s, "feature_x-y_token:") == field(enc, "feature_x-y_token:") {
+		t.Fatal("the MAC or the value did not change: the data key is the same")
+	}
+	// the server can still read it, the new recipient can, the removed one cannot
+	if v, err := r.Decrypt(ctx, rotated, "feature_x-y_token"); err != nil || strings.TrimSpace(string(v)) != "first-value" {
+		t.Fatalf("%q %v", v, err)
+	}
+	for who, ok := range map[string]bool{"other": true, "admin": true, "host": false} {
+		rr, err := sops.New(ctx, sops.Options{KeyFile: e.KeyFile(who), Sops: e.Sops, AgeKeygen: e.AgeKeygen, Tmp: tmp})
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = rr.Decrypt(ctx, rotated, "feature_x-y_token")
+		if ok && err != nil || !ok && !errors.Is(err, sops.ErrCannotDecrypt) {
+			t.Errorf("%s: %v", who, err)
+		}
+	}
+	// no change of recipients still gives a new data key
+	again, err := r.Rotate(ctx, rotated, nil, nil)
+	if err != nil || field(string(again), "mac:") == field(s, "mac:") {
+		t.Fatalf("%v", err)
+	}
+	// recipients become arguments: only age public keys pass
+	for _, bad := range []string{"", "-i", "age1xyz", e.Pub("other") + ",x", "age1" + strings.Repeat("b", 58)} {
+		if _, err := r.Rotate(ctx, rotated, []string{bad}, nil); err == nil {
+			t.Errorf("accepted %q", bad)
+		}
+		if _, err := r.Rotate(ctx, rotated, nil, []string{bad}); err == nil {
+			t.Errorf("accepted %q", bad)
+		}
+	}
+	// a file the server cannot read
+	nr, _ := sops.New(ctx, sops.Options{KeyFile: e.KeyFile("other"), Sops: e.Sops, AgeKeygen: e.AgeKeygen, Tmp: tmp})
+	if _, err := nr.Rotate(ctx, []byte(enc), nil, nil); !errors.Is(err, sops.ErrCannotDecrypt) {
+		t.Fatalf("%v", err)
+	}
+	if left, _ := os.ReadDir(tmp); len(left) != 0 {
+		t.Fatalf("scratch left behind: %v", left)
+	}
+}

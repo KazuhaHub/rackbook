@@ -5,6 +5,7 @@
 //	sops decrypt --extract '["key"]'        one value, to standard output
 //	sops set --value-stdin FILE '["key"]'   the value arrives on standard input
 //	sops unset FILE '["key"]'
+//	sops rotate -i [--add-age A,B] [--rm-age C] FILE   a new data key, recipients added or removed
 //	sops --config C encrypt --filename-override F -   a new file, from standard input
 //	age-keygen -y KEYFILE                   the public key of the private key file
 //
@@ -25,6 +26,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -241,4 +243,39 @@ func (r *Runner) Encrypt(ctx context.Context, repoDir, rel, key, value string) (
 		return nil, err
 	}
 	return out, nil
+}
+
+var ageRecipientRe = regexp.MustCompile(`^age1[02-9ac-hj-np-z]{58}$`)
+
+// ValidRecipient reports whether s is an age public key (X25519 recipient).
+func ValidRecipient(s string) bool { return ageRecipientRe.MatchString(s) }
+
+// Rotate returns the file encrypted with a fresh data key (every value and
+// the MAC change) for its recipients plus add minus remove. The recipients are
+// public keys and become arguments, so each one is checked first.
+func (r *Runner) Rotate(ctx context.Context, enc []byte, add, remove []string) ([]byte, error) {
+	args := []string{"rotate", "-i", "--input-type", "yaml", "--output-type", "yaml"}
+	for _, f := range []struct {
+		flag string
+		keys []string
+	}{{"--add-age", add}, {"--rm-age", remove}} {
+		if len(f.keys) == 0 {
+			continue
+		}
+		for _, k := range f.keys {
+			if !ValidRecipient(k) {
+				return nil, fmt.Errorf("%w: not an age recipient", ErrFailed)
+			}
+		}
+		args = append(args, f.flag, strings.Join(f.keys, ","))
+	}
+	p, done, err := r.workFile(enc)
+	if err != nil {
+		return nil, err
+	}
+	defer done()
+	if _, err := r.run(ctx, filepath.Dir(p), nil, r.o.Sops, append(args, p)...); err != nil {
+		return nil, err
+	}
+	return os.ReadFile(p)
 }

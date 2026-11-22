@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"path"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"unicode/utf8"
@@ -32,6 +33,7 @@ type Sopser interface {
 	Set(ctx context.Context, enc []byte, key, value string) ([]byte, error)
 	Unset(ctx context.Context, enc []byte, key string) ([]byte, error)
 	Encrypt(ctx context.Context, repoDir, rel, key, value string) ([]byte, error)
+	Rotate(ctx context.Context, enc []byte, add, remove []string) ([]byte, error)
 }
 
 // MaxSecretValue is the largest value the editor stores.
@@ -344,7 +346,7 @@ func secretsError(p string, err error) error {
 	case errors.Is(err, sops.ErrNoKey):
 		return ErrNoSecret
 	case errors.Is(err, sops.ErrCannotDecrypt):
-		return &EditError{Err: errors.New("this server's age key is not a recipient of " + p + "; add it to .sops.yaml and run `sops updatekeys`")}
+		return &EditError{Err: errors.New("this server's age key is not a recipient of " + p + "; another holder of a key of this file must add it to .sops.yaml and run `sops updatekeys`")}
 	}
 	return &EditError{Err: errors.New("sops failed on " + p)}
 }
@@ -414,6 +416,84 @@ func (r *Repo) SecretsFileEdit(host, base string, ops []SecretOp) (FileEdit, err
 			}
 		}
 		return cur, nil
+	}}, nil
+}
+
+// rekeyPlan is what changes between the recipients a file has and the ones
+// its creation rule wants.
+func rekeyPlan(want, have []string) (add, remove []string) {
+	in := func(l []string, x string) bool {
+		for _, y := range l {
+			if y == x {
+				return true
+			}
+		}
+		return false
+	}
+	for _, w := range want {
+		if !in(have, w) && !in(add, w) {
+			add = append(add, w)
+		}
+	}
+	for _, h := range have {
+		if !in(want, h) && !in(remove, h) {
+			remove = append(remove, h)
+		}
+	}
+	return add, remove
+}
+
+// SecretsRekeyAction is the action of the commit subject of a re-encryption.
+const SecretsRekeyAction = "re-encrypt for the .sops.yaml recipients (new data key)"
+
+// SecretsRekeyEdit is the FileEdit that re-encrypts a host's SOPS file for the
+// recipients of its creation rule in .sops.yaml and gives it a new data key
+// (always, even when the recipients already match). It refuses a file that
+// does not exist, a host without a creation rule, a rule that does not list
+// this server's own key (the server would lock itself out) and a file with
+// recipients that are not age keys.
+func (r *Repo) SecretsRekeyEdit(host, base string) (FileEdit, error) {
+	if r.o.Sops == nil {
+		return FileEdit{}, ErrSecretsOff
+	}
+	p, err := r.SecretsPath(host)
+	if err != nil {
+		return FileEdit{}, err
+	}
+	sp := r.o.Sops
+	return FileEdit{Path: p, Base: base, Make: func(cur []byte) ([]byte, error) {
+		if cur == nil {
+			return nil, &EditError{Err: errors.New(p + " does not exist; there is nothing to re-encrypt")}
+		}
+		want, ok := creationRecipients(dirTree{r}, p)
+		if !ok || len(want) == 0 {
+			return nil, &EditError{Err: errors.New("no creation rule of .sops.yaml lists age recipients for " + p)}
+		}
+		for _, w := range want {
+			if !sops.ValidRecipient(w) {
+				return nil, &EditError{Err: errors.New(".sops.yaml lists a recipient that is not an age public key")}
+			}
+		}
+		own := sp.PublicKey()
+		if !slices.Contains(want, own) {
+			return nil, &EditError{Err: errors.New("the .sops.yaml rule for " + p + " does not list this server's age key (" + own + "); re-encrypting would lock it out. Add the key to the rule first")}
+		}
+		info, perr := parseSecretsFile(cur)
+		if perr != nil {
+			return nil, &EditError{Err: errors.New(p + " is not a SOPS-encrypted file")}
+		}
+		meta := mapGet(info.root, "sops")
+		for _, k := range otherKeyTypes {
+			if n := mapGet(meta, k); n != nil && len(n.Content) > 0 {
+				return nil, &EditError{Err: errors.New(p + " has recipients that are not age keys (" + k + "); the editor only re-encrypts age files")}
+			}
+		}
+		add, remove := rekeyPlan(want, info.recipients)
+		out, err := sp.Rotate(context.Background(), cur, add, remove)
+		if err != nil {
+			return nil, secretsError(p, err)
+		}
+		return out, nil
 	}}, nil
 }
 

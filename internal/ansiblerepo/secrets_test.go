@@ -83,3 +83,27 @@ func TestSecretsDiffShowsNamesOnly(t *testing.T) {
 		t.Fatalf("%s", d)
 	}
 }
+
+func TestRekeyPlan(t *testing.T) {
+	for name, c := range map[string]struct{ want, have, add, remove string }{
+		"same":           {"a,b", "a,b", "", ""},
+		"add one":        {"a,b,c", "a,b", "c", ""},
+		"remove one":     {"a", "a,b", "", "b"},
+		"replace":        {"a,c", "a,b", "c", "b"},
+		"duplicates":     {"a,a,c", "a,b,b", "c", "b"},
+		"from nothing":   {"a", "", "a", ""},
+		"to nothing":     {"", "a", "", "a"},
+		"disjoint swaps": {"c,d", "a,b", "c,d", "a,b"},
+	} {
+		split := func(s string) []string {
+			if s == "" {
+				return nil
+			}
+			return strings.Split(s, ",")
+		}
+		add, remove := rekeyPlan(split(c.want), split(c.have))
+		if strings.Join(add, ",") != c.add || strings.Join(remove, ",") != c.remove {
+			t.Errorf("%s: add %v remove %v", name, add, remove)
+		}
+	}
+}
