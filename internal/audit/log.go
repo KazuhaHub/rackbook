@@ -7,9 +7,12 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"sync"
 	"time"
+
+	"github.com/kazuhahub/rackbook/internal/auth"
 )
 
 // Options configures a Log.
@@ -31,6 +34,11 @@ type Status struct {
 	OK             bool
 	Problem        string
 	FirstBrokenSeq int64
+	// Problems are the recorded problems nobody has acknowledged yet (and any
+	// problem the start check could not record). Empty when OK.
+	Problems []Problem
+	// LastSeq is the seq of the newest line.
+	LastSeq int64
 }
 
 // Log appends events to the audit directory. A nil *Log does nothing.
@@ -49,6 +57,8 @@ type Log struct {
 	failed    string // set when the log cannot safely append: Record then writes nothing
 
 	stat func(*os.File) (os.FileInfo, error) // test seam: f.Stat
+
+	index indexState // the commit index (index.go); its own lock, never held with mu
 
 	stop chan struct{}
 	wg   sync.WaitGroup
@@ -102,7 +112,10 @@ func (l *Log) Status() Status {
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	return l.status
+	st := l.status
+	st.Problems = slices.Clone(st.Problems)
+	st.LastSeq = l.seq
+	return st
 }
 
 // check verifies the directory, repairs a torn last line and a head.json one
@@ -164,14 +177,64 @@ func (l *Log) check() error {
 		l.setState(s)
 	}
 	rep := s.report
-	l.status = Status{OK: rep.OK}
+	pending := rep.Pending()
+	l.status = Status{OK: len(pending) == 0, Problems: pending}
 	if l.failed != "" {
 		l.status = Status{Problem: l.failed, FirstBrokenSeq: s.lastSeq + 1}
-	} else if !rep.OK {
-		p := rep.Problems[0]
+	} else if len(pending) > 0 {
+		p := pending[0]
 		l.status.Problem, l.status.FirstBrokenSeq = p.Describe(), p.Seq
 		l.log.Error("audit log: the chain does not verify; appending to it as it is (run `rackbook audit verify`)",
-			"firstBrokenSeq", p.Seq, "problem", p.Describe(), "problems", len(rep.Problems))
+			"firstBrokenSeq", p.Seq, "problem", p.Describe(), "problems", len(pending))
+	}
+	return nil
+}
+
+// ErrBadThrough is returned by Ack for a seq that is not in the log.
+var ErrBadThrough = errors.New("through must be a seq of the log")
+
+// ErrNothingToAck is returned by Ack when no recorded problem is waiting.
+var ErrNothingToAck = errors.New("no recorded chain problem is waiting to be acknowledged")
+
+// Ack records that who has looked at the recorded chain problems and accepts
+// them: a chain_problem_ack event with "through:<seq>". Every pending problem
+// whose chain_problem event has a seq up to through counts as acknowledged
+// from then on (Status drops it, retention no longer keeps its month). through
+// must be a seq of the log and cover at least one pending problem; the
+// problems themselves stay in the chain and in `audit verify`.
+func (l *Log) Ack(who *auth.Identity, through int64) error {
+	if l == nil {
+		return errors.New("there is no audit log")
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if through < 1 || through > l.seq {
+		return fmt.Errorf("%w: between 1 and %d", ErrBadThrough, l.seq)
+	}
+	var left []Problem
+	covered := false
+	for _, p := range l.status.Problems {
+		if p.Recorded && p.RecordedAt <= through {
+			covered = true
+			continue
+		}
+		left = append(left, p)
+	}
+	if !covered {
+		return ErrNothingToAck
+	}
+	e := Event{Event: ChainProblemAckEvent, Detail: []string{"through:" + strconv.FormatInt(through, 10)}}
+	e.By(who)
+	if err := l.append(e); err != nil {
+		return err
+	}
+	if l.failed == "" {
+		l.status.Problems = left
+		l.status.OK = len(left) == 0
+		l.status.Problem, l.status.FirstBrokenSeq = "", 0
+		if len(left) > 0 {
+			l.status.Problem, l.status.FirstBrokenSeq = left[0].Describe(), left[0].Seq
+		}
 	}
 	return nil
 }

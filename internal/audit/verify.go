@@ -41,6 +41,11 @@ type Problem struct {
 	// before head.json moved on. It stays listed, and still counts as a problem.
 	Recorded   bool  `json:"recorded,omitempty"`
 	RecordedAt int64 `json:"recorded_at,omitempty"`
+	// Acked says an administrator acknowledged the recorded problem with a
+	// chain_problem_ack event (at AckedAt). It stays listed and still counts
+	// in the report; it no longer blocks retention or shows in Status.
+	Acked   bool  `json:"acked,omitempty"`
+	AckedAt int64 `json:"acked_at,omitempty"`
 }
 
 // Report is the result of Verify.
@@ -112,6 +117,7 @@ type scan struct {
 	tornCrash bool   // the cut-short last line fits a crash (head.json is at the last complete line)
 	firstSeq  int64  // seq of the first line walked
 	recorded  []Problem
+	acks      []ack
 
 	fileLast        map[string]string // hash of the last complete line of each file
 	probsAfterFirst map[string]int    // problems found up to and including each file's first line
@@ -236,6 +242,11 @@ func scanOnce(dir string) (*scan, error) {
 			if perr == nil && e.Event == ChainProblemEvent {
 				s.recorded = append(s.recorded, recordedProblem(e, name))
 			}
+			if perr == nil && e.Event == ChainProblemAckEvent {
+				if through, ok := ackThrough(e); ok {
+					s.acks = append(s.acks, ack{seq: e.Seq, through: through})
+				}
+			}
 			first = false
 			lastChained, lastPrev = chained, e.Prev
 			prevHash = h
@@ -351,6 +362,23 @@ func (s *scan) pendingDelete(files []string) bool {
 // that does not verify (other than the two crash cases).
 const ChainProblemEvent = "chain_problem"
 
+// ChainProblemAckEvent is the event an administrator's acknowledgement is
+// recorded as: Detail holds "through:<seq>", and every recorded chain problem
+// whose chain_problem event has a seq up to that one counts as acknowledged.
+const ChainProblemAckEvent = "chain_problem_ack"
+
+type ack struct{ seq, through int64 }
+
+func ackThrough(e Event) (int64, bool) {
+	for _, d := range e.Detail {
+		if v, ok := strings.CutPrefix(d, "through:"); ok {
+			n, err := strconv.ParseInt(v, 10, 64)
+			return n, err == nil && n > 0
+		}
+	}
+	return 0, false
+}
+
 // recordedProblem reads a chain_problem event: Code is the kind and Detail
 // holds "seq=<first broken seq>", "head_seq=" and "head_hash=".
 func recordedProblem(e Event, file string) Problem {
@@ -373,6 +401,16 @@ func (s *scan) mergeRecorded() {
 	if len(s.recorded) == 0 {
 		return
 	}
+	// An acknowledgement counts only when it comes after the problem it covers.
+	for i := range s.recorded {
+		p := &s.recorded[i]
+		for _, a := range s.acks {
+			if a.seq > p.RecordedAt && a.through >= p.RecordedAt {
+				p.Acked, p.AckedAt = true, a.seq
+				break
+			}
+		}
+	}
 	type key struct {
 		kind string
 		seq  int64
@@ -388,6 +426,18 @@ func (s *scan) mergeRecorded() {
 		}
 	}
 	s.report.Problems = append(out, s.recorded...)
+}
+
+// Pending are the problems that still need attention: everything except a
+// recorded problem that was acknowledged.
+func (r Report) Pending() []Problem {
+	var out []Problem
+	for _, p := range r.Problems {
+		if !(p.Recorded && p.Acked) {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // fresh are the problems no chain_problem event holds yet.
@@ -437,6 +487,9 @@ func (p Problem) Describe() string {
 	}
 	if p.Recorded {
 		fmt.Fprintf(&b, " (recorded at seq %d)", p.RecordedAt)
+	}
+	if p.Acked {
+		fmt.Fprintf(&b, " (acknowledged at seq %d)", p.AckedAt)
 	}
 	if p.Detail != "" {
 		b.WriteString(": " + p.Detail)
