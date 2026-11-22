@@ -493,10 +493,18 @@ enforced by two sets of nonces, each entry kept until its token expires, and che
 used):
 
 **The replay set**, for attempts used **without** a verified CAPTCHA (no CAPTCHA was required, or a solve failed).
-Small: 20 000 entries, at most 20 per bucket. When a bucket is at its quota, or the set is full, the **newest** use
-is not recorded and the answer is `401 captcha_required`: the attempt is refused, and the caller retries with a
-CAPTCHA, which goes to the other set. So filling the replay set, which costs nothing, only makes everyone solve a
-CAPTCHA; it never blocks a solved attempt.
+Two partitions, each with its own per-bucket quota:
+
+| Partition | Size | Per bucket | Holds |
+|---|---|---|---|
+| **free** | 20 000 | 20 | uses with no CAPTCHA (none was required) |
+| **image** | 20 000 | 10 | reservations for image answers about to be checked (below) |
+
+When a bucket is at its quota in *free*, or *free* is full, the **newest** use is not recorded and the answer is
+`401 captcha_required`: the attempt is refused, and the caller retries with a CAPTCHA. Filling *free*, which costs
+nothing, therefore only makes everyone solve a CAPTCHA. It never stops a CAPTCHA from being checked: a token
+CAPTCHA does not use the replay set before it verifies, and an image answer reserves its entry in *image*, which
+free uses cannot reach. Filling *image* needs one rendered image per entry, which the rendering budget bounds.
 
 **The solved set**, for attempts whose CAPTCHA **verified**: an entry is added only after the provider (or the image
 answer) has accepted the solve, so every entry costs the attacker one CAPTCHA solve. 300 000 entries in three
@@ -517,9 +525,10 @@ checks that a new bucket still spends into *headroom* and a good bucket into *go
 **Image rendering** has a global budget of 50 images per second and a per-bucket share of 10 per minute; over it,
 "try again shortly". **Counters** have their own bounds (7.3).
 
-**An image is checked once.** Before an image answer is checked, a replay-set entry for its nonce is reserved, so
-a failed solve is always recorded before the answer goes out (a correct one moves to the solved set). If no entry can
-be reserved (the bucket is at its replay quota or the set is full), the token is refused without checking the answer: `401 captcha_required` with a new attempt and a new image. An image whose failure was not
+**An image is checked once.** Before an image answer is checked, an entry for its nonce is reserved in the *image*
+partition, so a failed solve is always recorded before the answer goes out (a correct one moves to the solved set).
+If no entry can be reserved (the bucket is at its *image* quota, or the partition is full), the token is refused
+without checking the answer: `401 captcha_required` with a new attempt and a new image. An image whose failure was not
 recorded is never checked again, so one image never yields more than one guess at its digits.
 
 One solve counts for one attempt: the nonce is recorded right after the solve verifies (the record and the check
@@ -868,6 +877,11 @@ Piece 1 goes first and can ship on its own. Pieces 2 to 6 are in order.
    cloud account gets the passkey and the Rackbook account without a password. `device_bound` accepts only passkeys
    whose backup-eligible flag is off, checked at registration and every sign-in, with attestation requested (and
    optionally an AAGUID allow list), at the cost of excluding synced passkeys.
+   Residual even with passwordless **off**: someone who holds the passkey but not the password (for example a synced
+   passkey taken over through the person's cloud account) gets one password guess per passkey use, with a CAPTCHA
+   once the counters trigger it, and the guesses count toward the NIST cap (7.4). Accepting only device-bound
+   passkeys would close the cloud-account route; as written, `device_bound` applies only to passwordless sign-in,
+   so whether to require it for the passkey second factor too is part of this decision.
 2. **CAPTCHA provider**: proposed Turnstile for this deployment. The image CAPTCHA only with
    `--captcha-image-weak-ok`; confirm that it should exist at all, since it has no audio alternative.
 3. **The NIST cap and restricted mode** (7.4): failures counted across all networks; at 99 the account accepts
