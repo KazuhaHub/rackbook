@@ -1,7 +1,9 @@
 # Audit history and roles from the identity provider
 
 Status: design, agreed 2026-11-22. Phase 1 pieces 1 and 2 are built (3.5); the rest is not. Phase 2
-starts with the light version (2a); SCIM (2b) comes later. Phase 3 still needs a decision (section 7).
+starts with the light version (2a); SCIM (2b) comes later. Phase 3 is accepted. The owner's decisions of
+2026-11-22 are in section 7; local accounts and passkeys under SSO have their own design,
+[design-local-accounts.md](design-local-accounts.md).
 
 The team is growing. Two things are needed:
 
@@ -69,7 +71,8 @@ plain-language explanation (section 8).
 3. Sign-ins and role changes leave no record that the console can show.
 4. Nothing shows whether an audit file was edited after the fact.
 5. Someone disabled in Entra, or removed from a group, keeps their access until their cookie expires (up to
-   7 days). With a passkey they can keep signing in, because a passkey sign-in never asks Entra.
+   7 days). With a passkey they can keep signing in, because a passkey sign-in never asks Entra (closed
+   by switching passkey sign-in off under SSO, section 4).
 6. Group roles break for people in more than about 19 groups, and do not reach their API tokens.
 7. There is no read-only role for someone who must see the history but change nothing.
 8. Every new `/infra` admin is a change to infra and a production deploy (phase 3).
@@ -96,7 +99,7 @@ Events (each with `time`, `identity`, `method` and `addr` where known):
 | Event | Extra fields |
 |---|---|
 | `login`, `logout` | `role` (the effective role at sign-in or sign-out); `groups: overage` when the token's groups were cut off (3.1 below and 4; phase 2a) |
-| `login_refused` | `reason`: `no_role`, `tenant`, `claims`, `passkey_failed`; `passkey_needs_oidc` (phase 2a) |
+| `login_refused` | `reason`: `no_role`, `tenant`, `claims`, `passkey_failed` (local accounts add their own reasons, [design-local-accounts.md](design-local-accounts.md), section 8) |
 | `role_changed` | `from`, `to`, `because`: `config` (a `rackbook.yml` commit) or `claims` (different groups or app roles) |
 | `write_refused` | `area` (ledger / infra), `code` (`conflict`, `stale_login`, `forbidden`, `checks_failed`, …) |
 | `secret_revealed`, `secret_reveal_refused`, `reencrypted` | `host`, `key` (never the value) |
@@ -310,22 +313,21 @@ This builds on what exists: the role is computed from the identity and the claim
   all past 200 (the token carries `_claim_names.groups`, or `hasgroups`). In both cases the sign-in
   succeeds without group roles, and the `login` event says `groups: overage`. The docs recommend app
   roles, or Entra's *groups assigned to the application* filter, which sends only the groups the app uses.
-- **Passkeys and the provider.** A passkey session never asks the provider, so it cannot see a disabled
-  account. New setting `auth.passkeys_oidc_max_age` (default 7 days): a passkey only signs someone in if
-  their last OIDC sign-in is within that time, and a passkey session ends when that time runs out (the
-  session cookie carries the last OIDC sign-in time, so this needs no server lookup per request). After
-  that they are sent through OIDC first (`login_refused`, reason `passkey_needs_oidc`). The last OIDC
-  sign-in per identity is kept as `last_oidc` in `audit/identities.json`. Without `--state-dir` there is
-  nowhere to keep it, so passkey sign-in then always requires a fresh OIDC sign-in first. On upgrade nobody
-  has a `last_oidc` yet, so everyone who uses a passkey signs in through OIDC once; the release notes say
-  so. Roles from groups
-  or app roles still do not apply to passkey sessions; the docs say so.
+- **No passkey sign-in under SSO** (changed 2026-11-22). A passkey session never asks the provider, so it
+  cannot see a disabled account. Instead of limiting passkeys with `auth.passkeys_oidc_max_age`, as first
+  planned, passkey sign-in is switched off whenever an OIDC provider is configured: SSO is the only way in,
+  and phishing-resistant sign-in is the provider's job (Entra supports passkeys itself).
+  `auth.passkeys_oidc_max_age`, the `passkey_needs_oidc` refusal and `last_oidc` are dropped. It is not a
+  switch: `auth.passkeys` in an OIDC deployment is ignored with a warning at start. Existing passkey
+  sessions end at their next request; `.rackbook/passkeys.yml` is left as it is (public keys only) and an
+  admin can delete it from **Users**. Details and the migration:
+  [design-local-accounts.md](design-local-accounts.md), section 10; it is that design's first piece.
 - **How fast a removal takes effect.** Claims are read only at sign-in. `auth.session.claims_absolute`
   (default 24 h) shortens the absolute lifetime of a session whose role came from claims. Removing someone
   by name in `rackbook.yml` still applies at the next pull, unless a domain or group entry also matches.
 - **Role changes are recorded.** At each sign-in, the effective role is compared with the role stored for
-  that identity in `audit/identities.json` (identity, name, last role, last sign-in and its method,
-  `last_oidc`; mode 0600, admin-only API, no groups or claims kept). A difference writes `role_changed`. After a `rackbook.yml` commit,
+  that identity in `audit/identities.json` (identity, name, last role, last sign-in and its method;
+  mode 0600, admin-only API, no groups or claims kept). A difference writes `role_changed`. After a `rackbook.yml` commit,
   `role_changed` is written lazily: at each person's next request, the newly computed role is compared
   with the stored one. People who never come back are not recomputed, because their claims are not kept.
 - **Tokens.** A token keeps working only through a role its creator holds *by identity*: an exact entry,
@@ -337,8 +339,10 @@ This builds on what exists: the role is computed from the identity and the claim
   `auth.auditors`, with a diff preview. Saving is a commit to `rackbook.yml` through `yamledit`, so comments
   and layout are kept and every change by hand is in the history. It refuses to remove the last admin, and
   refuses to remove the editing admin's own admin entry.
-- **Teams without SSO** can assign roles this way. How they *sign in* without an OIDC provider is a
-  separate question (section 7).
+- **Teams without SSO** sign in with local accounts (username, password and a mandatory second factor),
+  designed in [design-local-accounts.md](design-local-accounts.md). Their identities are `local:<username>`,
+  assigned in `auth.roles` like any other entry and edited with the same role editor; section 6 of that
+  design says how the editor treats them.
 
 ## 5. Phase 2b: SCIM (later)
 
@@ -358,7 +362,7 @@ Phase 2b gets its own design note before it is built.
 
 ---
 
-## 6. Phase 3: `/infra` admins by group (not decided)
+## 6. Phase 3: `/infra` admins by group (accepted 2026-11-22)
 
 Today `--infra-admins` is a list of exact identities in the infra deployment. The proposal: also accept
 **one** group or app role, pinned together with the issuer, client and tenant that are already pinned.
@@ -366,17 +370,31 @@ Adding an infra admin is then a change in Entra, not a deploy.
 
 The trade-off, plainly: whoever can change that Entra group or app-role assignment (Entra admins, group
 owners) can make anyone an infra admin, and an infra admin is root on every host. Today only a change to
-the infra repository can do that.
+the infra repository can do that. The owner accepted this trade-off on 2026-11-22. `/infra` stays OIDC-only:
+local accounts never reach it.
 
-## 7. Open questions
+## 7. Decisions (2026-11-22)
 
-1. **Phase 3**: accept the trade-off above, or keep the list of names?
-2. **Sign-in without an OIDC provider**: today a person needs an OIDC sign-in before they can enrol a
-   passkey. For teams with no SSO, one option is an admin-issued, single-use invite link that lets a person
-   enrol a passkey directly. This needs its own design, and it interacts with `auth.passkeys_oidc_max_age`.
-3. **Daily anchor** (3.1): offered as off by default. Turn it on for this deployment?
-4. **Defaults**: `--audit-addr truncate` and `--audit-retention-months 0` (keep everything), `claims_absolute: 24h`, `passkeys_oidc_max_age: 7d`. Are these
-   right for the team?
+The open questions of the first draft, as the owner decided them:
+
+1. **Phase 3** (section 6): accepted. `/infra` admins may also come from one Entra group or app role, pinned
+   with the issuer, client and tenant.
+2. **Sign-in without an OIDC provider:** local accounts are wanted, for teams without SSO. Only when no OIDC
+   provider is configured, so a deployment is either SSO or local. An admin creates an account with a
+   single-use, expiring invite link; on first use the person sets a password and must enrol a second factor
+   (TOTP or a passkey). Passwords are stored as argon2id, in the state dir, encrypted, never in Git.
+   Per-account and per-address limits, lockout with backoff. No e-mail: a forgotten password or a lost second
+   factor is an admin-issued one-time reset link. Every sign-in, failure, lockout, reset and invite is in the
+   audit log. Design: [design-local-accounts.md](design-local-accounts.md).
+3. **Passkeys under SSO:** passkey sign-in is disabled when SSO is configured, which makes
+   `auth.passkeys_oidc_max_age` moot; it is dropped (section 4). Not a config switch; existing passkeys stop
+   working, and their file stays until an admin removes it (design-local-accounts.md, section 10).
+4. **Daily anchor** (3.1): stays off.
+5. **Defaults:** this deployment runs with `--audit-addr full`; the default of the flag stays `truncate`.
+   Audit retention is forever (`--audit-retention-months 0`, the default), and stays configurable through that
+   flag. `claims_absolute: 24h` stays.
+
+Still open: the questions of [design-local-accounts.md](design-local-accounts.md), section 13.
 
 ## 8. In plain words
 
@@ -390,7 +408,10 @@ the infra repository can do that.
   latest fingerprint into Git, where rewriting is detected, so only the last day stays open.
 - **Roles come from Entra.** You put people in an app role or a group in Entra, and Rackbook reads it when
   they sign in. Taking someone out takes effect at their next sign-in, and at the latest after 24 hours.
-  Someone who signs in with a passkey must go through Entra at least once a week, and the passkey session
-  ends with that week, so a disabled Entra account stops working within a week at the latest, and within
-  24 hours for roles that come from Entra.
+  With SSO there is no passkey sign-in at Rackbook: everyone goes through Entra (which can use passkeys
+  itself), so a disabled Entra account cannot start a new session, and existing sessions end within 24 hours
+  for roles that come from Entra, and within 7 days at most otherwise.
   With SCIM (later), Entra tells Rackbook directly, and a disabled account stops at once.
+- **Teams without SSO** get local accounts: an admin sends an invite link, the person picks a password and
+  adds a passkey or an authenticator app. Passwords are never in Git; they sit encrypted on the server, and a
+  forgotten password is a new link from an admin.
