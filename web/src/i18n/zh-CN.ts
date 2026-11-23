@@ -894,7 +894,7 @@ const messages = {
     viaToken: (name: string) => `通过令牌 ${name}`,
     system: 'Rackbook',
     state: 'Rackbook 设置',
-    stateHint: '这次提交修改的是 Rackbook 自己的文件（令牌、通行密钥），不是台账记录',
+    stateHint: '这次提交修改的是 Rackbook 自己的文件（令牌、通行密钥、审计锚点），不是台账记录',
     showChanges: '查看改动',
     hideChanges: '收起改动',
     diff: {
@@ -943,6 +943,8 @@ const messages = {
         cut_from_end: '末尾的行被截掉',
         head_mismatch: 'head 文件不一致',
         first_file_mismatch: '第一个文件不一致',
+        anchor_mismatch: '仓库中的每日锚点与日志不一致',
+        anchor_ahead: '有每日锚点超出了日志的末尾（日志被截断或重置）',
       } as Record<string, string>,
       acknowledge: '我已检查，确认',
       adminsAcknowledge: '只有管理员可以确认。',

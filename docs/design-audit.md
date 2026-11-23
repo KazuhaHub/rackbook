@@ -1,6 +1,6 @@
 # Audit history and roles from the identity provider
 
-Status: design, agreed 2026-11-22. Phase 1 pieces 1 to 4 are built (3.5); the rest is not. Phase 2
+Status: design, agreed 2026-11-22. Phase 1 (pieces 1 to 5) is built (3.5); the rest is not. Phase 2
 starts with the light version (2a); SCIM (2b) comes later. Phase 3 is accepted. The owner's decisions of
 2026-11-22 are in section 7; local accounts beside SSO, and the sign-in security settings, have their own
 design, [design-local-accounts.md](design-local-accounts.md).
@@ -378,7 +378,40 @@ must not decide who sees infra.
      tab stays an edit page; infra auditors see group membership on the host pages and through `GET /api/infra/groups`,
      but the console has no read-only groups view. (5) The audit `login` event still records the role (`viewer` for an
      auditor with no role); the capability is not in the event.
-5. The optional daily anchor.
+5. The optional daily anchor. **Done** (README, "The daily anchor"; docs/api.md, "Activity and the audit log"). Phase 1 is
+   complete. As built, and where it differs from 3.1:
+   - `audit.anchor: daily` (absent or `off`: off; anything else is a config error) is `config.Audit.Anchor`.
+     `rackbook check` refuses `daily` with `write.mode: pr`, through the same config load the server uses, so
+     the server refuses it at start too; a reload that carries it keeps the last good config as for any other
+     config error. The anchor job reads the setting from the current config on every check.
+   - `internal/anchor` writes the anchor: a loop (30 seconds after start, then hourly) that appends one JSON Lines
+     line to `.rackbook/audit-anchors` through `Store.MutateStateFile`, with the subject `audit: anchor seq N`.
+     The file is read again on a replay after a moved remote and only ever appended to; lines that are not
+     anchors are left alone (a missing final newline is added before the new line, nothing else is touched).
+   - "The head has advanced" ignores the anchor's own `commit` event, which always follows the anchored seq:
+     otherwise an idle server would anchor every day for ever. The anchor commit is made by a fixed identity,
+     `rackbook-audit-anchor` (method `system`), so that its `commit` line can be told from a person's; it shows
+     in Activity as an ordinary state-only ledger commit, verified.
+   - It writes nothing while the audit log has a problem nobody has acknowledged: an anchor would vouch for a log
+     that is not intact. (Not in the brief of 3.1; a decision made while building.)
+   - Verification runs at start, after each periodic pull (`gitstore.Options.AfterPull`) and in
+     `rackbook audit verify --repo <clone>`, whether or not the setting is on. It reads the anchor file as it is
+     checked out and, for each anchor still in the kept log, the line at that seq through the log's offset index
+     (at most 512 lines are read per anchor). `anchor_mismatch` (the line differs, or the seq is not in the log)
+     and `anchor_ahead` (the seq is beyond the head) are recorded as `chain_problem` events with the fingerprint of
+     the anchor line and what was found, so one condition is recorded once and an acknowledgement covers only what
+     it saw. Only the first bad anchor of each kind is reported: a second, different bad anchor of the same kind
+     stays hidden behind an acknowledged first one until the first is gone.
+   - "Before the first kept line" means the first line of the oldest month file, and only when `head.json` says
+     retention moved the start; without that, a log that starts after seq 1 is missing lines and an anchor in
+     them is a mismatch, not a skip.
+   - Lines of the anchor file that are not anchors are reported by `audit verify` (and logged once), not as a
+     chain problem: they do not fail the exit status.
+   - `rackbook audit verify` had no data repository path; `--repo <clone>` is the narrowest addition. It reads the
+     file as checked out (pull first) and refuses a symbolic link.
+   - Not done: the anchor is not checked against the remote's tip rather than the checkout, and there is no
+     anchor in `/api/audit/status` beyond the problems. The console shows the two kinds in the banner in all three
+     languages; no other page changed.
 
 Each UI piece gets a demo with example data in three languages before merge.
 
@@ -476,7 +509,7 @@ The open questions of the first draft, as the owner decided them:
    audit log.
 3. **Passkeys under SSO:** passkey sign-in is disabled when SSO is configured, which makes
    `auth.passkeys_oidc_max_age` moot; it is dropped (section 4).
-4. **Daily anchor** (3.1): stays off.
+4. **Daily anchor** (3.1): stays off. It is built (piece 5) and off by default; this deployment does not turn it on.
 5. **Defaults:** this deployment runs with `--audit-addr full` (an IPv6 client is still kept as its /64);
    the default of the flag stays `truncate`.
    Audit retention is forever (`--audit-retention-months 0`, the default), and stays configurable through that

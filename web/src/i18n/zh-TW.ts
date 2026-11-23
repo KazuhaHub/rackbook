@@ -894,7 +894,7 @@ const messages = {
     viaToken: (name: string) => `透過權杖 ${name}`,
     system: 'Rackbook',
     state: 'Rackbook 設定',
-    stateHint: '這筆提交修改的是 Rackbook 自己的檔案（權杖、通行密鑰），不是台帳記錄',
+    stateHint: '這筆提交修改的是 Rackbook 自己的檔案（權杖、通行密鑰、稽核錨點），不是台帳記錄',
     showChanges: '檢視變更',
     hideChanges: '收合變更',
     diff: {
@@ -943,6 +943,8 @@ const messages = {
         cut_from_end: '結尾的行被截掉',
         head_mismatch: 'head 檔案不一致',
         first_file_mismatch: '第一個檔案不一致',
+        anchor_mismatch: '儲存庫中的每日錨點與紀錄不一致',
+        anchor_ahead: '有每日錨點超出了紀錄的結尾（紀錄被截斷或重置）',
       } as Record<string, string>,
       acknowledge: '我已檢查，確認',
       adminsAcknowledge: '只有管理員可以確認。',

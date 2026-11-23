@@ -900,7 +900,7 @@ const messages = {
     viaToken: (name: string) => `via token ${name}`,
     system: 'Rackbook',
     state: 'Rackbook settings',
-    stateHint: 'This commit changes Rackbook’s own files (tokens, passkeys), not ledger records',
+    stateHint: 'This commit changes Rackbook’s own files (tokens, passkeys, audit anchors), not ledger records',
     showChanges: 'Show changes',
     hideChanges: 'Hide changes',
     diff: {
@@ -949,6 +949,8 @@ const messages = {
         cut_from_end: 'Lines were cut from the end',
         head_mismatch: 'The head file does not match',
         first_file_mismatch: 'The first file does not match',
+        anchor_mismatch: 'A daily anchor in the repository does not match the log',
+        anchor_ahead: 'A daily anchor is beyond the end of the log (it was cut or reset)',
       } as Record<string, string>,
       acknowledge: 'I have checked — acknowledge',
       adminsAcknowledge: 'Only admins can acknowledge.',

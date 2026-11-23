@@ -959,8 +959,9 @@ be set aside, or a failed write cannot be undone, does the server write nothing 
 the log as failed, because appending would glue a line onto a partial one.
 
 **Checking.** `rackbook audit verify --state-dir <dir>` reads the log and prints what it found: the number of
-lines and files, and each problem (`edited`, `missing`, `reordered`, `cut_from_end`, `head_mismatch`) with the
-`seq` it starts at. A problem the server already wrote down is listed as `recorded at seq N` and still counts;
+lines and files, and each problem (`edited`, `missing`, `reordered`, `cut_from_end`, `head_mismatch`,
+`anchor_mismatch`, `anchor_ahead`) with the `seq` it starts at. `--repo <clone>` also checks the
+[daily anchors](#the-daily-anchor) in that clone of the data repository. A problem the server already wrote down is listed as `recorded at seq N` and still counts;
 once acknowledged it is also listed as `acknowledged at seq N`, and still counts. It never changes a file. It exits 1 on any problem, and 0 when the chain is intact; a torn
 last line or a `head.json` one line behind alone are warnings and exit 0. `--json` prints the report as JSON.
 
@@ -973,6 +974,53 @@ acknowledged, that month is deleted like any other when its turn comes. The ackn
 `chain_problem_ack` line in the chain itself (`detail: through:<seq>`), so it can be audited too. Each skipped
 run logs a warning with the reason. If a start or crash left months behind that `head.json` already says are gone,
 they are not a problem, and the next retention run deletes them.
+
+### The daily anchor
+
+Off by default, and optional. It narrows the one thing the chain cannot do: someone with root on the host can
+rewrite every audit file and `head.json` together, and nothing inside the log would show it. With
+
+```yaml
+audit:
+  anchor: daily      # absent or "off": no anchor is written (any other value is a `rackbook check` error)
+```
+
+Rackbook appends one line to `.rackbook/audit-anchors` in the data repository, at most once per UTC day and
+only if the log has moved on since the last anchor:
+
+```json
+{"day":"2026-11-20","seq":812,"hash":"sha256:…","at":"2026-11-20T03:05:12Z"}
+```
+
+`seq` is the head of the audit log and `hash` the hash of that line. The file is committed through the normal
+write path (`audit: anchor seq 812`, made by `rackbook-audit-anchor`), so it is a Rackbook commit like any
+other and gets its own `commit` line in the log, after the anchored `seq`. A background job tries shortly after
+start and then every hour; a failed push leaves nothing behind, is logged, and is tried again at the next
+check. Reading never waits for it (a write of the anchor queues behind other writes as any write does). It writes nothing while the audit log has a problem nobody has
+acknowledged (an anchor would vouch for a log that is not intact), and does nothing but log a warning without
+`--state-dir`, without Git, or on a `--read-only` server. The setting is read from the current config, so a
+change that arrives by pull takes effect without a restart. Lines that are not anchors are never rewritten:
+Rackbook only appends, and reports them.
+
+**Checking the anchors** happens at start, after each pull and in `rackbook audit verify --repo <clone>`, and
+does not depend on the setting: a leftover file still catches tampering after `anchor` is switched off. Each
+anchor whose `seq` is still in the kept log must name the hash of the line at that `seq` (anchors older than
+the first kept line, see *Retention*, are skipped and counted). A line that differs is an `anchor_mismatch`, an
+anchor beyond the end of the log (it was cut or reset) is an `anchor_ahead`. Either is recorded as a
+`chain_problem` event with the day and `seq` of the first bad anchor, shown in the same banner, acknowledged the
+same way, and recorded once however often the check runs.
+
+**Direct push only.** The anchor is a commit of its own, so `rackbook check` refuses `anchor: daily` with
+`write.mode: pr` (it would open a pull request every day, and nothing would be anchored until someone merged
+it).
+
+**What it protects, and what not.** Rewriting any audit line older than the last anchor now means rewriting
+Git history as well, which Rackbook already detects (`history_rewritten`). The most recent day stays open: lines
+written after the last anchor are protected only by the chain. It does not help if the person who can rewrite
+the log can also rewrite the data repository's history *and* get the server to accept it, and it says nothing
+about what the log did not record. The commit is as trustworthy as access to the data repository, no more.
+The anchor commits touch only `.rackbook/`, so Activity shows them to admins and auditors, never to viewers or
+editors.
 
 **Migration.** Earlier versions wrote the `/infra` audit to `infra-audit.jsonl` in `--state-dir`. At the first
 start with the audit log, its entries are copied into the log with their original times (`audit/migrated` marks it
@@ -992,7 +1040,7 @@ to) are in the URL, so a link reproduces the view; "Load more" pages through old
 | Area | What it holds | Who sees it |
 |---|---|---|
 | `ledger` | commits of the data repository that touch ledger files | every role |
-| `ledger`, state | commits that touch `.rackbook/` (tokens, passkeys) | admins, auditors |
+| `ledger`, state | commits that touch `.rackbook/` (tokens, passkeys, audit anchors) | admins, auditors |
 | `audit` | sign-ins, refusals, `write_refused`, acknowledgements, chain problems | admins, auditors |
 | `infra` | commits of the infra repository and the infra audit events (secret reveals, re-encryption) | `--infra-admins` and `--infra-auditors`, signed in with the console login |
 
