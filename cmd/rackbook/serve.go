@@ -19,6 +19,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 
+	"github.com/kazuhahub/rackbook/internal/anchor"
 	"github.com/kazuhahub/rackbook/internal/ansiblerepo"
 	"github.com/kazuhahub/rackbook/internal/api"
 	"github.com/kazuhahub/rackbook/internal/audit"
@@ -169,7 +170,15 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		defer auditLog.Close()
 	}
 
+	// The audit anchors are checked at start and after each pull; audit.anchor: daily
+	// also writes them (a loop started below). The hook runs only once the pull loop does.
+	var anchorer *anchor.Anchorer
 	store, err := gitstore.Open(ctx, gitstore.Options{GitHubApp: appSource, OnCommit: commitHook(auditLog, "ledger", filepath.Base(cfg.Dir)), StateDir: stateDir,
+		AfterPull: func() {
+			if anchorer != nil {
+				anchorer.Verify()
+			}
+		},
 		ConfigPath: path, NoGit: noGit, Committer: committer, PullInterval: interval,
 		GitHubToken: os.Getenv("RACKBOOK_GITHUB_TOKEN"), GitHubRepo: ghRepo, GitHubAPI: ghAPI, Logger: logger,
 	})
@@ -182,6 +191,15 @@ func runServe(cmd *cobra.Command, _ []string) error {
 			return fmt.Errorf("--accept-remote: %w", err)
 		}
 		logger.Warn("accepted the remote history", "remote", hash)
+	}
+	anchorer = &anchor.Anchorer{Log: auditLog, Store: store, Logger: logger}
+	anchorer.Verify()
+	if ro, _ := f.GetBool("read-only"); ro {
+		if cfg.AuditAnchorDaily() {
+			logger.Warn("audit.anchor: daily writes a commit, so --read-only writes no anchors; existing anchors are still checked")
+		}
+	} else {
+		go anchorer.Run(ctx)
 	}
 	go store.Run(ctx)
 

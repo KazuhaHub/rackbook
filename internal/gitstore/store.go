@@ -54,6 +54,11 @@ type Options struct {
 	// trailer value ("" for none). It runs under the write lock: keep it short.
 	OnCommit func(hash string, who *auth.Identity, record string)
 
+	// AfterPull, when set, runs after each periodic pull of Run that succeeded
+	// (the data is then at the new tip), outside the write lock. The first pull
+	// at Open is not one: the caller does what it needs once Open returned.
+	AfterPull func()
+
 	// StateDir is the server's --state-dir ("" = none): the deleted-records cache
 	// is kept under history/ there. It is outside the data repository.
 	StateDir string
@@ -291,6 +296,8 @@ func (s *Store) Run(ctx context.Context) {
 		case <-t.C:
 			if err := s.Pull(ctx); err != nil && !errors.Is(err, ErrHistoryRewritten) {
 				s.log.Warn("pull failed", "err", err)
+			} else if err == nil && s.opts.AfterPull != nil {
+				s.opts.AfterPull()
 			}
 		}
 	}

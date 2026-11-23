@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kazuhahub/rackbook/internal/edit"
 	"github.com/kazuhahub/rackbook/internal/testutil"
@@ -622,5 +623,22 @@ func TestMigrationOnlyForTheCheckedOutBranchAndNeverLosesTheOldFile(t *testing.T
 	// Temp names cannot collide with a branch file: they start with a dot.
 	if strings.HasPrefix(url.PathEscape("main"), ".") {
 		t.Fatal("unreachable")
+	}
+}
+
+func TestRunCallsAfterPullAfterAPull(t *testing.T) {
+	e := newEnv(t)
+	pulled := make(chan struct{}, 8)
+	s := open(t, e.server, func(o *Options) {
+		o.PullInterval = 5 * time.Millisecond
+		o.AfterPull = func() { pulled <- struct{}{} }
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go s.Run(ctx)
+	select {
+	case <-pulled:
+	case <-time.After(30 * time.Second):
+		t.Fatal("AfterPull was not called after a successful pull")
 	}
 }
