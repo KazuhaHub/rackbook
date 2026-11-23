@@ -258,7 +258,7 @@ func TestAnchorsBeforeTheFirstKeptLineAreSkipped(t *testing.T) {
 	if st := l2.Status(); !st.OK {
 		t.Fatalf("%+v", st)
 	}
-	rep, err := VerifyWithAnchors(dir, anchorFile(anchors...), AnchorOptions{RetentionMonths: 2})
+	rep, err := VerifyWithAnchors(dir, anchorFile(anchors...), AnchorOptions{RetentionMonths: 2, Now: at(2026, 11, 22)})
 	if err != nil || !rep.OK || rep.Anchors.Skipped != 1 || rep.Anchors.Checked != 3 {
 		t.Fatalf("%+v %v", rep, err)
 	}
@@ -341,13 +341,13 @@ func TestAForgedHeadFileCannotHideAnchorsOfTheKeptMonths(t *testing.T) {
 	}
 	// the same files with an anchor day inside the oldest kept month, whose line is gone: a problem
 	moved := append([]Anchor{}, anchors...)
-	moved[0].Day = "2026-10-01"
-	rep, err := VerifyWithAnchors(dir, anchorFile(moved...), AnchorOptions{RetentionMonths: 2})
+	moved[0].Day = "2026-10-02" // the 1st itself would be allowed: the writer can anchor the month before just after midnight
+	rep, err := VerifyWithAnchors(dir, anchorFile(moved...), AnchorOptions{RetentionMonths: 2, Now: at(2026, 11, 22)})
 	if err != nil || rep.OK || rep.Problems[0].Kind != KindAnchorMismatch || rep.Problems[0].Seq != anchors[0].Seq {
 		t.Fatalf("%+v %v", rep, err)
 	}
 	// and the newest anchor is never skipped, however old it says it is
-	rep, err = VerifyWithAnchors(dir, anchorFile(anchors[0]), AnchorOptions{RetentionMonths: 2})
+	rep, err = VerifyWithAnchors(dir, anchorFile(anchors[0]), AnchorOptions{RetentionMonths: 2, Now: at(2026, 11, 22)})
 	if err != nil || rep.OK || rep.Anchors.Skipped != 0 {
 		t.Fatalf("%+v %v", rep, err)
 	}
@@ -453,12 +453,21 @@ func TestManyWrongAnchorsAreCappedPerPassWithASummary(t *testing.T) {
 	}
 }
 
-func TestAnchorsThatCannotBeAnchorsAreInvalid(t *testing.T) {
+// logWithHashes records n lines and returns the real (seq, hash) of each as an anchor of the given day.
+func logWithHashes(t *testing.T, n int) (*Log, []Anchor) {
+	t.Helper()
 	l, _ := newLog(t, Options{})
-	recordN(l, 10, "login")
-	a := func(day string, seq int64) Anchor {
-		return Anchor{Day: day, Seq: seq, Hash: hashOf([]byte("x")), At: day + "T03:00:00Z"}
+	var as []Anchor
+	for i := 1; i <= n; i++ {
+		recordN(l, 1, "login")
+		as = append(as, anchorOf(t, l, "2026-11-01"))
 	}
+	return l, as
+}
+
+func TestAnchorsThatCannotBeAnchorsAreInvalid(t *testing.T) {
+	l, real := logWithHashes(t, 10)
+	a := func(day string, seq int64) Anchor { x := real[seq-1]; x.Day, x.At = day, day+"T03:00:00Z"; return x }
 	now := time.Date(2026, 11, 25, 9, 0, 0, 0, time.UTC)
 	for _, c := range []struct {
 		name    string
@@ -489,6 +498,50 @@ func TestAnchorsThatCannotBeAnchorsAreInvalid(t *testing.T) {
 	}
 }
 
+func TestAForgedAnchorThatIsAcknowledgedDoesNotBecomeTheBaseline(t *testing.T) {
+	l, real := logWithHashes(t, 12)
+	now := time.Date(2026, 11, 25, 9, 0, 0, 0, time.UTC)
+	opt := AnchorOptions{Full: true, Now: now}
+	a1 := real[3]
+	a1.Day = "2026-11-10"
+	// a forged line: tomorrow, and a seq far beyond the log's end
+	forged := Anchor{Day: "2026-11-26", Seq: 1 << 50, Hash: hashOf([]byte("x")), At: "2026-11-26T00:00:00Z"}
+	if _, err := l.ReviewAnchors(anchorFile(a1, forged), nil, opt); err != nil {
+		t.Fatal(err)
+	}
+	st := l.Status()
+	if st.OK || problemKinds(st) != KindAnchorAhead {
+		t.Fatalf("%+v", st)
+	}
+	seq, _ := l.Head()
+	if err := l.Ack(nil, seq); err != nil {
+		t.Fatal(err)
+	}
+	// real anchors that come after: compared with the last anchor that matched, not with the forged
+	// line, so they are valid and the writer may trust them
+	a2 := real[7]
+	a2.Day = "2026-11-24"
+	rev, err := l.ReviewAnchors(anchorFile(a1, forged, a2), nil, opt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !l.Status().OK || len(rev.Good) != 2 || rev.Good[1] != a2 {
+		t.Fatalf("%+v %+v", rev, l.Status())
+	}
+	// a forged line with a seq that exists but a hash that does not, dated ahead, is a mismatch and no baseline either
+	bad := real[9]
+	bad.Day, bad.Hash = "2026-11-26", hashOf([]byte("not it"))
+	a3 := real[10]
+	a3.Day = "2026-11-25"
+	rev, err = l.ReviewAnchors(anchorFile(a1, forged, a2, bad, a3), nil, opt)
+	if err != nil || len(rev.Good) != 3 || rev.Good[2] != a3 {
+		t.Fatalf("%+v %v", rev, err)
+	}
+	if st := l.Status(); st.OK || problemKinds(st) != KindAnchorMismatch {
+		t.Fatalf("%+v", st)
+	}
+}
+
 func TestAnInvalidAnchorIsNotTrusted(t *testing.T) {
 	l, _ := newLog(t, Options{})
 	recordN(l, 10, "login")
@@ -502,40 +555,27 @@ func TestAnInvalidAnchorIsNotTrusted(t *testing.T) {
 	}
 }
 
-func TestAnchorHistoryMustOnlyGrowByAppendedLines(t *testing.T) {
+func TestARewrittenAnchorFileIsAProblemThatNamesTheCommit(t *testing.T) {
 	a1 := Anchor{Day: "2026-11-01", Seq: 3, Hash: hashOf([]byte("a")), At: "2026-11-01T03:00:00Z"}
 	a2 := Anchor{Day: "2026-11-02", Seq: 7, Hash: hashOf([]byte("b")), At: "2026-11-02T03:00:00Z"}
-	a3 := Anchor{Day: "2026-11-03", Seq: 9, Hash: hashOf([]byte("c")), At: "2026-11-03T03:00:00Z"}
 	forged := a2
 	forged.Hash = hashOf([]byte("forged"))
-	v := func(c string, as ...Anchor) FileVersion { return FileVersion{Commit: c, Content: anchorFile(as...)} }
-
-	if ps := CheckAppendOnly(nil, []FileVersion{v("c1", a1), v("c2", a1, a2), v("c3", a1, a2, a3)}); len(ps) != 0 {
-		t.Fatalf("%+v", ps)
+	p := RewrittenAnchor("c3", anchorFile(a1, a2), anchorFile(a1, forged))
+	if p.Kind != KindAnchorRewritten || p.Seq != 7 || !strings.Contains(p.Detail, "commit c3") || p.Fingerprint == "" {
+		t.Fatalf("%+v", p)
 	}
-	if ps := CheckAppendOnly(anchorFile(a1), []FileVersion{v("c2", a1, a2)}); len(ps) != 0 {
-		t.Fatalf("%+v", ps)
-	}
-	ps := CheckAppendOnly(nil, []FileVersion{v("c1", a1), v("c2", a1, a2), v("c3", a1, forged), v("c4", a1, forged, a3), v("c5")})
-	if len(ps) != 2 || ps[0].Kind != KindAnchorRewritten || ps[0].Seq != 7 || !strings.Contains(ps[0].Detail, "c3") || ps[1].Seq != 3 || !strings.Contains(ps[1].Detail, "c5") {
-		t.Fatalf("%+v", ps)
-	}
-	if ps[0].Fingerprint == ps[1].Fingerprint {
-		t.Fatal("one fingerprint per commit")
-	}
-	// a file that was cut: lines removed from the end
-	if ps := CheckAppendOnly(nil, []FileVersion{v("c1", a1, a2), v("c2", a1)}); len(ps) != 1 || ps[0].Seq != 7 {
-		t.Fatalf("%+v", ps)
+	if q := RewrittenAnchor("c4", anchorFile(a1, a2), anchorFile(a1)); q.Seq != 7 || q.Fingerprint == p.Fingerprint {
+		t.Fatalf("%+v", q)
 	}
 	// a rewritten commit is recorded as a chain problem, once, and acknowledged like any other
 	l, dir := newLog(t, Options{})
 	recordN(l, 3, "login")
 	for i := 0; i < 2; i++ {
-		if _, err := l.ReviewAnchors(nil, ps, full); err != nil {
+		if _, err := l.ReviewAnchors(nil, []Problem{p}, full); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if n := countEvents(t, dir, ChainProblemEvent); n != 2 || problemKinds(l.Status()) != KindAnchorRewritten+","+KindAnchorRewritten {
+	if n := countEvents(t, dir, ChainProblemEvent); n != 1 || problemKinds(l.Status()) != KindAnchorRewritten {
 		t.Fatalf("%d events, %+v", n, l.Status())
 	}
 }
@@ -558,5 +598,162 @@ func TestAnchorCacheSkipsWhatMatchedBeforeButNotTheNewest(t *testing.T) {
 	l.anchorOK.ok = map[string]bool{}
 	if _, err := l.ReviewAnchors(anchorFile(as...), nil, now); err != nil || len(l.anchorOK.ok) != 3 {
 		t.Fatalf("%v %v", err, l.anchorOK.ok)
+	}
+}
+
+// retentionLog records lines at the given times with fake "now" and an anchor after each group
+// the caller asks for. It returns the Log reopened with the retention, so month files that
+// retention would delete are gone.
+func retentionLog(t *testing.T, now time.Time, retention int, times ...time.Time) (*Log, string) {
+	t.Helper()
+	clk := &fakeClock{now}
+	l, dir := newLog(t, Options{Now: clk.Now})
+	for _, tm := range times {
+		e := ev("login")
+		e.Time = tm
+		l.Record(e)
+	}
+	l.Close()
+	l2, err := Open(dir, Options{Now: clk.Now, RetentionMonths: retention})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(l2.Close)
+	return l2, dir
+}
+
+func lineAnchor(t *testing.T, dir string, seq int64, day string) Anchor {
+	t.Helper()
+	files, _ := listFiles(dir)
+	_, h, err := lineHashAt(dir, files, &offsetIndex{}, seq)
+	if err != nil || h == "" {
+		t.Fatalf("line %d: %q %v", seq, h, err)
+	}
+	return Anchor{Day: day, Seq: seq, Hash: h, At: day + "T00:30:00Z"}
+}
+
+func TestAnAnchorOfTheMonthBeforeWrittenOnThe1stMayBeSkippedByRetention(t *testing.T) {
+	// retention 1 in December keeps November and December: October goes. The anchor of an October
+	// line, written just after midnight on 2026-11-01, is dated on the 1st of the oldest kept month.
+	clk := &fakeClock{at(2026, 12, 2)}
+	l, dir := newLog(t, Options{Now: clk.Now})
+	for _, tm := range []time.Time{at(2026, 10, 30), at(2026, 10, 31), at(2026, 11, 5), at(2026, 11, 20)} {
+		e := ev("login")
+		e.Time = tm
+		l.Record(e)
+	}
+	l.Close()
+	oct := lineAnchor(t, dir, 2, "2026-11-01")
+	l2, err := Open(dir, Options{Now: clk.Now, RetentionMonths: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l2.Close()
+	if files, _ := listFiles(dir); len(files) != 1 {
+		t.Fatalf("October should be gone: %v", files)
+	}
+	head := lineAnchor(t, dir, 4, "2026-11-20")
+	rev, err := l2.ReviewAnchors(anchorFile(oct, head), nil, AnchorOptions{Full: true})
+	if err != nil || rev.Summary.Skipped != 1 || rev.Summary.Checked != 1 || !l2.Status().OK {
+		t.Fatalf("%+v %v %+v", rev, err, l2.Status())
+	}
+	// dated the 2nd it is not: that is no anchor that was written for a month retention dropped
+	oct.Day = "2026-11-02"
+	rep, err := VerifyWithAnchors(dir, anchorFile(oct, head), AnchorOptions{RetentionMonths: 1, Now: clk.Now()})
+	if err != nil || rep.OK || rep.Problems[len(rep.Problems)-1].Kind != KindAnchorMismatch {
+		t.Fatalf("%+v %v", rep, err)
+	}
+}
+
+func TestACutIntoTheCurrentMonthIsNotRetention(t *testing.T) {
+	now := at(2026, 11, 22)
+	l, dir := retentionLog(t, now, 1, at(2026, 10, 30), at(2026, 11, 3), at(2026, 11, 4), at(2026, 11, 5), at(2026, 11, 6))
+	// the anchors as the server wrote them, taken before somebody removed the first lines of November
+	early := lineAnchor(t, dir, 3, "2026-11-10")
+	head := lineAnchor(t, dir, 5, "2026-11-20")
+	p := filepath.Join(dir, "audit-2026-11.jsonl")
+	ls := lines(t, p)
+	write(t, p, ls[2:]) // lines 2 and 3 are gone from the front of the current month's file (seq 1 is October's)
+	_ = l
+	rep, err := VerifyWithAnchors(dir, anchorFile(early, head), AnchorOptions{RetentionMonths: 1, Now: now})
+	if err != nil || rep.Anchors.Skipped != 0 {
+		t.Fatalf("%+v %v", rep, err)
+	}
+	found := false
+	for _, pr := range rep.Problems {
+		found = found || (pr.Kind == KindAnchorMismatch && pr.Seq == 3)
+	}
+	if !found {
+		t.Fatalf("an anchor of a line cut from the current month must be a problem: %s", kinds(rep))
+	}
+}
+
+func TestMonthsYoungerThanTheRetentionCutoffAreNotRetentions(t *testing.T) {
+	// retention 3 in November keeps August onward. A log that lost September and October has not
+	// been through retention, whatever head.json says.
+	now := at(2026, 11, 22)
+	clk := &fakeClock{now}
+	l, dir := newLog(t, Options{Now: clk.Now})
+	for _, m := range []time.Month{8, 9, 10, 11} {
+		e := ev("login")
+		e.Time = at(2026, m, 3)
+		l.Record(e)
+	}
+	l.Close()
+	files, _ := listFiles(dir)
+	aug := lineAnchor(t, dir, 1, "2026-08-04")
+	sep := lineAnchor(t, dir, 2, "2026-09-04")
+	head := lineAnchor(t, dir, 4, "2026-11-05")
+	for _, f := range files[:3] {
+		if err := os.Remove(filepath.Join(dir, f)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rep, err := VerifyWithAnchors(dir, anchorFile(aug, sep, head), AnchorOptions{RetentionMonths: 3, Now: now})
+	if err != nil || rep.Anchors.Skipped != 0 {
+		t.Fatalf("%+v %v", rep, err)
+	}
+	n := 0
+	for _, p := range rep.Problems {
+		if p.Kind == KindAnchorMismatch {
+			n++
+		}
+	}
+	if n != 2 {
+		t.Fatalf("both anchors of the lost months must be problems: %s", kinds(rep))
+	}
+	// the same files, as a retention of 1 month would have left them in November, are fine
+	rep, err = VerifyWithAnchors(dir, anchorFile(aug, sep, head), AnchorOptions{RetentionMonths: 1, Now: now})
+	if err != nil || rep.Anchors.Skipped != 2 {
+		t.Fatalf("%+v %v", rep, err)
+	}
+}
+
+func TestNothingIsSkippedWhenNoAnchorMatchedTheLog(t *testing.T) {
+	now := at(2026, 11, 22)
+	_, dir := retentionLog(t, now, 2, at(2026, 8, 3), at(2026, 9, 3), at(2026, 10, 3), at(2026, 11, 3))
+	if files, _ := listFiles(dir); len(files) != 3 {
+		t.Fatalf("%v", files)
+	}
+	// the August anchor would be skipped if a later anchor matched; with only a forged tail none does
+	aug := Anchor{Day: "2026-08-04", Seq: 1, Hash: hashOf([]byte("a")), At: "2026-08-04T00:00:00Z"}
+	tail := Anchor{Day: "2026-11-06", Seq: 3, Hash: hashOf([]byte("forged")), At: "2026-11-06T00:00:00Z"}
+	rep, err := VerifyWithAnchors(dir, anchorFile(aug, tail), AnchorOptions{RetentionMonths: 2, Now: now})
+	if err != nil || rep.Anchors.Skipped != 0 || rep.Anchors.Checked != 2 {
+		t.Fatalf("%+v %v", rep, err)
+	}
+}
+
+func TestTheNewestAnchorForRetentionIsTheNewestThatMatched(t *testing.T) {
+	now := at(2026, 11, 22)
+	_, dir := retentionLog(t, now, 2, at(2026, 8, 3), at(2026, 9, 3), at(2026, 10, 3), at(2026, 11, 3))
+	seqSep := lineAnchor(t, dir, 2, "2026-08-31") // an anchor of the first kept month's line, dated before it
+	oct := lineAnchor(t, dir, 3, "2026-10-04")
+	// a forged line at the end of the file: not the newest that matched, so it does not make
+	// the two real ones before it look like "not the newest"; and they stay as they are
+	forgedTail := Anchor{Day: "2026-11-05", Seq: 4, Hash: hashOf([]byte("forged")), At: "2026-11-05T00:00:00Z"}
+	rep, err := VerifyWithAnchors(dir, anchorFile(seqSep, oct, forgedTail), AnchorOptions{RetentionMonths: 2, Now: now})
+	if err != nil || rep.Anchors.Skipped != 0 || len(rep.Problems) != 1 || rep.Problems[0].Kind != KindAnchorMismatch || rep.Problems[0].Seq != 4 {
+		t.Fatalf("%+v %v", rep, err)
 	}
 }

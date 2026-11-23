@@ -108,24 +108,29 @@ const maxAnchorProblems = 20
 
 // AnchorSummary is what checking the anchors looked at.
 type AnchorSummary struct {
-	Checked   int   `json:"checked"`             // anchors compared with the log
-	Skipped   int   `json:"skipped,omitempty"`   // anchors older than the kept log (retention)
-	Malformed []int `json:"malformed,omitempty"` // lines of the file that are not anchors
+	Checked   int    `json:"checked"`             // anchors compared with the log
+	Skipped   int    `json:"skipped,omitempty"`   // anchors older than the kept log (retention)
+	Malformed []int  `json:"malformed,omitempty"` // lines of the file that are not anchors
+	Note      string `json:"note,omitempty"`      // something that was not checked, and why
 }
 
 // AnchorOptions tells how the anchors are checked.
 type AnchorOptions struct {
 	// RetentionMonths is the server's --audit-retention-months. With 0 (keep everything) no
-	// anchor is ever skipped. With more, an anchor may be skipped as older than the kept log
-	// only when its day's month is strictly older than the month of the oldest month file
-	// present, it is not the newest anchor of the file, and its seq is below the first line
-	// kept (it is not beyond the end of the log, which is checked first). head.json is not
-	// consulted: it can be rewritten together with the log.
+	// anchor is ever skipped. With more, an anchor is skipped as removed by retention only if ALL
+	// of these hold: its seq is below the first line kept; its day is on or before the first day
+	// of the oldest month file kept (the writer can anchor a line of the month before just after
+	// midnight on the 1st); that oldest month is not newer than the month retention would keep
+	// from now, with a month of slack (retention never deletes a month younger than its cutoff, so
+	// if such months are gone that is not retention); and it is older in the file than the newest
+	// anchor that matched the log. head.json is not consulted: it can be rewritten together with the
+	// log. What a deletion that looks like retention can still hide is at most the lines retention
+	// itself would drop, plus the first day of the oldest kept month.
 	RetentionMonths int
-	// Now is the time for "a day in the future"; zero is time.Now().
+	// Now is the time for "a day in the future" and for the retention cutoff; zero is time.Now().
 	Now time.Time
 	// Full checks every anchor. Otherwise an anchor that matched before in this process is not
-	// looked up again, except the newest.
+	// looked up again, except the newest one that matched.
 	Full bool
 }
 
@@ -176,106 +181,126 @@ func (c *anchorCache) add(a Anchor) {
 }
 
 // evaluateAnchors compares every anchor with the log, and returns each wrong one as a problem of
-// its own, in file order. lastSeq is the seq of the last line.
+// its own, in file order. lastSeq is the seq of the last line. The anchors that matched are the
+// baseline for order: a line that does not match (ahead, mismatch, future) never becomes the
+// "previous" anchor that later ones must come after.
 func evaluateAnchors(dir string, idx *offsetIndex, lastSeq int64, anchors Anchors, opt AnchorOptions, cache *anchorCache) (AnchorReview, []Problem, error) {
 	rev := AnchorReview{Summary: AnchorSummary{Malformed: anchors.Malformed}}
-	if len(anchors.List) == 0 {
+	list := anchors.List
+	if len(list) == 0 {
 		return rev, nil, nil
 	}
 	files, err := listFiles(dir)
 	if err != nil {
 		return rev, nil, err
 	}
-	oldestMonth, oldestSeq := "", int64(0)
-	if opt.RetentionMonths > 0 && len(files) > 0 {
-		oldestMonth = fileRe.FindStringSubmatch(files[0])[1]
-		if f, err := os.Open(filepath.Join(dir, files[0])); err == nil {
-			oldestSeq, _ = firstSeq(f)
-			f.Close()
-		}
-	}
 	now := opt.Now
 	if now.IsZero() {
 		now = time.Now()
 	}
-	latest := now.UTC().AddDate(0, 0, 1).Format("2006-01-02")
+	now = now.UTC()
+	latest := now.AddDate(0, 0, 1).Format("2006-01-02")
+	type found struct {
+		file, got string
+		done      bool
+	}
+	res := make([]found, len(list))
+	lookup := func(i int) (string, string, error) {
+		if !res[i].done {
+			f, g, err := lineHashAt(dir, files, idx, list[i].Seq)
+			if err != nil {
+				return "", "", err
+			}
+			res[i] = found{f, g, true}
+		}
+		return res[i].file, res[i].got, nil
+	}
+	candidate := func(a Anchor) bool { return a.Day <= latest && a.Seq <= lastSeq }
+
+	// The newest anchor that matched the log, looked up fresh: from the end, the first that matches.
+	newest := -1
+	for i := len(list) - 1; i >= 0; i-- {
+		if !candidate(list[i]) {
+			continue
+		}
+		if _, got, err := lookup(i); err != nil {
+			return rev, nil, err
+		} else if got == list[i].Hash {
+			newest = i
+			break
+		}
+	}
+
+	// Retention: what may be skipped, if anything.
+	skipBelow, skipDay := int64(0), ""
+	if opt.RetentionMonths > 0 && newest >= 0 && len(files) > 0 {
+		m := fileRe.FindStringSubmatch(files[0])[1]
+		if t, err := time.Parse("2006-01", m); err == nil && monthIndex(t) <= monthIndex(now)-opt.RetentionMonths+1 {
+			if f, err := os.Open(filepath.Join(dir, files[0])); err == nil {
+				skipBelow, _ = firstSeq(f)
+				f.Close()
+			}
+			skipDay = m + "-01"
+		}
+	}
+
 	var out []Problem
-	var acc *Anchor // the last anchor that is not invalid
-	last := len(anchors.List) - 1
-	for i := range anchors.List {
-		a := anchors.List[i]
-		reason := ""
+	var base *Anchor // the last anchor that matched
+	for i, a := range list {
 		switch {
 		case a.Day > latest:
-			reason = fmt.Sprintf("the anchor of %s is dated after today", a.Day)
-		case acc != nil && (a.Day <= acc.Day || a.Seq <= acc.Seq):
-			reason = fmt.Sprintf("the anchor of %s (seq %d) does not come after the one of %s (seq %d)", a.Day, a.Seq, acc.Day, acc.Seq)
-		}
-		if reason != "" {
+			reason := fmt.Sprintf("the anchor of %s is dated after today", a.Day)
 			out = append(out, Problem{Seq: a.Seq, Kind: KindAnchorInvalid, Detail: reason,
 				Fingerprint: fingerprint(KindAnchorInvalid, a.Seq, "", anchorEvidence(a, reason))})
 			continue
-		}
-		acc = &anchors.List[i]
-		switch {
 		case a.Seq > lastSeq:
 			rev.Summary.Checked++
 			out = append(out, Problem{Seq: a.Seq, Kind: KindAnchorAhead,
 				Detail:      fmt.Sprintf("the anchor of %s is at seq %d, the log ends at seq %d", a.Day, a.Seq, lastSeq),
 				Fingerprint: fingerprint(KindAnchorAhead, a.Seq, "", anchorEvidence(a, ""))})
 			continue
-		case oldestMonth != "" && i != last && a.Day[:7] < oldestMonth && a.Seq < oldestSeq:
+		case skipDay != "" && i < newest && a.Seq < skipBelow && a.Day <= skipDay:
 			rev.Summary.Skipped++
 			rev.Good = append(rev.Good, a)
 			continue
 		}
 		rev.Summary.Checked++
-		if !opt.Full && i != last && cache.has(a) {
-			rev.Good = append(rev.Good, a)
-			continue
-		}
-		file, got, err := lineHashAt(dir, files, idx, a.Seq)
-		if err != nil {
+		var file, got string
+		if !opt.Full && i != newest && cache.has(a) {
+			got = a.Hash
+		} else if file, got, err = lookup(i); err != nil {
 			return rev, nil, err
 		}
-		if got == a.Hash {
-			cache.add(a)
-			rev.Good = append(rev.Good, a)
+		if got != a.Hash {
+			d := fmt.Sprintf("the anchor of %s says seq %d is %s, the line is %s", a.Day, a.Seq, shortHash(a.Hash), shortHash(got))
+			if got == "" {
+				d = fmt.Sprintf("the anchor of %s is at seq %d, which the log does not have", a.Day, a.Seq)
+			}
+			out = append(out, Problem{Seq: a.Seq, Kind: KindAnchorMismatch, File: file, Detail: d,
+				Fingerprint: fingerprint(KindAnchorMismatch, a.Seq, "", anchorEvidence(a, got))})
 			continue
 		}
-		d := fmt.Sprintf("the anchor of %s says seq %d is %s, the line is %s", a.Day, a.Seq, shortHash(a.Hash), shortHash(got))
-		if got == "" {
-			d = fmt.Sprintf("the anchor of %s is at seq %d, which the log does not have", a.Day, a.Seq)
+		if base != nil && (a.Day <= base.Day || a.Seq <= base.Seq) {
+			reason := fmt.Sprintf("the anchor of %s (seq %d) does not come after the one of %s (seq %d)", a.Day, a.Seq, base.Day, base.Seq)
+			out = append(out, Problem{Seq: a.Seq, Kind: KindAnchorInvalid, Detail: reason,
+				Fingerprint: fingerprint(KindAnchorInvalid, a.Seq, "", anchorEvidence(a, reason))})
+			continue
 		}
-		out = append(out, Problem{Seq: a.Seq, Kind: KindAnchorMismatch, File: file, Detail: d,
-			Fingerprint: fingerprint(KindAnchorMismatch, a.Seq, "", anchorEvidence(a, got))})
+		cache.add(a)
+		rev.Good = append(rev.Good, a)
+		base = &list[i]
 	}
 	return rev, out, nil
 }
 
-// FileVersion is the anchor file as one commit left it.
-type FileVersion struct {
-	Commit  string
-	Content []byte
-}
-
-// CheckAppendOnly checks that each version of the anchor file is the one before it with lines
-// appended, and nothing else. base is the version before the first (nil when there is none). A
-// version that is not is an anchor_rewritten problem naming its commit; the next version is
-// compared with that one, so a rewrite is reported once.
-func CheckAppendOnly(base []byte, versions []FileVersion) []Problem {
-	var out []Problem
-	prev := base
-	for _, v := range versions {
-		if !bytes.HasPrefix(v.Content, prev) {
-			seq := firstChangedSeq(prev, v.Content)
-			out = append(out, Problem{Seq: seq, Kind: KindAnchorRewritten,
-				Detail:      "commit " + v.Commit + " changed or removed lines that were already in " + AnchorsPath,
-				Fingerprint: fingerprint(KindAnchorRewritten, seq, "", v.Commit)})
-		}
-		prev = v.Content
-	}
-	return out
+// RewrittenAnchor is the problem for a commit whose version of the anchor file is not its
+// parent's with lines appended: base is the parent's version, content the commit's. The problem
+// carries the commit; its seq is that of the first anchor of base that was changed or removed.
+func RewrittenAnchor(commit string, base, content []byte) Problem {
+	seq := firstChangedSeq(base, content)
+	return Problem{Seq: seq, Kind: KindAnchorRewritten,
+		Detail:      "commit " + commit + " changed or removed lines that were already in " + AnchorsPath,
+		Fingerprint: fingerprint(KindAnchorRewritten, seq, "", commit)}
 }
 
 // firstChangedSeq is the seq of the first anchor of old that is not the same line in now; the
@@ -369,9 +394,9 @@ func lineSeq(line []byte) (int64, bool) {
 // VerifyWithAnchors is Verify plus the anchors: file is the content of the
 // anchor file (nil when there is none), whose summary is Report.Anchors. An anchor
 // problem that a chain_problem event already holds is listed once, as recorded; any
-// other is added as found now (at most maxAnchorProblems, then a summary). The CLI
-// checks the file as it is in a clone; it does not read the file's history.
-func VerifyWithAnchors(dir string, file []byte, opt AnchorOptions) (Report, error) {
+// other is added as found now (at most maxAnchorProblems, then a summary). extra are
+// problems found elsewhere (anchor_rewritten from the history of the file).
+func VerifyWithAnchors(dir string, file []byte, opt AnchorOptions, extra ...Problem) (Report, error) {
 	s, err := scanDir(dir)
 	if err != nil {
 		return Report{}, err
@@ -388,6 +413,7 @@ func VerifyWithAnchors(dir string, file []byte, opt AnchorOptions) (Report, erro
 		have[problemKey(p.Kind, p.Seq, p.Fingerprint)] = true
 	}
 	var fresh []Problem
+	probs = append(append([]Problem{}, extra...), probs...)
 	for _, p := range probs {
 		if !have[problemKey(p.Kind, p.Seq, p.Fingerprint)] {
 			fresh = append(fresh, p)
