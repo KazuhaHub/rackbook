@@ -19,7 +19,14 @@ const (
 	MethodToken            = "token"
 	// MethodCLI marks commits made by the rackbook command line.
 	MethodCLI = "cli"
+	// MethodSystem marks what Rackbook does by itself, with no person behind it: the daily
+	// audit anchor's commit. No sign-in produces it.
+	MethodSystem = "system"
 )
+
+// AnchorIdentity is the ID of that commit's identity. No sign-in may produce it: the OIDC and
+// MCP paths refuse it as an identity.
+const AnchorIdentity = "rackbook-audit-anchor"
 
 // Identity is an authenticated caller. Authenticators build one per request
 // and finish it with Authenticator.Evaluate, which sets Role from the config

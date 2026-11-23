@@ -233,6 +233,10 @@ func (s *Service) identityFromClaims(a *authoidc.Assertion) (*auth.Identity, str
 		// The oidc: prefix names subject identities only; a claim must not be able to forge one.
 		return nil, "", errors.New("claim " + idClaim + " must not start with " + SubjectPrefix)
 	}
+	if strings.EqualFold(ident, auth.AnchorIdentity) {
+		// the identity of the audit anchor's commit belongs to Rackbook itself
+		return nil, "", errors.New("claim " + idClaim + " must not be " + auth.AnchorIdentity)
+	}
 	if idClaim == "email" {
 		// An e-mail address is only an identity if the IdP vouches for it
 		// (Entra does not: its "email" claim is user-editable).

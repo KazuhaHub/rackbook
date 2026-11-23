@@ -225,7 +225,7 @@ func TestNothingIsWrittenWhenTheSettingIsOffOrThereIsNoLog(t *testing.T) {
 	if strings.Count(logs.String(), "without --state-dir") != 1 || len(e.anchorCommits(t)) != 0 {
 		t.Fatalf("logs %q, anchors %v", logs.String(), e.anchorCommits(t))
 	}
-	e.a.Verify() // and verifying without a log is a no-op
+	e.a.Verify(true) // and verifying without a log is a no-op
 }
 
 func TestAFailedPushLeavesNothingAndTheNextTickRetries(t *testing.T) {
@@ -292,8 +292,8 @@ func TestUnknownLinesAreKeptAndOnlyAppendedTo(t *testing.T) {
 	// verification reports them
 	var logs strings.Builder
 	e.a.Logger = slog.New(slog.NewTextHandler(&logs, nil))
-	e.a.Verify()
-	e.a.Verify()
+	e.a.Verify(true)
+	e.a.Verify(true)
 	if strings.Count(logs.String(), "are not anchors") != 1 {
 		t.Fatalf("%q", logs.String())
 	}
@@ -303,7 +303,7 @@ func TestVerifyAfterPullsRecordsATamperedAnchorOnceAndAcknowledgementClearsIt(t 
 	e := newEnv(t, "audit:\n  anchor: daily\n")
 	e.activity(3)
 	e.tick(t)
-	e.a.Verify()
+	e.a.Verify(true)
 	if st := e.log.Status(); !st.OK {
 		t.Fatalf("%+v", st)
 	}
@@ -317,7 +317,7 @@ func TestVerifyAfterPullsRecordsATamperedAnchorOnceAndAcknowledgementClearsIt(t 
 	e.a.Log = rebuilt
 	var recorded func() int = func() int { return countEvents(t, e.logDir, audit.ChainProblemEvent) }
 	for i := 0; i < 4; i++ { // four pulls
-		e.a.Verify()
+		e.a.Verify(true)
 	}
 	st := rebuilt.Status()
 	if st.OK || len(st.Problems) != 1 || st.Problems[0].Kind != audit.KindAnchorMismatch || recorded() != 1 {
@@ -334,7 +334,7 @@ func TestVerifyAfterPullsRecordsATamperedAnchorOnceAndAcknowledgementClearsIt(t 
 	if err := rebuilt.Ack(nil, seq); err != nil {
 		t.Fatal(err)
 	}
-	e.a.Verify()
+	e.a.Verify(true)
 	if st := rebuilt.Status(); !st.OK || recorded() != 1 {
 		t.Fatalf("%+v, %d recorded", st, recorded())
 	}
@@ -375,4 +375,124 @@ func countEvents(t *testing.T, dir, event string) int {
 		n += strings.Count(string(b), `"event":"`+event+`"`)
 	}
 	return n
+}
+
+func TestALineDatedFarAheadDoesNotKeepTodaysAnchorAway(t *testing.T) {
+	e := newEnv(t, "audit:\n  anchor: daily\n")
+	e.activity(3)
+	var logs strings.Builder
+	e.a.Logger = slog.New(slog.NewTextHandler(&logs, nil))
+	// a line that is well formed but dated 2099 is in the file, pushed by somebody
+	laptop := filepath.Join(filepath.Dir(e.server), "laptop")
+	sh(t, filepath.Dir(e.server), "clone", e.bare, laptop)
+	future := audit.Anchor{Day: "2099-01-01", Seq: 1, Hash: "sha256:" + strings.Repeat("b", 64), At: "2099-01-01T00:00:00Z"}
+	if err := os.MkdirAll(filepath.Join(laptop, ".rackbook"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(laptop, filepath.FromSlash(audit.AnchorsPath)), future.Line(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sh(t, laptop, "add", ".")
+	sh(t, laptop, "commit", "-m", "future")
+	sh(t, laptop, "push", "origin", "main")
+
+	if err := e.store.Pull(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	e.tick(t) // a warning, and today's anchor all the same
+	as := e.anchors(t).List
+	if len(as) != 2 || as[0] != future || as[1].Day != "2026-11-20" {
+		t.Fatalf("%+v", as)
+	}
+	if !strings.Contains(logs.String(), "not valid or do not match") {
+		t.Fatalf("no warning: %s", logs.String())
+	}
+	// the line is reported as invalid; the anchor the server wrote is fine, and the next day
+	// follows the usual rule
+	if st := e.log.Status(); st.OK || !strings.Contains(problemList(st), audit.KindAnchorInvalid) {
+		t.Fatalf("%+v", st)
+	}
+	if strings.Contains(problemList(e.log.Status()), audit.KindAnchorMismatch) {
+		t.Fatalf("the server's own anchor must match: %+v", e.log.Status())
+	}
+}
+
+func problemList(st audit.Status) string {
+	var k []string
+	for _, p := range st.Problems {
+		k = append(k, p.Kind)
+	}
+	return strings.Join(k, ",")
+}
+
+func TestAForwardCommitThatRewritesAnAnchorIsRecordedWithItsCommit(t *testing.T) {
+	e := newEnv(t, "audit:\n  anchor: daily\n")
+	e.activity(2)
+	e.tick(t)
+	e.clk.t = e.clk.t.Add(24 * time.Hour)
+	e.activity(2)
+	e.tick(t)
+	e.a.Verify(true)
+	if st := e.log.Status(); !st.OK {
+		t.Fatalf("an honest history must pass: %+v", st)
+	}
+	// somebody with push access commits a version of the file whose first line is different
+	laptop := filepath.Join(filepath.Dir(e.server), "laptop")
+	sh(t, filepath.Dir(e.server), "clone", e.bare, laptop)
+	p := filepath.Join(laptop, filepath.FromSlash(audit.AnchorsPath))
+	b, _ := os.ReadFile(p)
+	as := audit.ParseAnchors(b).List
+	forged := as[0]
+	forged.Hash = "sha256:" + strings.Repeat("c", 64)
+	if err := os.WriteFile(p, append(forged.Line(), as[1].Line()...), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sh(t, laptop, "commit", "-qam", "tidy")
+	sh(t, laptop, "push", "origin", "main")
+	bad := sh(t, laptop, "rev-parse", "HEAD")
+	// the server takes the commit in, and checks after the pull (not from the start)
+	if err := e.store.Pull(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	e.a.Verify(false)
+	st := e.log.Status()
+	var got *audit.Problem
+	for i := range st.Problems {
+		if st.Problems[i].Kind == audit.KindAnchorRewritten {
+			got = &st.Problems[i]
+		}
+	}
+	if got == nil || !strings.Contains(got.Detail, bad) || got.Seq != as[0].Seq {
+		t.Fatalf("%+v", st)
+	}
+	n := countEvents(t, e.logDir, audit.ChainProblemEvent)
+	e.a.Verify(false)
+	e.a.Verify(true) // from the start again: the same commit is the same fingerprint
+	if countEvents(t, e.logDir, audit.ChainProblemEvent) != n {
+		t.Fatal("recorded again")
+	}
+	// the writer stays paused until it is acknowledged
+	e.clk.t = e.clk.t.Add(24 * time.Hour)
+	e.activity(1)
+	e.tick(t)
+	if len(e.anchors(t).List) != 2 {
+		t.Fatal("no anchor over a history that was rewritten and not acknowledged")
+	}
+}
+
+func TestOnlyTheAnchorIdentityWithMethodSystemIsItsOwnCommit(t *testing.T) {
+	own := audit.Event{Event: "commit", Identity: Identity.ID, Method: auth.MethodSystem}
+	if !isOwnCommit(own) {
+		t.Fatal("the anchor's own commit event")
+	}
+	for _, e := range []audit.Event{
+		{Event: "commit", Identity: Identity.ID, Method: auth.MethodOIDC},
+		{Event: "commit", Identity: Identity.ID},
+		{Event: "commit", Identity: "ann@example.com", Method: auth.MethodSystem},
+		{Event: "login", Identity: Identity.ID, Method: auth.MethodSystem},
+	} {
+		if isOwnCommit(e) {
+			t.Errorf("%+v counts as the anchor's own commit", e)
+		}
+	}
 }

@@ -31,10 +31,10 @@ const (
 // Identity is who the anchor commit is made by: Rackbook itself. Its commit
 // event in the audit log carries this identity, which is how the next day's check
 // knows that event is not activity worth an anchor.
-var Identity = &auth.Identity{ID: "rackbook-audit-anchor", Name: "Rackbook audit anchor", Email: gitstore.DefaultCommitter.Email, Method: "system"}
+var Identity = &auth.Identity{ID: auth.AnchorIdentity, Name: "Rackbook audit anchor", Email: gitstore.DefaultCommitter.Email, Method: auth.MethodSystem}
 
 func isOwnCommit(e audit.Event) bool {
-	return e.Event == "commit" && e.Identity == Identity.ID
+	return e.Event == "commit" && e.Identity == Identity.ID && e.Method == auth.MethodSystem
 }
 
 // Files is the part of *gitstore.Store the anchor uses.
@@ -42,6 +42,7 @@ type Files interface {
 	Config() *config.Config
 	GitEnabled() bool
 	StateFile(rel string) ([]byte, bool, error)
+	StateFileHistory(ctx context.Context, rel, after string) (*gitstore.StateHistory, error)
 	MutateStateFile(ctx context.Context, rel, subject string, who *auth.Identity, mutate func(old []byte, exists bool) ([]byte, error), options ...gitstore.StateOption) (*gitstore.StateResult, error)
 }
 
@@ -55,7 +56,8 @@ type Anchorer struct {
 	Delay  time.Duration    // Run: before the first check; default DefaultDelay
 	Every  time.Duration    // Run: between checks; default DefaultEvery
 
-	mu        sync.Mutex      // guards warned and malformed: Run and the pull hook call in
+	mu        sync.Mutex      // guards warned, malformed and checked: Run and the pull hook call in
+	checked   string          // the commit the history of the anchor file was last checked up to (memory only)
 	warned    map[string]bool // problems with the setup, said once
 	malformed string          // the malformed lines last reported
 }
@@ -95,38 +97,67 @@ func (a *Anchorer) clearWarning(key string) {
 	a.mu.Unlock()
 }
 
-// Verify checks the anchor file at the tip of the data repository against the
-// audit log, and has a problem that is not in the chain yet written into it.
-// A missing file has nothing to check. It is for the start and after each pull,
-// and does not depend on audit.anchor: an anchor file left behind when the
-// setting was switched off still catches tampering.
-func (a *Anchorer) Verify() {
+// Verify checks the anchors against the audit log, and has a problem that is not in the chain yet
+// written into it. It reads the anchor file at the tip of the data repository, and walks the
+// commits that changed it to see that every version is the one before with lines appended
+// (anchor_rewritten otherwise). full checks every anchor and the whole history: at the start. After
+// a pull only the anchors not verified before in this process, and the newest, are looked up, and
+// the history is walked from the commit it was last checked up to (from the start again when that
+// commit is no longer an ancestor of the tip). It does not depend on audit.anchor: an anchor file
+// left behind when the setting was switched off still catches tampering.
+func (a *Anchorer) Verify(full bool) {
 	if a.Log == nil || a.Store == nil || !a.Store.GitEnabled() {
 		return
 	}
-	b, ok, err := a.Store.StateFile(audit.AnchorsPath)
+	var extra []audit.Problem
+	var tip string
+	a.mu.Lock()
+	after := a.checked
+	a.mu.Unlock()
+	if full {
+		after = ""
+	}
+	if h, err := a.Store.StateFileHistory(context.Background(), audit.AnchorsPath, after); err != nil {
+		a.log().Warn("audit anchors: could not read the history of the anchor file", "err", err)
+	} else {
+		tip = h.Tip
+		vs := make([]audit.FileVersion, len(h.Versions))
+		for i, v := range h.Versions {
+			vs[i] = audit.FileVersion{Commit: v.Commit, Content: v.Content}
+		}
+		extra = audit.CheckAppendOnly(h.Base, vs)
+	}
+	b, _, err := a.Store.StateFile(audit.AnchorsPath)
 	if err != nil {
 		a.log().Warn("audit anchors: could not read the anchor file", "err", err)
 		return
 	}
-	if !ok {
+	if len(b) == 0 && len(extra) == 0 {
+		if tip != "" {
+			a.mu.Lock()
+			a.checked = tip
+			a.mu.Unlock()
+		}
 		return
 	}
-	sum, err := a.Log.CheckAnchors(b)
+	rev, err := a.Log.ReviewAnchors(b, extra, audit.AnchorOptions{Full: full, Now: a.now()})
 	if err != nil {
 		a.log().Warn("audit anchors: could not check the anchors", "err", err)
 		return
 	}
-	m := ""
-	if len(sum.Malformed) > 0 {
-		m = fmt.Sprint(sum.Malformed)
-	}
 	a.mu.Lock()
+	if tip != "" {
+		a.checked = tip
+	}
+	m := ""
+	if len(rev.Summary.Malformed) > 0 {
+		m = fmt.Sprint(rev.Summary.Malformed)
+	}
 	changed := m != a.malformed
 	a.malformed = m
 	a.mu.Unlock()
 	if changed && m != "" {
-		a.log().Warn("audit anchors: lines of the anchor file are not anchors; they are left as they are", "lines", sum.Malformed)
+		a.log().Warn("audit anchors: lines of the anchor file are not anchors; they are left as they are", "lines", rev.Summary.Malformed)
 	}
 }
 
@@ -153,7 +184,7 @@ func (a *Anchorer) Tick(ctx context.Context) error {
 		a.warnOnce("nogit", "audit.anchor: daily does nothing: the data directory is not a Git repository, so there is no history to protect the anchors")
 		return nil
 	}
-	if st := a.Log.Status(); !st.OK {
+	if !a.healthy() {
 		// an anchor would vouch for a log that is not intact
 		a.warnOnce("unhealthy", "audit anchors: no anchor is written while the audit log has problems that are not acknowledged")
 		return nil
@@ -170,10 +201,30 @@ func (a *Anchorer) Tick(ctx context.Context) error {
 		return err
 	}
 	anchors := audit.ParseAnchors(b)
-	if !due(anchors, day, seq) {
+	// Only an anchor that is valid and passed the check says what is already anchored: a
+	// line dated far ahead, or one that does not match the log, must not keep today's anchor away.
+	rev, err := a.Log.ReviewAnchors(b, nil, audit.AnchorOptions{Now: now})
+	if err != nil {
+		return err
+	}
+	if !a.healthy() {
+		a.warnOnce("unhealthy", "audit anchors: no anchor is written while the audit log has problems that are not acknowledged")
 		return nil
 	}
-	if last, ok := anchors.Last(); ok {
+	if len(rev.Good) != len(anchors.List) {
+		a.warnOnce("untrusted", "audit anchors: some lines of the anchor file are not valid or do not match the log; today's anchor is decided without them")
+	} else {
+		a.clearWarning("untrusted")
+	}
+	var last audit.Anchor
+	haveLast := len(rev.Good) > 0
+	if haveLast {
+		last = rev.Good[len(rev.Good)-1]
+	}
+	if haveLast && !due(last, day, seq) {
+		return nil
+	}
+	if haveLast {
 		// the anchor's own commit event is after its seq: that alone is no reason for another
 		busy, err := a.Log.ActivitySince(last.Seq, isOwnCommit)
 		if err != nil || !busy {
@@ -182,9 +233,11 @@ func (a *Anchorer) Tick(ctx context.Context) error {
 	}
 	anchor := audit.Anchor{Day: day, Seq: seq, Hash: hash, At: now.Format(time.RFC3339)}
 	_, err = a.Store.MutateStateFile(ctx, audit.AnchorsPath, fmt.Sprintf("audit: anchor seq %d", seq), Identity, func(old []byte, _ bool) ([]byte, error) {
-		// the file is read again on a replay after a moved remote: append only, and only if still due
-		if !due(audit.ParseAnchors(old), day, seq) {
-			return old, nil
+		// the file is read again on a replay after a moved remote: append only, and not twice
+		for _, o := range audit.ParseAnchors(old).List {
+			if o == anchor {
+				return old, nil
+			}
 		}
 		out := slices.Clone(old)
 		if len(out) > 0 && !bytes.HasSuffix(out, []byte("\n")) {
@@ -199,11 +252,26 @@ func (a *Anchorer) Tick(ctx context.Context) error {
 	return nil
 }
 
-// due says an anchor for seq is wanted: the newest one is from an earlier
-// UTC day and at an earlier seq.
-func due(anchors audit.Anchors, day string, seq int64) bool {
-	last, ok := anchors.Last()
-	return !ok || (last.Day < day && last.Seq < seq)
+// healthy says the audit log has no problem nobody has acknowledged, other than anchors that
+// cannot be anchors (anchor_invalid): those say nothing about the log, and must not keep today's
+// anchor away.
+func (a *Anchorer) healthy() bool {
+	st := a.Log.Status()
+	if st.OK {
+		return true
+	}
+	for _, p := range st.Problems {
+		if p.Kind != audit.KindAnchorInvalid {
+			return false
+		}
+	}
+	return len(st.Problems) > 0 // no problems listed: the log cannot be written, which is not healthy
+}
+
+// due says an anchor for seq is wanted: the newest trusted one is from an earlier UTC day and
+// at an earlier seq.
+func due(last audit.Anchor, day string, seq int64) bool {
+	return last.Day < day && last.Seq < seq
 }
 
 // Run calls Tick shortly after the start and then every hour until ctx ends.

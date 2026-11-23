@@ -649,6 +649,15 @@ func TestClaimIdentityCannotForgeASubjectIdentity(t *testing.T) {
 	}
 }
 
+func TestClaimIdentityCannotBeTheAuditAnchorIdentity(t *testing.T) {
+	e := newEnv(t, options{roles: "  roles:\n    viewer: [\"*\"]\n"})
+	e.idp.Users["anchor"] = map[string]any{"sub": "sub-y", "preferred_username": "Rackbook-Audit-Anchor", "name": "Y", "tid": tenant}
+	b := e.browser()
+	if r := b.login("anchor", ""); r.StatusCode == 303 && r.Loc() == "/" {
+		t.Fatalf("the identity of the audit anchor's commit must be refused: %d %q", r.StatusCode, r.Loc())
+	}
+}
+
 func TestPublicPathsAreCanonicalOnly(t *testing.T) {
 	e := newEnv(t, options{})
 	b := e.browser()
