@@ -673,7 +673,7 @@ export function mockApi(root: string): Plugin {
         records: [`${h.collection}/${h.subject.split(' ').slice(2).join(' ')}`], ...(i === 1 ? { token: 'ci-bot' } : {}), collection: h.collection,
       }))
       items.push(
-        { time: ago(2), area: 'audit', kind: 'login', seq: 51, identity: user.id, name: user.name, method: 'oidc', role: 'admin', addr: '203.0.113.0' },
+        { time: ago(2), area: 'audit', kind: 'login', seq: 51, identity: user.id, name: user.name, method: 'oidc', role: roleOf, addr: '203.0.113.0' },
         { time: ago(40), area: 'audit', kind: 'login_refused', seq: 50, identity: 'guest@example.com', reason: 'no_role', method: 'oidc' },
         { time: ago(26 * 60), area: 'audit', kind: 'chain_problem', seq: 44, code: 'cut_from_end', detail: ['seq=41'] },
         { time: ago(26 * 60 - 5), area: 'infra', kind: 'secret_revealed', seq: 45, identity: user.id, name: user.name, host: 'alpha-host' },
