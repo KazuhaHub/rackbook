@@ -51,19 +51,20 @@ func (c *clock) Now() time.Time          { return time.Unix(c.t.Load(), 0) }
 func (c *clock) Advance(d time.Duration) { c.t.Add(int64(d.Seconds())) }
 
 type env struct {
-	t     *testing.T
-	idp   *testidp.IdP
-	idpS  *httptest.Server
-	app   *httptest.Server
-	base  string // https://localhost:<port>: the base URL (WebAuthn needs a domain, not an IP)
-	svc   *Service
-	store *gitstore.Store
-	dir   string
-	bare  string
-	clk   *clock
-	pool  *x509.CertPool
-	logs  *logBuf
-	audit string // directory of the audit log every Service of the env writes to
+	t       *testing.T
+	idp     *testidp.IdP
+	idpS    *httptest.Server
+	app     *httptest.Server
+	base    string // https://localhost:<port>: the base URL (WebAuthn needs a domain, not an IP)
+	svc     *Service
+	store   *gitstore.Store
+	dir     string
+	bare    string
+	clk     *clock
+	pool    *x509.CertPool
+	logs    *logBuf
+	audit   string      // directory of the audit log every Service of the env writes to
+	apiOpts api.Options // what the handler was built from (to list its routes)
 }
 
 type logBuf struct {
@@ -228,7 +229,8 @@ func newEnv(t *testing.T, o options) *env {
 	}
 	e.svc.Bind(authn)
 	web := fstest.MapFS{"index.html": {Data: []byte("<!doctype html><title>console</title>")}, "favicon.svg": {Data: []byte("<svg xmlns=\"http://www.w3.org/2000/svg\"/>")}}
-	handler := api.New(api.Options{Store: st, Auth: authn, BaseURL: e.base, Web: web, Logger: logger, Login: e.svc, Prefs: ps})
+	e.apiOpts = api.Options{Store: st, Auth: authn, BaseURL: e.base, Web: web, Logger: logger, Login: e.svc, Prefs: ps}
+	handler := api.New(e.apiOpts)
 	h.Store(&handler)
 	return e
 }

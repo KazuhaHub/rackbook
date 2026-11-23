@@ -25,7 +25,7 @@ const (
 	maxSecretBody = 64 << 10
 )
 
-func (s *server) infraSecretsRoutes(mux *http.ServeMux) {
+func (s *server) infraSecretsRoutes(mux *routeMux) {
 	mux.HandleFunc("GET /api/infra/hosts/{name}/secrets", s.infraSecrets)
 	mux.HandleFunc("POST /api/infra/hosts/{name}/secrets/reveal", s.infraRevealSecret)
 	mux.HandleFunc("POST /api/infra/hosts/{name}/secrets/set", s.infraSetSecret)

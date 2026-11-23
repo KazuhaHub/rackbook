@@ -34,6 +34,7 @@ import (
 	"github.com/kazuhahub/rackbook/internal/modules"
 	"github.com/kazuhahub/rackbook/internal/prefs"
 	"github.com/kazuhahub/rackbook/internal/roles"
+	"github.com/kazuhahub/rackbook/internal/routes"
 	"github.com/kazuhahub/rackbook/internal/tokens"
 	"github.com/kazuhahub/rackbook/internal/validate"
 )
@@ -51,7 +52,7 @@ type Options struct {
 	// Login mounts the /auth endpoints and the account and user APIs (oidc
 	// mode). It receives the console handler, which serves the login page.
 	Login interface {
-		Mount(mux *http.ServeMux, static http.Handler)
+		Mount(mux routes.Mux, static http.Handler)
 	}
 	// RestrictHost limits accepted Host headers to loopback names and the host
 	// of BaseURL (DNS-rebinding protection for --auth none).
@@ -85,7 +86,7 @@ type Options struct {
 // OAuthServer is the built-in authorization server (internal/oauthserver).
 type OAuthServer interface {
 	Public() map[string]http.Handler
-	Mount(mux *http.ServeMux)
+	Mount(mux routes.Mux)
 }
 
 type server struct {
@@ -99,8 +100,37 @@ type server struct {
 	cursorKey []byte
 }
 
+// routeMux is the mux with a list of the patterns registered through it, so
+// that a test can walk every route the API defines (RoutePatterns).
+type routeMux struct {
+	*http.ServeMux
+	patterns []string
+}
+
+func (m *routeMux) HandleFunc(pattern string, h func(http.ResponseWriter, *http.Request)) {
+	m.patterns = append(m.patterns, pattern)
+	m.ServeMux.HandleFunc(pattern, h)
+}
+
+func (m *routeMux) Handle(pattern string, h http.Handler) {
+	m.patterns = append(m.patterns, pattern)
+	m.ServeMux.Handle(pattern, h)
+}
+
 // New returns the full handler: API, exports, MCP and console.
 func New(o Options) http.Handler {
+	h, _ := build(o)
+	return h
+}
+
+// RoutePatterns lists the patterns registered for o, as given to the mux
+// ("GET /api/meta"): the API's own routes and those mounted by o.Login and
+// o.OAuth. It exists so that tests can walk every route; the MCP and static
+// catch-alls are included. It builds a handler and discards it.
+func RoutePatterns(o Options) []string { _, p := build(o); return p }
+
+// build makes the handler and lists the route patterns it registered.
+func build(o Options) (http.Handler, []string) {
 	s := &server{o: o, log: o.Logger}
 	if s.log == nil {
 		s.log = slog.New(slog.DiscardHandler)
@@ -127,7 +157,7 @@ func New(o Options) http.Handler {
 	if s.o.Prefs == nil {
 		s.o.Prefs = &prefs.Store{}
 	}
-	mux := http.NewServeMux()
+	mux := &routeMux{ServeMux: http.NewServeMux()}
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, "ok\n") })
 	mux.HandleFunc("GET /api/meta", s.meta)
 	mux.HandleFunc("GET /api/check", s.check)
@@ -190,7 +220,7 @@ func New(o Options) http.Handler {
 		}
 		authed.ServeHTTP(w, r)
 	})
-	return securityHeaders(s.guard(h))
+	return securityHeaders(s.guard(h)), mux.patterns
 }
 
 // guard rejects DNS-rebinding (unexpected Host) and cross-site or non-JSON writes.
@@ -384,9 +414,15 @@ func (s *server) meta(w http.ResponseWriter, r *http.Request) {
 	l := s.o.Store.Ledger()
 	cfg := l.Config
 	user := map[string]any{"canEdit": s.canEdit(r), "canAdmin": auth.Can(r.Context(), roles.Manage)}
+	if auth.IsAuditor(r.Context()) {
+		user["auditor"] = true
+	}
 	if s.canInfra(r) {
 		user["canInfra"] = true
-		if s.writesOn() {
+		switch {
+		case !s.canInfraAdmin(r):
+			user["infraAuditor"] = true // read-only, no secrets
+		case s.writesOn():
 			user["canInfraWrite"] = true
 		}
 	}

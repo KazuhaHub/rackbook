@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -120,5 +121,45 @@ func TestInfraPinTenantRules(t *testing.T) {
 		if err := a.Pin(c.issuer, "c", "", c.tenant, 0); (err == nil) != c.ok {
 			t.Errorf("%s: %v", name, err)
 		}
+	}
+}
+
+func TestInfraAuditorsAreTheSameKindOfList(t *testing.T) {
+	a, err := NewInfraAuditors([]string{"Aud@Example.com"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Pin("https://idp.test", "client", "", "", 0); err != nil {
+		t.Fatal(err)
+	}
+	ok := &Identity{ID: "aud@example.com", Method: MethodOIDC, OIDCIssuer: "https://idp.test", OIDCClient: "client", OIDCClaim: "preferred_username"}
+	if !a.Allows(ok) || a.Len() != 1 {
+		t.Fatal("a listed OIDC session under the pinned provider")
+	}
+	for name, mut := range map[string]func(*Identity){
+		"passkey":      func(i *Identity) { i.Method = MethodPasskey },
+		"token":        func(i *Identity) { i.Token = "ci" },
+		"oauth":        func(i *Identity) { i.Method = MethodOAuth },
+		"other issuer": func(i *Identity) { i.OIDCIssuer = "https://evil.test" },
+		"other client": func(i *Identity) { i.OIDCClient = "x" },
+		"other claim":  func(i *Identity) { i.OIDCClaim = "sub" },
+		"other tenant": func(i *Identity) { i.OIDCTenant = "t" },
+		"other person": func(i *Identity) { i.ID = "x@example.com" },
+	} {
+		c := *ok
+		mut(&c)
+		if a.Allows(&c) {
+			t.Errorf("%s: allowed", name)
+		}
+	}
+	if _, err := NewInfraAuditors([]string{"*@example.com"}); err == nil || !strings.Contains(err.Error(), "--infra-auditors") {
+		t.Fatalf("%v", err)
+	}
+	if _, err := NewInfraAuditors(nil); err == nil || !strings.Contains(err.Error(), "--infra-auditors") {
+		t.Fatalf("%v", err)
+	}
+	var none *InfraAdmins
+	if none.Allows(ok) || none.Len() != 0 {
+		t.Fatal("a nil list allows nobody")
 	}
 }

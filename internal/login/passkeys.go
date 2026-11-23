@@ -518,7 +518,7 @@ func (s *Service) account(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	out := map[string]any{
-		"id": who.ID, "name": who.Name, "email": who.Email, "role": who.EffectiveRole().String(),
+		"id": who.ID, "name": who.Name, "email": who.Email, "role": who.EffectiveRole().String(), "auditor": who.IsAuditor(),
 		"authMethod": who.Method, "passkeysEnabled": s.pk != nil, "canEnrol": false, "passkeys": []passkeyOut{},
 	}
 	if l := s.o.Prefs.Locale(who.ID); l != "" {
@@ -545,10 +545,12 @@ type userOut struct {
 	Name      string       `json:"name,omitempty"`
 	Method    string       `json:"method,omitempty"`
 	Role      string       `json:"role"`
+	Auditor   bool         `json:"auditor,omitempty"` // on auth.auditors: a capability next to the role
 	Seen      bool         `json:"seen"`
 	FirstSeen *time.Time   `json:"firstSeen,omitempty"`
 	LastSeen  *time.Time   `json:"lastSeen,omitempty"`
 	Passkeys  []passkeyOut `json:"passkeys"`
+	groups    []string     // the last groups seen (memory only), for group: entries
 }
 
 func (s *Service) adminUsers(w http.ResponseWriter, r *http.Request) {
@@ -560,7 +562,7 @@ func (s *Service) adminUsers(w http.ResponseWriter, r *http.Request) {
 	var order []string
 	for _, u := range s.users.list() {
 		u := u
-		byID[u.ID] = &userOut{ID: u.ID, Name: u.Name, Method: u.Method, Seen: true, FirstSeen: &u.FirstSeen, LastSeen: &u.LastSeen, Passkeys: []passkeyOut{}}
+		byID[u.ID] = &userOut{ID: u.ID, Name: u.Name, Method: u.Method, Seen: true, FirstSeen: &u.FirstSeen, LastSeen: &u.LastSeen, Passkeys: []passkeyOut{}, groups: u.Groups}
 		order = append(order, u.ID)
 	}
 	resp := map[string]any{"passkeysEnabled": s.pk != nil}
@@ -585,7 +587,8 @@ func (s *Service) adminUsers(w http.ResponseWriter, r *http.Request) {
 	users := make([]userOut, 0, len(order))
 	for _, id := range order {
 		e := byID[id]
-		e.Role = s.roleOf(&auth.Identity{ID: e.ID, Method: auth.MethodOIDC, Email: emailOf(e.ID)}).String()
+		who := &auth.Identity{ID: e.ID, Method: auth.MethodOIDC, Email: emailOf(e.ID), Groups: e.groups}
+		e.Role, e.Auditor = s.roleOf(who).String(), s.auditorOf(who)
 		users = append(users, *e)
 	}
 	resp["users"] = users

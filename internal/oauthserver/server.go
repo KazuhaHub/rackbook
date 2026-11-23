@@ -33,6 +33,7 @@ import (
 	"github.com/kazuhahub/rackbook/internal/auth"
 	"github.com/kazuhahub/rackbook/internal/config"
 	"github.com/kazuhahub/rackbook/internal/prefs"
+	"github.com/kazuhahub/rackbook/internal/routes"
 	"github.com/kazuhahub/rackbook/internal/tokens"
 )
 
@@ -197,7 +198,7 @@ func (s *Server) Public() map[string]http.Handler {
 }
 
 // Mount registers the endpoints that need a signed-in person.
-func (s *Server) Mount(mux *http.ServeMux) {
+func (s *Server) Mount(mux routes.Mux) {
 	mux.HandleFunc("GET "+PathAuthorize, s.authorize)
 	mux.HandleFunc("GET /api/oauth/consent", s.consentInfo)
 	mux.HandleFunc("POST /api/oauth/consent", s.consentDecision)

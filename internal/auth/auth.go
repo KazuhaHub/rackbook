@@ -204,16 +204,18 @@ func (a *Authenticator) Policy() *roles.Policy {
 		return c.policy
 	}
 	var spec *roles.Spec
+	var auditors []string
 	editors := append([]string{}, a.cfg.Editors...)
 	if cur != nil {
 		spec = cur.Auth.Roles
+		auditors = cur.Auth.Auditors
 		editors = append(editors, cur.Auth.Editors...)
 	}
 	var opt roles.Options
 	if cur != nil {
 		opt.MCPMatchEmail = cur.Auth.MCP.MatchEmail
 	}
-	p, err := roles.Compile(spec, opt, editors...)
+	p, err := roles.CompileAuditors(spec, auditors, opt, editors...)
 	if err != nil { // config.Load validates, so this is a defensive fallback: deny
 		p, _ = roles.Compile(&roles.Spec{}, roles.Options{})
 	}
@@ -235,14 +237,20 @@ func (a *Authenticator) RoleFor(identity string) roles.Role {
 }
 
 // RoleForVia is RoleFor for an identity that logged in with method (so a
-// subject identity oidc:<sub> finds its role entry).
+// subject identity oidc:<sub> finds its role entry). It includes the viewer
+// floor of an auditor, as the identity's own evaluation does.
 func (a *Authenticator) RoleForVia(identity, method string) roles.Role {
-	id := roles.FoldASCII(identity)
-	r := a.Policy().Evaluate(roles.Subject{ID: id, Email: emailOf(id), Method: method})
-	if a.cfg.Degraded != nil && a.cfg.Degraded() {
-		r = roles.Lower(r, roles.Viewer)
-	}
+	r, _ := a.CapabilitiesForVia(identity, method)
 	return r
+}
+
+// CapabilitiesForVia is the role and the auditor capability that an identity
+// string has now, evaluated like RoleForVia. It is how a token's creator is
+// evaluated, so a token carries the capability only while its creator is on
+// auth.auditors.
+func (a *Authenticator) CapabilitiesForVia(identity, method string) (roles.Role, bool) {
+	id := roles.FoldASCII(identity)
+	return a.evaluate(roles.Subject{ID: id, Email: emailOf(id), Method: method})
 }
 
 func emailOf(id string) string {
@@ -252,13 +260,26 @@ func emailOf(id string) string {
 	return ""
 }
 
-// EvaluateSubject is Evaluate with the role looked up for s instead of for the
-// identity itself (a token takes its creator's role).
-func (a *Authenticator) EvaluateSubject(id *Identity, s roles.Subject) *Identity {
-	id.Role = a.Policy().Evaluate(s)
-	if a.cfg.Degraded != nil && a.cfg.Degraded() {
-		id.Role = roles.Lower(id.Role, roles.Viewer)
+// evaluate is the one place that computes the role and the auditor capability
+// of a subject. An auditor never ends up below viewer (the viewer floor); one
+// who has a role keeps it. A degraded config (the latest one failed to load)
+// limits the role to viewer, so nothing here can write.
+func (a *Authenticator) evaluate(s roles.Subject) (roles.Role, bool) {
+	p := a.Policy()
+	r, auditor := p.Evaluate(s), p.IsAuditor(s)
+	if auditor && r < roles.Viewer {
+		r = roles.Viewer
 	}
+	if a.cfg.Degraded != nil && a.cfg.Degraded() {
+		r = roles.Lower(r, roles.Viewer)
+	}
+	return r, auditor
+}
+
+// EvaluateSubject is Evaluate with the role and the auditor capability looked
+// up for s instead of for the identity itself (a token takes its creator's).
+func (a *Authenticator) EvaluateSubject(id *Identity, s roles.Subject) *Identity {
+	id.Role, id.Auditor = a.evaluate(s)
 	if id.Anonymous() && id.Method == MethodNone && id.Role == roles.None {
 		id.Role = roles.Viewer
 	}

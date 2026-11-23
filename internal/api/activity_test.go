@@ -24,6 +24,7 @@ import (
 	"github.com/kazuhahub/rackbook/internal/auth"
 	"github.com/kazuhahub/rackbook/internal/gitstore"
 	"github.com/kazuhahub/rackbook/internal/testutil"
+	"github.com/kazuhahub/rackbook/internal/tokens"
 )
 
 const (
@@ -31,6 +32,12 @@ const (
 	editorU = "tom@team.example.com"
 	viewerU = "guest@example.com"
 	infraU  = "ia@team.example.com" // an editor in the ledger, and the infra administrator
+	// auditU is on auth.auditors with no role (the viewer floor applies); eveU is an editor
+	// (*@team.example.com) and an auditor; infraAuditU is a viewer in the ledger and an
+	// infra auditor (--infra-auditors), not a ledger auditor.
+	auditU      = "audie@example.com"
+	eveU        = "eve@team.example.com"
+	infraAuditU = "ira@example.com" // a viewer in the ledger
 )
 
 type actEnv struct {
@@ -42,6 +49,7 @@ type actEnv struct {
 	auditDir           string
 	store              *gitstore.Store
 	infra              *ansiblerepo.Repo
+	opts               api.Options // what the handler was built from (to list its routes)
 }
 
 type actOpts struct {
@@ -118,6 +126,14 @@ func newActEnv(t *testing.T, o actOpts) *actEnv {
 		t.Fatal(err)
 	}
 
+	iau, err := auth.NewInfraAuditors([]string{infraAuditU})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := iau.Pin(testIssuer, testClient, "", testTenant, 0); err != nil {
+		t.Fatal(err)
+	}
+
 	now := time.Now()
 	e.fixture = newFixtureOpts(t, func(op *api.Options) {
 		a, err := auth.New(context.Background(), auth.Config{Mode: auth.ModeOIDC, Sessions: testSessions{now: func() time.Time { return now }}, Config: op.Store.Config})
@@ -126,8 +142,10 @@ func newActEnv(t *testing.T, o actOpts) *actEnv {
 		}
 		a.SetBearer(testBearer{})
 		op.Auth, op.ReadOnly = a, o.readOnly
-		op.Infra = &api.InfraOptions{Repo: repo, Admins: ia}
+		op.Infra = &api.InfraOptions{Repo: repo, Admins: ia, Auditors: iau}
 		op.Audit = e.log
+		op.Tokens = &tokens.Registry{Store: op.Store}
+		e.opts = *op
 	}, server, func(so *gitstore.Options) {
 		if o.runner != nil {
 			so.Runner = o.runner
@@ -349,6 +367,11 @@ func TestActivityPermissionTable(t *testing.T) {
 		{editorU, []string{"ledger"}, false, false, false, false, false},
 		{adminU, []string{"ledger", "audit"}, true, true, false, false, true},
 		{infraU, []string{"ledger", "infra"}, false, false, true, true, false},
+		// the auditor capability: what an administrator sees of the ledger and audit areas, not infra
+		{auditU, []string{"ledger", "audit"}, true, true, false, false, true},
+		{eveU, []string{"ledger", "audit"}, true, true, false, false, true},
+		// an infra auditor sees infra, and is no ledger auditor
+		{infraAuditU, []string{"ledger", "infra"}, false, false, true, true, false},
 	} {
 		code, out := e.get(t, c.who, "/api/activity")
 		if code != 200 {
@@ -380,7 +403,7 @@ func TestActivityPermissionTable(t *testing.T) {
 		}
 	}
 	// an area the caller may not see is a 403, not an empty list
-	for who, bad := range map[string][]string{viewerU: {"audit", "infra"}, editorU: {"audit", "infra"}, adminU: {"infra"}, infraU: {"audit"}} {
+	for who, bad := range map[string][]string{viewerU: {"audit", "infra"}, editorU: {"audit", "infra"}, adminU: {"infra"}, infraU: {"audit"}, auditU: {"infra"}, eveU: {"infra"}, infraAuditU: {"audit"}} {
 		for _, a := range bad {
 			if code, out := e.get(t, who, "/api/activity?area="+a); code != 403 || out["error"] != "forbidden" {
 				t.Errorf("%s area=%s: %d %v", who, a, code, out)
@@ -402,10 +425,18 @@ func TestActivityPermissionTable(t *testing.T) {
 	if code, _ := e.get(t, adminU, "/api/activity?area=nope"); code != 400 {
 		t.Fatal(code)
 	}
-	// the state commit is flagged for administrators
-	_, out = e.get(t, adminU, "/api/activity?limit=200")
-	if it := find(items(t, out), "subject", "state only"); it == nil || it["state"] != "only" {
-		t.Fatalf("%v", it)
+	// the state commit is flagged for administrators and auditors
+	for _, who := range []string{adminU, auditU, eveU} {
+		_, out = e.get(t, who, "/api/activity?limit=200")
+		if it := find(items(t, out), "subject", "state only"); it == nil || it["state"] != "only" {
+			t.Fatalf("%s: %v", who, it)
+		}
+	}
+	for _, who := range []string{viewerU, editorU, infraAuditU} {
+		_, out = e.get(t, who, "/api/activity?limit=200")
+		if it := find(items(t, out), "subject", "state only"); it != nil {
+			t.Fatalf("%s: %v", who, it)
+		}
 	}
 	// no sign-in: nothing
 	if code, _, _ := e.do(t, "GET", "/api/activity", nil, nil); code != 401 {
@@ -444,6 +475,19 @@ func TestActivityCommitDiffVisibility(t *testing.T) {
 	if code, _ = e.get(t, adminU, "/api/activity/commit/ledger/"+stateHash); code != 200 {
 		t.Fatal(code)
 	}
+	// .rackbook/ diffs follow seeState: auditors see them as administrators do
+	for _, who := range []string{auditU, eveU} {
+		code, d = e.get(t, who, "/api/activity/commit/ledger/"+mixedHash)
+		if code != 200 || paths(d) != ".rackbook/x.yml,notes.txt" {
+			t.Fatalf("%s: %d %v", who, code, d)
+		}
+		if code, _ = e.get(t, who, "/api/activity/commit/ledger/"+stateHash); code != 200 {
+			t.Fatalf("%s: %d", who, code)
+		}
+	}
+	if code, _ = e.get(t, infraAuditU, "/api/activity/commit/ledger/"+stateHash); code != 404 {
+		t.Fatalf("an infra auditor is no ledger auditor: %d", code)
+	}
 	for _, bad := range []string{"abc", "zzzzzzzz", "0000000000000000000000000000000000000000"} {
 		if code, _ = e.get(t, adminU, "/api/activity/commit/ledger/"+bad); code != 404 {
 			t.Errorf("%s: %d", bad, code)
@@ -453,9 +497,17 @@ func TestActivityCommitDiffVisibility(t *testing.T) {
 		t.Fatal(code)
 	}
 
-	// infra: only for the infra administrators, and secret files show no patch
+	// infra: only for the infra administrators and auditors, and secret files show no patch
 	head := sh(t, e.infraSeed, "rev-parse", "HEAD")
-	for _, who := range []string{adminU, editorU, viewerU} {
+	if code, d = e.get(t, infraAuditU, "/api/activity/commit/infra/"+head); code != 200 {
+		t.Fatalf("infra auditor: %d %v", code, d)
+	}
+	for _, f := range arr(t, d["files"]) {
+		if fm := f.(map[string]any); fm["path"] == "secrets/alpha.sops.yaml" && fm["patch"] != nil {
+			t.Fatalf("an infra auditor gets a secret file's patch: %v", fm)
+		}
+	}
+	for _, who := range []string{adminU, editorU, viewerU, auditU, eveU} {
 		if code, _ = e.get(t, who, "/api/activity/commit/infra/"+head); code != 403 {
 			t.Errorf("%s: %d", who, code)
 		}
@@ -613,8 +665,17 @@ func TestActivityJSONLExport(t *testing.T) {
 			t.Fatalf("line %d: %v %s", i, err, l)
 		}
 	}
-	// the export is for administrators (design 3.1); piece 4 adds the auditors in canSee
-	for _, who := range []string{viewerU, editorU, infraU} {
+	// the export is for administrators and auditors (design 3.1, 3.4), with the same items
+	for _, who := range []string{auditU, eveU} {
+		req.Header.Set("X-User", who)
+		resp2, _ := http.DefaultClient.Do(req)
+		b2, _ := io.ReadAll(resp2.Body)
+		resp2.Body.Close()
+		if resp2.StatusCode != 200 || strings.Count(strings.TrimSpace(string(b2)), "\n")+1 != len(want) {
+			t.Fatalf("%s: %d\n%s", who, resp2.StatusCode, b2)
+		}
+	}
+	for _, who := range []string{viewerU, editorU, infraU, infraAuditU} {
 		req.Header.Set("X-User", who)
 		resp2, _ := http.DefaultClient.Do(req)
 		resp2.Body.Close()
@@ -672,9 +733,22 @@ func TestAuditStatusAndAcknowledgement(t *testing.T) {
 		t.Fatalf("the banner for administrators: %v", m)
 	}
 	if _, m := e.get(t, editorU, "/api/meta"); m["auditAlert"] != nil {
-		t.Fatalf("only administrators: %v", m["auditAlert"])
+		t.Fatalf("only administrators and auditors: %v", m["auditAlert"])
 	}
-	for _, who := range []string{editorU, viewerU, infraU} {
+	// auditors read the status and see the banner, but cannot acknowledge
+	for _, who := range []string{auditU, eveU} {
+		if code, s2 := e.get(t, who, "/api/audit/status"); code != 200 || s2["ok"] != false {
+			t.Errorf("%s status: %d %v", who, code, s2)
+		}
+		if _, m := e.get(t, who, "/api/meta"); m["auditAlert"] == nil {
+			t.Errorf("%s: no banner", who)
+		}
+		code, out, _ := e.do(t, "POST", "/api/audit/ack", map[string]any{"through": through}, map[string]string{"X-User": who})
+		if code != 403 || out["error"] != "forbidden" {
+			t.Errorf("%s ack: %d %v", who, code, out)
+		}
+	}
+	for _, who := range []string{editorU, viewerU, infraU, infraAuditU} {
 		if code, _ := e.get(t, who, "/api/audit/status"); code != 403 {
 			t.Errorf("%s: %d", who, code)
 		}

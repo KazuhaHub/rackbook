@@ -262,3 +262,33 @@ func TestModules(t *testing.T) {
 		}
 	}
 }
+
+func TestParseAuditors(t *testing.T) {
+	c, err := Parse([]byte(sample+"auth:\n  roles:\n    admin: [a@x.org]\n  auditors: ['group:audit', '*@audit.x.org', 'oauth:acme:aud', 'aud@x.org']\n"), "/r/rackbook.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := c.Auth.Auditors; len(got) != 4 || got[0] != "group:audit" || got[3] != "aud@x.org" {
+		t.Fatalf("%v", got)
+	}
+	if c.Auth.Roles == nil || len(c.Auth.Roles.Admin) != 1 {
+		t.Fatalf("roles are untouched: %+v", c.Auth)
+	}
+	// auditors need no roles block, and absent means none
+	if c, err = Parse([]byte(sample+"auth:\n  auditors: ['aud@x.org']\n"), "/r/rackbook.yml"); err != nil || c.Auth.Roles != nil || len(c.Auth.Auditors) != 1 {
+		t.Fatalf("%v %+v", err, c.Auth)
+	}
+	if c, err = Parse([]byte(sample), "/r/rackbook.yml"); err != nil || c.Auth.Auditors != nil {
+		t.Fatalf("%v %+v", err, c.Auth)
+	}
+	// the same validation as a role list, with the key in the message
+	for _, bad := range []string{"['*@']", "['']", "['a*b']", "['group:']", "['oauth:x']"} {
+		if _, err := Parse([]byte(sample+"auth:\n  auditors: "+bad+"\n"), "/r/rackbook.yml"); err == nil || !strings.Contains(err.Error(), "auth.auditors") {
+			t.Errorf("%s: %v", bad, err)
+		}
+	}
+	// an unknown key stays ignored, as before
+	if _, err := Parse([]byte(sample+"auth:\n  auditorz: ['x']\n"), "/r/rackbook.yml"); err != nil {
+		t.Fatal(err)
+	}
+}

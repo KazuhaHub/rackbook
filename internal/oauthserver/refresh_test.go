@@ -10,6 +10,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"github.com/kazuhahub/rackbook/internal/api"
 	"net/http"
 	"net/url"
 	"os"
@@ -435,5 +436,88 @@ func TestStartupDropsGrantsThatWentIdle(t *testing.T) {
 	var f map[string]any
 	if json.Unmarshal(raw, &f) != nil || len(f["grants"].(map[string]any)) != 0 {
 		t.Fatalf("the file still holds the idle grant: %s", raw)
+	}
+}
+
+// An auditor with no role at all gets the viewer floor, so a grant they approve
+// works; removing them from auth.auditors ends it like removing a role.
+func TestGrantOfAnAuditorLastsWhileTheyAreOnTheList(t *testing.T) {
+	e := newEnv(t, opts{})
+	const aud = "aud@example.com"
+	e.setAuditors([]string{aud})
+	cid, tok := e.login(aud, "Audit Client")
+	if e.mcpStatus(tok.access).StatusCode != 200 {
+		t.Fatal("an auditor's grant is refused")
+	}
+	names := e.toolSet(e.session(tok.access))
+	for _, w := range []string{"records_create", "records_update", "records_delete", "create_record", "update_record", "delete_record"} {
+		if names[w] {
+			t.Errorf("an auditor without a role sees the write tool %s", w)
+		}
+	}
+	e.setAuditors(nil)
+	if r := e.mcpStatus(tok.access); r.StatusCode != 401 {
+		t.Fatalf("access token after removal from the list: %d", r.StatusCode)
+	}
+	if r := e.refresh(cid, tok.refresh); r.str("error") != "invalid_grant" {
+		t.Fatalf("refresh after removal: %s", r.body)
+	}
+}
+
+// grantRouteClass classes the routes the built-in authorization server mounts
+// on the mux, like loginRouteClass in the login package.
+//
+//	admin   an admin acts on anybody's grant: an auditor is refused
+//	own     acts on the caller's own grant: another person's id is a 404
+//	self    the caller's own consent decision for a pending request
+var grantRouteClass = map[string]string{
+	"POST /api/oauth/consent":         "self",
+	"DELETE /api/account/grants/{id}": "own",
+	"DELETE /api/admin/grants/{id}":   "admin",
+}
+
+func TestAuditorCannotRevokeAnotherPersonsGrantOnAnyRoute(t *testing.T) {
+	e := newEnv(t, opts{})
+	const aud = "aud@example.com"
+	e.setAuditors([]string{aud})
+	_, ed := e.login("ed@example.com", "Editor Client")
+	if e.mcpStatus(ed.access).StatusCode != 200 {
+		t.Fatal("the editor's grant is refused")
+	}
+	seen := map[string]bool{}
+	for _, pat := range api.RoutePatterns(e.apiOpts) {
+		method, path, ok := strings.Cut(pat, " ")
+		if !ok || method == "GET" || !(strings.HasPrefix(path, "/api/oauth/") || strings.HasPrefix(path, "/api/account/grants") || strings.HasPrefix(path, "/api/admin/grants")) {
+			continue
+		}
+		class := grantRouteClass[pat]
+		if class == "" {
+			t.Errorf("%s is mounted by the authorization server and is not classified", pat)
+			continue
+		}
+		seen[pat] = true
+		r := e.do(aud, method, strings.ReplaceAll(path, "{id}", ed.grant), strings.NewReader("{}"), "Sec-Fetch-Site", "same-origin", "Content-Type", "application/json")
+		switch class {
+		case "admin":
+			if r.StatusCode != 403 {
+				t.Errorf("%s as an auditor: %d %s", pat, r.StatusCode, r.body)
+			}
+		case "own":
+			if r.StatusCode != 404 {
+				t.Errorf("%s with somebody else's grant: %d %s", pat, r.StatusCode, r.body)
+			}
+		case "self":
+			if r.StatusCode >= 200 && r.StatusCode < 300 {
+				t.Errorf("%s with no pending request: %d %s", pat, r.StatusCode, r.body)
+			}
+		}
+	}
+	for pat := range grantRouteClass {
+		if !seen[pat] {
+			t.Errorf("%s is classified but is not a route", pat)
+		}
+	}
+	if e.mcpStatus(ed.access).StatusCode != 200 {
+		t.Fatal("an auditor revoked the editor's grant")
 	}
 }

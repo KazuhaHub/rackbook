@@ -18,7 +18,7 @@ const (
 	brandingFaviconPath = "/branding/favicon"
 )
 
-func (s *server) brandingRoutes(mux *http.ServeMux) {
+func (s *server) brandingRoutes(mux *routeMux) {
 	mux.HandleFunc("GET "+brandingLogoPath, func(w http.ResponseWriter, r *http.Request) {
 		a := s.o.Store.Config().BrandLogo()
 		if a == nil {

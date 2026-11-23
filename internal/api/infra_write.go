@@ -20,7 +20,7 @@ import (
 
 const maxInfraBody = 2 << 20
 
-func (s *server) infraWriteRoutes(mux *http.ServeMux) {
+func (s *server) infraWriteRoutes(mux *routeMux) {
 	mux.HandleFunc("GET /api/infra/write", s.infraWriteState)
 	mux.HandleFunc("GET /api/infra/features", s.infraFeatures)
 	mux.HandleFunc("GET /api/infra/hosts/{name}/vars", s.infraHostVars)
@@ -69,10 +69,15 @@ func (s *server) infraWriter(w http.ResponseWriter, r *http.Request) (*auth.Iden
 }
 
 func (s *server) infraWriteState(w http.ResponseWriter, r *http.Request) {
-	if !s.infraAdmin(w, r) {
+	if !s.infraReader(w, r) {
 		return
 	}
 	who := s.who(r)
+	if !s.canInfraAdmin(r) {
+		// an infra auditor: the editors and the secrets are off for them
+		writeJSON(w, http.StatusOK, map[string]any{"enabled": false, "secrets": false, "fresh": false, "auditor": true, "maxAgeSeconds": int64(s.o.Infra.Admins.WriteAge() / time.Second)})
+		return
+	}
 	out := map[string]any{"enabled": s.writesOn(), "secrets": s.secretsOn(), "fresh": s.o.Infra.Admins.Fresh(who, s.now()), "maxAgeSeconds": int64(s.o.Infra.Admins.WriteAge() / time.Second)}
 	if !who.OIDCAt.IsZero() {
 		out["signedInAt"] = who.OIDCAt.UTC().Format(time.RFC3339)
@@ -143,7 +148,7 @@ func (s *server) outcome(w http.ResponseWriter, o *ansiblerepo.Outcome) {
 }
 
 func (s *server) infraFeatures(w http.ResponseWriter, r *http.Request) {
-	if !s.infraAdmin(w, r) {
+	if !s.infraReader(w, r) {
 		return
 	}
 	specs, invalid := s.o.Infra.Repo.Features()
@@ -153,6 +158,10 @@ func (s *server) infraFeatures(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"features": specs, "invalid": nz(invalid)})
 }
 
+// infraHostVars is the raw host_vars file for the editor. fileState sends no
+// content when the hide scan finds anything, so it is not less redacted than the
+// host page; it stays in the secret class (infra administrators only) as defence
+// in depth, because it is edit support.
 func (s *server) infraHostVars(w http.ResponseWriter, r *http.Request) {
 	if !s.infraAdmin(w, r) {
 		return
@@ -313,7 +322,7 @@ func (s *server) infraSetFeature(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) infraGroups(w http.ResponseWriter, r *http.Request) {
-	if !s.infraAdmin(w, r) {
+	if !s.infraReader(w, r) {
 		return
 	}
 	inv, err := s.o.Infra.Repo.Inventory(r.Context())

@@ -252,3 +252,71 @@ func TestClearReferencesNeedsUpdateRightsOnTheReferencingCollections(t *testing.
 		t.Fatalf("clearReferences must check the token on every edited collection: %d %v", code, body)
 	}
 }
+
+// A token carries the auditor capability of its creator for as long as the
+// creator is on auth.auditors, re-evaluated per request like the role.
+func TestTokenCarriesTheAuditorCapabilityOfItsCreator(t *testing.T) {
+	h := newHarness(t, hopts{})
+	cfg := filepath.Join(h.dir, "rackbook.yml")
+	setAuditors := func(list string) {
+		t.Helper()
+		b, _ := os.ReadFile(cfg)
+		s := string(b)
+		if i := strings.Index(s, "  auditors:"); i >= 0 {
+			j := strings.Index(s[i:], "\n")
+			s = s[:i] + s[i+j+1:]
+		}
+		if list != "" {
+			s = strings.Replace(s, "  mcp:\n", "  auditors: ["+list+"]\n  mcp:\n", 1)
+		}
+		if err := os.WriteFile(cfg, []byte(s), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	user := func(secret string) map[string]any {
+		t.Helper()
+		code, m, _ := h.do("GET", "/api/meta", secret, nil)
+		if code != 200 {
+			t.Fatalf("%d %v", code, m)
+		}
+		return m["user"].(map[string]any)
+	}
+
+	// created while the creator (an admin) is not an auditor: an admin is not one automatically
+	secret, _ := h.createToken(map[string]any{"name": "r", "scope": "read"})
+	if u := user(secret); u["auditor"] != nil || u["role"] != "viewer" {
+		t.Fatalf("%v", u)
+	}
+	// the creator is added to the list: the same token has the capability now
+	setAuditors("boss@example.com")
+	if u := user(secret); u["auditor"] != true || u["role"] != "viewer" {
+		t.Fatalf("after adding the creator: %v", u)
+	}
+	_, list, _ := h.do("GET", "/api/admin/tokens", "", nil)
+	if tk := list["tokens"].([]any)[0].(map[string]any); tk["creatorAuditor"] != true || tk["creatorRole"] != "admin" {
+		t.Fatalf("%v", tk)
+	}
+	// still no writes, and the audit routes stay out of a token's reach
+	if code, _, _ := h.do("POST", "/api/c/todo", secret, map[string]any{"data": map[string]any{"item": "x", "status": "待办"}}); code != 403 {
+		t.Fatalf("a read token wrote: %d", code)
+	}
+	if code, _, _ := h.do("GET", "/api/activity", secret, nil); code != 403 {
+		t.Fatalf("a token reached the activity view: %d", code)
+	}
+	// a token made while the creator is an auditor has it too, and loses it with the creator's entry
+	secret2, _ := h.createToken(map[string]any{"name": "w", "scope": "write", "collections": []string{"todo"}})
+	if u := user(secret2); u["auditor"] != true || u["role"] != "editor" {
+		t.Fatalf("%v", u)
+	}
+	setAuditors("")
+	for _, s := range []string{secret, secret2} {
+		if u := user(s); u["auditor"] != nil {
+			t.Fatalf("after removal: %v", u)
+		}
+	}
+	// the list matches by the creator's identity: another person's entry grants nothing
+	setAuditors("someone@example.com")
+	if u := user(secret); u["auditor"] != nil {
+		t.Fatalf("%v", u)
+	}
+}

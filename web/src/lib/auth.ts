@@ -25,6 +25,8 @@ export type ManagedUser = {
   name?: string
   method?: string
   role: Role | 'none'
+  /** on auth.auditors: a capability next to the role */
+  auditor?: boolean
   /** logged in since the server started */
   seen: boolean
   lastSeen?: string

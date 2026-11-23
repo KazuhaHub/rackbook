@@ -20,7 +20,7 @@ import (
 // the modules; a module reads its own settings and reports its own runs with
 // its own API token, and nothing else.
 
-func (s *server) modulesRoutes(mux *http.ServeMux) {
+func (s *server) modulesRoutes(mux *routeMux) {
 	mux.HandleFunc("GET /api/modules", s.modulesList)
 	mux.HandleFunc("GET /api/modules/status", s.modulesStatus)
 	mux.HandleFunc("GET /api/modules/{name}/settings", s.moduleSettings)

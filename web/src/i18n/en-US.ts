@@ -9,6 +9,7 @@ const messages = {
   // login, the account page and the users page
   auth: {
     role: { admin: 'Admin', editor: 'Editor', viewer: 'Viewer', none: 'No access' } as Record<string, string>,
+    auditor: { label: 'Auditor', hint: 'Auditor is a capability apart from the role, granted by auth.auditors in rackbook.yml. It lets you see and export the audit areas of Activity and the audit log status. It does not let you reveal secrets or change anything, and Restore is shown only if your role is also editor or higher. Admins are not auditors automatically.', users: 'Auditors are set in auth.auditors, separately from roles. A group entry is matched against the groups of the person’s last sign-in since the server started; someone not seen since then matches only by name.' },
     method: {
       oidc: 'Single sign-on (OIDC)',
       passkey: 'Passkey',
@@ -950,6 +951,7 @@ const messages = {
         first_file_mismatch: 'The first file does not match',
       } as Record<string, string>,
       acknowledge: 'I have checked — acknowledge',
+      adminsAcknowledge: 'Only admins can acknowledge.',
       confirmTitle: 'Acknowledge these problems?',
       confirmBody: 'This records in the audit log that you looked at them. The problems stay in the log and in the verify report; they stop showing this banner and no longer keep old months from being deleted by the retention setting.',
       working: 'Working…',
@@ -1192,8 +1194,10 @@ const messages = {
     title: 'Infrastructure',
     subtitle: 'Read-only: each machine’s configuration and applied state, certificates, IP lists and the configuration repository’s commits. Nothing can be changed here.',
     subtitleWrite: 'Each machine’s configuration and applied state, certificates, IP lists and the configuration repository’s commits. Administrators can edit variables, feature switches and groups; every save is one commit to main.',
-    adminOnly: 'Only infrastructure administrators can see this page',
-    adminOnlyBody: 'You must be listed in --infra-admins and signed in with the console login (single sign-on); API tokens and MCP do not count.',
+    adminOnly: 'Only infrastructure administrators and auditors can see this page',
+    adminOnlyBody: 'You must be listed in --infra-admins or --infra-auditors and signed in with the console login (single sign-on); API tokens and MCP do not count.',
+    subtitleAuditor: 'Read-only: each machine’s configuration and applied state, certificates, IP lists and the configuration repository’s commits. Nothing can be changed here, and secrets are not shown.',
+    auditorBadge: 'Auditor · read-only',
     loadFailed: 'Could not load this',
     tabs: { hosts: 'Hosts', certs: 'Certificates', iplists: 'IP lists', commits: 'Commits', groups: 'Groups' },
     seconds: (n: number) => `${n} ${pick(n, 'second', 'seconds')} ago`,

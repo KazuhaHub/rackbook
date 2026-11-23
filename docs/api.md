@@ -105,8 +105,11 @@ answers `200 {"locale": ""}`. It is stored per identity in `<state-dir>/preferen
   after any scope narrowing, from `auth.roles` evaluated on this request).
   `authMethod` is `none`, `cloudflare-access`, `oidc`, `passkey`, `mcphub` or
   `token`. `canEdit` is `role` ≥ editor and the server is not read-only;
-  `canAdmin` is `role` = admin. `canInfra: true` appears only for an infra
-  administrator, and `canInfraWrite: true` when the infra editors are on (see Infra, below). `id` (lowercased identity), `email` and `name`
+  `canAdmin` is `role` = admin. `auditor: true` appears only for a person (or the token or grant
+  of a person) on `auth.auditors`: a capability next to the role, not part of it (an admin has no
+  `auditor` unless listed; an auditor with no role has `role` = `viewer`, the floor). `canInfra: true`
+  appears for an infra administrator or an infra auditor, and `canInfraWrite: true` only for an
+  administrator when the infra editors are on; an infra auditor has `infraAuditor: true` instead (see Infra, below). `id` (lowercased identity), `email` and `name`
   are left out when unknown (auth `none` without `--editor`).
 - `alert` is present only while the remote Git history was rewritten (see
   [design.md](design.md), section 3): writes return `503` until an
@@ -298,7 +301,7 @@ mode. A refused request changes nothing.
 Admin only, and never with a token (`403 forbidden`); `404` unless token support
 is on (it is in `rackbook serve`).
 
-- `GET /api/admin/tokens` → `{"tokens": [{name, prefix, scope, collections?, actions?, writeMode?, createdBy, created, expires?, revoked?, status: active|revoked|expired, lastUsed?, creatorRole, module?, warnings: [creator_no_role|limited_by_creator|push_needs_admin]}], "mcpUrl"}`; `module` names the module (rackbook.yml `modules:`) that uses the token.
+- `GET /api/admin/tokens` → `{"tokens": [{name, prefix, scope, collections?, actions?, writeMode?, createdBy, created, expires?, revoked?, status: active|revoked|expired, lastUsed?, creatorRole, creatorAuditor?, module?, warnings: [creator_no_role|limited_by_creator|push_needs_admin]}], "mcpUrl"}`; `module` names the module (rackbook.yml `modules:`) that uses the token. `creatorAuditor: true` says the creator is on `auth.auditors` now; the token then carries the capability (`user.auditor` in its `/api/meta`) for as long as that holds, but it cannot reach the activity or audit routes (it is limited to the paths below).
 - `POST /api/admin/tokens` `{"name", "scope": "read"|"write", "collections": [], "actions": ["create","update","delete"], "writeMode": ""|"pr"|"push", "expiresDays": 0}` → `201 {"token", "secret", "snippet", "claudeCode", "commit", "pullRequest"}`. The secret is shown only here. `400` for invalid input, `409 exists` for a taken name.
 - `DELETE /api/admin/tokens/{name}` → `200 {"ok", "commit"}`; `404` for an unknown name.
 
@@ -347,7 +350,7 @@ Public endpoints (no session):
 
 With a session:
 
-- `GET /api/account` → `{"id", "name", "email", "role", "authMethod", "passkeysEnabled",
+- `GET /api/account` → `{"id", "name", "email", "role", "auditor", "authMethod", "passkeysEnabled",
   "canEnrol", "enrolUntil", "locale"?, "passkeys": [{"id", "name", "created"}], "passkeyError"?}`.
 - `POST /api/account/passkeys/begin` `{"name": "MacBook"}` → `{"ceremony", "options": <creation options>}`;
   `POST /api/account/passkeys/finish?ceremony=<id>` with the attestation JSON →
@@ -355,7 +358,7 @@ With a session:
   login is at most 10 minutes old, `403 read_only`. Each add is a Git commit.
 - With a passkey session, an unreadable or missing `.rackbook/passkeys.yml` (for example during a pull) answers `503 passkey_unavailable` and keeps the cookie; only a file that loads without the credential ends the session. These endpoints refuse API tokens and OAuth access tokens (`403`).
 - `DELETE /api/account/passkeys/{id}` → `200 {"ok": true}` (own passkeys only, `404` otherwise).
-- Admin: `GET /api/admin/users` → `{"users": [{"id", "name", "method", "role", "seen",
+- Admin: `GET /api/admin/users` → `{"users": [{"id", "name", "method", "role", "auditor"?, "seen",
   "firstSeen", "lastSeen", "passkeys"}], "passkeysEnabled"}` (users seen since the
   server started plus users with passkeys; `role` is the effective role, `none` if
   they have none) and `DELETE /api/admin/passkeys/{id}`.
@@ -451,13 +454,39 @@ forbidden`). A module uses its own token for the three calls marked *module*.
 | `POST /api/modules/{name}/runs` | module | body `{started, finished, status: ok\|failed\|skipped, counts: {created, updated, revoked, sent}, error?, run_request?}` (RFC 3339 times, `finished` more than 24 hours ahead of the server clock is refused; one that is merely ahead (a fast module clock) is accepted and stored exactly as reported, with a log line when more than 10 minutes ahead) → `201 {ok: true}`. Only the module's own token (`403` otherwise, an administrator included); `400` for an invalid body. `error` is cut to 300 characters on one line. A run that carries the pending request's id clears it; consecutive `skipped` runs replace each other. The server keeps the last 30 runs per module in `<state-dir>/modules.json` |
 | `GET /api/modules/status` | admin, notify module | `{modules: [{name, type, paused, lastRun}]}`: the last run of every module, for rackbook-notify's digest. `403` for any other token |
 
+## Activity and the audit log
+
+README, *Activity*. Every role may call `GET /api/activity` and is limited to the areas it may see; who sees which
+area is decided in one place (`canSee` in `internal/api/activity.go`):
+
+| Class | Who |
+|---|---|
+| ledger commits without `.rackbook/` | every role |
+| state (`.rackbook/` commits and their diffs), audit events, the client address (`addr`), the JSONL export | admins and auditors (`auth.auditors`, README *Auditors*) |
+| infra commits and infra audit events | infra administrators and infra auditors |
+
+- `GET /api/activity?since&until&identity&area&collection&id&limit&cursor` → `{items, cursor?, areas, audit, scanned}`. `areas` lists what the caller may name; another area is `403 forbidden`.
+- `GET /api/activity?format=jsonl` → every match as `application/x-ndjson`. Admins and auditors; `403` for everyone else.
+- `GET /api/activity/commit/{area}/{hash}` → `{area, hash, files, moreFiles}`. `ledger`: `.rackbook/` files only for admins and auditors. `infra`: infra administrators and infra auditors (secret files are listed without a patch).
+- `GET /api/audit/status` → `{enabled, ok, problems, lastSeq, failed?}`. Admins and auditors.
+- `POST /api/audit/ack` `{"through": <seq>}` → the status. **Admins only**: an auditor, an editor, a token and a read-only server are `403`; `409 nothing_to_ack | no_audit_log`; `400` for a bad body.
+
+An auditor never gets a success from any write route (`403`), and the only write open to every signed-in person is
+`PUT /api/account/preferences` (their own language).
+
 ## Infra (`--infra-repo`)
 
 Only with `--infra-repo` (README, *Infrastructure view and editors*); without it every path below is `404`.
-Each call needs a person listed in `--infra-admins` who signed in with the OIDC login **under the issuer and
+Each call needs a person listed in `--infra-admins`, or, for the read class below, in `--infra-auditors`, who signed in with the OIDC login **under the issuer and
 client ID pinned by `--infra-oidc-issuer` and `--infra-oidc-client-id`, with the identity claim and tenant of `--infra-oidc-identity-claim` and `--infra-oidc-tenant`**: any other caller, a token of the
 listed person included, gets `403 forbidden`. None is on `/mcp`. `/api/meta` tells such a person with
 `user.canInfra: true`, and with `user.canInfraWrite: true` when the editors are on (`--infra-write`, not `--read-only`).
+
+Every route is in one of three classes:
+
+- **read**: infra administrators and infra auditors (`--infra-auditors`, the same pinned provider and OIDC sessions only): `GET /api/infra/hosts`, `…/hosts/{name}`, `…/certs`, `…/iplists`, `…/commits`, `…/groups`, `…/features`, `…/write`, and `GET /api/activity/commit/infra/{hash}`. For an infra auditor `GET /api/infra/write` answers `{enabled: false, secrets: false, fresh: false, auditor: true}` and `canRevert` in the commits is false; `user.infraAuditor: true` marks them in `/api/meta`.
+- **secret**: infra administrators only; an infra auditor gets `403 forbidden`: `GET …/hosts/{name}/secrets`, `POST …/secrets/reveal|set|unset|reencrypt`, and `GET …/hosts/{name}/vars` (the editor's raw host_vars file; it sends no content when the hide scan finds anything, and is admin-only as defence in depth). The hide scan is the boundary: a plaintext secret it does not recognise reaches an infra auditor through `GET /api/infra/hosts/{name}` (`vars`) and infra commit diffs, as it reaches infra administrators.
+- **write**: infra administrators only (with a recent sign-in): every other `POST` (`…/vars`, `…/features/{feature}`, `…/groups`, `…/commits/{hash}/revert`). A refused attempt is audited.
 
 `hub` is `{state: ok|stale|missing|invalid, error?, time?, ageSeconds}`, the state of the hub's
 status file. Anything but `ok` means its data is not current: `report` is left out and `certs`

@@ -212,6 +212,42 @@ exact/`*@domain` entries only for a *verified* e-mail address (the token's `emai
 current config on every request, so a change pulled from Git applies at once.
 `/api/meta` reports `user.role`, `user.canEdit` and `user.canAdmin`.
 
+#### Auditors
+
+```yaml
+# rackbook.yml
+auth:
+  roles: { … }
+  auditors: ["group:<entra-group-id>", "audit@example.com"]
+```
+
+An **auditor** is not a fourth role. The roles are a scale (viewer < editor < admin, the highest wins);
+auditing is a separate capability granted by its own list, `auth.auditors`, which takes the same entries as a
+role list (an identity, `*@domain`, `group:<id>`, `oauth:<alias>:<user>`, `mcphub:<username>`, `oidc:<sub>`,
+`*`) and the same validation (`rackbook check` reports a bad entry under `auth.auditors`). It is read from the
+current config on every request, like the roles, so a change pulled from Git applies at once.
+
+- **What it adds.** Seeing and exporting the audit areas of [Activity](#activity) (sign-ins, refusals,
+  `.rackbook/` commits and their diffs, the client address of an audit event), and the audit log status and
+  banner. Nothing else: an auditor cannot acknowledge a chain problem (that stays admin-only), cannot reveal
+  a secret, and cannot write.
+- **The viewer floor.** Somebody on the list with no role gets viewer access to records. Somebody on the list
+  who has a role keeps it, so an auditor who is also an editor still edits, and sees *Restore*; an auditor
+  without the editor role never does (every write route answers `403`).
+- **An admin is not automatically an auditor.** Admins already see everything auditors see, so in practice the
+  only difference is the label: `user.auditor` in `/api/meta`, and the *Auditor* badge on the account page,
+  appear only for people who are on the list.
+- **Tokens and grants.** An API token, or an OAuth/MCP grant, carries the capability of the person who made it
+  for as long as that person is on the list, the same way it carries their role; removing them takes it away
+  at the next request. Neither can reach the activity or audit routes anyway (tokens are limited to record
+  paths).
+- **Older servers** ignore `auth.auditors` (the file is not decoded strictly), so on them it grants nothing.
+  Bump the Rackbook version in the ledger's CI first so that CI checks the key.
+- `app-role:` entries come with the roles from the provider's claims (design, phase 2a); until roles accept
+  them, auditors do not either.
+
+For `/infra` the auditors are a separate deploy flag, `--infra-auditors` (see below).
+
 ### Any OAuth provider: MCP and MCPHub
 
 `/mcp` is an OAuth 2.0 **protected resource** (RFC 9728). Users sign in to an
@@ -584,6 +620,7 @@ repository* below). It is off unless `--infra-repo` is given.
 rackbook serve --auth oidc … \
   --infra-repo /data/infra --infra-branch main \
   --infra-admins me@example.org \
+  --infra-auditors audit@example.org \
   --infra-oidc-issuer https://login.microsoftonline.com/<tenant>/v2.0 \
   --infra-oidc-client-id <the console's application ID> \
   --infra-oidc-tenant <the Entra tenant ID> \
@@ -596,6 +633,7 @@ rackbook serve --auth oidc … \
 | `--infra-branch` | The branch followed, and the branch the editors commit to (default `main`) |
 | `--infra-ssh-key` | (Or use the [GitHub App](#github-app-instead-of-deploy-keys): its token for this clone is `contents: read`, and `contents: write` only for an edit.) The private key (give it a read-only deploy key) used to fetch this clone, and only this clone. It cannot be combined with `--infra-write`. It reaches git in `GIT_SSH_COMMAND` in the environment of the git process, not on a command line; a `known_hosts` file beside the key is used with strict host key checking when it exists |
 | `--infra-admins` | Comma-separated exact identities (no wildcards) who may use `/infra`. This is **not** `auth.roles`, and it is never read from `rackbook.yml`, so nobody can grant it by editing the ledger. Needs `--auth oidc`: only a person who signed in with the console's OIDC login counts. API tokens (also the token of a listed person), MCP clients, OAuth access tokens, passkey and Cloudflare Access identities are answered `403 forbidden` |
+| `--infra-auditors` | Optional. Comma-separated exact identities who may **read** `/infra` but nothing more (needs `--infra-admins`). Same rules as `--infra-admins`: OIDC login sessions only (never a token, MCP client, OAuth token, passkey or Cloudflare Access identity), the identity provider pinned by the `--infra-oidc-*` flags below, never read from `rackbook.yml`. They read hosts, groups, certificates, IP lists, commits, the diffs of infra commits and the infra audit events. They get `403 forbidden` on the secrets (the list of key names, reveal, set, unset, re-encrypt), on the raw `host_vars` editor file (kept admin-only as defence in depth: it sends no content when the hide scan finds anything), and on every edit and revert. The boundary for plaintext in `host_vars` is that scan: a secret it does not recognise reaches an infra auditor through the host page (`GET /api/infra/hosts/{name}`) and through infra commit diffs, exactly as it reaches infra administrators A person on both lists is an administrator. Deploy it by adding the flag to the service's command line next to `--infra-admins` |
 | `--infra-oidc-issuer`, `--infra-oidc-client-id` | **Required** with `--infra-repo`. The identity provider (issuer URL) and the application (client ID) that infra administrators sign in with. A session counts only if it was issued under exactly this issuer **and** this client ID (and the claim and tenant below); anything else is `403`, however it was obtained. See *Why the identity provider is pinned* |
 | `--infra-oidc-identity-claim` | The ID token claim the administrators' identities are taken from (default `preferred_username`; `sub` for subject identities, which are then listed as `oidc:<sub>`). A session whose identity came from another claim is refused, so `auth.oidc.identity_claim` in the ledger cannot change who counts as an administrator |
 | `--infra-oidc-tenant` | The tenant (the `tid` claim) the administrators sign in from. **Required for an Entra issuer**, and a tenant GUID in `--infra-oidc-issuer` must equal it; optional for other providers (then a session without a tenant is expected). A session from another tenant is refused; `allowed_tenants` in the ledger is not trusted |
@@ -954,12 +992,14 @@ to) are in the URL, so a link reproduces the view; "Load more" pages through old
 | Area | What it holds | Who sees it |
 |---|---|---|
 | `ledger` | commits of the data repository that touch ledger files | every role |
-| `ledger`, state | commits that touch `.rackbook/` (tokens, passkeys) | admins |
-| `audit` | sign-ins, refusals, `write_refused`, acknowledgements, chain problems | admins |
-| `infra` | commits of the infra repository and the infra audit events (secret reveals, re-encryption) | `--infra-admins`, signed in with the console login |
+| `ledger`, state | commits that touch `.rackbook/` (tokens, passkeys) | admins, auditors |
+| `audit` | sign-ins, refusals, `write_refused`, acknowledgements, chain problems | admins, auditors |
+| `infra` | commits of the infra repository and the infra audit events (secret reveals, re-encryption) | `--infra-admins` and `--infra-auditors`, signed in with the console login |
 
 Without `area`, a request returns every area its caller may see. Naming an area the caller may not see is a `403`.
-The client address of an audit event is shown to admins only.
+The client address of an audit event is shown to admins and auditors only. The JSONL export is for admins and
+auditors; it holds the areas the caller may see. *Auditors* are on the list `auth.auditors`
+(see [Auditors](#auditors)); they see this page read-only: no *Acknowledge* button, no secrets, no writes.
 
 **Verified.** Anybody with push access can write any author and any `Edited-by` trailer, so a commit's
 trailers prove nothing. A commit is **verified** only when Rackbook itself made it: after its own push it writes a
@@ -974,10 +1014,10 @@ them, `audit/index.json`, is updated as the log grows; it can be deleted at any 
 | Request | Meaning |
 |---|---|
 | `GET /api/activity` | `since`, `until` (RFC 3339 or `YYYY-MM-DD`; a date for `until` includes that whole day, UTC), `identity`, `area` (`ledger`, `infra`, `audit`; repeat it or separate with commas), `collection`, `id` (needs `collection`; commits with that exact `Record` trailer), `limit` (default 50, at most 200), `cursor`. Answers `{"items": [...], "cursor": "...", "areas": [...], "audit": true}`; `cursor` is absent on the last page. `collection` leaves out infra and audit rows, which belong to no collection. |
-| `GET /api/activity?format=jsonl` | Admins only. The same filters, no cursor: every match, one JSON object per line, as `application/x-ndjson` with `Content-Disposition: attachment`. It stops at 50 000 rows, or when its work budget is spent, with a last line `{"truncated":true}`. |
-| `GET /api/activity/commit/{area}/{hash}` | What a commit changed (`ledger` or `infra`): the files with status and unified patch. The patches together are capped at 256 KiB (a file that crosses it says `truncated`), at most 200 files. Files under `.rackbook/` are left out for non-admins, and a commit with nothing else is a `404`. In the infra repository SOPS and vault files, and anything under `secrets/`, are listed as changed without a patch, and values that look like secrets are hidden in the others. |
-| `GET /api/audit/status` | Admins: `{"enabled", "ok", "problems": [...], "lastSeq"}`: the recorded chain problems nobody has acknowledged. |
-| `POST /api/audit/ack` | Admins, signed in (not with an API token), not on a read-only server: `{"through": <seq>}` acknowledges the recorded problems whose `chain_problem` line has that seq or a lower one. `409` when there is no audit log or nothing waits to be acknowledged. |
+| `GET /api/activity?format=jsonl` | Admins and auditors. The same filters, no cursor: every match, one JSON object per line, as `application/x-ndjson` with `Content-Disposition: attachment`. It stops at 50 000 rows, or when its work budget is spent, with a last line `{"truncated":true}`. |
+| `GET /api/activity/commit/{area}/{hash}` | What a commit changed (`ledger` or `infra`): the files with status and unified patch. The patches together are capped at 256 KiB (a file that crosses it says `truncated`), at most 200 files. Files under `.rackbook/` are left out for everyone but admins and auditors, and a commit with nothing else is a `404`. In the infra repository SOPS and vault files, and anything under `secrets/`, are listed as changed without a patch, and values that look like secrets are hidden in the others. |
+| `GET /api/audit/status` | Admins and auditors: `{"enabled", "ok", "problems": [...], "lastSeq"}`: the recorded chain problems nobody has acknowledged. |
+| `POST /api/audit/ack` | Admins only (an auditor gets `403`), signed in (not with an API token), not on a read-only server: `{"through": <seq>}` acknowledges the recorded problems whose `chain_problem` line has that seq or a lower one. `409` when there is no audit log or nothing waits to be acknowledged. |
 
 **Paging.** The three sources (data repository, infra repository, audit log) are read as three streams, each in
 its own order, and merged by taking the newest of their heads. The cursor holds, per stream, where it has got to:
@@ -1000,7 +1040,8 @@ fails the check, or from before a history rewrite was accepted, is `400` with `"
 console then starts again from the first page with a notice.
 
 **Acknowledging a chain problem.** While the audit log has a recorded problem nobody has acknowledged, admins see a
-red banner on every page, with the kinds of problem and the first affected line. *I have checked — acknowledge*
+red banner on every page (auditors see it too, without the button), with the kinds of problem and the first
+affected line. *I have checked — acknowledge*
 (after a confirmation) records a `chain_problem_ack` line by the admin. The problem stays in the log and in
 `rackbook audit verify` (marked acknowledged, and verify still exits 1); it stops showing the banner and stops
 keeping its month from the retention.
@@ -1645,7 +1686,10 @@ Rackbook 永远不会 force push，也不会改写或删除远端分支和标签
 
 基础设施视图与编辑（v0.7.3）：给 `serve` 加 `--infra-repo`（一个 Ansible + SOPS 仓库的 git 克隆）后，管理员可在 `/infra`
 查看主机清单与各机器的 host_vars、功能开关、基础设施中心（infra-hub）上报的应用状态、证书、IP 列表和最近
-50 个提交。能用 `/infra` 的人由 `--infra-admins` 指定（不是 `auth.roles`，也不来自台账里的 `rackbook.yml`），
+50 个提交。`auth.auditors`（审计员）是和角色分开的一份名单，写法与角色列表相同：名单里的人能查看并导出“活动”里的审计部分
+（登录记录、拒绝、`.rackbook/` 的提交和审计日志状态），没有角色时按只读（viewer）处理，有角色则保持原角色；审计员不能确认审计链问题、
+不能查看密钥、不能写入，管理员也不会自动成为审计员。`/infra` 里对应的是 `--infra-auditors`：与 `--infra-admins` 同样固定
+身份提供方、只认控制台 OIDC 登录会话，只能读（看不到密钥，也不能改和还原）。能用 `/infra` 的人由 `--infra-admins` 指定（不是 `auth.roles`，也不来自台账里的 `rackbook.yml`），
 必须是用控制台 OIDC 登录的会话，并且登录所用的身份提供方必须正是 `--infra-oidc-issuer` 与 `--infra-oidc-client-id`
 固定的那一个（签发方、客户端 ID、身份声明 `--infra-oidc-identity-claim` 和租户 `--infra-oidc-tenant` 都来自命令行，不来自台账里可被改动的 `auth.oidc`）；API 令牌、MCP、OAuth 令牌一律 `403`。
 加上 `--infra-write` 后，管理员还能编辑 host_vars、按 `feature.yml` 生成的功能开关表单和主机分组，并在提交历史里还原某次提交：

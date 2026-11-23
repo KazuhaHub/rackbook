@@ -17,7 +17,7 @@ import (
 // Admin endpoints for Rackbook API tokens (docs/api.md). A token can never
 // reach them: managing tokens needs the admin role of a signed-in user.
 
-func (s *server) tokenRoutes(mux *http.ServeMux) {
+func (s *server) tokenRoutes(mux *routeMux) {
 	mux.HandleFunc("GET /api/admin/tokens", s.listTokens)
 	mux.HandleFunc("POST /api/admin/tokens", s.createToken)
 	mux.HandleFunc("DELETE /api/admin/tokens/{name}", s.revokeToken)
@@ -45,6 +45,8 @@ type tokenOut struct {
 	Status      string `json:"status"` // active, revoked, expired
 	LastUsed    string `json:"lastUsed,omitempty"`
 	CreatorRole string `json:"creatorRole"`
+	// CreatorAuditor: the creator is on auth.auditors now, so the token reads the audit areas too.
+	CreatorAuditor bool `json:"creatorAuditor,omitempty"`
 	// Module is the module (modules: in rackbook.yml) that uses this token.
 	Module   string   `json:"module,omitempty"`
 	Warnings []string `json:"warnings"`
@@ -65,8 +67,8 @@ func (s *server) describe(t tokens.Token) tokenOut {
 	if name, _ := s.o.Store.Config().ModuleForToken(t.Name); name != "" {
 		out.Module = name
 	}
-	role := s.o.Auth.RoleForVia(t.CreatedBy, t.SubjectMethod())
-	out.CreatorRole = role.String()
+	role, auditor := s.o.Auth.CapabilitiesForVia(t.CreatedBy, t.SubjectMethod())
+	out.CreatorRole, out.CreatorAuditor = role.String(), auditor
 	want := roles.Viewer
 	if t.Scope == tokens.ScopeWrite {
 		want = roles.Editor

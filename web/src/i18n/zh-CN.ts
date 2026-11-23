@@ -4,6 +4,7 @@ const messages = {
   // login, the account page and the users page
   auth: {
     role: { admin: '管理员', editor: '编辑', viewer: '只读', none: '无权限' } as Record<string, string>,
+    auditor: { label: '审计员', hint: '审计员是独立于角色的能力，由 rackbook.yml 的 auth.auditors 授予：可以查看并导出「活动」里的审计区域和审计日志状态，但不能显示密钥，也不能修改任何内容；只有角色同时是编辑或以上才能还原版本。管理员不会自动成为审计员。', users: '审计员在 auth.auditors 里设置，和角色分开。按组匹配时用的是服务器启动以来该用户最近一次登录带的组；之后没登录过的人只能按名字匹配。' },
     method: {
       oidc: '单点登录（OIDC）',
       passkey: '通行密钥',
@@ -944,6 +945,7 @@ const messages = {
         first_file_mismatch: '第一个文件不一致',
       } as Record<string, string>,
       acknowledge: '我已检查，确认',
+      adminsAcknowledge: '只有管理员可以确认。',
       confirmTitle: '确认这些问题？',
       confirmBody: '这会在审计日志中记下你已查看这些问题。问题本身仍保留在日志和校验报告中；确认后不再显示此横幅，也不再阻止保留期设置删除旧月份。',
       working: '处理中…',
@@ -1187,8 +1189,10 @@ const messages = {
     title: '基础设施',
     subtitle: '只读：每台机器的配置与应用状态、证书、IP 列表和配置仓库的提交。这里不能改任何东西。',
     subtitleWrite: '每台机器的配置与应用状态、证书、IP 列表和配置仓库的提交。管理员可以编辑变量、功能开关和分组；每次保存就是一个提交到 main 的提交。',
-    adminOnly: '只有基础设施管理员能看这个页面',
-    adminOnlyBody: '需要在 --infra-admins 里，并且用控制台登录（单点登录）进入；令牌和 MCP 不行。',
+    adminOnly: '只有基础设施管理员和审计员能看这个页面',
+    adminOnlyBody: '需要在 --infra-admins 或 --infra-auditors 里，并且用控制台登录（单点登录）进入；令牌和 MCP 不行。',
+    subtitleAuditor: '只读：每台机器的配置与应用状态、证书、IP 列表和配置仓库的提交。这里不能改任何东西，也看不到密钥。',
+    auditorBadge: '审计员 · 只读',
     loadFailed: '无法加载',
     tabs: { hosts: '主机', certs: '证书', iplists: 'IP 列表', commits: '提交', groups: '分组' },
     seconds: (n: number) => `${n} 秒前`,

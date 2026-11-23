@@ -13,14 +13,32 @@ import (
 
 // The infra pages (README, "Infrastructure"): a read-only view of an Ansible +
 // SOPS repository and of the infra hub's status. They are not part of the
-// ledger and never appear on /mcp. Only a person named in --infra-admins who
-// signed in through the OIDC login may read them; roles, API tokens and OAuth
-// tokens do not count.
+// ledger and never appear on /mcp. Only a person named in --infra-admins or
+// --infra-auditors who signed in through the OIDC login may read them; roles,
+// API tokens and OAuth tokens do not count. An infra auditor reads everything
+// an infra administrator reads except the secrets, and changes nothing.
+//
+// Every route here is one of three classes (TestInfraRouteClasses walks them):
+//
+//	read    infraReader: infra administrators and infra auditors
+//	secret  infraAdmin: the secrets (list of keys, reveal, edit, re-encrypt) and
+//	        the raw host_vars file of the editor (defence in depth: it sends no
+//	        content when the hide scan finds anything, but it is edit support)
+//	write   infraAdmin: edits, groups, reverts, with a recent sign-in
+//
+// The boundary for plaintext in host_vars is the hide scan: a secret the scan
+// does not recognise reaches an infra auditor through GET /api/infra/hosts/{name}
+// (HostDetail.Vars) and through infra commit diffs, exactly as it reaches infra
+// administrators.
 
 // InfraOptions turns the infra pages on.
 type InfraOptions struct {
 	Repo   *ansiblerepo.Repo
 	Admins *auth.InfraAdmins
+	// Auditors (--infra-auditors, may be nil) read what Admins read except the
+	// secrets. They are pinned to the same identity provider as Admins and are
+	// OIDC sessions only.
+	Auditors *auth.InfraAdmins
 	// StatusFile is the hub's status.json (`infra-hub status -o json`), kept
 	// fresh by a timer outside Rackbook. Empty = no hub status.
 	StatusFile string
@@ -35,7 +53,7 @@ type InfraOptions struct {
 	RevealStatePath string
 }
 
-func (s *server) infraRoutes(mux *http.ServeMux) {
+func (s *server) infraRoutes(mux *routeMux) {
 	if s.o.Infra == nil {
 		return
 	}
@@ -48,14 +66,30 @@ func (s *server) infraRoutes(mux *http.ServeMux) {
 	s.infraSecretsRoutes(mux)
 }
 
-// canInfra reports whether the caller may use the infra pages.
-func (s *server) canInfra(r *http.Request) bool {
+// canInfraAdmin reports whether the caller is an infra administrator.
+func (s *server) canInfraAdmin(r *http.Request) bool {
 	return s.o.Infra != nil && s.o.Infra.Admins.Allows(s.who(r))
 }
 
+// canInfra reports whether the caller may read the infra pages: an infra
+// administrator or an infra auditor.
+func (s *server) canInfra(r *http.Request) bool {
+	return s.canInfraAdmin(r) || (s.o.Infra != nil && s.o.Infra.Auditors.Allows(s.who(r)))
+}
+
+// infraAdmin gates the secrets and every write: infra administrators only.
 func (s *server) infraAdmin(w http.ResponseWriter, r *http.Request) bool {
+	if !s.canInfraAdmin(r) {
+		writeError(w, http.StatusForbidden, "forbidden", "this is for the infra administrators who signed in with the console login")
+		return false
+	}
+	return true
+}
+
+// infraReader gates the read routes: infra administrators and infra auditors.
+func (s *server) infraReader(w http.ResponseWriter, r *http.Request) bool {
 	if !s.canInfra(r) {
-		writeError(w, http.StatusForbidden, "forbidden", "the infra pages are for the infra administrators who signed in with the console login")
+		writeError(w, http.StatusForbidden, "forbidden", "the infra pages are for the infra administrators and auditors who signed in with the console login")
 		return false
 	}
 	return true
@@ -106,7 +140,7 @@ type infraHostOut struct {
 }
 
 func (s *server) infraHosts(w http.ResponseWriter, r *http.Request) {
-	if !s.infraAdmin(w, r) {
+	if !s.infraReader(w, r) {
 		return
 	}
 	hosts, err := s.o.Infra.Repo.HostDetails()
@@ -140,7 +174,7 @@ func (s *server) infraHosts(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) infraHost(w http.ResponseWriter, r *http.Request) {
-	if !s.infraAdmin(w, r) {
+	if !s.infraReader(w, r) {
 		return
 	}
 	d, err := s.o.Infra.Repo.Host(r.PathValue("name"))
@@ -167,7 +201,7 @@ func (s *server) infraHost(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) infraCerts(w http.ResponseWriter, r *http.Request) {
-	if !s.infraAdmin(w, r) {
+	if !s.infraReader(w, r) {
 		return
 	}
 	snap, hub := s.hubSnapshot()
@@ -179,7 +213,7 @@ func (s *server) infraCerts(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) infraIPLists(w http.ResponseWriter, r *http.Request) {
-	if !s.infraAdmin(w, r) {
+	if !s.infraReader(w, r) {
 		return
 	}
 	snap, hub := s.hubSnapshot()
@@ -196,7 +230,7 @@ func (s *server) infraIPLists(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) infraCommits(w http.ResponseWriter, r *http.Request) {
-	if !s.infraAdmin(w, r) {
+	if !s.infraReader(w, r) {
 		return
 	}
 	history, err := s.o.Infra.Repo.History(r.Context(), 50)
@@ -204,5 +238,5 @@ func (s *server) infraCommits(w http.ResponseWriter, r *http.Request) {
 		s.internal(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"repo": s.o.Infra.Repo.State(), "commits": history, "canRevert": s.writesOn()})
+	writeJSON(w, http.StatusOK, map[string]any{"repo": s.o.Infra.Repo.State(), "commits": history, "canRevert": s.writesOn() && s.canInfraAdmin(r)})
 }

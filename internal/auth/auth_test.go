@@ -368,3 +368,120 @@ func TestRoleForViaFindsSubjectIdentities(t *testing.T) {
 		t.Fatalf("a token without a recorded method keeps the old behaviour: %v", got)
 	}
 }
+
+// authWith is an authenticator over a config whose roles and auditors can be
+// swapped, like a reload.
+func authWith(t *testing.T, spec *roles.Spec, auditors []string, degraded *atomic.Bool) (*Authenticator, func(*roles.Spec, []string)) {
+	t.Helper()
+	var cur atomic.Pointer[config.Config]
+	set := func(s *roles.Spec, a []string) { cur.Store(&config.Config{Auth: config.Auth{Roles: s, Auditors: a}}) }
+	set(spec, auditors)
+	c := Config{Mode: ModeNone, Config: cur.Load}
+	if degraded != nil {
+		c.Degraded = degraded.Load
+	}
+	a, err := New(context.Background(), c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return a, set
+}
+
+func TestAuditorViewerFloorAndRolesAreKept(t *testing.T) {
+	spec := &roles.Spec{Admin: []string{"boss@example.com"}, Editor: []string{"ed@example.com"}, Viewer: []string{"vic@example.com"}}
+	a, set := authWith(t, spec, []string{"aud@example.com", "ed@example.com", "vic@example.com", "boss@example.com"}, nil)
+	for _, c := range []struct {
+		who  string
+		role roles.Role
+		aud  bool
+	}{
+		{"aud@example.com", roles.Viewer, true}, // no role: the viewer floor
+		{"ed@example.com", roles.Editor, true},  // keeps the role
+		{"vic@example.com", roles.Viewer, true},
+		{"boss@example.com", roles.Admin, true},
+		{"other@example.com", roles.None, false}, // not listed: refused as before
+	} {
+		id := a.Evaluate(&Identity{ID: c.who, Email: c.who, Method: MethodOIDC})
+		if id.EffectiveRole() != c.role || id.IsAuditor() != c.aud {
+			t.Errorf("%s: %v %v", c.who, id.EffectiveRole(), id.IsAuditor())
+		}
+	}
+	// the floor is a viewer: no write, no admin
+	id := a.Evaluate(&Identity{ID: "aud@example.com", Method: MethodOIDC})
+	if !id.Can(roles.Read) || id.Can(roles.Write) || id.Can(roles.Delete) || id.Can(roles.Manage) {
+		t.Fatalf("%v", id.EffectiveRole())
+	}
+	// an admin is not an auditor unless listed
+	set(spec, []string{"aud@example.com"})
+	if b := a.Evaluate(&Identity{ID: "boss@example.com", Method: MethodOIDC}); b.EffectiveRole() != roles.Admin || b.IsAuditor() {
+		t.Fatalf("admin %v auditor %v", b.EffectiveRole(), b.IsAuditor())
+	}
+	// no roles block: v0.1 behaviour is untouched
+	set(nil, []string{"aud@example.com"})
+	if e := a.Evaluate(&Identity{ID: "anyone@example.com", Method: MethodOIDC}); e.EffectiveRole() != roles.Editor || e.IsAuditor() {
+		t.Fatalf("%v", e.EffectiveRole())
+	}
+}
+
+func TestAuditorFollowsConfigReloadsAndScopeNarrowing(t *testing.T) {
+	a, set := authWith(t, &roles.Spec{Admin: []string{"boss@example.com"}}, []string{"aud@example.com"}, nil)
+	ev := func() *Identity { return a.Evaluate(&Identity{ID: "aud@example.com", Method: MethodOIDC}) }
+	if !ev().IsAuditor() {
+		t.Fatal("listed")
+	}
+	set(&roles.Spec{Admin: []string{"boss@example.com"}}, nil) // removed from the list
+	if id := ev(); id.IsAuditor() || id.EffectiveRole() != roles.None {
+		t.Fatalf("after removal: %v %v", id.IsAuditor(), id.EffectiveRole())
+	}
+	set(&roles.Spec{Admin: []string{"boss@example.com"}}, []string{"aud@example.com"})
+	// a credential whose scope leaves nothing readable carries no capability
+	id := ev()
+	id.Narrow = func(roles.Role) roles.Role { return roles.None }
+	if id.IsAuditor() {
+		t.Fatal("a scope that narrows the role to nothing takes the capability with it")
+	}
+	// a nil identity and a context without one are no auditor
+	var nilID *Identity
+	if nilID.IsAuditor() || IsAuditor(context.Background()) {
+		t.Fatal("nobody")
+	}
+	if !IsAuditor(WithIdentity(context.Background(), ev())) {
+		t.Fatal("context")
+	}
+}
+
+func TestAuditorCreatorOfATokenIsEvaluatedLikeTheRole(t *testing.T) {
+	spec := &roles.Spec{Admin: []string{"oidc:sub-1", "boss@example.com"}}
+	a, set := authWith(t, spec, []string{"boss@example.com", "oidc:sub-1"}, nil)
+	role, aud := a.CapabilitiesForVia("Boss@Example.com", MethodNone)
+	if role != roles.Admin || !aud {
+		t.Fatalf("%v %v", role, aud)
+	}
+	if role, aud = a.CapabilitiesForVia("oidc:sub-1", MethodOIDC); role != roles.Admin || !aud {
+		t.Fatalf("a subject creator: %v %v", role, aud)
+	}
+	if a.RoleForVia("boss@example.com", MethodNone) != roles.Admin {
+		t.Fatal("RoleForVia")
+	}
+	set(spec, nil) // removed from the list: the token loses the capability, keeps the role
+	if role, aud = a.CapabilitiesForVia("boss@example.com", MethodNone); role != roles.Admin || aud {
+		t.Fatalf("%v %v", role, aud)
+	}
+	// an auditor with no role at all: the creator's role is the viewer floor
+	set(spec, []string{"aud@example.com"})
+	if role, aud = a.CapabilitiesForVia("aud@example.com", MethodNone); role != roles.Viewer || !aud {
+		t.Fatalf("%v %v", role, aud)
+	}
+}
+
+func TestDegradedConfigStillCapsAnAuditorAtViewer(t *testing.T) {
+	var degraded atomic.Bool
+	a, _ := authWith(t, &roles.Spec{Editor: []string{"ed@example.com"}}, []string{"ed@example.com", "aud@example.com"}, &degraded)
+	degraded.Store(true)
+	if id := a.Evaluate(&Identity{ID: "ed@example.com", Method: MethodOIDC}); id.EffectiveRole() != roles.Viewer || !id.IsAuditor() {
+		t.Fatalf("%v %v", id.EffectiveRole(), id.IsAuditor())
+	}
+	if id := a.Evaluate(&Identity{ID: "aud@example.com", Method: MethodOIDC}); id.EffectiveRole() != roles.Viewer {
+		t.Fatalf("%v", id.EffectiveRole())
+	}
+}

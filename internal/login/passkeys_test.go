@@ -5,11 +5,14 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/descope/virtualwebauthn"
+
+	"github.com/kazuhahub/rackbook/internal/api"
 )
 
 // device is a software authenticator.
@@ -486,5 +489,97 @@ func TestMissingPasskeyFileAtASettledCommitRevokes(t *testing.T) {
 	}
 	if st, _ := b.meta(); st != 401 {
 		t.Fatalf("no passkeys file at a settled commit means no passkeys: %d", st)
+	}
+}
+
+// loginRouteClass says what each route that Service mounts is. A route that is
+// not here fails the walk below until it is classified.
+//
+//	admin   an admin acts on anybody's object: an auditor is refused
+//	own     acts on the caller's own object: another person's id is a 404
+//	self    the caller's own session or ceremony; not about anybody else's object
+var loginRouteClass = map[string]string{
+	"POST /auth/logout":                 "self",
+	"POST /auth/passkey/begin":          "self",
+	"POST /auth/passkey/finish":         "self",
+	"POST /api/account/passkeys/begin":  "self",
+	"POST /api/account/passkeys/finish": "self",
+	"DELETE /api/account/passkeys/{id}": "own",
+	"DELETE /api/admin/passkeys/{id}":   "admin",
+}
+
+// An auditor with no role walks every non-GET route the login service mounts:
+// the admin ones are 403, the ones on a passkey are 404 for somebody else's,
+// and nothing the auditor does changes another person's credentials.
+func TestAuditorCannotTouchAnotherPersonsPasskeyOnAnyLoginRoute(t *testing.T) {
+	e := newEnv(t, options{passkeys: true, remote: true, nogit: false,
+		roles: "  roles:\n    admin: [kazuha@kazuha.org]\n  auditors: [\"group:audit\"]\n"})
+	e.idp.Users["editor"]["groups"] = []string{"audit"}
+	admin, aud := e.browser(), e.browser()
+	admin.login("admin", "")
+	aud.login("editor", "")
+	if _, m := aud.meta(); userOf(t, m)["auditor"] != true || userOf(t, m)["role"] != "viewer" {
+		t.Fatalf("%v", m)
+	}
+	if r := e.newDevice().enrol(admin, "admin key"); r.StatusCode != 201 {
+		t.Fatalf("%d %s", r.StatusCode, r.Body)
+	}
+	file, _ := os.ReadFile(filepath.Join(e.dir, PasskeysPath))
+	pf, err := parsePasskeys(file)
+	if err != nil || len(pf.Users) != 1 {
+		t.Fatalf("%v %s", err, file)
+	}
+	adminKey := pf.Users[0].Credentials[0].ID
+
+	// reading the users list is for admins; an auditor is refused
+	if r := aud.get("/api/admin/users"); r.StatusCode != 403 {
+		t.Fatalf("users list as an auditor: %d", r.StatusCode)
+	}
+	walked := 0
+	seen := map[string]bool{}
+	pats := api.RoutePatterns(e.apiOpts)
+	// the auditor's own logout goes last: it ends the session the others use
+	sort.SliceStable(pats, func(i, j int) bool { return pats[j] == "POST /auth/logout" && pats[i] != pats[j] })
+	for _, pat := range pats {
+		method, path, ok := strings.Cut(pat, " ")
+		if !ok || method == "GET" || !(strings.HasPrefix(path, "/auth/") || strings.HasPrefix(path, "/api/account/") || strings.HasPrefix(path, "/api/admin/")) {
+			continue
+		}
+		class := loginRouteClass[pat]
+		if class == "" {
+			// /api/admin/tokens and friends belong to the API: only the login service's own routes are classed here
+			if strings.HasPrefix(path, "/api/admin/tokens") || path == "/api/admin/accept-remote" || path == "/api/account/preferences" || strings.HasPrefix(path, "/api/account/grants") {
+				continue
+			}
+			t.Errorf("%s is mounted by the login service and is not classified", pat)
+			continue
+		}
+		seen[pat] = true
+		walked++
+		target := strings.ReplaceAll(path, "{id}", adminKey)
+		r := aud.do(method, target, map[string]string{"Sec-Fetch-Site": "same-origin", "Content-Type": "application/json"}, strings.NewReader("{}"))
+		switch class {
+		case "admin":
+			if r.StatusCode != 403 {
+				t.Errorf("%s as an auditor: %d %s", pat, r.StatusCode, r.Body)
+			}
+		case "own":
+			if r.StatusCode != 404 {
+				t.Errorf("%s with somebody else's key: %d %s", pat, r.StatusCode, r.Body)
+			}
+		}
+	}
+	for pat := range loginRouteClass {
+		if !seen[pat] {
+			t.Errorf("%s is classified but is not a route", pat)
+		}
+	}
+	if walked < len(loginRouteClass) {
+		t.Fatalf("walked %d of %d", walked, len(loginRouteClass))
+	}
+	// the admin's key is still there
+	after, _ := os.ReadFile(filepath.Join(e.dir, PasskeysPath))
+	if pf2, err := parsePasskeys(after); err != nil || len(pf2.Users) != 1 || len(pf2.Users[0].Credentials) != 1 || pf2.Users[0].Credentials[0].ID != adminKey {
+		t.Fatalf("an auditor changed somebody's credentials: %v %s", err, after)
 	}
 }

@@ -108,6 +108,7 @@ type env struct {
 	res      *mcpauth.Resource
 	ts       *httptest.Server
 	prefs    *prefs.Store // the console languages people saved
+	apiOpts  api.Options  // what the handler was built from (to list its routes)
 }
 
 func (e *env) config() *config.Config {
@@ -122,6 +123,15 @@ func (e *env) setRoles(spec *roles.Spec) {
 	defer e.cfgMu.Unlock()
 	c := *e.cfg
 	c.Auth.Roles = spec
+	e.cfg = &c
+}
+
+// setAuditors replaces auth.auditors from now on (a config reload).
+func (e *env) setAuditors(list []string) {
+	e.cfgMu.Lock()
+	defer e.cfgMu.Unlock()
+	c := *e.cfg
+	c.Auth.Auditors = list
 	e.cfg = &c
 }
 
@@ -198,13 +208,14 @@ func (e *env) start(ln net.Listener) {
 	authn.SetBearer(e.res)
 	meta := e.res.MetadataHandler()
 	mcpSrv := mcpserver.NewWithOptions(mcpserver.Options{Source: e.store.Ledger, Version: "test", Backend: e.store})
-	h := api.New(api.Options{
+	e.apiOpts = api.Options{
 		Store: e.store, Auth: authn, Web: fstest.MapFS{"index.html": {Data: []byte("<html>")}}, BaseURL: e.base,
 		MCP:    mcpauth.Handler(mcpserver.Handler(mcpSrv, true)),
 		Public: map[string]http.Handler{mcpauth.MetadataPath: meta, mcpauth.MetadataPathMCP: meta},
 		OAuth:  srv,
 		Prefs:  e.prefs,
-	})
+	}
+	h := api.New(e.apiOpts)
 	e.ts = httptest.NewUnstartedServer(h)
 	e.ts.Listener.Close()
 	e.ts.Listener = ln

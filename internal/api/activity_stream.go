@@ -13,9 +13,7 @@ import (
 	"time"
 
 	"github.com/kazuhahub/rackbook/internal/audit"
-	"github.com/kazuhahub/rackbook/internal/auth"
 	"github.com/kazuhahub/rackbook/internal/gitstore"
-	"github.com/kazuhahub/rackbook/internal/roles"
 )
 
 // The activity view merges three streams, each read in its own order and each
@@ -345,13 +343,14 @@ func (s *server) markVerified(items []*activityItem) {
 // activityStreams are the sources the caller's filter reads from, resumed from cur.
 func (s *server) activityStreams(ctx context.Context, r *http.Request, f *activityFilter, cur activityCursor) (map[string]activityStream, error) {
 	out := map[string]activityStream{}
-	admin := auth.Can(ctx, roles.Manage)
+	// state markers follow seeState and the client address follows seeAudit
+	showState, showAddr := s.canSee(r, seeState), s.canSee(r, seeAudit)
 	inRange := func(it *activityItem) bool {
 		return (f.since.IsZero() || !it.at.Before(f.since)) && (f.until.IsZero() || !it.at.After(f.until))
 	}
 	// commits: who made them from the audit log, then the filters
 	finish := func(cs []gitstore.ActivityCommit, area string, src int) []walkEntry {
-		ents := commitItems(area, src, cs, admin)
+		ents := commitItems(area, src, cs, showState)
 		items := make([]*activityItem, len(ents))
 		for i, e := range ents {
 			items[i] = e.item
@@ -405,7 +404,7 @@ func (s *server) activityStreams(ctx context.Context, r *http.Request, f *activi
 			qq := q
 			qq.Before, qq.Limit, qq.MaxScan = before, limit, maxScan
 			pg, err := s.o.Audit.Read(qq)
-			return pg, eventItems(pg.Events, admin), err
+			return pg, eventItems(pg.Events, showAddr), err
 		}}
 	}
 	return out, nil

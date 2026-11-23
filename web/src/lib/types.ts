@@ -56,10 +56,14 @@ export type MetaUser = {
   /** role is editor or higher and the server is not read-only */
   canEdit: boolean
   canAdmin?: boolean
+  /** on auth.auditors: reads the audit areas of Activity and the audit status; a capability next to the role, no write */
+  auditor?: boolean
   /** may see the read-only /infra pages (listed in --infra-admins, signed in with the console login) */
   canInfra?: boolean
   /** may also edit it: the editors are on and the server is not read-only (a recent sign-in is still needed per save) */
   canInfraWrite?: boolean
+  /** listed in --infra-auditors: reads /infra without secrets, edits nothing */
+  infraAuditor?: boolean
   /** the language this person chose (server-side preference); absent = none chosen */
   locale?: string
 }

@@ -284,6 +284,9 @@ func TestServeInfraFlagsAreChecked(t *testing.T) {
 		want string
 	}{
 		"admins without a repo":            {[]string{"--infra-admins", "a@x.org"}, "--infra-admins needs --infra-repo"},
+		"auditors without a repo":          {[]string{"--infra-auditors", "a@x.org"}, "--infra-auditors needs --infra-repo"},
+		"wildcard auditor":                 {append([]string{"--auth", "oidc", "--infra-repo", other, "--infra-admins", "a@x.org", "--infra-auditors", "*@x.org"}, pin...), "--infra-auditors"},
+		"empty auditors":                   {append([]string{"--auth", "oidc", "--infra-repo", other, "--infra-admins", "a@x.org", "--infra-auditors", ""}, pin...), "--infra-auditors names nobody"},
 		"status file without repo":         {[]string{"--hub-status-file", "/run/hub/status.json"}, "--hub-status-file needs --infra-repo"},
 		"repo without oidc":                {[]string{"--infra-repo", other, "--infra-admins", "a@x.org"}, "needs --auth oidc"},
 		"oidc without admins":              {[]string{"--auth", "oidc", "--infra-repo", other}, "names nobody"},
@@ -305,5 +308,26 @@ func TestServeInfraFlagsAreChecked(t *testing.T) {
 		if _, err := run(t, args...); err == nil || !strings.Contains(err.Error(), c.want) {
 			t.Errorf("%s: %v (want %q)", name, err, c.want)
 		}
+	}
+}
+
+func TestCheckValidatesAuthAuditors(t *testing.T) {
+	dir := testutil.CopyExample(t)
+	cfg := filepath.Join(dir, "rackbook.yml")
+	b, _ := os.ReadFile(cfg)
+	write := func(extra string) {
+		t.Helper()
+		if err := os.WriteFile(cfg, append(append([]byte{}, b...), extra...), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("\nauth:\n  auditors: ['group:audit', '*@audit.example.com', 'aud@example.com']\n")
+	if out, err := run(t, "check", "--config", cfg); err != nil || !strings.HasPrefix(out, "ok:") {
+		t.Fatalf("%v %s", err, out)
+	}
+	write("\nauth:\n  auditors: ['a*b']\n")
+	out, err := run(t, "check", "--config", cfg)
+	if err == nil || !strings.Contains(out+err.Error(), "auth.auditors") {
+		t.Fatalf("a bad entry must fail and name the key: %v %s", err, out)
 	}
 }
