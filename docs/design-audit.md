@@ -390,25 +390,40 @@ must not decide who sees infra.
      anchors are left alone (a missing final newline is added before the new line, nothing else is touched).
    - "The head has advanced" ignores the anchor's own `commit` event, which always follows the anchored seq:
      otherwise an idle server would anchor every day for ever. The anchor commit is made by a fixed identity,
-     `rackbook-audit-anchor` (method `system`), so that its `commit` line can be told from a person's; it shows
-     in Activity as an ordinary state-only ledger commit, verified.
-   - It writes nothing while the audit log has a problem nobody has acknowledged: an anchor would vouch for a log
-     that is not intact. (Not in the brief of 3.1; a decision made while building.)
-   - Verification runs at start, after each periodic pull (`gitstore.Options.AfterPull`) and in
-     `rackbook audit verify --repo <clone>`, whether or not the setting is on. It reads the anchor file as it is
-     checked out and, for each anchor still in the kept log, the line at that seq through the log's offset index
-     (at most 512 lines are read per anchor). `anchor_mismatch` (the line differs, or the seq is not in the log)
-     and `anchor_ahead` (the seq is beyond the head) are recorded as `chain_problem` events with the fingerprint of
-     the anchor line and what was found, so one condition is recorded once and an acknowledgement covers only what
-     it saw. Only the first bad anchor of each kind is reported: a second, different bad anchor of the same kind
-     stays hidden behind an acknowledged first one until the first is gone.
-   - "Before the first kept line" means the first line of the oldest month file, and only when `head.json` says
-     retention moved the start; without that, a log that starts after seq 1 is missing lines and an anchor in
-     them is a mismatch, not a skip.
+     `rackbook-audit-anchor` with method `system`, so that its `commit` line can be told from a person's (the
+     check needs both); OIDC and MCP sign-in refuse that identity. It shows in Activity as an ordinary
+     state-only ledger commit, verified.
+   - "Already anchored today" is decided only from the newest anchor that is valid and matched the log
+     (`Log.ReviewAnchors` returns those). A line dated far ahead cannot keep today's anchor away: the writer
+     warns and writes it. It writes nothing while the audit log has a problem nobody has acknowledged, except
+     `anchor_invalid`, which says nothing about the log. (Not in 3.1; a decision made while building.)
+   - Verification runs at start (everything), after each periodic pull (`gitstore.Options.AfterPull`; only anchors
+     not verified before in this process, and the newest) and in `rackbook audit verify --repo <clone>`, whether
+     or not the setting is on. Lines are found through the log's offset index (at most 512 lines read per
+     anchor). Kinds: `anchor_mismatch`, `anchor_ahead`, `anchor_invalid` (a day more than a day in the future,
+     or a day or seq not after the anchor before it), `anchor_rewritten` and `anchor_more`. Each wrong anchor
+     has its own fingerprint (anchor line, kind, what was found), so acknowledging one hides no other; at most 20
+     are recorded per pass, then one `anchor_more` entry.
+   - History. `Store.StateFileHistory` walks `git log --reverse` on `.rackbook/audit-anchors` on the tracked
+     branch (the only addition to the guarded runner is `--reverse` for `log`), and `audit.CheckAppendOnly`
+     checks that each version is the previous one plus appended lines; anything else is `anchor_rewritten`
+     carrying the commit. The last checked commit is kept in memory only (a file in `--state-dir` would be one more
+     thing for somebody with that directory to forge, and a full walk at start is cheap); if it is no longer an
+     ancestor of the tip the walk restarts. `audit verify` does not walk history.
+   - What it does not do: a person with the server's push credentials can still push a forward commit that
+     rewrites the anchor file. The change stays in Git history, visible to anyone with a clone or on the Git
+     host, and Rackbook flags it; it is not prevented.
+   - Retention. An anchor is skipped as older than the kept log only when `--audit-retention-months` is above 0,
+     its day's month is strictly older than the oldest month file present, it is not the newest anchor, and its
+     seq is below the first line kept (and it is not beyond the end of the log, which is checked first).
+     `head.json` is not read for this: an earlier version trusted it, and somebody with the files could forge
+     `first_file` to make anchors go away. `audit verify --retention-months N` takes the server's number; its
+     default of 0 skips nothing.
    - Lines of the anchor file that are not anchors are reported by `audit verify` (and logged once), not as a
      chain problem: they do not fail the exit status.
    - `rackbook audit verify` had no data repository path; `--repo <clone>` is the narrowest addition. It reads the
-     file as checked out (pull first) and refuses a symbolic link.
+     file as checked out (pull first), through `os.OpenRoot`, and refuses a symbolic link as the file or as
+     `.rackbook`.
    - Not done: the anchor is not checked against the remote's tip rather than the checkout, and there is no
      anchor in `/api/audit/status` beyond the problems. The console shows the two kinds in the banner in all three
      languages; no other page changed.

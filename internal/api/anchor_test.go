@@ -98,7 +98,7 @@ func TestAnchorProblemsShowInTheStatusAndTheBanner(t *testing.T) {
 	e.log.Record(audit.Event{Event: "login", Identity: "x"})
 	e.log.Record(audit.Event{Event: "login", Identity: "x"})
 	bad := audit.Anchor{Day: "2026-11-19", Seq: 2, Hash: "sha256:" + strings.Repeat("0", 64), At: "2026-11-19T10:00:00Z"}
-	if _, err := e.log.CheckAnchors(bad.Line()); err != nil {
+	if _, err := e.log.ReviewAnchors(bad.Line(), nil, audit.AnchorOptions{Full: true}); err != nil {
 		t.Fatal(err)
 	}
 	code, st := e.get(t, adminU, "/api/audit/status")

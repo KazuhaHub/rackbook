@@ -116,9 +116,14 @@ With --repo (the server's clone of the data repository, or any current clone of 
 the daily anchors in .rackbook/audit-anchors are checked too: each anchor that is
 still inside the kept log must name the hash of the line at its seq. An anchor that
 does not match, or that is beyond the end of the log, is a problem (anchor_mismatch,
-anchor_ahead). The file is read as it is checked out: pull the clone first. Anchors
-older than the first kept line (retention) are skipped and counted. This works
-whether or not audit.anchor is on. Without --repo the anchors are not checked.`,
+anchor_ahead), and so is an anchor that cannot be one (anchor_invalid: dated after
+tomorrow, or not after the one before it). The file is read as it is checked out: pull
+the clone first. The history of the file is not read here; the server checks that at start
+and after each pull (anchor_rewritten). By default no anchor is skipped. If the server
+runs with --audit-retention-months, pass the same number as --retention-months: only then
+an anchor that is older than the oldest month file kept, is not the newest, and is below
+the first kept line is skipped (and counted). This works whether or not audit.anchor is
+on. Without --repo the anchors are not checked.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			dir, _ := cmd.Flags().GetString("state-dir")
@@ -132,7 +137,11 @@ whether or not audit.anchor is on. Without --repo the anchors are not checked.`,
 				if anchors, err = readAnchorFile(repo); err != nil {
 					return err
 				}
-				rep, err = audit.VerifyWithAnchors(filepath.Join(dir, "audit"), anchors)
+				months, _ := cmd.Flags().GetInt("retention-months")
+				if months < 0 {
+					return errors.New("--retention-months must be 0 (the log keeps everything) or more")
+				}
+				rep, err = audit.VerifyWithAnchors(filepath.Join(dir, "audit"), anchors, audit.AnchorOptions{RetentionMonths: months})
 			} else {
 				rep, err = audit.Verify(filepath.Join(dir, "audit"))
 			}
@@ -161,30 +170,58 @@ whether or not audit.anchor is on. Without --repo the anchors are not checked.`,
 	}
 	verify.Flags().String("state-dir", "", "the server's --state-dir (the log is in its audit directory)")
 	verify.Flags().String("repo", "", "a clone of the data repository: also check the daily anchors in its .rackbook/audit-anchors (as checked out)")
+	verify.Flags().Int("retention-months", 0, "with --repo: the server's --audit-retention-months. 0 (the default) means no anchor is skipped; with more, an anchor may be skipped only when it is older than the oldest month file kept, is not the newest, and its seq is below the first kept line")
 	verify.Flags().Bool("json", false, "print the report as JSON")
 	cmd.AddCommand(verify)
 	return cmd
 }
 
-// readAnchorFile reads .rackbook/audit-anchors of a clone; nil when it has none.
-// A symbolic link is refused: the clone may be somebody else's.
+// readAnchorFile reads .rackbook/audit-anchors of a clone; nil when it has none. The clone may
+// be somebody else's: nothing is followed out of it, and neither .rackbook nor the file may be a
+// symbolic link. The file is opened through os.Root, then checked to be the regular file the
+// directory entry names, so what is read is what was checked.
 func readAnchorFile(repo string) ([]byte, error) {
-	st, err := os.Stat(repo)
+	root, err := os.OpenRoot(repo)
 	if err != nil {
 		return nil, fmt.Errorf("--repo: %w", err)
 	}
-	if !st.IsDir() {
-		return nil, fmt.Errorf("--repo %s is not a directory", repo)
-	}
-	p := filepath.Join(repo, filepath.FromSlash(audit.AnchorsPath))
-	if l, err := os.Lstat(p); err == nil && !l.Mode().IsRegular() {
-		return nil, fmt.Errorf("%s is not a regular file", p)
-	}
-	b, err := os.ReadFile(p)
+	defer root.Close()
+	dirName := strings.SplitN(audit.AnchorsPath, "/", 2)[0]
+	fileName := strings.SplitN(audit.AnchorsPath, "/", 2)[1]
+	st, err := root.Lstat(dirName)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}
-	return b, err
+	if err != nil {
+		return nil, err
+	}
+	if !st.IsDir() {
+		return nil, fmt.Errorf("%s/%s is not a directory (a symbolic link is refused)", repo, dirName)
+	}
+	sub, err := root.OpenRoot(dirName)
+	if err != nil {
+		return nil, err
+	}
+	defer sub.Close()
+	l, err := sub.Lstat(fileName)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if !l.Mode().IsRegular() {
+		return nil, fmt.Errorf("%s/%s is not a regular file (a symbolic link is refused)", repo, audit.AnchorsPath)
+	}
+	f, err := sub.Open(fileName)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	if fi, err := f.Stat(); err != nil || !os.SameFile(fi, l) {
+		return nil, fmt.Errorf("%s changed while it was opened", audit.AnchorsPath)
+	}
+	return io.ReadAll(io.LimitReader(f, 64<<20))
 }
 
 // printAnchors says what the anchors were compared with; malformed lines are a

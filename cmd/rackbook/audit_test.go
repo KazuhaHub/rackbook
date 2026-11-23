@@ -182,7 +182,7 @@ func TestAuditVerifyChecksTheAnchorsOfAClone(t *testing.T) {
 	}
 	// an anchor past the end of the log
 	ahead := good
-	ahead.Seq = seq + 10
+	ahead.Seq, ahead.Day = seq+10, "2026-11-03"
 	out, err = run(t, "audit", "verify", "--state-dir", state, "--repo", anchorRepo(t, good, ahead), "--json")
 	var rep audit.Report
 	if exitCode(err) != 1 || json.Unmarshal([]byte(out), &rep) != nil || rep.OK || len(rep.Problems) != 1 ||
@@ -203,11 +203,54 @@ func TestAuditVerifyChecksTheAnchorsOfAClone(t *testing.T) {
 	if _, err = run(t, "audit", "verify", "--state-dir", state, "--repo", filepath.Join(repo, "nope")); err == nil {
 		t.Fatal("a missing --repo must fail")
 	}
+	// a symbolic link in place of .rackbook, even to a directory inside the clone, is refused too
+	dirLink := anchorRepo(t)
+	if err := os.MkdirAll(filepath.Join(dirLink, "elsewhere"), 0o755); err == nil {
+		_ = os.WriteFile(filepath.Join(dirLink, "elsewhere", "audit-anchors"), good.Line(), 0o644)
+		if err := os.Symlink("elsewhere", filepath.Join(dirLink, ".rackbook")); err == nil {
+			if _, err = run(t, "audit", "verify", "--state-dir", state, "--repo", dirLink); err == nil {
+				t.Fatal("a linked .rackbook directory must be refused")
+			}
+		}
+	}
 	link := anchorRepo(t)
 	_ = os.MkdirAll(filepath.Join(link, ".rackbook"), 0o755)
 	if err := os.Symlink(filepath.Join(repo, ".rackbook", "audit-anchors"), filepath.Join(link, ".rackbook", "audit-anchors")); err == nil {
 		if _, err = run(t, "audit", "verify", "--state-dir", state, "--repo", link); err == nil {
 			t.Fatal("a linked anchor file must be refused")
 		}
+	}
+}
+
+func TestAuditVerifyRetentionMonthsDecidesWhatMaySkip(t *testing.T) {
+	state := t.TempDir()
+	clk := time.Date(2026, 11, 22, 10, 0, 0, 0, time.UTC)
+	l, err := audit.Open(filepath.Join(state, "audit"), audit.Options{Now: func() time.Time { return clk }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var as []audit.Anchor
+	for _, m := range []time.Month{8, 9, 10, 11} {
+		l.Record(audit.Event{Event: "login", Identity: "ann@example.com", Time: time.Date(2026, m, 3, 9, 0, 0, 0, time.UTC)})
+		seq, hash := l.Head()
+		as = append(as, audit.Anchor{Day: time.Date(2026, m, 3, 0, 0, 0, 0, time.UTC).Format("2006-01-02"), Seq: seq, Hash: hash, At: "2026-01-01T00:00:00Z"})
+	}
+	l.Close()
+	if err := os.Remove(filepath.Join(state, "audit", "audit-2026-08.jsonl")); err != nil {
+		t.Fatal(err)
+	}
+	repo := anchorRepo(t, as...)
+	// by default nothing is skipped: the anchor of the August line, which is gone, is a problem
+	out, err := run(t, "audit", "verify", "--state-dir", state, "--repo", repo)
+	if exitCode(err) != 1 || !strings.Contains(out, "anchor_mismatch at seq 1") {
+		t.Fatalf("%v %s", err, out)
+	}
+	// with the retention of the server (a gap in the chain aside) that anchor may be skipped
+	out, _ = run(t, "audit", "verify", "--state-dir", state, "--repo", repo, "--retention-months", "3")
+	if !strings.Contains(out, "anchors: 3 checked, 1 before the first kept line skipped") || strings.Contains(out, "anchor_mismatch") {
+		t.Fatalf("%s", out)
+	}
+	if _, err := run(t, "audit", "verify", "--state-dir", state, "--repo", repo, "--retention-months", "-1"); err == nil {
+		t.Fatal("a negative retention must be refused")
 	}
 }
