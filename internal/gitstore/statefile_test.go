@@ -132,57 +132,181 @@ func roleOf(s string) roles.Role {
 	return roles.Viewer
 }
 
-func TestStateFileHistoryWalksTheCommitsOfOneFileOldestFirst(t *testing.T) {
+const anchorsRel = ".rackbook/audit-anchors"
+
+func appendState(t *testing.T, s *Store, line string) string {
+	t.Helper()
+	if _, err := s.MutateStateFile(context.Background(), anchorsRel, "anchor "+line, nil, appendLine(line)); err != nil {
+		t.Fatal(err)
+	}
+	return sh(t, s.repo.Dir, "rev-parse", "HEAD")
+}
+
+func TestStateFileHistoryAcceptsAppendsAndFindsOtherChanges(t *testing.T) {
 	e := newEnv(t)
 	s := open(t, e.server, nil)
 	ctx := context.Background()
-	const rel = ".rackbook/audit-anchors"
 	var commits []string
 	for _, line := range []string{"a", "b", "c"} {
-		if _, err := s.MutateStateFile(ctx, rel, "anchor "+line, nil, appendLine(line)); err != nil {
-			t.Fatal(err)
-		}
-		commits = append(commits, sh(t, e.server, "rev-parse", "HEAD"))
-		// a commit that does not touch the file is not a version
+		commits = append(commits, appendState(t, s, line))
+		// a commit that does not touch the file is no concern of it
 		if _, err := s.MutateStateFile(ctx, ".rackbook/other.yml", "other "+line, nil, appendLine("x: "+line)); err != nil {
 			t.Fatal(err)
 		}
 	}
-	h, err := s.StateFileHistory(ctx, rel, "")
-	if err != nil || h.Restarted || len(h.Versions) != 3 || h.Base != nil || h.Tip != sh(t, e.server, "rev-parse", "HEAD") {
-		t.Fatalf("%+v %v", h, err)
+	tip := sh(t, e.server, "rev-parse", "HEAD")
+	c, err := s.CheckStateFileHistory(ctx, anchorsRel, "")
+	if err != nil || c.Restarted || len(c.Violations) != 0 || c.Commits != 3 || c.Tip != tip {
+		t.Fatalf("%+v %v", c, err)
 	}
-	for i, v := range h.Versions {
-		if v.Commit != commits[i] || string(v.Content) != strings.Join([]string{"a", "b", "c"}[:i+1], "\n")+"\n" {
-			t.Fatalf("version %d: %+v", i, v)
+	// nothing new since the tip; and from an earlier commit only what came after is looked at
+	if c, err = s.CheckStateFileHistory(ctx, anchorsRel, tip); err != nil || c.Commits != 0 || c.Restarted {
+		t.Fatalf("%+v %v", c, err)
+	}
+	if c, err = s.CheckStateFileHistory(ctx, anchorsRel, commits[0]); err != nil || c.Commits != 2 || len(c.Violations) != 0 {
+		t.Fatalf("%+v %v", c, err)
+	}
+	// a rewrite of the first line by a forward commit
+	sh(t, e.laptop, "pull", "--quiet")
+	if err := os.WriteFile(filepath.Join(e.laptop, anchorsRel), []byte("A\nb\nc\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sh(t, e.laptop, "commit", "-qam", "tidy")
+	sh(t, e.laptop, "push", "--quiet", "origin", "main")
+	bad := sh(t, e.laptop, "rev-parse", "HEAD")
+	if err := s.Pull(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for _, after := range []string{"", tip} {
+		c, err = s.CheckStateFileHistory(ctx, anchorsRel, after)
+		if err != nil || len(c.Violations) != 1 || c.Violations[0].Commit != bad || c.Violations[0].Parent != tip || string(c.Violations[0].Base) != "a\nb\nc\n" {
+			t.Fatalf("after %q: %+v %v", after, c, err)
 		}
 	}
-	// from a commit already checked: only what came after, with the file as it was at that commit
-	h2, err := s.StateFileHistory(ctx, rel, commits[0])
-	if err != nil || len(h2.Versions) != 2 || string(h2.Base) != "a\n" || h2.Versions[0].Commit != commits[1] {
-		t.Fatalf("%+v %v", h2, err)
-	}
-	// nothing new
-	if h3, err := s.StateFileHistory(ctx, rel, h.Tip); err != nil || len(h3.Versions) != 0 || h3.Restarted {
-		t.Fatalf("%+v %v", h3, err)
-	}
-	// a commit that is not an ancestor of the tip (the history was rewritten): from the start again
-	sh(t, e.laptop, "pull", "--quiet")
+	// a commit that is not an ancestor of the tip (the history was rewritten): everything again
 	sh(t, e.laptop, "checkout", "-q", "--orphan", "other")
 	sh(t, e.laptop, "commit", "-q", "--allow-empty", "-m", "elsewhere")
 	foreign := sh(t, e.laptop, "rev-parse", "HEAD")
 	sh(t, e.server, "fetch", "--quiet", e.laptop, "other")
-	h4, err := s.StateFileHistory(ctx, rel, foreign)
-	if err != nil || !h4.Restarted || len(h4.Versions) != 3 {
-		t.Fatalf("%+v %v", h4, err)
+	if c, err = s.CheckStateFileHistory(ctx, anchorsRel, foreign); err != nil || !c.Restarted || c.Commits != 4 || len(c.Violations) != 1 {
+		t.Fatalf("%+v %v", c, err)
 	}
-	// an unusable commit, or a file outside .rackbook/, is refused or restarted, never run as an option
-	if h5, err := s.StateFileHistory(ctx, rel, "--output=/tmp/x"); err != nil || len(h5.Versions) != 3 {
-		t.Fatalf("%+v %v", h5, err)
+	if c, err = s.CheckStateFileHistory(ctx, anchorsRel, "--output=/tmp/x"); err != nil || c.Commits != 4 {
+		t.Fatalf("%+v %v", c, err)
 	}
-	for _, bad := range []string{"rackbook.yml", ".rackbook", "../x", ".rackbook/../rackbook.yml"} {
-		if _, err := s.StateFileHistory(ctx, bad, ""); err == nil {
-			t.Errorf("%q must be refused", bad)
+	for _, p := range []string{"rackbook.yml", ".rackbook", "../x", ".rackbook/../rackbook.yml"} {
+		if _, err := s.CheckStateFileHistory(ctx, p, ""); err == nil {
+			t.Errorf("%q must be refused", p)
 		}
 	}
+	// and a clone that no server owns can be checked the same way
+	cc, err := CheckStateFileInClone(ctx, e.laptop, anchorsRel)
+	if err != nil || len(cc.Violations) != 0 && cc.Commits == 0 {
+		t.Fatalf("%+v %v", cc, err)
+	}
+	if _, err := CheckStateFileInClone(ctx, t.TempDir(), anchorsRel); err == nil {
+		t.Fatal("not a repository")
+	}
+}
+
+// mergeEnv makes a branch that was cut before the anchor file existed (so its file can only be
+// the forged one) and gives the server's main two real anchors.
+func mergeEnv(t *testing.T) (e env, s *Store, forged string) {
+	t.Helper()
+	e = newEnv(t)
+	sh(t, e.laptop, "checkout", "-q", "-b", "forged")
+	if err := os.MkdirAll(filepath.Join(e.laptop, ".rackbook"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(e.laptop, anchorsRel), []byte("FORGED\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sh(t, e.laptop, "add", ".")
+	sh(t, e.laptop, "commit", "-qm", "a branch with its own anchors")
+	forged = sh(t, e.laptop, "rev-parse", "HEAD")
+	s = open(t, e.server, nil)
+	appendState(t, s, "real1")
+	appendState(t, s, "real2")
+	sh(t, e.laptop, "fetch", "--quiet", "origin", "main")
+	return e, s, forged
+}
+
+func TestAMergeThatTakesAForgedAnchorFileIsFoundOnEitherSide(t *testing.T) {
+	ctx := context.Background()
+	t.Run("forged side is the second parent", func(t *testing.T) {
+		e, s, _ := mergeEnv(t)
+		sh(t, e.laptop, "checkout", "-q", "main")
+		sh(t, e.laptop, "merge", "--quiet", "origin/main")
+		sh(t, e.laptop, "merge", "--quiet", "-X", "theirs", "forged", "-m", "merge the branch")
+		if got := sh(t, e.laptop, "show", "HEAD:"+anchorsRel); got != "FORGED" {
+			t.Fatalf("the merge did not take the forged file: %q", got)
+		}
+		merge := sh(t, e.laptop, "rev-parse", "HEAD")
+		sh(t, e.laptop, "push", "--quiet", "origin", "main")
+		if err := s.Pull(ctx); err != nil {
+			t.Fatal(err)
+		}
+		c, err := s.CheckStateFileHistory(ctx, anchorsRel, "")
+		if err != nil || !hasViolation(c, merge) {
+			t.Fatalf("%+v %v", c, err)
+		}
+	})
+	t.Run("forged side is the first parent", func(t *testing.T) {
+		e, s, forged := mergeEnv(t)
+		sh(t, e.laptop, "checkout", "-q", "forged")
+		sh(t, e.laptop, "merge", "--quiet", "-X", "ours", "origin/main", "-m", "merge main into the branch")
+		if got := sh(t, e.laptop, "show", "HEAD:"+anchorsRel); got != "FORGED" {
+			t.Fatalf("the merge did not keep the forged file: %q", got)
+		}
+		if p := sh(t, e.laptop, "rev-parse", "HEAD^1"); p != forged {
+			t.Fatalf("first parent %s", p)
+		}
+		merge := sh(t, e.laptop, "rev-parse", "HEAD")
+		sh(t, e.laptop, "push", "--quiet", "origin", "HEAD:main")
+		if err := s.Pull(ctx); err != nil {
+			t.Fatal(err)
+		}
+		c, err := s.CheckStateFileHistory(ctx, anchorsRel, "")
+		if err != nil || !hasViolation(c, merge) {
+			t.Fatalf("%+v %v", c, err)
+		}
+		// the incremental check from the tip before the merge sees it as well
+		c, err = s.CheckStateFileHistory(ctx, anchorsRel, sh(t, e.server, "rev-parse", "HEAD^2"))
+		if err != nil || !hasViolation(c, merge) {
+			t.Fatalf("incremental: %+v %v", c, err)
+		}
+	})
+	t.Run("a harmless merge passes", func(t *testing.T) {
+		e := newEnv(t)
+		sh(t, e.laptop, "checkout", "-q", "-b", "side")
+		if err := os.WriteFile(filepath.Join(e.laptop, "notes.txt"), []byte("hi\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		sh(t, e.laptop, "add", ".")
+		sh(t, e.laptop, "commit", "-qm", "notes")
+		s := open(t, e.server, nil)
+		appendState(t, s, "real1")
+		appendState(t, s, "real2")
+		sh(t, e.laptop, "fetch", "--quiet", "origin", "main")
+		sh(t, e.laptop, "checkout", "-q", "main")
+		sh(t, e.laptop, "merge", "--quiet", "origin/main")
+		sh(t, e.laptop, "merge", "--quiet", "--no-ff", "side", "-m", "merge notes")
+		sh(t, e.laptop, "push", "--quiet", "origin", "main")
+		if err := s.Pull(ctx); err != nil {
+			t.Fatal(err)
+		}
+		c, err := s.CheckStateFileHistory(ctx, anchorsRel, "")
+		if err != nil || len(c.Violations) != 0 || c.Commits < 2 {
+			t.Fatalf("%+v %v", c, err)
+		}
+	})
+}
+
+func hasViolation(c *StateCheck, commit string) bool {
+	for _, v := range c.Violations {
+		if v.Commit == commit {
+			return true
+		}
+	}
+	return false
 }

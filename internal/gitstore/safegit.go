@@ -80,7 +80,7 @@ var allowedOptions = map[string][]string{
 	"commit":     {"--quiet", "--no-verify", "-F", "-", "--only", "--"},
 	"fetch":      {"--quiet"},
 	"ls-tree":    {"-z", "--"},
-	"log":        {"-n", "--format=*", "--fixed-strings", "--grep=*", "--skip=*", "--name-only", "--date-order", "--reverse", "--"},
+	"log":        {"-n", "--format=*", "--fixed-strings", "--grep=*", "--skip=*", "--name-only", "--date-order", "--full-history", "--"},
 	"merge":      {"--quiet", "--ff-only"},
 	"merge-base": {"--is-ancestor"},
 	"push":       {},
@@ -119,9 +119,9 @@ func refuseDestructive(args []string) error {
 		if len(rest) != 2 || rest[0] != "get-url" || rest[1] != "origin" {
 			return fmt.Errorf("%w: remote %s", errDestructive, strings.Join(rest, " "))
 		}
-	case "cat-file": // read only: one blob, by its object id, never an option or a name
-		if len(rest) != 2 || rest[0] != "blob" || !blobIDRe.MatchString(rest[1]) {
-			return fmt.Errorf("%w: cat-file %s (only \"cat-file blob <object id>\")", errDestructive, strings.Join(rest, " "))
+	case "cat-file": // read only: one blob by its object id, or "--batch" with the names on stdin; no other option
+		if !(len(rest) == 1 && rest[0] == "--batch") && (len(rest) != 2 || rest[0] != "blob" || !blobIDRe.MatchString(rest[1])) {
+			return fmt.Errorf("%w: cat-file %s (only \"cat-file blob <object id>\" and \"cat-file --batch\")", errDestructive, strings.Join(rest, " "))
 		}
 	case "ls-tree": // read only: "-z <commit> -- <up to 4 plain paths>"
 		if len(rest) < 4 || len(rest) > 7 || rest[0] != "-z" || !fullRevRe.MatchString(rest[1]) || rest[2] != "--" {

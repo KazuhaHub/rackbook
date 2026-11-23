@@ -239,6 +239,11 @@ func TestRuntimeGuardRefusesDestructiveCommands(t *testing.T) {
 		{"log", "--max-count=5"},
 		{"log", "--name-status"},
 		{"log", "--stat"},
+		{"log", "--reverse"},
+		{"log", "--first-parent"},
+		{"log", "--simplify-merges"},
+		{"log", "--full-history=x"},
+		{"log", "--full-history", "--output=/tmp/x"},
 		{"log", "--date=iso"},
 		{"log", "--author=x"},
 		{"log", "--all"},
@@ -252,7 +257,11 @@ func TestRuntimeGuardRefusesDestructiveCommands(t *testing.T) {
 		{"log", "-n", "1", "--textconv"},
 		// cat-file reads one blob, and only that (a record at a commit)
 		{"cat-file", "-p", "HEAD:rackbook.yml"},
-		{"cat-file", "--batch"},
+		{"cat-file", "--batch-check"},
+		{"cat-file", "--batch=%(rest)"},
+		{"cat-file", "--batch-command"},
+		{"cat-file", "--batch", "--buffer"},
+		{"cat-file", "--batch", "HEAD:a.yml"},
 		{"cat-file", "--batch-all-objects"},
 		{"cat-file", "--textconv", "HEAD:a.yml"},
 		{"cat-file", "--filters", "HEAD:a.yml"},
@@ -299,7 +308,8 @@ func TestRuntimeGuardRefusesDestructiveCommands(t *testing.T) {
 		{"log", "--date-order", "--skip=10", "-n", "5", "--name-only", "--format=%H", "HEAD", "--", ".", ":(exclude).rackbook"},
 		{"diff-tree", "--patch", "--no-ext-diff", "--no-color", "--no-commit-id", "-r", "--root", "--no-renames", "abc1234", "--", ":(top,literal)a.yml"},
 		{"cat-file", "blob", "0123456789abcdef0123456789abcdef01234567"}, {"ls-tree", "-z", "0123456789abcdef0123456789abcdef01234567", "--", "rackbook.yml", "data/a.yml"},
-		{"log", "--format=%H", "--reverse", "0123456789abcdef0123456789abcdef01234567", "^0123456789abcdef0123456789abcdef01234568", "--", ".rackbook/audit-anchors"},
+		{"log", "--full-history", "--format=%H %P", "0123456789abcdef0123456789abcdef01234567", "^0123456789abcdef0123456789abcdef01234568", "--", ".rackbook/audit-anchors"},
+		{"cat-file", "--batch"},
 		{"log", "--format=%H", "--date-order", "--skip=1", "-n", "5", "0123456789abcdef0123456789abcdef01234567", "^0123456789abcdef0123456789abcdef01234568", "--", "data/a.yml"}} {
 		if err := refuseDestructive(args); err != nil {
 			t.Errorf("%v refused: %v", args, err)

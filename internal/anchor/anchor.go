@@ -42,7 +42,7 @@ type Files interface {
 	Config() *config.Config
 	GitEnabled() bool
 	StateFile(rel string) ([]byte, bool, error)
-	StateFileHistory(ctx context.Context, rel, after string) (*gitstore.StateHistory, error)
+	CheckStateFileHistory(ctx context.Context, rel, after string) (*gitstore.StateCheck, error)
 	MutateStateFile(ctx context.Context, rel, subject string, who *auth.Identity, mutate func(old []byte, exists bool) ([]byte, error), options ...gitstore.StateOption) (*gitstore.StateResult, error)
 }
 
@@ -99,8 +99,8 @@ func (a *Anchorer) clearWarning(key string) {
 
 // Verify checks the anchors against the audit log, and has a problem that is not in the chain yet
 // written into it. It reads the anchor file at the tip of the data repository, and walks the
-// commits that changed it to see that every version is the one before with lines appended
-// (anchor_rewritten otherwise). full checks every anchor and the whole history: at the start. After
+// commits that touch it, on every side of every merge, to see that each is its parent's file with lines
+// appended (anchor_rewritten otherwise). full checks every anchor and the whole history: at the start. After
 // a pull only the anchors not verified before in this process, and the newest, are looked up, and
 // the history is walked from the commit it was last checked up to (from the start again when that
 // commit is no longer an ancestor of the tip). It does not depend on audit.anchor: an anchor file
@@ -117,15 +117,17 @@ func (a *Anchorer) Verify(full bool) {
 	if full {
 		after = ""
 	}
-	if h, err := a.Store.StateFileHistory(context.Background(), audit.AnchorsPath, after); err != nil {
-		a.log().Warn("audit anchors: could not read the history of the anchor file", "err", err)
+	if h, err := a.Store.CheckStateFileHistory(context.Background(), audit.AnchorsPath, after); err != nil {
+		a.log().Warn("audit anchors: could not check the history of the anchor file", "err", err)
 	} else {
 		tip = h.Tip
-		vs := make([]audit.FileVersion, len(h.Versions))
-		for i, v := range h.Versions {
-			vs[i] = audit.FileVersion{Commit: v.Commit, Content: v.Content}
+		seen := map[string]bool{}
+		for _, v := range h.Violations {
+			if !seen[v.Commit] { // one problem per commit, however many of its parents differ
+				seen[v.Commit] = true
+				extra = append(extra, audit.RewrittenAnchor(v.Commit, v.Base, v.Content))
+			}
 		}
-		extra = audit.CheckAppendOnly(h.Base, vs)
 	}
 	b, _, err := a.Store.StateFile(audit.AnchorsPath)
 	if err != nil {
