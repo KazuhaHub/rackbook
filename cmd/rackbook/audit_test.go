@@ -131,3 +131,83 @@ func TestAuditFlagsWarnWithoutStateDir(t *testing.T) {
 		t.Fatalf("%s", buf.String())
 	}
 }
+
+func anchorRepo(t *testing.T, lines ...audit.Anchor) string {
+	t.Helper()
+	repo := t.TempDir()
+	if len(lines) > 0 {
+		var b []byte
+		for _, a := range lines {
+			b = append(b, a.Line()...)
+		}
+		if err := os.MkdirAll(filepath.Join(repo, ".rackbook"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(repo, ".rackbook", "audit-anchors"), b, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return repo
+}
+
+func TestAuditVerifyChecksTheAnchorsOfAClone(t *testing.T) {
+	state, _ := auditState(t, 5)
+	l, err := audit.Open(filepath.Join(state, "audit"), audit.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	seq, hash := l.Head()
+	l.Close()
+	good := audit.Anchor{Day: "2026-11-02", Seq: seq, Hash: hash, At: "2026-11-02T03:00:00Z"}
+
+	out, err := run(t, "audit", "verify", "--state-dir", state, "--repo", anchorRepo(t, good))
+	if exitCode(err) != 0 || !strings.Contains(out, "ok: 5 lines") || !strings.Contains(out, "anchors: 1 checked") {
+		t.Fatalf("%v %s", err, out)
+	}
+	// without --repo the anchors are not looked at, and nothing is said about them
+	if out, err = run(t, "audit", "verify", "--state-dir", state); exitCode(err) != 0 || strings.Contains(out, "anchors") {
+		t.Fatalf("%v %s", err, out)
+	}
+	// a clone with no anchor file has nothing to check
+	if out, err = run(t, "audit", "verify", "--state-dir", state, "--repo", anchorRepo(t)); exitCode(err) != 0 || !strings.Contains(out, "anchors: 0 checked") {
+		t.Fatalf("%v %s", err, out)
+	}
+
+	// an anchor whose hash is not the line's: exit 1, with the day and seq
+	bad := good
+	bad.Seq, bad.Hash = 3, good.Hash
+	out, err = run(t, "audit", "verify", "--state-dir", state, "--repo", anchorRepo(t, bad))
+	if exitCode(err) != 1 || !strings.Contains(out, "anchor_mismatch at seq 3") || !strings.Contains(out, "2026-11-02") {
+		t.Fatalf("%v %s", err, out)
+	}
+	// an anchor past the end of the log
+	ahead := good
+	ahead.Seq = seq + 10
+	out, err = run(t, "audit", "verify", "--state-dir", state, "--repo", anchorRepo(t, good, ahead), "--json")
+	var rep audit.Report
+	if exitCode(err) != 1 || json.Unmarshal([]byte(out), &rep) != nil || rep.OK || len(rep.Problems) != 1 ||
+		rep.Problems[0].Kind != audit.KindAnchorAhead || rep.Anchors == nil || rep.Anchors.Checked != 2 {
+		t.Fatalf("%v %s", err, out)
+	}
+	// unknown lines are reported, and are not a failure
+	repo := anchorRepo(t, good)
+	f, _ := os.OpenFile(filepath.Join(repo, ".rackbook", "audit-anchors"), os.O_APPEND|os.O_WRONLY, 0)
+	f.WriteString("{\"future\":1}\n")
+	f.Close()
+	out, err = run(t, "audit", "verify", "--state-dir", state, "--repo", repo)
+	if exitCode(err) != 0 || !strings.Contains(out, "lines [2] of .rackbook/audit-anchors are not anchors") {
+		t.Fatalf("%v %s", err, out)
+	}
+	// the log is never changed by looking
+	// a --repo that is not a directory, or an anchor file that is a link, is an error
+	if _, err = run(t, "audit", "verify", "--state-dir", state, "--repo", filepath.Join(repo, "nope")); err == nil {
+		t.Fatal("a missing --repo must fail")
+	}
+	link := anchorRepo(t)
+	_ = os.MkdirAll(filepath.Join(link, ".rackbook"), 0o755)
+	if err := os.Symlink(filepath.Join(repo, ".rackbook", "audit-anchors"), filepath.Join(link, ".rackbook", "audit-anchors")); err == nil {
+		if _, err = run(t, "audit", "verify", "--state-dir", state, "--repo", link); err == nil {
+			t.Fatal("a linked anchor file must be refused")
+		}
+	}
+}

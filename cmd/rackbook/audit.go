@@ -110,14 +110,32 @@ Exit status 1: anything else, with the first broken seq.
 A problem the server wrote down at start and an administrator acknowledged on the
 Activity page is still listed, marked "acknowledged at seq N", and still counts:
 acknowledging stops it from blocking retention and from showing as a banner, it does
-not make the chain intact.`,
+not make the chain intact.
+
+With --repo (the server's clone of the data repository, or any current clone of it)
+the daily anchors in .rackbook/audit-anchors are checked too: each anchor that is
+still inside the kept log must name the hash of the line at its seq. An anchor that
+does not match, or that is beyond the end of the log, is a problem (anchor_mismatch,
+anchor_ahead). The file is read as it is checked out: pull the clone first. Anchors
+older than the first kept line (retention) are skipped and counted. This works
+whether or not audit.anchor is on. Without --repo the anchors are not checked.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			dir, _ := cmd.Flags().GetString("state-dir")
 			if dir == "" {
 				return errors.New("--state-dir is required")
 			}
-			rep, err := audit.Verify(filepath.Join(dir, "audit"))
+			var rep audit.Report
+			var err error
+			if repo, _ := cmd.Flags().GetString("repo"); repo != "" {
+				var anchors []byte
+				if anchors, err = readAnchorFile(repo); err != nil {
+					return err
+				}
+				rep, err = audit.VerifyWithAnchors(filepath.Join(dir, "audit"), anchors)
+			} else {
+				rep, err = audit.Verify(filepath.Join(dir, "audit"))
+			}
 			if err != nil {
 				return err
 			}
@@ -142,12 +160,51 @@ not make the chain intact.`,
 		},
 	}
 	verify.Flags().String("state-dir", "", "the server's --state-dir (the log is in its audit directory)")
+	verify.Flags().String("repo", "", "a clone of the data repository: also check the daily anchors in its .rackbook/audit-anchors (as checked out)")
 	verify.Flags().Bool("json", false, "print the report as JSON")
 	cmd.AddCommand(verify)
 	return cmd
 }
 
+// readAnchorFile reads .rackbook/audit-anchors of a clone; nil when it has none.
+// A symbolic link is refused: the clone may be somebody else's.
+func readAnchorFile(repo string) ([]byte, error) {
+	st, err := os.Stat(repo)
+	if err != nil {
+		return nil, fmt.Errorf("--repo: %w", err)
+	}
+	if !st.IsDir() {
+		return nil, fmt.Errorf("--repo %s is not a directory", repo)
+	}
+	p := filepath.Join(repo, filepath.FromSlash(audit.AnchorsPath))
+	if l, err := os.Lstat(p); err == nil && !l.Mode().IsRegular() {
+		return nil, fmt.Errorf("%s is not a regular file", p)
+	}
+	b, err := os.ReadFile(p)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	return b, err
+}
+
+// printAnchors says what the anchors were compared with; malformed lines are a
+// warning (nothing about the chain is wrong), not a failure.
+func printAnchors(out io.Writer, a *audit.AnchorSummary) {
+	if a == nil {
+		return
+	}
+	fmt.Fprintf(out, "anchors: %d checked", a.Checked)
+	if a.Skipped > 0 {
+		fmt.Fprintf(out, ", %d before the first kept line skipped", a.Skipped)
+	}
+	fmt.Fprintln(out)
+	if len(a.Malformed) > 0 {
+		fmt.Fprintf(out, "warning: lines %v of .rackbook/audit-anchors are not anchors (left as they are)\n", a.Malformed)
+	}
+}
+
 func printReport(out io.Writer, rep audit.Report) {
+	defer printAnchors(out, rep.Anchors)
 	if rep.OK {
 		fmt.Fprintf(out, "ok: %d lines in %d files, the chain is intact\n", rep.Lines, rep.Files)
 		return
