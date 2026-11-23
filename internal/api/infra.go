@@ -22,9 +22,14 @@ import (
 //
 //	read    infraReader: infra administrators and infra auditors
 //	secret  infraAdmin: the secrets (list of keys, reveal, edit, re-encrypt) and
-//	        the raw host_vars file (the host page shows it with secret-looking
-//	        values hidden; the editor's copy is not redacted)
+//	        the raw host_vars file of the editor (defence in depth: it sends no
+//	        content when the hide scan finds anything, but it is edit support)
 //	write   infraAdmin: edits, groups, reverts, with a recent sign-in
+//
+// The boundary for plaintext in host_vars is the hide scan: a secret the scan
+// does not recognise reaches an infra auditor through GET /api/infra/hosts/{name}
+// (HostDetail.Vars) and through infra commit diffs, exactly as it reaches infra
+// administrators.
 
 // InfraOptions turns the infra pages on.
 type InfraOptions struct {

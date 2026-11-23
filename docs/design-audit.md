@@ -357,11 +357,15 @@ must not decide who sees infra.
      test until it is classified): *read* (`infraReader`: hosts, host, certs, iplists, commits, groups, features, write
      state), *secret* and *write* (`infraAdmin`).
    - The API routes are registered through `routeMux`, which records the patterns; `api.RoutePatterns` (a test hook) lists
-     them, so the write-route test and the infra table walk the mux itself. OAuth and login routes are mounted by their own
-     packages and are not in that list.
+     them, so the write-route test and the infra table walk the mux itself. The login service and the built-in
+     authorization server register through the same `routes.Mux` interface, so their routes are in the list too; their
+     own packages walk them (`TestAuditorCannotTouchAnotherPersonsPasskeyOnAnyLoginRoute`,
+     `TestAuditorCannotRevokeAnotherPersonsGrantOnAnyRoute`): the admin routes are 403 for an auditor, the routes on one's
+     own passkey or grant are 404 for somebody else's, and a new route fails until it is classified.
    - Deviations from the brief: (1) `GET /api/infra/hosts/{name}/vars` is in the secret class, not read. It is the raw
-     file for the editor and, unlike the host page, is not redacted: a value the scan does not recognise would reach an
-     auditor. (2) `--infra-auditors` grants nothing in the ledger: an infra auditor needs a ledger role (or a place on
+     file for the editor; it sends no content when the hide scan finds anything, so this is defence in depth. The real
+     boundary is that scan: a plaintext secret in host_vars that it does not recognise reaches an infra auditor through
+     `GET /api/infra/hosts/{name}` (`HostDetail.Vars`) and through infra commit diffs, exactly as it reaches infra admins. (2) `--infra-auditors` grants nothing in the ledger: an infra auditor needs a ledger role (or a place on
      `auth.auditors`) of their own to sign in at all. (3) The only write an auditor can make is `PUT /api/account/preferences` (their own
      language, a state file, not the ledger), so the "never 200 on a write route" test exempts it by name. (4) The Groups
      tab stays an edit page; infra auditors see group membership on the host pages and through `GET /api/infra/groups`,

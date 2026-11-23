@@ -9,7 +9,7 @@ const messages = {
   // login, the account page and the users page
   auth: {
     role: { admin: 'Admin', editor: 'Editor', viewer: 'Viewer', none: 'No access' } as Record<string, string>,
-    auditor: { label: 'Auditor', hint: 'Auditor is a capability apart from the role, granted by auth.auditors in rackbook.yml. It lets you see and export the audit areas of Activity and the audit log status. It does not let you reveal secrets or change anything, and Restore is shown only if your role is also editor or higher. Admins are not auditors automatically.', users: 'Auditors are set in auth.auditors, separately from roles.' },
+    auditor: { label: 'Auditor', hint: 'Auditor is a capability apart from the role, granted by auth.auditors in rackbook.yml. It lets you see and export the audit areas of Activity and the audit log status. It does not let you reveal secrets or change anything, and Restore is shown only if your role is also editor or higher. Admins are not auditors automatically.', users: 'Auditors are set in auth.auditors, separately from roles. A group entry is matched against the groups of the person’s last sign-in since the server started; someone not seen since then matches only by name.' },
     method: {
       oidc: 'Single sign-on (OIDC)',
       passkey: 'Passkey',

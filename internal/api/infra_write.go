@@ -158,9 +158,10 @@ func (s *server) infraFeatures(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"features": specs, "invalid": nz(invalid)})
 }
 
-// infraHostVars is the raw host_vars file for the editor. The host page shows
-// the same file with secret-looking values hidden; this one does not, so it is
-// in the secret class: infra administrators only.
+// infraHostVars is the raw host_vars file for the editor. fileState sends no
+// content when the hide scan finds anything, so it is not less redacted than the
+// host page; it stays in the secret class (infra administrators only) as defence
+// in depth, because it is edit support.
 func (s *server) infraHostVars(w http.ResponseWriter, r *http.Request) {
 	if !s.infraAdmin(w, r) {
 		return

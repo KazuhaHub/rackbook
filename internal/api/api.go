@@ -34,6 +34,7 @@ import (
 	"github.com/kazuhahub/rackbook/internal/modules"
 	"github.com/kazuhahub/rackbook/internal/prefs"
 	"github.com/kazuhahub/rackbook/internal/roles"
+	"github.com/kazuhahub/rackbook/internal/routes"
 	"github.com/kazuhahub/rackbook/internal/tokens"
 	"github.com/kazuhahub/rackbook/internal/validate"
 )
@@ -51,7 +52,7 @@ type Options struct {
 	// Login mounts the /auth endpoints and the account and user APIs (oidc
 	// mode). It receives the console handler, which serves the login page.
 	Login interface {
-		Mount(mux *http.ServeMux, static http.Handler)
+		Mount(mux routes.Mux, static http.Handler)
 	}
 	// RestrictHost limits accepted Host headers to loopback names and the host
 	// of BaseURL (DNS-rebinding protection for --auth none).
@@ -85,7 +86,7 @@ type Options struct {
 // OAuthServer is the built-in authorization server (internal/oauthserver).
 type OAuthServer interface {
 	Public() map[string]http.Handler
-	Mount(mux *http.ServeMux)
+	Mount(mux routes.Mux)
 }
 
 type server struct {
@@ -121,6 +122,12 @@ func New(o Options) http.Handler {
 	h, _ := build(o)
 	return h
 }
+
+// RoutePatterns lists the patterns registered for o, as given to the mux
+// ("GET /api/meta"): the API's own routes and those mounted by o.Login and
+// o.OAuth. It exists so that tests can walk every route; the MCP and static
+// catch-alls are included. It builds a handler and discards it.
+func RoutePatterns(o Options) []string { _, p := build(o); return p }
 
 // build makes the handler and lists the route patterns it registered.
 func build(o Options) (http.Handler, []string) {
@@ -175,7 +182,7 @@ func build(o Options) (http.Handler, []string) {
 		public[p] = h
 	}
 	if o.OAuth != nil {
-		o.OAuth.Mount(mux.ServeMux)
+		o.OAuth.Mount(mux)
 		for p, h := range o.OAuth.Public() {
 			public[p] = h
 		}
@@ -194,7 +201,7 @@ func build(o Options) (http.Handler, []string) {
 	}
 	mux.HandleFunc("/", s.static)
 	if o.Login != nil {
-		o.Login.Mount(mux.ServeMux, http.HandlerFunc(s.static))
+		o.Login.Mount(mux, http.HandlerFunc(s.static))
 	}
 
 	authed := s.o.Auth.Middleware(mux)

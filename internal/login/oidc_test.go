@@ -796,6 +796,22 @@ func TestAuditorByGroupSignsInWithTheViewerFloor(t *testing.T) {
 	if _, m := ba.meta(); userOf(t, m)["role"] != "admin" || userOf(t, m)["auditor"] != nil {
 		t.Fatalf("%v", m)
 	}
+	// the Users page evaluates group entries with the groups of the last sign-in
+	var users struct {
+		Users []struct {
+			ID      string `json:"id"`
+			Role    string `json:"role"`
+			Auditor bool   `json:"auditor"`
+		}
+	}
+	if err := json.Unmarshal([]byte(ba.get("/api/admin/users").Body), &users); err != nil {
+		t.Fatal(err)
+	}
+	for _, u := range users.Users {
+		if want := u.ID == "ed@kazuha.org"; u.Auditor != want || (want && u.Role != "viewer") {
+			t.Errorf("users list: %+v", u)
+		}
+	}
 	// removing the entry takes the capability and the floor away
 	e.rewriteRoles("  roles:\n    admin: [kazuha@kazuha.org]\n")
 	if r := b.get("/api/meta"); r.StatusCode != 403 || !strings.Contains(r.Body, "no_role") {

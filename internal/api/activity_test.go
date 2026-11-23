@@ -24,6 +24,7 @@ import (
 	"github.com/kazuhahub/rackbook/internal/auth"
 	"github.com/kazuhahub/rackbook/internal/gitstore"
 	"github.com/kazuhahub/rackbook/internal/testutil"
+	"github.com/kazuhahub/rackbook/internal/tokens"
 )
 
 const (
@@ -143,6 +144,7 @@ func newActEnv(t *testing.T, o actOpts) *actEnv {
 		op.Auth, op.ReadOnly = a, o.readOnly
 		op.Infra = &api.InfraOptions{Repo: repo, Admins: ia, Auditors: iau}
 		op.Audit = e.log
+		op.Tokens = &tokens.Registry{Store: op.Store}
 		e.opts = *op
 	}, server, func(so *gitstore.Options) {
 		if o.runner != nil {

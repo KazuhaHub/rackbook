@@ -34,6 +34,7 @@ import (
 	"github.com/kazuhahub/rackbook/internal/modules"
 	"github.com/kazuhahub/rackbook/internal/oauthserver"
 	"github.com/kazuhahub/rackbook/internal/prefs"
+	"github.com/kazuhahub/rackbook/internal/routes"
 	"github.com/kazuhahub/rackbook/internal/sops"
 	"github.com/kazuhahub/rackbook/internal/tokens"
 	"github.com/kazuhahub/rackbook/web"
@@ -231,7 +232,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 	var loginMount interface {
-		Mount(mux *http.ServeMux, static http.Handler)
+		Mount(mux routes.Mux, static http.Handler)
 	}
 	if loginSvc != nil {
 		loginMount = loginSvc

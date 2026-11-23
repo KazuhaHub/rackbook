@@ -31,6 +31,7 @@ import (
 	"github.com/kazuhahub/rackbook/internal/locale"
 	"github.com/kazuhahub/rackbook/internal/prefs"
 	"github.com/kazuhahub/rackbook/internal/roles"
+	"github.com/kazuhahub/rackbook/internal/routes"
 )
 
 // StateFiles is where passkey credentials are read and committed. The Git
@@ -193,7 +194,7 @@ func (s *Service) provider() (*authoidc.Provider, error) {
 
 // Mount registers the /auth endpoints and the account and user APIs. static
 // serves the console's index.html (the login page is part of the console).
-func (s *Service) Mount(mux *http.ServeMux, static http.Handler) {
+func (s *Service) Mount(mux routes.Mux, static http.Handler) {
 	mux.HandleFunc("GET /auth/login", func(w http.ResponseWriter, r *http.Request) { s.loginPage(w, r, static) })
 	mux.HandleFunc("GET /auth/config", s.publicConfig)
 	mux.HandleFunc("GET /auth/oidc/start", s.oidcStart)
@@ -291,7 +292,7 @@ func (s *Service) Identify(w http.ResponseWriter, r *http.Request) (*auth.Identi
 		sess.Seen = now.Unix()
 		s.setSession(w, sess)
 	}
-	s.users.touch(sess.ID, sess.Name, sess.Method, now)
+	s.users.touch(sess.ID, sess.Name, sess.Method, sess.Groups, now)
 	return identityOf(sess), nil
 }
 
@@ -334,7 +335,7 @@ func (s *Service) issue(w http.ResponseWriter, id *auth.Identity, method, cred s
 		}
 	}
 	s.setSession(w, sess)
-	s.users.touch(id.ID, id.Name, method, s.now())
+	s.users.touch(id.ID, id.Name, method, id.Groups, s.now())
 }
 
 // isAPI tells API-style requests (answered with JSON) from console pages

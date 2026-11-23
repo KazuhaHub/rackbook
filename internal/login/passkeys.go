@@ -550,6 +550,7 @@ type userOut struct {
 	FirstSeen *time.Time   `json:"firstSeen,omitempty"`
 	LastSeen  *time.Time   `json:"lastSeen,omitempty"`
 	Passkeys  []passkeyOut `json:"passkeys"`
+	groups    []string     // the last groups seen (memory only), for group: entries
 }
 
 func (s *Service) adminUsers(w http.ResponseWriter, r *http.Request) {
@@ -561,7 +562,7 @@ func (s *Service) adminUsers(w http.ResponseWriter, r *http.Request) {
 	var order []string
 	for _, u := range s.users.list() {
 		u := u
-		byID[u.ID] = &userOut{ID: u.ID, Name: u.Name, Method: u.Method, Seen: true, FirstSeen: &u.FirstSeen, LastSeen: &u.LastSeen, Passkeys: []passkeyOut{}}
+		byID[u.ID] = &userOut{ID: u.ID, Name: u.Name, Method: u.Method, Seen: true, FirstSeen: &u.FirstSeen, LastSeen: &u.LastSeen, Passkeys: []passkeyOut{}, groups: u.Groups}
 		order = append(order, u.ID)
 	}
 	resp := map[string]any{"passkeysEnabled": s.pk != nil}
@@ -586,7 +587,7 @@ func (s *Service) adminUsers(w http.ResponseWriter, r *http.Request) {
 	users := make([]userOut, 0, len(order))
 	for _, id := range order {
 		e := byID[id]
-		who := &auth.Identity{ID: e.ID, Method: auth.MethodOIDC, Email: emailOf(e.ID)}
+		who := &auth.Identity{ID: e.ID, Method: auth.MethodOIDC, Email: emailOf(e.ID), Groups: e.groups}
 		e.Role, e.Auditor = s.roleOf(who).String(), s.auditorOf(who)
 		users = append(users, *e)
 	}

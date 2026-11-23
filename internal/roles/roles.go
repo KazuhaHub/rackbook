@@ -278,7 +278,7 @@ func (e entry) matches(s Subject, opt Options) bool {
 	return false
 }
 
-// Policy is a compiled auth.roles block. It is immutable and safe for
+// Policy is a compiled auth.roles block and auth.auditors list. It is immutable and safe for
 // concurrent use.
 type Policy struct {
 	opt                 Options
@@ -332,7 +332,7 @@ func CompileAuditors(spec *Spec, auditors []string, opt Options, legacyEditors .
 // Explicit reports whether the policy has a roles block.
 func (p *Policy) Explicit() bool { return p.explicit }
 
-// Evaluate returns the highest role s has. s.ID must already be lowercased.
+// Evaluate returns the highest role s has. It folds s.ID itself (ASCII only).
 func (p *Policy) Evaluate(s Subject) Role {
 	s.ID = FoldASCII(s.ID)
 	for _, c := range []struct {
@@ -357,7 +357,7 @@ func (p *Policy) Evaluate(s Subject) Role {
 // IsAuditor reports whether s is on the auth.auditors list. The auditor
 // capability is separate from the role scale: it does not depend on, and does
 // not change, the role Evaluate returns. An admin is an auditor only when the
-// list names them. s.ID must already be lowercased.
+// list names them. Like Evaluate it folds s.ID itself (ASCII only).
 func (p *Policy) IsAuditor(s Subject) bool {
 	s.ID = FoldASCII(s.ID)
 	for _, e := range p.auditors {

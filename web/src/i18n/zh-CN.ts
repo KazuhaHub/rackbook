@@ -4,7 +4,7 @@ const messages = {
   // login, the account page and the users page
   auth: {
     role: { admin: '管理员', editor: '编辑', viewer: '只读', none: '无权限' } as Record<string, string>,
-    auditor: { label: '审计员', hint: '审计员是独立于角色的能力，由 rackbook.yml 的 auth.auditors 授予：可以查看并导出「活动」里的审计区域和审计日志状态，但不能显示密钥，也不能修改任何内容；只有角色同时是编辑或以上才能还原版本。管理员不会自动成为审计员。', users: '审计员在 auth.auditors 里设置，和角色分开。' },
+    auditor: { label: '审计员', hint: '审计员是独立于角色的能力，由 rackbook.yml 的 auth.auditors 授予：可以查看并导出「活动」里的审计区域和审计日志状态，但不能显示密钥，也不能修改任何内容；只有角色同时是编辑或以上才能还原版本。管理员不会自动成为审计员。', users: '审计员在 auth.auditors 里设置，和角色分开。按组匹配时用的是服务器启动以来该用户最近一次登录带的组；之后没登录过的人只能按名字匹配。' },
     method: {
       oidc: '单点登录（OIDC）',
       passkey: '通行密钥',

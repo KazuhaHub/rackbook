@@ -5,7 +5,7 @@ const messages = {
   // login, the account page and the users page
   auth: {
     role: { admin: '管理員', editor: '編輯', viewer: '唯讀', none: '無權限' } as Record<string, string>,
-    auditor: { label: '稽核員', hint: '稽核員是獨立於角色的能力，由 rackbook.yml 的 auth.auditors 授予：可以檢視並匯出「活動」裡的稽核區域和稽核紀錄狀態，但不能顯示密鑰，也不能修改任何內容；只有角色同時是編輯以上才能還原版本。管理員不會自動成為稽核員。', users: '稽核員在 auth.auditors 裡設定，和角色分開。' },
+    auditor: { label: '稽核員', hint: '稽核員是獨立於角色的能力，由 rackbook.yml 的 auth.auditors 授予：可以檢視並匯出「活動」裡的稽核區域和稽核紀錄狀態，但不能檢視密鑰，也不能修改任何內容；只有角色同時是編輯以上才能還原版本。管理員不會自動成為稽核員。', users: '稽核員在 auth.auditors 裡設定，和角色分開。依群組比對時用的是伺服器啟動以來該使用者最近一次登入帶的群組；之後沒登入過的人只能依名稱比對。' },
     method: {
       oidc: '單一登入（OIDC）',
       passkey: '通行密鑰',

@@ -159,6 +159,10 @@ func TestAuditorNeverGets2xxOnAWriteRoute(t *testing.T) {
 	fill := strings.NewReplacer("{collection}", "todo", "{id}", "no-such-id", "{name}", "alpha", "{hash}", head, "{commit}", head, "{feature}", "beszel-agent", "{area}", "ledger")
 	// writes that every signed-in person may make to their own state
 	selfService := map[string]bool{"PUT /api/account/preferences": true}
+	// one API token exists, made by the administrator: the auditors must not be able to touch it
+	if code, body, _ := e.do(t, "POST", "/api/admin/tokens", map[string]any{"name": "ci", "scope": "read"}, map[string]string{"X-User": adminU}); code != 201 {
+		t.Fatalf("create token: %d %v", code, body)
+	}
 	serverHead := sh(t, e.dir, "rev-parse", "HEAD")
 	infraHead := sh(t, e.infraSeed, "rev-parse", "HEAD")
 	walked := 0
@@ -170,8 +174,7 @@ func TestAuditorNeverGets2xxOnAWriteRoute(t *testing.T) {
 			}
 			walked++
 			code, body, _ := e.do(t, method, fill.Replace(path), map[string]any{}, map[string]string{"X-User": who})
-			// API tokens are not set up in this fixture: their routes answer 404 before any gate
-			if code != http.StatusForbidden && !(code == http.StatusNotFound && strings.HasPrefix(path, "/api/admin/tokens")) {
+			if code != http.StatusForbidden {
 				t.Errorf("%s as %s: %d %v (want 403)", pat, who, code, body)
 			}
 		}
@@ -192,6 +195,19 @@ func TestAuditorNeverGets2xxOnAWriteRoute(t *testing.T) {
 	}
 	if got := sh(t, e.infraSeed, "rev-parse", "HEAD"); got != infraHead {
 		t.Fatal("an auditor's request committed to the infra repository")
+	}
+	// the token is still there, and an auditor who is also an editor is refused every admin-only write route
+	if _, list, _ := e.do(t, "GET", "/api/admin/tokens", nil, map[string]string{"X-User": adminU}); len(list["tokens"].([]any)) != 1 {
+		t.Fatalf("the token list changed: %v", list)
+	}
+	for _, pat := range pats {
+		method, path, _ := strings.Cut(pat, " ")
+		if method == http.MethodGet || !(strings.HasPrefix(path, "/api/admin/") || strings.HasPrefix(path, "/api/types") || strings.HasPrefix(path, "/api/modules/") || path == "/api/audit/ack") {
+			continue
+		}
+		if code, body, _ := e.do(t, method, fill.Replace(path), map[string]any{}, map[string]string{"X-User": eveU}); code != http.StatusForbidden {
+			t.Errorf("%s as an auditor+editor: %d %v (want 403)", pat, code, body)
+		}
 	}
 	// the one write an auditor may make is to their own preferences
 	if code, _, _ := e.do(t, "PUT", "/api/account/preferences", map[string]any{"locale": "en-US"}, map[string]string{"X-User": auditU}); code != 200 {

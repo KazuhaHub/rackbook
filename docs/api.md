@@ -485,7 +485,7 @@ listed person included, gets `403 forbidden`. None is on `/mcp`. `/api/meta` tel
 Every route is in one of three classes:
 
 - **read**: infra administrators and infra auditors (`--infra-auditors`, the same pinned provider and OIDC sessions only): `GET /api/infra/hosts`, `…/hosts/{name}`, `…/certs`, `…/iplists`, `…/commits`, `…/groups`, `…/features`, `…/write`, and `GET /api/activity/commit/infra/{hash}`. For an infra auditor `GET /api/infra/write` answers `{enabled: false, secrets: false, fresh: false, auditor: true}` and `canRevert` in the commits is false; `user.infraAuditor: true` marks them in `/api/meta`.
-- **secret**: infra administrators only; an infra auditor gets `403 forbidden`: `GET …/hosts/{name}/secrets`, `POST …/secrets/reveal|set|unset|reencrypt`, and `GET …/hosts/{name}/vars` (the raw host_vars file of the editor, which is not redacted like the host page's copy).
+- **secret**: infra administrators only; an infra auditor gets `403 forbidden`: `GET …/hosts/{name}/secrets`, `POST …/secrets/reveal|set|unset|reencrypt`, and `GET …/hosts/{name}/vars` (the editor's raw host_vars file; it sends no content when the hide scan finds anything, and is admin-only as defence in depth). The hide scan is the boundary: a plaintext secret it does not recognise reaches an infra auditor through `GET /api/infra/hosts/{name}` (`vars`) and infra commit diffs, as it reaches infra administrators.
 - **write**: infra administrators only (with a recent sign-in): every other `POST` (`…/vars`, `…/features/{feature}`, `…/groups`, `…/commits/{hash}/revert`). A refused attempt is audited.
 
 `hub` is `{state: ok|stale|missing|invalid, error?, time?, ageSeconds}`, the state of the hub's
