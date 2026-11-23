@@ -404,21 +404,35 @@ must not decide who sees infra.
      or a day or seq not after the anchor before it), `anchor_rewritten` and `anchor_more`. Each wrong anchor
      has its own fingerprint (anchor line, kind, what was found), so acknowledging one hides no other; at most 20
      are recorded per pass, then one `anchor_more` entry.
-   - History. `Store.StateFileHistory` walks `git log --reverse` on `.rackbook/audit-anchors` on the tracked
-     branch (the only addition to the guarded runner is `--reverse` for `log`), and `audit.CheckAppendOnly`
-     checks that each version is the previous one plus appended lines; anything else is `anchor_rewritten`
-     carrying the commit. The last checked commit is kept in memory only (a file in `--state-dir` would be one more
-     thing for somebody with that directory to forge, and a full walk at start is cheap); if it is no longer an
-     ancestor of the tip the walk restarts. `audit verify` does not walk history.
+   - History. `Store.CheckStateFileHistory` lists every commit reachable from the tip that touches
+     `.rackbook/audit-anchors` with `git log --full-history --format='%H %P'` and, for each such commit and each of
+     its parents, requires the file at the commit to be the file at the parent (empty when absent) with lines
+     appended. Checking edges rather than one line of history matters: default history simplification follows
+     one side of a merge, so a branch cut before the file existed, with a forged file, merged into main taking the
+     branch's version, would never have been compared with main's real anchors. A violating commit is an
+     `anchor_rewritten` problem naming it (one per commit). The files are read with one `git cat-file --batch`
+     call (the guarded runner allows exactly `cat-file --batch`; `log` gained only `--full-history`). With a
+     previous tip that is an ancestor of the new tip only `old..new` is looked at, otherwise everything. The last
+     checked tip is kept in memory only (a file in `--state-dir` would be one more thing for somebody with that
+     directory to forge, and a full check at start is cheap). `audit verify --repo` runs the same check on the
+     clone's HEAD (`gitstore.CheckStateFileInClone`) when the clone is a Git repository. A hand-made merge that
+     combines two sides' new lines is flagged too; the server never makes one.
+   - Order. The baseline an anchor must come after is the last anchor that matched the log; a line that did not
+     (ahead, mismatch, future) is never the baseline, so one forged line cannot turn the real anchors after it
+     into `anchor_invalid`, and acknowledging it changes nothing for them.
    - What it does not do: a person with the server's push credentials can still push a forward commit that
      rewrites the anchor file. The change stays in Git history, visible to anyone with a clone or on the Git
      host, and Rackbook flags it; it is not prevented.
-   - Retention. An anchor is skipped as older than the kept log only when `--audit-retention-months` is above 0,
-     its day's month is strictly older than the oldest month file present, it is not the newest anchor, and its
-     seq is below the first line kept (and it is not beyond the end of the log, which is checked first).
-     `head.json` is not read for this: an earlier version trusted it, and somebody with the files could forge
-     `first_file` to make anchors go away. `audit verify --retention-months N` takes the server's number; its
-     default of 0 skips nothing.
+   - Retention. An anchor is skipped as removed by retention only if all of these hold: `--audit-retention-months`
+     is above 0; its seq is below the first line kept; its day is on or before the first day of the oldest kept
+     month file (the writer can anchor a line of the previous month just after midnight on the 1st); that month is
+     not newer than the month retention would keep from now, plus one month of slack (retention never deletes a
+     month younger than its cutoff); and it comes before the newest anchor that matched the log. `head.json` is not
+     read for this: an earlier version trusted it. What a deletion that looks like retention can still hide is at
+     most the lines retention itself would drop, plus the first day of the oldest kept month. A quiet stretch of
+     months without a month file can make a legitimate retention fail the cutoff test, and the anchors of the
+     deleted months are then reported (the cost of not trusting `head.json`). `audit verify --retention-months N`
+     takes the server's number; its default of 0 skips nothing.
    - Lines of the anchor file that are not anchors are reported by `audit verify` (and logged once), not as a
      chain problem: they do not fail the exit status.
    - `rackbook audit verify` had no data repository path; `--repo <clone>` is the narrowest addition. It reads the

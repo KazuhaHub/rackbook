@@ -496,3 +496,89 @@ func TestOnlyTheAnchorIdentityWithMethodSystemIsItsOwnCommit(t *testing.T) {
 		}
 	}
 }
+
+func TestAnAcknowledgedForgedLineDoesNotStopTheWriterOrInvalidateLaterAnchors(t *testing.T) {
+	e := newEnv(t, "audit:\n  anchor: daily\n")
+	e.activity(3)
+	e.tick(t)
+	// somebody appends a line dated tomorrow with a seq far beyond the log
+	laptop := filepath.Join(filepath.Dir(e.server), "laptop")
+	sh(t, filepath.Dir(e.server), "clone", e.bare, laptop)
+	p := filepath.Join(laptop, filepath.FromSlash(audit.AnchorsPath))
+	b, _ := os.ReadFile(p)
+	forged := audit.Anchor{Day: "2026-11-21", Seq: 1 << 50, Hash: "sha256:" + strings.Repeat("e", 64), At: "2026-11-21T00:00:00Z"}
+	if err := os.WriteFile(p, append(b, forged.Line()...), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sh(t, laptop, "commit", "-qam", "extra")
+	sh(t, laptop, "push", "origin", "main")
+	if err := e.store.Pull(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	e.a.Verify(true)
+	st := e.log.Status()
+	if st.OK || problemList(st) != audit.KindAnchorAhead {
+		t.Fatalf("%+v", st)
+	}
+	seq, _ := e.log.Head()
+	if err := e.log.Ack(nil, seq); err != nil {
+		t.Fatal(err)
+	}
+	n := countEvents(t, e.logDir, audit.ChainProblemEvent)
+	// the next days: real anchors keep being written, and are valid against the last one that matched
+	for day := 1; day <= 2; day++ {
+		e.clk.t = e.clk.t.Add(24 * time.Hour)
+		e.activity(1)
+		e.tick(t)
+		e.a.Verify(true)
+	}
+	as := e.anchors(t).List
+	if len(as) != 4 || as[3].Day != "2026-11-22" {
+		t.Fatalf("%+v", as)
+	}
+	if st := e.log.Status(); !st.OK || countEvents(t, e.logDir, audit.ChainProblemEvent) != n {
+		t.Fatalf("%+v", st)
+	}
+}
+
+func TestAMergeTakingAForgedAnchorFileIsRecordedThroughTheServerCheck(t *testing.T) {
+	e := newEnv(t, "audit:\n  anchor: daily\n")
+	laptop := filepath.Join(filepath.Dir(e.server), "laptop")
+	sh(t, filepath.Dir(e.server), "clone", e.bare, laptop)
+	// a branch cut before the file existed, with an anchor file of its own
+	sh(t, laptop, "checkout", "-q", "-b", "forged")
+	if err := os.MkdirAll(filepath.Join(laptop, ".rackbook"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	f := audit.Anchor{Day: "2026-11-01", Seq: 1, Hash: "sha256:" + strings.Repeat("f", 64), At: "2026-11-01T00:00:00Z"}
+	if err := os.WriteFile(filepath.Join(laptop, filepath.FromSlash(audit.AnchorsPath)), f.Line(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sh(t, laptop, "add", ".")
+	sh(t, laptop, "commit", "-qm", "branch")
+	// the real anchor, written by the server
+	e.activity(2)
+	e.tick(t)
+	e.a.Verify(true)
+	if st := e.log.Status(); !st.OK {
+		t.Fatalf("%+v", st)
+	}
+	sh(t, laptop, "checkout", "-q", "main")
+	sh(t, laptop, "pull", "-q")
+	sh(t, laptop, "merge", "-q", "-X", "theirs", "forged", "-m", "merge")
+	merge := sh(t, laptop, "rev-parse", "HEAD")
+	sh(t, laptop, "push", "origin", "main")
+	if err := e.store.Pull(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	e.a.Verify(false) // after the pull: the walk from the last checked commit sees the merge
+	var got string
+	for _, p := range e.log.Status().Problems {
+		if p.Kind == audit.KindAnchorRewritten {
+			got = p.Detail
+		}
+	}
+	if !strings.Contains(got, merge) {
+		t.Fatalf("%+v", e.log.Status())
+	}
+}

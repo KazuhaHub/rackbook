@@ -1011,25 +1011,37 @@ does not depend on the setting: a leftover file still catches tampering after `a
   `seq`. A line that differs is an `anchor_mismatch`; an anchor beyond the end of the log (it was cut or reset)
   is an `anchor_ahead`. An anchor that cannot be one is an `anchor_invalid`: its day is more than a day in the
   future, or its day or `seq` does not come after the one before it.
-- *Against Git history.* The server walks the commits that changed `.rackbook/audit-anchors` on the tracked
-  branch, oldest first, and checks that each version is the one before it with lines appended and nothing else.
-  A commit that changed or removed a line is an `anchor_rewritten`, and the problem carries that commit's hash.
-  After the first walk (at start) only the commits since the last checked one are read; if that commit is no
-  longer an ancestor of the tip, the walk starts again from the beginning. The position is kept in memory only,
-  so every start walks the whole history. `audit verify` reads the file as checked out and does not walk
-  history.
+- *Against Git history.* The server checks every commit on the tracked branch that touches
+  `.rackbook/audit-anchors`, and for each of its parents (so on every side of every merge, not one line of
+  history: a merge that takes a forged side is not hidden by Git's default history simplification) that the file
+  is the parent's with lines appended and nothing else. A commit that changed or removed a line is an
+  `anchor_rewritten`, and the problem carries that commit's hash. A human merge that combines two sides each
+  with their own new lines also differs from one parent and is flagged: the server's own history is
+  fast-forward only and does not make such merges. After the first check (at start) only the commits not
+  reachable from the last checked one are read; if that commit is no longer an ancestor of the tip, everything is
+  checked again. The position is kept in memory only, so every start checks the whole history. `rackbook audit
+  verify --repo` checks the same on the clone's checked-out HEAD when the clone is a Git repository.
 - Every wrong anchor is a problem of its own (its fingerprint is the anchor line and what was found), so
   acknowledging one never hides another, and the same condition is recorded once however often the check
   runs. At most 20 are recorded per pass, then one `anchor_more` entry; the rest follow on the next passes.
   They go through the same banner and acknowledgement as any chain problem.
-- *Retention.* With `--audit-retention-months 0` (keep everything) no anchor is ever skipped. With a
-  retention, an anchor is skipped (and counted) only if its day's month is strictly older than the oldest
-  month file that is kept, it is not the newest anchor in the file, and its `seq` is below the first line kept.
-  `head.json` is not consulted: it can be rewritten together with the log. `rackbook audit verify --repo`
-  skips nothing unless it is given `--retention-months` with the server's number; without it, anchors for lines
-  that retention deleted are reported as problems. `--repo` reads the clone without following a symbolic link:
-  `.rackbook` and the file are opened relative to the clone with `os.OpenRoot`, and a link in place of either
-  is refused.
+- *Order.* An anchor is out of order (`anchor_invalid`) if its day or `seq` does not come after the previous
+  anchor **that matched the log**. A line that did not match (ahead, mismatch, future) never becomes that
+  baseline, so a forged line does not make the real anchors after it invalid.
+- *Retention.* With `--audit-retention-months 0` (keep everything) no anchor is ever skipped. With a retention,
+  an anchor is skipped (and counted) only if all of these hold: its `seq` is below the first line kept; its day is
+  on or before the first day of the oldest kept month file (the writer can anchor a line of the previous month
+  just after midnight on the 1st); that oldest month is not newer than the month retention would keep from now,
+  with a month of slack (retention never deletes a month younger than its cutoff, so if such months are gone
+  that is not retention); and it comes before the newest anchor that matched the log (not simply the last line of
+  the file). `head.json` is not consulted: it can be rewritten together with the log. What a deletion that
+  looks like retention can still hide is at most the lines retention itself would drop, plus the first day of
+  the oldest kept month. A log with a quiet stretch (months without any event, so without a month file) can
+  make a legitimate retention look like it removed too much, and then its old anchors are reported: pass the
+  right `--retention-months` and read the problem. `rackbook audit verify --repo` skips nothing unless it is
+  given `--retention-months` with the server's number. `--repo` reads the clone without following a symbolic
+  link: `.rackbook` and the file are opened relative to the clone with `os.OpenRoot`, and a link in place of
+  either is refused.
 
 **Direct push only.** The anchor is a commit of its own, so `rackbook check` refuses `anchor: daily` with
 `write.mode: pr` (it would open a pull request every day, and nothing would be anchored until someone merged

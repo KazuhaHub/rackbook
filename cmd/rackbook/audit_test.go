@@ -254,3 +254,39 @@ func TestAuditVerifyRetentionMonthsDecidesWhatMaySkip(t *testing.T) {
 		t.Fatal("a negative retention must be refused")
 	}
 }
+
+func TestAuditVerifyRepoChecksTheHistoryOfTheAnchorFile(t *testing.T) {
+	state, _ := auditState(t, 5)
+	l, err := audit.Open(filepath.Join(state, "audit"), audit.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	seq, hash := l.Head()
+	l.Close()
+	good := audit.Anchor{Day: "2026-11-02", Seq: seq, Hash: hash, At: "2026-11-02T03:00:00Z"}
+	repo := anchorRepo(t, good)
+	anchorGit(t, repo, "init", "-q", "-b", "main")
+	anchorGit(t, repo, "add", ".")
+	anchorGit(t, repo, "commit", "-qm", "anchor")
+	out, err := run(t, "audit", "verify", "--state-dir", state, "--repo", repo)
+	if exitCode(err) != 0 || strings.Contains(out, "not checked") || strings.Contains(out, "anchor_rewritten") {
+		t.Fatalf("%v %s", err, out)
+	}
+	// a forward commit that changes the line that was there
+	changed := good
+	changed.At = "2026-11-02T04:00:00Z"
+	if err := os.WriteFile(filepath.Join(repo, ".rackbook", "audit-anchors"), changed.Line(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	anchorGit(t, repo, "commit", "-qam", "tidy")
+	bad := anchorGit(t, repo, "rev-parse", "HEAD")
+	out, err = run(t, "audit", "verify", "--state-dir", state, "--repo", repo)
+	if exitCode(err) != 1 || !strings.Contains(out, "anchor_rewritten") || !strings.Contains(out, bad) {
+		t.Fatalf("%v %s", err, out)
+	}
+	// a directory that is no repository: the file is checked, the history is said not to be
+	out, err = run(t, "audit", "verify", "--state-dir", state, "--repo", anchorRepo(t, good))
+	if exitCode(err) != 0 || !strings.Contains(out, "note: the history of .rackbook/audit-anchors was not checked") {
+		t.Fatalf("%v %s", err, out)
+	}
+}

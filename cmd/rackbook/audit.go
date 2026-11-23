@@ -17,6 +17,7 @@ import (
 	"github.com/kazuhahub/rackbook/internal/auth"
 	"github.com/kazuhahub/rackbook/internal/config"
 	"github.com/kazuhahub/rackbook/internal/fsutil"
+	"github.com/kazuhahub/rackbook/internal/gitstore"
 )
 
 // auditFlags reads and checks --audit-addr and --audit-retention-months.
@@ -117,13 +118,18 @@ the daily anchors in .rackbook/audit-anchors are checked too: each anchor that i
 still inside the kept log must name the hash of the line at its seq. An anchor that
 does not match, or that is beyond the end of the log, is a problem (anchor_mismatch,
 anchor_ahead), and so is an anchor that cannot be one (anchor_invalid: dated after
-tomorrow, or not after the one before it). The file is read as it is checked out: pull
-the clone first. The history of the file is not read here; the server checks that at start
-and after each pull (anchor_rewritten). By default no anchor is skipped. If the server
-runs with --audit-retention-months, pass the same number as --retention-months: only then
-an anchor that is older than the oldest month file kept, is not the newest, and is below
-the first kept line is skipped (and counted). This works whether or not audit.anchor is
-on. Without --repo the anchors are not checked.`,
+tomorrow, or not after the previous anchor that matched). The file is read as it is
+checked out: pull the clone first. If the clone is a Git repository, the history of the
+file is checked as well, as the server does: for every commit that touches it and each of
+that commit's parents (so every side of every merge), the file must be the parent's with
+lines appended, else the commit is an anchor_rewritten problem.
+
+By default no anchor is skipped. If the server runs with --audit-retention-months, pass the
+same number as --retention-months: only then an anchor that is below the first kept line,
+dated on or before the first day of the oldest kept month, older in the file than the newest
+anchor that matched, and not in a month that retention would have kept, is skipped (and
+counted). This works whether or not audit.anchor is on. Without --repo the anchors are not
+checked.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			dir, _ := cmd.Flags().GetString("state-dir")
@@ -141,7 +147,23 @@ on. Without --repo the anchors are not checked.`,
 				if months < 0 {
 					return errors.New("--retention-months must be 0 (the log keeps everything) or more")
 				}
-				rep, err = audit.VerifyWithAnchors(filepath.Join(dir, "audit"), anchors, audit.AnchorOptions{RetentionMonths: months})
+				var extra []audit.Problem
+				var note string
+				if chk, herr := gitstore.CheckStateFileInClone(cmd.Context(), repo, audit.AnchorsPath); herr != nil {
+					note = "the history of " + audit.AnchorsPath + " was not checked: " + herr.Error()
+				} else {
+					seen := map[string]bool{}
+					for _, v := range chk.Violations {
+						if !seen[v.Commit] {
+							seen[v.Commit] = true
+							extra = append(extra, audit.RewrittenAnchor(v.Commit, v.Base, v.Content))
+						}
+					}
+				}
+				rep, err = audit.VerifyWithAnchors(filepath.Join(dir, "audit"), anchors, audit.AnchorOptions{RetentionMonths: months}, extra...)
+				if err == nil && note != "" && rep.Anchors != nil {
+					rep.Anchors.Note = note
+				}
 			} else {
 				rep, err = audit.Verify(filepath.Join(dir, "audit"))
 			}
@@ -170,7 +192,7 @@ on. Without --repo the anchors are not checked.`,
 	}
 	verify.Flags().String("state-dir", "", "the server's --state-dir (the log is in its audit directory)")
 	verify.Flags().String("repo", "", "a clone of the data repository: also check the daily anchors in its .rackbook/audit-anchors (as checked out)")
-	verify.Flags().Int("retention-months", 0, "with --repo: the server's --audit-retention-months. 0 (the default) means no anchor is skipped; with more, an anchor may be skipped only when it is older than the oldest month file kept, is not the newest, and its seq is below the first kept line")
+	verify.Flags().Int("retention-months", 0, "with --repo: the server's --audit-retention-months. 0 (the default) means no anchor is skipped; with more, only an anchor that retention could have removed is (see the long help)")
 	verify.Flags().Bool("json", false, "print the report as JSON")
 	cmd.AddCommand(verify)
 	return cmd
@@ -235,6 +257,9 @@ func printAnchors(out io.Writer, a *audit.AnchorSummary) {
 		fmt.Fprintf(out, ", %d before the first kept line skipped", a.Skipped)
 	}
 	fmt.Fprintln(out)
+	if a.Note != "" {
+		fmt.Fprintln(out, "note: "+a.Note)
+	}
 	if len(a.Malformed) > 0 {
 		fmt.Fprintf(out, "warning: lines %v of .rackbook/audit-anchors are not anchors (left as they are)\n", a.Malformed)
 	}
