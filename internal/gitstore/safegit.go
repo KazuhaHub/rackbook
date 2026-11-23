@@ -80,7 +80,7 @@ var allowedOptions = map[string][]string{
 	"commit":     {"--quiet", "--no-verify", "-F", "-", "--only", "--"},
 	"fetch":      {"--quiet"},
 	"ls-tree":    {"-z", "--"},
-	"log":        {"-n", "--format=*", "--fixed-strings", "--grep=*", "--skip=*", "--name-only", "--date-order", "--"},
+	"log":        {"-n", "--format=*", "--fixed-strings", "--grep=*", "--skip=*", "--name-only", "--date-order", "--reverse", "--"},
 	"merge":      {"--quiet", "--ff-only"},
 	"merge-base": {"--is-ancestor"},
 	"push":       {},

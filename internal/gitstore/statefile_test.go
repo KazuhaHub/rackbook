@@ -131,3 +131,58 @@ func roleOf(s string) roles.Role {
 	}
 	return roles.Viewer
 }
+
+func TestStateFileHistoryWalksTheCommitsOfOneFileOldestFirst(t *testing.T) {
+	e := newEnv(t)
+	s := open(t, e.server, nil)
+	ctx := context.Background()
+	const rel = ".rackbook/audit-anchors"
+	var commits []string
+	for _, line := range []string{"a", "b", "c"} {
+		if _, err := s.MutateStateFile(ctx, rel, "anchor "+line, nil, appendLine(line)); err != nil {
+			t.Fatal(err)
+		}
+		commits = append(commits, sh(t, e.server, "rev-parse", "HEAD"))
+		// a commit that does not touch the file is not a version
+		if _, err := s.MutateStateFile(ctx, ".rackbook/other.yml", "other "+line, nil, appendLine("x: "+line)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h, err := s.StateFileHistory(ctx, rel, "")
+	if err != nil || h.Restarted || len(h.Versions) != 3 || h.Base != nil || h.Tip != sh(t, e.server, "rev-parse", "HEAD") {
+		t.Fatalf("%+v %v", h, err)
+	}
+	for i, v := range h.Versions {
+		if v.Commit != commits[i] || string(v.Content) != strings.Join([]string{"a", "b", "c"}[:i+1], "\n")+"\n" {
+			t.Fatalf("version %d: %+v", i, v)
+		}
+	}
+	// from a commit already checked: only what came after, with the file as it was at that commit
+	h2, err := s.StateFileHistory(ctx, rel, commits[0])
+	if err != nil || len(h2.Versions) != 2 || string(h2.Base) != "a\n" || h2.Versions[0].Commit != commits[1] {
+		t.Fatalf("%+v %v", h2, err)
+	}
+	// nothing new
+	if h3, err := s.StateFileHistory(ctx, rel, h.Tip); err != nil || len(h3.Versions) != 0 || h3.Restarted {
+		t.Fatalf("%+v %v", h3, err)
+	}
+	// a commit that is not an ancestor of the tip (the history was rewritten): from the start again
+	sh(t, e.laptop, "pull", "--quiet")
+	sh(t, e.laptop, "checkout", "-q", "--orphan", "other")
+	sh(t, e.laptop, "commit", "-q", "--allow-empty", "-m", "elsewhere")
+	foreign := sh(t, e.laptop, "rev-parse", "HEAD")
+	sh(t, e.server, "fetch", "--quiet", e.laptop, "other")
+	h4, err := s.StateFileHistory(ctx, rel, foreign)
+	if err != nil || !h4.Restarted || len(h4.Versions) != 3 {
+		t.Fatalf("%+v %v", h4, err)
+	}
+	// an unusable commit, or a file outside .rackbook/, is refused or restarted, never run as an option
+	if h5, err := s.StateFileHistory(ctx, rel, "--output=/tmp/x"); err != nil || len(h5.Versions) != 3 {
+		t.Fatalf("%+v %v", h5, err)
+	}
+	for _, bad := range []string{"rackbook.yml", ".rackbook", "../x", ".rackbook/../rackbook.yml"} {
+		if _, err := s.StateFileHistory(ctx, bad, ""); err == nil {
+			t.Errorf("%q must be refused", bad)
+		}
+	}
+}

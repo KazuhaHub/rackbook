@@ -55,7 +55,8 @@ type Log struct {
 	firstPrev string
 	status    Status
 	failed    string          // set when the log cannot safely append: Record then writes nothing
-	known     map[string]bool // recorded chain problems, by problemKey: what CheckAnchors must not record twice
+	known     map[string]bool // recorded chain problems, by problemKey: what ReviewAnchors must not record twice
+	anchorOK  anchorCache     // anchors that matched the log in this process
 
 	stat func(*os.File) (os.FileInfo, error) // test seam: f.Stat
 

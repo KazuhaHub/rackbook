@@ -299,6 +299,7 @@ func TestRuntimeGuardRefusesDestructiveCommands(t *testing.T) {
 		{"log", "--date-order", "--skip=10", "-n", "5", "--name-only", "--format=%H", "HEAD", "--", ".", ":(exclude).rackbook"},
 		{"diff-tree", "--patch", "--no-ext-diff", "--no-color", "--no-commit-id", "-r", "--root", "--no-renames", "abc1234", "--", ":(top,literal)a.yml"},
 		{"cat-file", "blob", "0123456789abcdef0123456789abcdef01234567"}, {"ls-tree", "-z", "0123456789abcdef0123456789abcdef01234567", "--", "rackbook.yml", "data/a.yml"},
+		{"log", "--format=%H", "--reverse", "0123456789abcdef0123456789abcdef01234567", "^0123456789abcdef0123456789abcdef01234568", "--", ".rackbook/audit-anchors"},
 		{"log", "--format=%H", "--date-order", "--skip=1", "-n", "5", "0123456789abcdef0123456789abcdef01234567", "^0123456789abcdef0123456789abcdef01234568", "--", "data/a.yml"}} {
 		if err := refuseDestructive(args); err != nil {
 			t.Errorf("%v refused: %v", args, err)
