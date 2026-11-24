@@ -1,5 +1,4 @@
 import { useInfiniteQuery, useQuery } from '@tanstack/react-query'
-import { t } from '@/i18n'
 import { apiFetch } from './api'
 
 export type ActivityArea = 'ledger' | 'infra' | 'audit'
@@ -38,6 +37,15 @@ export type ActivityItem = {
   host?: string
   files?: string[]
   detail?: string[]
+  /** sign-in events: "overage" when the groups or roles claim was cut off */
+  groups?: string
+  app_roles?: string
+  /** role_changed: the role and auditor flag before and after, and why it was seen */
+  from?: string
+  to?: string
+  auditor_from?: boolean
+  auditor_to?: boolean
+  cause?: 'sign_in' | 'config' | string
 }
 
 export type ActivityPage = { items: ActivityItem[]; cursor?: string; areas: ActivityArea[]; audit: boolean; /** commits and log lines looked at to make this page */ scanned?: number }
@@ -126,39 +134,4 @@ export const acknowledgeAudit = (through: number) => apiFetch<AuditStatus>('/aud
 /** The highest line the admin acknowledges: the last recorded problem the status lists. */
 export const ackThrough = (s: AuditStatus | undefined) => Math.max(0, ...(s?.problems ?? []).map((p) => p.recordedAt ?? 0))
 
-const detailValue = (it: ActivityItem, key: string) => it.detail?.find((d) => d.startsWith(key))?.slice(key.length)
-
-/** An audit event as a sentence without its subject (the row shows who). */
-export function eventSentence(it: ActivityItem): string {
-  const e = t.activity.events
-  const role = (it.role && t.auth.role[it.role]) || it.role || ''
-  const method = (it.method && t.auth.method[it.method]) || it.method || ''
-  switch (it.kind) {
-    case 'login':
-      return e.login(role, method)
-    case 'logout':
-      return e.logout
-    case 'login_refused':
-      return e.loginRefused(e.reasons[it.reason ?? ''] ?? it.reason ?? '')
-    case 'role_changed':
-      return e.roleChanged
-    case 'write_refused':
-      return e.writeRefused(it.area === 'infra' ? t.activity.filters.area.infra : t.activity.filters.area.ledger, e.codes[it.code ?? ''] ?? it.code ?? '')
-    case 'secret_revealed':
-      return e.secretRevealed(it.host ?? '')
-    case 'secret_reveal_refused':
-      return e.secretRevealRefused(it.host ?? '')
-    case 'reencrypted':
-      return e.reencrypted(it.host ?? '')
-    case 'accept_remote':
-      return e.acceptRemote
-    case 'history_rewritten':
-      return e.historyRewritten
-    case 'chain_problem':
-      return e.chainProblem(it.code ?? '', detailValue(it, 'seq=') ?? '')
-    case 'chain_problem_ack':
-      return e.chainProblemAck(detailValue(it, 'through:') ?? '')
-    default:
-      return e.other(it.kind, it.code ?? it.reason ?? '')
-  }
-}
+export { eventSentence } from './eventSentence.ts'

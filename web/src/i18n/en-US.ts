@@ -9,7 +9,7 @@ const messages = {
   // login, the account page and the users page
   auth: {
     role: { admin: 'Admin', editor: 'Editor', viewer: 'Viewer', none: 'No access' } as Record<string, string>,
-    auditor: { label: 'Auditor', hint: 'Auditor is a capability apart from the role, granted by auth.auditors in rackbook.yml. It lets you see and export the audit areas of Activity and the audit log status. It does not let you reveal secrets or change anything, and Restore is shown only if your role is also editor or higher. Admins are not auditors automatically.', users: 'Auditors are set in auth.auditors, separately from roles. A group entry is matched against the groups of the person’s last sign-in since the server started; someone not seen since then matches only by name.' },
+    auditor: { label: 'Auditor', hint: 'Auditor is a capability apart from the role, granted by auth.auditors in rackbook.yml. It lets you see and export the audit areas of Activity and the audit log status. It does not let you reveal secrets or change anything, and Restore is shown only if your role is also editor or higher. Admins are not auditors automatically.', users: 'Auditors are set in auth.auditors, separately from roles. A group or app-role entry is matched against the groups and app roles of the person’s last sign-in since the server started; someone not seen since then matches only by name.' },
     method: {
       oidc: 'Single sign-on (OIDC)',
       passkey: 'Passkey',
@@ -81,6 +81,10 @@ const messages = {
       role: 'Role',
       method: 'Sign-in method',
       roleHint: 'Your role comes from auth.roles in rackbook.yml and is recomputed on every request.',
+      roleFrom: 'Role from',
+      auditorFrom: 'Auditor from',
+      roleFromKinds: { identity: 'your account name', group: 'a group', 'app-role': 'an app role' } as Record<string, string>,
+      claimsNote: (hours: number) => `This role was read from your identity provider’s groups or app roles when you signed in. If you are removed there, it takes effect when you next sign in, and at the latest when this session ends, ${hours} ${pick(hours, 'hour', 'hours')} after you signed in (auth.session.claims_absolute).`,
       passkeys: 'Passkeys',
       passkeysHint: 'Sign in with a fingerprint, face or device PIN, without going through single sign-on. A passkey is just one way to sign in; if you lose it, you can still use single sign-on.',
       passkeysEmpty: 'No passkeys yet',
@@ -110,6 +114,7 @@ const messages = {
     users: {
       title: 'Users',
       description: 'Users who have signed in since the server started, and users with registered passkeys. Roles are set in auth.roles in rackbook.yml (reviewed through Git) and can’t be changed here.',
+      descriptionNoPasskeys: 'Users who have signed in since the server started. Roles are set in auth.roles in rackbook.yml (reviewed through Git) and can’t be changed here.',
       id: 'Account',
       name: 'Name',
       role: 'Role',
@@ -432,6 +437,7 @@ const messages = {
     suspectedBody: 'Saving is paused. If it really is not a secret, check the option below and save again; this confirmation is recorded in the commit.',
     notASecret: 'This is not a secret',
     readOnly: 'Read-only mode, or you don’t have permission to make changes, so this can’t be saved.',
+    tokenCreatorClaims: 'Your role comes from a group or an app role, which an API token cannot inherit. Ask an admin to list you by name (or *@domain) in auth.roles, then create the token.',
     historyRewritten: 'Remote history was rewritten and writes are paused. Contact an admin.',
     configError: 'The config file can’t be loaded and writes are paused. Contact an admin.',
     conflictTitle: 'This record was changed by someone else',
@@ -920,9 +926,14 @@ const messages = {
         tenant: 'wrong tenant',
         claims: 'unusable claims from the identity provider',
         passkey_failed: 'passkey check failed',
-        passkey_needs_oidc: 'the passkey needs a single sign-on first',
       } as Record<string, string>,
-      roleChanged: 'role changed',
+      roleChanged: (from: string, to: string, auditor: string, cause: string) =>
+        `${from === to ? `role unchanged (${to})` : `role changed from ${from} to ${to}`}${auditor === 'on' ? ', now an auditor' : auditor === 'off' ? ', no longer an auditor' : ''}${cause ? ` (${cause})` : ''}`,
+      causes: { sign_in: 'seen at sign-in', config: 'after a rackbook.yml change' } as Record<string, string>,
+      overage: {
+        groups: 'the identity provider sent too many groups; the ones past the limit were not used',
+        appRoles: 'the identity provider sent too many app roles; the ones past the limit were not used',
+      },
       writeRefused: (area: string, code: string) => `write refused (${area})${code ? `: ${code}` : ''}`,
       codes: {
         conflict: 'someone changed it first',
@@ -1041,6 +1052,7 @@ const messages = {
     lastUsedHint: 'Kept across restarts when --state-dir is set; otherwise only use since the server last restarted is recorded',
     never: 'Never',
     status: { active: 'Active', revoked: 'Revoked', expired: 'Expired' } as Record<string, string>,
+    claimsOnly: 'Your role comes from a group or an app role. A token keeps only the role its creator has by name (or *@domain), so a token made now would have no access, and creating it will be refused. Ask an admin to list you by name in auth.roles.',
     warnings: {
       creator_no_role: 'The creator no longer has a role, so this token is no longer valid',
       limited_by_creator: 'The creator’s current role is lower than the token’s access, so its effective access is reduced',

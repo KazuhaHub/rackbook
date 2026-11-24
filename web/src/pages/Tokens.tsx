@@ -22,6 +22,7 @@ import { EmptyState, PageHeader } from '@/components/common'
 import { t } from '@/i18n'
 import { formatDateTime } from '@/i18n/format'
 import { apiFetch, errorMessage } from '@/lib/api'
+import { hasSession, useAccount } from '@/lib/auth'
 import type { ApiToken, CreatedToken } from '@/lib/types'
 import { useMeta } from '@/providers/meta'
 import { collectionTitle, collectionTitleOf } from '@/lib/labels'
@@ -57,6 +58,9 @@ function CopyBox({ label, value }: { label: string; value: string }) {
 
 function CreateDialog({ open, onOpenChange, onCreated }: { open: boolean; onOpenChange: (o: boolean) => void; onCreated: (c: CreatedToken) => void }) {
   const { meta } = useMeta()
+  // a role that comes only from groups or app roles cannot be inherited by a token (the server refuses it)
+  const account = useAccount(open && hasSession(meta.user?.authMethod))
+  const claimsOnly = !!account.data?.roleFrom?.length && !account.data.roleFrom.includes('identity')
   const [name, setName] = useState('')
   const [scope, setScope] = useState<'read' | 'write'>('read')
   const [cols, setCols] = useState<string[]>([])
@@ -98,6 +102,11 @@ function CreateDialog({ open, onOpenChange, onCreated }: { open: boolean; onOpen
           <DialogTitle>{t.tokens.create}</DialogTitle>
           <DialogDescription>{t.tokens.description}</DialogDescription>
         </DialogHeader>
+        {claimsOnly && (
+          <p role="alert" className="rounded-md bg-amber-500/10 px-3 py-2 text-sm text-amber-700 dark:text-amber-400">
+            {t.tokens.claimsOnly}
+          </p>
+        )}
         <form
           className="space-y-4"
           onSubmit={(e) => {

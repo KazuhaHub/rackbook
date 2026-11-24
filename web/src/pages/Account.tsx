@@ -21,7 +21,7 @@ import { PageHeader } from '@/components/common'
 import { roleLabel } from '@/components/layout/UserMenu'
 import { t } from '@/i18n'
 import { apiFetch, errorMessage } from '@/lib/api'
-import { hasSession, logout, useAccount, type Passkey } from '@/lib/auth'
+import { hasSession, isSSO, logout, useAccount, type Passkey } from '@/lib/auth'
 import { relativeTime } from '@/lib/ledger'
 import { createCredential, isCancelled, passkeysSupported } from '@/lib/webauthn'
 import { useMeta } from '@/providers/meta'
@@ -87,6 +87,8 @@ export default function Account() {
   }
 
   const method = u?.authMethod ?? 'none'
+  const sso = isSSO(u?.authMethod)
+  const kinds = (list?: string[]) => (list ?? []).map((k) => A.roleFromKinds[k] ?? k).join(t.common.listSep)
   return (
     <div className="max-w-3xl">
       <PageHeader
@@ -119,6 +121,15 @@ export default function Account() {
               <span className="ml-2 text-xs text-muted-foreground">{A.roleHint}</span>
               {u?.auditor && <p className="mt-1.5 text-xs text-muted-foreground">{t.auth.auditor.hint}</p>}
             </Field>
+            {acc && kinds(acc.roleFrom) && (
+              <Field label={A.roleFrom}>
+                <span data-testid="role-from">{kinds(acc.roleFrom)}</span>
+                {acc.claimsAbsolute ? (
+                  <p className="mt-1.5 text-xs text-muted-foreground">{A.claimsNote(Math.max(1, Math.round(acc.claimsAbsolute / 3600)))}</p>
+                ) : null}
+              </Field>
+            )}
+            {acc && kinds(acc.auditorFrom) && <Field label={A.auditorFrom}>{kinds(acc.auditorFrom)}</Field>}
             <Field label={A.method}>{t.auth.method[method] ?? method}</Field>
           </dl>
         </CardContent>
@@ -138,7 +149,7 @@ export default function Account() {
         </Card>
       )}
 
-      {session && (
+      {session && !sso && (
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-2">

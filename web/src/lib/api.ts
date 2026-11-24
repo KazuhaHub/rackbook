@@ -91,6 +91,7 @@ export async function apiFetch<T>(path: string, init: RequestInit = {}): Promise
 
 export function errorMessage(e: unknown): string {
   if (e instanceof ApiError) {
+    if (e.code === 'creator_role_from_claims') return t.errors.tokenCreatorClaims
     if (e.statusCode === 403) return t.errors.readOnly
     if (e.code === 'history_rewritten') return t.errors.historyRewritten
     if (e.code === 'config_error') return t.errors.configError

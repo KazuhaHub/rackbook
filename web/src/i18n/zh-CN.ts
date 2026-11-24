@@ -4,7 +4,7 @@ const messages = {
   // login, the account page and the users page
   auth: {
     role: { admin: '管理员', editor: '编辑', viewer: '只读', none: '无权限' } as Record<string, string>,
-    auditor: { label: '审计员', hint: '审计员是独立于角色的能力，由 rackbook.yml 的 auth.auditors 授予：可以查看并导出「活动」里的审计区域和审计日志状态，但不能显示密钥，也不能修改任何内容；只有角色同时是编辑或以上才能还原版本。管理员不会自动成为审计员。', users: '审计员在 auth.auditors 里设置，和角色分开。按组匹配时用的是服务器启动以来该用户最近一次登录带的组；之后没登录过的人只能按名字匹配。' },
+    auditor: { label: '审计员', hint: '审计员是独立于角色的能力，由 rackbook.yml 的 auth.auditors 授予：可以查看并导出「活动」里的审计区域和审计日志状态，但不能显示密钥，也不能修改任何内容；只有角色同时是编辑或以上才能还原版本。管理员不会自动成为审计员。', users: '审计员在 auth.auditors 里设置，和角色分开。按用户组或应用角色匹配时用的是服务器启动以来该用户最近一次登录带的用户组和应用角色；之后没登录过的人只能按名字匹配。' },
     method: {
       oidc: '单点登录（OIDC）',
       passkey: '通行密钥',
@@ -76,6 +76,10 @@ const messages = {
       role: '角色',
       method: '登录方式',
       roleHint: '角色由 rackbook.yml 的 auth.roles 决定，每次请求时重新计算。',
+      roleFrom: '角色来自',
+      auditorFrom: '审计员来自',
+      roleFromKinds: { identity: '账号名称', group: '用户组', 'app-role': '应用角色' } as Record<string, string>,
+      claimsNote: (hours: number) => `这个角色是登录时从身份提供方的用户组或应用角色里读到的。在那边被移出后，下次登录就会生效，最迟 ${hours} 小时后本次登录会话结束（auth.session.claims_absolute）。`,
       passkeys: '通行密钥',
       passkeysHint: '用指纹、面容或设备 PIN 登录，无需再经过单点登录。通行密钥只是登录方式之一，丢失后仍可用单点登录。',
       passkeysEmpty: '还没有通行密钥',
@@ -105,6 +109,7 @@ const messages = {
     users: {
       title: '用户',
       description: '自服务器启动以来登录过的用户，以及已登记通行密钥的用户。角色在 rackbook.yml 的 auth.roles 中修改（走 Git 评审），这里不能改。',
+      descriptionNoPasskeys: '自服务器启动以来登录过的用户。角色在 rackbook.yml 的 auth.roles 中修改（走 Git 评审），这里不能改。',
       id: '账号',
       name: '姓名',
       role: '角色',
@@ -426,6 +431,7 @@ const messages = {
     suspectedBody: '保存已暂停。如果确实不是密钥，请勾选下面的选项后再保存；这次确认会记录在提交里。',
     notASecret: '不是密钥',
     readOnly: '当前为只读模式，或你没有修改权限，无法保存。',
+    tokenCreatorClaims: '你的角色来自用户组或应用角色，API 令牌无法继承。请管理员在 auth.roles 里按名称（或 *@域名）列出你，然后再创建令牌。',
     historyRewritten: '远端历史被改写，已暂停写入，请联系管理员。',
     configError: '配置文件无法加载，已暂停写入，请联系管理员。',
     conflictTitle: '记录已被他人修改',
@@ -914,9 +920,14 @@ const messages = {
         tenant: '租户不符',
         claims: '身份提供方的声明无法使用',
         passkey_failed: '通行密钥校验失败',
-        passkey_needs_oidc: '通行密钥需要先通过单点登录',
       } as Record<string, string>,
-      roleChanged: '角色已变更',
+      roleChanged: (from: string, to: string, auditor: string, cause: string) =>
+        `${from === to ? `角色不变（${to}）` : `角色由「${from}」变为「${to}」`}${auditor === 'on' ? '，并成为审计员' : auditor === 'off' ? '，不再是审计员' : ''}${cause ? `（${cause}）` : ''}`,
+      causes: { sign_in: '登录时发现', config: 'rackbook.yml 修改后' } as Record<string, string>,
+      overage: {
+        groups: '身份提供方给的用户组太多，超出的部分没有使用',
+        appRoles: '身份提供方给的应用角色太多，超出的部分没有使用',
+      },
       writeRefused: (area: string, code: string) => `写入被拒绝（${area}）${code ? `：${code}` : ''}`,
       codes: {
         conflict: '已被他人先行修改',
@@ -1035,6 +1046,7 @@ const messages = {
     lastUsedHint: '设置了 --state-dir 时跨重启保留；否则只记录服务器上次重启以来的使用',
     never: '从未',
     status: { active: '有效', revoked: '已撤销', expired: '已过期' } as Record<string, string>,
+    claimsOnly: '你的角色来自用户组或应用角色。令牌只沿用创建者按名称（或 *@域名）得到的角色，所以现在创建的令牌没有权限，创建会被拒绝。请管理员在 auth.roles 里按名称列出你。',
     warnings: {
       creator_no_role: '创建者已没有角色，此令牌已失效',
       limited_by_creator: '创建者当前的角色低于令牌权限，实际权限被降低',

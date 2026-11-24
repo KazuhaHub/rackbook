@@ -5,7 +5,7 @@ const messages = {
   // login, the account page and the users page
   auth: {
     role: { admin: '管理員', editor: '編輯', viewer: '唯讀', none: '無權限' } as Record<string, string>,
-    auditor: { label: '稽核員', hint: '稽核員是獨立於角色的能力，由 rackbook.yml 的 auth.auditors 授予：可以檢視並匯出「活動」裡的稽核區域和稽核紀錄狀態，但不能檢視密鑰，也不能修改任何內容；只有角色同時是編輯以上才能還原版本。管理員不會自動成為稽核員。', users: '稽核員在 auth.auditors 裡設定，和角色分開。依群組比對時用的是伺服器啟動以來該使用者最近一次登入帶的群組；之後沒登入過的人只能依名稱比對。' },
+    auditor: { label: '稽核員', hint: '稽核員是獨立於角色的能力，由 rackbook.yml 的 auth.auditors 授予：可以檢視並匯出「活動」裡的稽核區域和稽核紀錄狀態，但不能檢視密鑰，也不能修改任何內容；只有角色同時是編輯以上才能還原版本。管理員不會自動成為稽核員。', users: '稽核員在 auth.auditors 裡設定，和角色分開。依群組或應用程式角色比對時用的是伺服器啟動以來該使用者最近一次登入帶的群組和應用程式角色；之後沒登入過的人只能依名稱比對。' },
     method: {
       oidc: '單一登入（OIDC）',
       passkey: '通行密鑰',
@@ -77,6 +77,10 @@ const messages = {
       role: '角色',
       method: '登入方式',
       roleHint: '角色由 rackbook.yml 的 auth.roles 決定，每次請求時重新計算。',
+      roleFrom: '角色來自',
+      auditorFrom: '稽核員來自',
+      roleFromKinds: { identity: '帳號名稱', group: '群組', 'app-role': '應用程式角色' } as Record<string, string>,
+      claimsNote: (hours: number) => `這個角色是登入時從身分提供者的群組或應用程式角色讀到的。在那邊被移除後，下次登入就會生效，最遲 ${hours} 小時後這次登入的工作階段會結束（auth.session.claims_absolute）。`,
       passkeys: '通行密鑰',
       passkeysHint: '用指紋、臉部或裝置 PIN 登入，不必再經過單一登入。通行密鑰只是登入方式之一，遺失後仍可用單一登入。',
       passkeysEmpty: '尚未建立通行密鑰',
@@ -106,6 +110,7 @@ const messages = {
     users: {
       title: '使用者',
       description: '自伺服器啟動以來登入過的使用者，以及已登錄通行密鑰的使用者。角色在 rackbook.yml 的 auth.roles 中修改（經由 Git 審查），這裡無法變更。',
+      descriptionNoPasskeys: '自伺服器啟動以來登入過的使用者。角色在 rackbook.yml 的 auth.roles 中修改（經由 Git 審查），這裡無法變更。',
       id: '帳號',
       name: '姓名',
       role: '角色',
@@ -426,6 +431,7 @@ const messages = {
     suspectedBody: '儲存已暫停。如果確實不是金鑰，請勾選下方的選項後再儲存；這次確認會記錄在提交中。',
     notASecret: '不是金鑰',
     readOnly: '目前為唯讀模式，或你沒有修改權限，無法儲存。',
+    tokenCreatorClaims: '你的角色來自群組或應用程式角色，API 權杖無法繼承。請管理員在 auth.roles 裡依名稱（或 *@網域）列出你，之後再建立權杖。',
     historyRewritten: '遠端歷史被改寫，已暫停寫入，請聯絡管理員。',
     configError: '設定檔無法載入，已暫停寫入，請聯絡管理員。',
     conflictTitle: '記錄已被他人修改',
@@ -914,9 +920,14 @@ const messages = {
         tenant: '租用戶不符',
         claims: '身分提供者的宣告無法使用',
         passkey_failed: '通行密鑰驗證失敗',
-        passkey_needs_oidc: '通行密鑰須先透過單一登入',
       } as Record<string, string>,
-      roleChanged: '角色已變更',
+      roleChanged: (from: string, to: string, auditor: string, cause: string) =>
+        `${from === to ? `角色不變（${to}）` : `角色由「${from}」變更為「${to}」`}${auditor === 'on' ? '，並成為稽核員' : auditor === 'off' ? '，不再是稽核員' : ''}${cause ? `（${cause}）` : ''}`,
+      causes: { sign_in: '登入時發現', config: 'rackbook.yml 變更後' } as Record<string, string>,
+      overage: {
+        groups: '身分提供者給的群組太多，超出的部分沒有使用',
+        appRoles: '身分提供者給的應用程式角色太多，超出的部分沒有使用',
+      },
       writeRefused: (area: string, code: string) => `寫入遭拒（${area}）${code ? `：${code}` : ''}`,
       codes: {
         conflict: '已被他人先行修改',
@@ -1035,6 +1046,7 @@ const messages = {
     lastUsedHint: '設定了 --state-dir 時，重新啟動後仍會保留；否則只記錄伺服器上次重新啟動以來的使用情況',
     never: '從未',
     status: { active: '有效', revoked: '已撤銷', expired: '已過期' } as Record<string, string>,
+    claimsOnly: '你的角色來自群組或應用程式角色。權杖只沿用建立者依名稱（或 *@網域）取得的角色，所以現在建立的權杖不會有任何權限，建立會被拒絕。請管理員在 auth.roles 裡依名稱列出你。',
     warnings: {
       creator_no_role: '建立者已沒有角色，此權杖已失效',
       limited_by_creator: '建立者目前的角色低於權杖權限，實際權限已被降低',

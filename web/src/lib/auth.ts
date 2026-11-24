@@ -18,6 +18,13 @@ export type Account = {
   passkeyError?: string
   /** the language this person chose; absent = none chosen */
   locale?: string
+  /** which kinds of entry in auth.roles grant the role: identity, group, app-role */
+  roleFrom?: string[]
+  /** the same for the auditor capability (auth.auditors) */
+  auditorFrom?: string[]
+  /** the role was read from claims at sign-in: seconds this session lasts at most, and when it ends */
+  claimsAbsolute?: number
+  sessionEnds?: string
 }
 
 export type ManagedUser = {
@@ -32,6 +39,9 @@ export type ManagedUser = {
   lastSeen?: string
   passkeys: Passkey[]
 }
+
+/** A person who signs in through single sign-on (OIDC) has no passkey sign-in: the provider is their second factor. */
+export const isSSO = (method?: string) => method === 'oidc'
 
 export type UsersResponse = { users: ManagedUser[]; passkeysEnabled: boolean; passkeyError?: string }
 
