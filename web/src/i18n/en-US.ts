@@ -67,6 +67,10 @@ const messages = {
           title: 'Invalid sign-in request',
           body: 'This sign-in callback is missing required information, or does not match the browser that started it. Start again from here.',
         },
+        session_too_large: {
+          title: 'Couldn’t start your session',
+          body: 'Your account details are too long to fit in the sign-in cookie, so Rackbook cannot sign you in. Ask an admin to check the name and identity claims of your account.',
+        },
         claims: {
           title: 'Couldn’t confirm your identity',
           body: 'The identity provider’s response has no usable account identifier. Ask an admin to check auth.oidc.identity_claim and the token claims of the app registration.',
@@ -83,8 +87,8 @@ const messages = {
       roleHint: 'Your role comes from auth.roles in rackbook.yml and is recomputed on every request.',
       roleFrom: 'Role from',
       auditorFrom: 'Auditor from',
-      roleFromKinds: { identity: 'your account name', group: 'a group', 'app-role': 'an app role' } as Record<string, string>,
-      claimsNote: (hours: number) => `This role was read from your identity provider’s groups or app roles when you signed in. If you are removed there, it takes effect when you next sign in, and at the latest when this session ends, ${hours} ${pick(hours, 'hour', 'hours')} after you signed in (auth.session.claims_absolute).`,
+      roleFromKinds: { identity: 'your account (name or domain)', group: 'a group', 'app-role': 'an app role' } as Record<string, string>,
+      claimsNote: (hours: number) => `This role was read from your identity provider’s groups or app roles when you signed in. If you are removed there, it takes effect when you next sign in, and at the latest when this session ends, ${hours} ${pick(hours, 'hour', 'hours')} after you signed in (auth.session.claims_absolute). Access you gave to MCP clients follows the same rule: a given time after you approved it, it works only with the role you have by name.`,
       passkeys: 'Passkeys',
       passkeysHint: 'Sign in with a fingerprint, face or device PIN, without going through single sign-on. A passkey is just one way to sign in; if you lose it, you can still use single sign-on.',
       passkeysEmpty: 'No passkeys yet',
@@ -1052,7 +1056,6 @@ const messages = {
     lastUsedHint: 'Kept across restarts when --state-dir is set; otherwise only use since the server last restarted is recorded',
     never: 'Never',
     status: { active: 'Active', revoked: 'Revoked', expired: 'Expired' } as Record<string, string>,
-    claimsOnly: 'Your role comes from a group or an app role. A token keeps only the role its creator has by name (or *@domain), so a token made now would have no access, and creating it will be refused. Ask an admin to list you by name in auth.roles.',
     warnings: {
       creator_no_role: 'The creator no longer has a role, so this token is no longer valid',
       limited_by_creator: 'The creator’s current role is lower than the token’s access, so its effective access is reduced',

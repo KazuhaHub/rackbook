@@ -244,7 +244,7 @@ current config on every request, like the roles, so a change pulled from Git app
 - **Tokens and grants.** An API token carries the capability of the person who made it for as long as that
   person is on the list *by identity* (a name or `*@domain`; a `group:` or `app-role:` entry does not count, as
   it does not for the role, see [API tokens](#api-tokens)); removing them takes it away at the next request. An
-  OAuth/MCP grant keeps the claims of the sign-in that approved it. Neither can reach the activity or audit
+  OAuth/MCP grant keeps the claims of the sign-in that approved it for `claims_absolute`, then is evaluated by identity entries alone. Neither can reach the activity or audit
   routes anyway (tokens are limited to record paths).
 - **Older servers** ignore `auth.auditors` (the file is not decoded strictly), so on them it grants nothing.
   Bump the Rackbook version in the ledger's CI first so that CI checks the key.
@@ -963,15 +963,19 @@ Per provider:
   provider's scopes and list that scope in `auth.oidc.scopes`.
 
 **Too many groups, too many roles.** Only the first 40 values of each claim, at most 700 bytes, are kept (about
-19 Entra group IDs), so that the cookie stays small. Entra sends no `groups` claim at all to a person in more
-than 200 groups; the token has `_claim_names` with a `groups` entry (and often `hasgroups: true`) instead, and
-Rackbook detects both. In each case **the sign-in succeeds** with the values that fit (none, for Entra's
-overage: groups the token carries next to `hasgroups`/`_claim_names` are not used either), so a person whose
-only role is a group role is refused as having no role, and anyone else gets the roles their other
-entries give. The `login` (or `login_refused`) audit event carries `"groups": "overage"` and, for the roles
-claim, `"app_roles": "overage"`, and the server logs a warning. The way out is
-app roles, or, in Entra, *Token configuration, Add groups claim, Groups assigned to the application*, which
-sends only the groups the app uses.
+19 Entra group IDs), so that the cookie stays small. A list that is cut at that limit **keeps the values that fit**,
+in token order: a prefix can only lower a role, never raise it. Entra sends no `groups` claim at all to a person in
+more than 200 groups; the token has `_claim_names` with a `groups` entry (and often `hasgroups: true`) instead,
+and Rackbook detects both. Only this Entra overage drops **all** groups (a `groups` claim that comes next to
+those signals is not used either). In every case **the sign-in succeeds**: a person whose only role is a group
+role is refused as having no role (`login_refused`, reason `no_role`), anyone else gets the roles their other
+entries give. The `login` or `login_refused` audit event carries `"groups": "overage"` and, for the roles claim,
+`"app_roles": "overage"`, and the server logs a warning. The same marker appears when the whole session
+cookie would be too long (4096 bytes with name and attributes, which only happens with very long names and values
+that JSON has to escape): claim values are then dropped, last first from the longer list, until it fits; if even
+that is not enough the sign-in is refused (`login_refused`, reason `session_too_large`, with its own error page) rather
+than looping. The way out is app roles, or, in Entra, *Token configuration, Add groups claim, Groups assigned to the
+application*, which sends only the groups the app uses.
 
 **How fast a removal takes effect.** Claims are read only at sign-in. Someone removed from a group or app role at
 the provider keeps the role until their next sign-in, and `auth.session.claims_absolute` (default `24h`) bounds
@@ -985,8 +989,15 @@ a shorter `absolute` simply gives way to it. Like `idle` and `absolute` it is re
 says where the role comes from (*account name*, *a group*, *an app role*) and, for a claims session, when it
 ends at the latest. Removing someone *by name* in `rackbook.yml` applies at the next pull, unless a domain,
 group or app-role entry also matches them. A session issued before an upgrade has the normal limit until it
-ends. OAuth grants made through the built-in authorization server keep the claims of the sign-in that approved
-them (groups and roles) until they expire or are revoked.
+ends. If a config change makes the claims the only source of a role (`admin: [alice@x, group:ops]` loses `alice@x`),
+the first request of an open session after that decides it again: the session is marked as a claims session, one way,
+and its cookie is issued again, so it ends `claims_absolute` after it was issued (never decided while `rackbook.yml`
+does not load, because roles are then capped at viewer; the first look after it loads does). **OAuth grants** made
+through the built-in authorization server (MCP clients) keep the groups and roles of the sign-in that approved
+them for `claims_absolute` after the approval (a grant with no recorded approval time has none left); after
+that the grant is evaluated by identity entries alone, like an API token, so a role removed at the provider cannot
+outlive that bound by refreshing: a viewer by name falls back to viewer, and a person with no identity entry at all
+ends the grant at the next refresh. This applies to groups as well as app roles.
 
 **`audit/identities.json` and `role_changed`.** For every person who has signed in, Rackbook keeps in
 `<state-dir>/audit/identities.json` (mode 0600, replaced atomically through a temp file, fsync and rename)
@@ -1021,7 +1032,7 @@ With `--state-dir`, Rackbook keeps an append-only audit log in `<state-dir>/audi
 **What is recorded.**
 
 - Sign-ins: `login` and `logout` (identity, name, method, the effective role at sign-in, client address), and
-  `login_refused` with a `reason`: `no_role`, `tenant`, `claims` or `passkey_failed`. A sign-in whose groups or
+  `login_refused` with a `reason`: `no_role`, `tenant`, `claims`, `session_too_large` or `passkey_failed`. A sign-in whose groups or
   app roles could not be used whole carries `"groups": "overage"` or `"app_roles": "overage"`.
 - `role_changed`: a person's effective role or auditor flag differs from the one Rackbook stored for them:
   `from`, `to`, `auditor_from`, `auditor_to` and `cause` (`sign_in`, or `config` after a `rackbook.yml` change).

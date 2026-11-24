@@ -63,6 +63,10 @@ const messages = {
           title: '登入請求無效',
           body: '這次登入回呼缺少必要資訊，或與發起登入的瀏覽器不相符。請從這裡重新開始。',
         },
+        session_too_large: {
+          title: '無法開始工作階段',
+          body: '你的帳號資訊太長，放不進登入 Cookie，所以 Rackbook 無法讓你登入。請聯絡管理員檢查帳號的名稱和身分宣告。',
+        },
         claims: {
           title: '無法確認你的身分',
           body: '身分提供者回傳的資訊中沒有可用的帳號識別。請聯絡管理員檢查 auth.oidc.identity_claim 和應用程式註冊的權杖宣告。',
@@ -79,8 +83,8 @@ const messages = {
       roleHint: '角色由 rackbook.yml 的 auth.roles 決定，每次請求時重新計算。',
       roleFrom: '角色來自',
       auditorFrom: '稽核員來自',
-      roleFromKinds: { identity: '帳號名稱', group: '群組', 'app-role': '應用程式角色' } as Record<string, string>,
-      claimsNote: (hours: number) => `這個角色是登入時從身分提供者的群組或應用程式角色讀到的。在那邊被移除後，下次登入就會生效，最遲 ${hours} 小時後這次登入的工作階段會結束（auth.session.claims_absolute）。`,
+      roleFromKinds: { identity: '你的帳號（名稱或網域）', group: '群組', 'app-role': '應用程式角色' } as Record<string, string>,
+      claimsNote: (hours: number) => `這個角色是登入時從身分提供者提供的群組或應用程式角色讀到的。在那邊被移除後，下次登入就會生效，最遲在你登入後 ${hours} 小時，這次工作階段結束時生效（auth.session.claims_absolute）。你授權給 MCP 用戶端的存取也一樣：核准後過了這段時間，就只依你的帳號名稱對應的角色運作。`,
       passkeys: '通行密鑰',
       passkeysHint: '用指紋、臉部或裝置 PIN 登入，不必再經過單一登入。通行密鑰只是登入方式之一，遺失後仍可用單一登入。',
       passkeysEmpty: '尚未建立通行密鑰',
@@ -1046,7 +1050,6 @@ const messages = {
     lastUsedHint: '設定了 --state-dir 時，重新啟動後仍會保留；否則只記錄伺服器上次重新啟動以來的使用情況',
     never: '從未',
     status: { active: '有效', revoked: '已撤銷', expired: '已過期' } as Record<string, string>,
-    claimsOnly: '你的角色來自群組或應用程式角色。權杖只沿用建立者依名稱（或 *@網域）取得的角色，所以現在建立的權杖不會有任何權限，建立會被拒絕。請管理員在 auth.roles 裡依名稱列出你。',
     warnings: {
       creator_no_role: '建立者已沒有角色，此權杖已失效',
       limited_by_creator: '建立者目前的角色低於權杖權限，實際權限已被降低',

@@ -522,11 +522,14 @@ role editor (part 2) and local accounts. Where it differs from the text above:
   ids are GUIDs, app role values are names that Entra, Keycloak and Authentik keep apart by case. The prefix is not
   case-sensitive. Only the top-level `roles` claim is read. A subject login (`identity: subject`) still matches only
   `oidc:` entries, as with groups. Built-in OAuth grants carry the roles claim next to the groups, so an MCP client
-  of an app-role person works; like the groups they are a snapshot until the grant ends.
-- **Caps and cookie.** Both lists are capped at the first 40 values and 700 bytes. Two full lists did not fit the old
-  2 048-byte cookie limit, so the limit is 3 800 bytes (browsers keep 4 096 with name and attributes), and each list also
-  has an encoded-size budget of 900 bytes, so a value full of characters JSON escapes cannot push the cookie over it.
-- **Overage.** The `login` event gets `groups: "overage"` and `app_roles: "overage"` (new fields of the event, not
+  of an app-role person works. The claims of a grant are a snapshot of the approving sign-in, and they stop counting `claims_absolute` after the approval (`Server.effective`, from the grant's `created` time; a grant with none has none left, no migration): the grant is then evaluated by identity entries alone, like an API token, so a role removed at the provider cannot outlive that bound by refreshing (groups and app roles alike). A person with no identity entry ends the grant at the next refresh.
+- **Caps and cookie.** Both lists are capped at the first 40 values and 700 bytes (one shared helper, `roles.BoundClaim`, for
+  the session and the grants). Two full lists did not fit the old 2 048-byte cookie limit, so the whole `Set-Cookie` header
+  (name, value and attributes) may be 4 096 bytes, the session is encoded without HTML escaping, and each list has an
+  encoded-size budget of 900 bytes. Every sealed cookie is measured; if it is over, values are dropped from the longer list,
+  last first, and the login event carries the overage marker; if even empty lists do not fit the sign-in is a
+  `login_refused` with reason `session_too_large` and an error page, never a loop.
+- **Overage.** (Corrected 2026-11-23: a list cut at the cap keeps a prefix; only Entra's overage drops all groups.) The `login` event gets `groups: "overage"` and `app_roles: "overage"` (new fields of the event, not
   `detail`; the design's `groups: overage`). Entra's two signals, `_claim_names` with a `groups` key and `hasgroups` (a
   boolean or `"true"`), both mean no group is used. A list cut at 40 values or 700 bytes keeps the values that fit, in
   token order, instead of none: a prefix can only lower a role, and "none past the cap" would have taken away today's
@@ -545,14 +548,18 @@ role editor (part 2) and local accounts. Where it differs from the text above:
   `absolute` just gives way). It is read at start with `idle` and `absolute`. The flag is stored in the session (`fc`) and
   decided at sign-in as "the effective role is higher than the identity entries alone give, or the auditor capability
   exists only through claims": `Identity.FromClaims`, computed by `Authenticator.Evaluate`. An identity entry that grants
-  the same role wins; `*` counts as an identity entry. Sessions issued before the upgrade keep the normal limit.
+  the same role wins; `*` counts as an identity entry. Sessions issued before the upgrade keep the normal limit. The flag is decided again, one way, at the first request after a
+  config change (`observeConfig`), with the cookie issued again, so `admin: [alice@x, group:ops]` losing `alice@x` makes the
+  session end `claims_absolute` after it was issued; it is never decided while the config does not load (roles are capped
+  at viewer then, which would hide the claims), and a sign-in under a degraded config is not marked as looked at, so the first
+  look after it loads decides it.
 - **`identities.json`.** In `audit/` beside the chain (the retention and verification code ignore it), `{version,
   identities: {id: {name, role, auditor, lastSignIn, method}}}`, mode 0600, replaced atomically, 5 000 entries (about 750 KB), the
   oldest sign-in evicted first. The event is appended before the file is rewritten, so a crash repeats an event rather than
   losing one. A file that cannot be read is set aside as `identities.json.unreadable` and the store starts empty.
 - **`role_changed`.** Fields `from`, `to`, `auditor_from`, `auditor_to` and `cause`, which is `sign_in` or `config`, not
   the table's `because: config|claims`: the only moment claims change is a sign-in, so `claims` is `sign_in`. A first
-  sign-in writes no event. A sign-in refused for no role is compared too (and does not move the last sign-in). The lazy
+  sign-in writes no event. A sign-in refused for no role is compared too and moves the last sign-in time (without a session), so an older session cannot write the old role back as a change later. The lazy
   comparison runs in `Identify`, once for each session (person and issue time) and role policy generation (the
   `*roles.Policy` the authenticator compiles when the config object changes), remembered in memory (bounded at
   20 000); a restart costs one extra comparison. Nothing is compared while the latest `rackbook.yml` does not load (roles
@@ -565,13 +572,10 @@ role editor (part 2) and local accounts. Where it differs from the text above:
   in `RoleForVia`; `oauth:` and `mcphub:` never match because the creator's recorded method is the console's. Creation
   answers `403 creator_role_from_claims` when the identity-only role is below what the token needs (viewer for `read`,
   editor for `write`) and the creator's own role is not: which covers a role with no identity entry at all, and a
-  viewer-by-name who is admin by group asking for a write token. Push mode on a token made by an admin who is admin
-  only by group is not refused; it keeps the existing `push_needs_admin` warning. The auditor capability of a token
+  viewer-by-name who is admin by group asking for a write token. A push token needs admin by identity: one made by an admin who is admin only by group is refused with the same code. The auditor capability of a token
   follows identity entries the same way.
 
-Not done in part 1: the role editor; local accounts and the `local:` gate of design-local-accounts.md section 7; bounding
-a built-in OAuth grant's claim snapshot by `claims_absolute` (a grant keeps the claims of the sign-in that approved it
-until it expires or is revoked, as it kept groups before); reading the audit log or `identities.json` from the CLI or MCP.
+Not done in part 1: the role editor; local accounts and the `local:` gate of design-local-accounts.md section 7; reading the audit log or `identities.json` from the CLI or MCP.
 
 ## 5. Phase 2b: SCIM (later)
 

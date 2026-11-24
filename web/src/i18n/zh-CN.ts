@@ -62,6 +62,10 @@ const messages = {
           title: '登录请求无效',
           body: '这次登录回调缺少必要信息，或与发起登录的浏览器不匹配。请从这里重新开始。',
         },
+        session_too_large: {
+          title: '无法开始会话',
+          body: '你的账号信息太长，放不进登录 Cookie，所以 Rackbook 无法让你登录。请联系管理员检查账号的名称和身份声明。',
+        },
         claims: {
           title: '无法确认你的身份',
           body: '身份提供方返回的信息里没有可用的账号标识。请联系管理员检查 auth.oidc.identity_claim 和应用注册的令牌声明。',
@@ -78,8 +82,8 @@ const messages = {
       roleHint: '角色由 rackbook.yml 的 auth.roles 决定，每次请求时重新计算。',
       roleFrom: '角色来自',
       auditorFrom: '审计员来自',
-      roleFromKinds: { identity: '账号名称', group: '用户组', 'app-role': '应用角色' } as Record<string, string>,
-      claimsNote: (hours: number) => `这个角色是登录时从身份提供方的用户组或应用角色里读到的。在那边被移出后，下次登录就会生效，最迟 ${hours} 小时后本次登录会话结束（auth.session.claims_absolute）。`,
+      roleFromKinds: { identity: '你的账号（名称或域名）', group: '用户组', 'app-role': '应用角色' } as Record<string, string>,
+      claimsNote: (hours: number) => `这个角色是登录时从身份提供方提供的用户组或应用角色里读到的。在那边被移出后，下次登录就会生效，最迟在你登录后 ${hours} 小时，本次会话结束时生效（auth.session.claims_absolute）。你授权给 MCP 客户端的访问也一样：批准后过了这段时间，它只按你的账号名称对应的角色工作。`,
       passkeys: '通行密钥',
       passkeysHint: '用指纹、面容或设备 PIN 登录，无需再经过单点登录。通行密钥只是登录方式之一，丢失后仍可用单点登录。',
       passkeysEmpty: '还没有通行密钥',
@@ -1046,7 +1050,6 @@ const messages = {
     lastUsedHint: '设置了 --state-dir 时跨重启保留；否则只记录服务器上次重启以来的使用',
     never: '从未',
     status: { active: '有效', revoked: '已撤销', expired: '已过期' } as Record<string, string>,
-    claimsOnly: '你的角色来自用户组或应用角色。令牌只沿用创建者按名称（或 *@域名）得到的角色，所以现在创建的令牌没有权限，创建会被拒绝。请管理员在 auth.roles 里按名称列出你。',
     warnings: {
       creator_no_role: '创建者已没有角色，此令牌已失效',
       limited_by_creator: '创建者当前的角色低于令牌权限，实际权限被降低',
