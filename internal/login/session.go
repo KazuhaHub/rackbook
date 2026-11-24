@@ -25,7 +25,7 @@ const (
 	// enrolWindow is how recent an OIDC login must be to add a passkey.
 	enrolWindow = 10 * time.Minute
 
-	maxCookieBytes = 2048
+	maxCookieBytes = 3800 // a browser keeps cookies of up to 4096 bytes, name and attributes included
 )
 
 var (
@@ -38,45 +38,64 @@ var (
 	errUnavailable = errors.New("passkey file unavailable")
 )
 
-// Bounds on the groups kept in the session cookie, which must stay small.
+// Bounds on each claim list (groups, app roles) kept in the session cookie,
+// which must stay small. The raw bytes are what the docs promise; the encoded
+// size is the safety net for values that JSON escapes (quotes, backslashes), so
+// that two full lists plus the rest of the session always fit maxCookieBytes.
 const (
-	maxSessionGroups     = 40
-	maxSessionGroupBytes = 700 // total
+	maxSessionClaims       = 40
+	maxSessionClaimBytes   = 700 // total, of the raw values
+	maxSessionClaimEncoded = 900 // total, as JSON strings with their commas
 )
 
-// boundGroups keeps the first groups that fit the cookie. truncated says some were dropped.
-func boundGroups(in []string) (out []string, truncated bool) {
-	total := 0
+// boundClaim keeps the first values that fit the cookie. truncated says some were
+// dropped for size; values that are empty, longer than 128 bytes or not UTF-8 are
+// skipped without counting as a cut. trim removes surrounding spaces (group ids,
+// which match without regard to them); app roles are kept exactly as sent.
+func boundClaim(in []string, trim bool) (out []string, truncated bool) {
+	total, encoded := 0, 0
 	for _, g := range in {
-		g = strings.TrimSpace(g)
-		if g == "" || len(g) > 128 || !utf8.ValidString(g) {
+		if trim {
+			g = strings.TrimSpace(g)
+		}
+		if strings.TrimSpace(g) == "" || len(g) > 128 || !utf8.ValidString(g) {
 			continue
 		}
-		if len(out) >= maxSessionGroups || total+len(g) > maxSessionGroupBytes {
+		enc, _ := json.Marshal(g)
+		if len(out) >= maxSessionClaims || total+len(g) > maxSessionClaimBytes || encoded+len(enc)+1 > maxSessionClaimEncoded {
 			return out, true
 		}
 		total += len(g)
+		encoded += len(enc) + 1
 		out = append(out, g)
 	}
 	return out, false
 }
 
+// boundGroups is boundClaim for the groups claim.
+func boundGroups(in []string) (out []string, truncated bool) { return boundClaim(in, true) }
+
+// boundAppRoles is boundClaim for the roles claim.
+func boundAppRoles(in []string) (out []string, truncated bool) { return boundClaim(in, false) }
+
 // session is the signed payload of the session cookie. It holds no role: the
 // role is evaluated from auth.roles on every request.
 type session struct {
-	V      int      `json:"v"`
-	ID     string   `json:"id"`
-	Name   string   `json:"name,omitempty"`
-	Method string   `json:"m"`
-	Issued int64    `json:"iat"`
-	Seen   int64    `json:"seen"`
-	OIDCAt int64    `json:"oidc,omitempty"` // when the user last logged in with OIDC (passkey enrolment)
-	Iss    string   `json:"iss,omitempty"`  // oidc sessions: the issuer that authenticated the login; a session from another issuer is refused
-	Clm    string   `json:"clm,omitempty"`  // oidc sessions: the claim the identity came from ("sub" for a subject identity); checked by /infra
-	Tid    string   `json:"tid,omitempty"`  // oidc sessions: the ID token's tenant (tid), lower case; checked by /infra
-	Cli    string   `json:"cli,omitempty"`  // oidc sessions: the client ID of that login (checked by /infra, which pins it)
-	Groups []string `json:"grp,omitempty"`  // oidc sessions: the ID token's groups claim (bounded), for group: role entries
-	Cred   string   `json:"cred,omitempty"` // passkey sessions: the credential id used, so deleting it ends the session
+	V          int      `json:"v"`
+	ID         string   `json:"id"`
+	Name       string   `json:"name,omitempty"`
+	Method     string   `json:"m"`
+	Issued     int64    `json:"iat"`
+	Seen       int64    `json:"seen"`
+	OIDCAt     int64    `json:"oidc,omitempty"` // when the user last logged in with OIDC (passkey enrolment)
+	Iss        string   `json:"iss,omitempty"`  // oidc sessions: the issuer that authenticated the login; a session from another issuer is refused
+	Clm        string   `json:"clm,omitempty"`  // oidc sessions: the claim the identity came from ("sub" for a subject identity); checked by /infra
+	Tid        string   `json:"tid,omitempty"`  // oidc sessions: the ID token's tenant (tid), lower case; checked by /infra
+	Cli        string   `json:"cli,omitempty"`  // oidc sessions: the client ID of that login (checked by /infra, which pins it)
+	Groups     []string `json:"grp,omitempty"`  // oidc sessions: the ID token's groups claim (bounded), for group: role entries
+	Roles      []string `json:"rol,omitempty"`  // oidc sessions: the ID token's roles claim (bounded), for app-role: role entries
+	FromClaims bool     `json:"fc,omitempty"`   // oidc sessions: the role or auditor capability depended on groups or app roles at sign-in (auth.session.claims_absolute applies)
+	Cred       string   `json:"cred,omitempty"` // passkey sessions: the credential id used, so deleting it ends the session
 }
 
 type codec struct {
@@ -121,6 +140,15 @@ func (c codec) open(v string) (session, error) {
 		return session{}, errBadCookie
 	}
 	return s, nil
+}
+
+// absoluteLimit is the absolute lifetime of s: claimsAbsolute for a session whose
+// role came from claims, if that is shorter than the normal limit.
+func (s session) absoluteLimit(absolute, claimsAbsolute time.Duration) time.Duration {
+	if s.FromClaims && claimsAbsolute > 0 && claimsAbsolute < absolute {
+		return claimsAbsolute
+	}
+	return absolute
 }
 
 // check applies the idle and absolute limits.

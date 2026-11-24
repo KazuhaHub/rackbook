@@ -29,6 +29,7 @@ import (
 	"github.com/kazuhahub/rackbook/internal/login/testidp"
 	"github.com/kazuhahub/rackbook/internal/prefs"
 	"github.com/kazuhahub/rackbook/internal/testutil"
+	"github.com/kazuhahub/rackbook/internal/tokens"
 )
 
 const (
@@ -80,16 +81,19 @@ func (l *logBuf) Write(p []byte) (int, error) {
 func (l *logBuf) String() string { l.mu.Lock(); defer l.mu.Unlock(); return l.b.String() }
 
 type options struct {
-	passkeys  bool
-	remote    bool // data repo with a bare origin
-	nogit     bool
-	roles     string // YAML under auth:
-	tenants   []string
-	readOnly  bool
-	uv        string
-	cfgExtras string
-	oidc      string            // extra lines under auth.oidc
-	files     map[string]string // extra files in the data repository
+	passkeys bool // auth.passkeys on, and the passkey code built (the seam of Options.ssoPasskeys)
+	// passkeysIgnored is auth.passkeys on as a deployment writes it: ignored under OIDC.
+	passkeysIgnored bool
+	remote          bool // data repo with a bare origin
+	nogit           bool
+	roles           string // YAML under auth:
+	tenants         []string
+	readOnly        bool
+	uv              string
+	cfgExtras       string
+	session         string            // extra lines under auth.session, with their 4-space indent
+	oidc            string            // extra lines under auth.oidc
+	files           map[string]string // extra files in the data repository
 }
 
 func git(t *testing.T, dir string, args ...string) string {
@@ -159,7 +163,7 @@ func newEnv(t *testing.T, o options) *env {
 		tenants = "[" + tenant + "]"
 	}
 	pk := "false"
-	if o.passkeys {
+	if o.passkeys || o.passkeysIgnored {
 		pk = "true"
 		if o.uv != "" {
 			pk = "{user_verification: " + o.uv + "}"
@@ -170,7 +174,7 @@ func newEnv(t *testing.T, o options) *env {
 	if err != nil {
 		t.Fatal(err)
 	}
-	block := "\nauth:\n  mode: oidc\n  oidc:\n    issuer: " + e.idpS.URL + "\n    client_id: " + clientID + "\n    allowed_tenants: " + tenants + "\n" + o.oidc + "  passkeys: " + pk + "\n  session:\n    idle: 12h\n    absolute: 7d\n" + roles + o.cfgExtras
+	block := "\nauth:\n  mode: oidc\n  oidc:\n    issuer: " + e.idpS.URL + "\n    client_id: " + clientID + "\n    allowed_tenants: " + tenants + "\n" + o.oidc + "  passkeys: " + pk + "\n  session:\n    idle: 12h\n    absolute: 7d\n" + o.session + roles + o.cfgExtras
 	if err := os.WriteFile(cfgPath, append(b, []byte(block)...), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -206,7 +210,7 @@ func newEnv(t *testing.T, o options) *env {
 	}
 	ps := &prefs.Store{}
 	e.audit = filepath.Join(t.TempDir(), "audit")
-	al, err := audit.Open(e.audit, audit.Options{Logger: logger})
+	al, err := audit.Open(e.audit, audit.Options{Logger: logger, Now: e.clk.Now})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -216,6 +220,7 @@ func newEnv(t *testing.T, o options) *env {
 		Login: cfg.Auth.Login, BaseURL: e.base, Key: testKey, ClientSecret: clientSecret,
 		Config: st.Config, HTTPClient: e.idpS.Client(), ReadOnly: o.readOnly, Logger: logger, Now: e.clk.Now,
 	}
+	lo.ssoPasskeys = o.passkeys
 	if cfg.Auth.Passkeys.Enabled {
 		lo.Files = st
 	}
@@ -229,7 +234,7 @@ func newEnv(t *testing.T, o options) *env {
 	}
 	e.svc.Bind(authn)
 	web := fstest.MapFS{"index.html": {Data: []byte("<!doctype html><title>console</title>")}, "favicon.svg": {Data: []byte("<svg xmlns=\"http://www.w3.org/2000/svg\"/>")}}
-	e.apiOpts = api.Options{Store: st, Auth: authn, BaseURL: e.base, Web: web, Logger: logger, Login: e.svc, Prefs: ps}
+	e.apiOpts = api.Options{Store: st, Auth: authn, BaseURL: e.base, Web: web, Logger: logger, Login: e.svc, Prefs: ps, Audit: al, Tokens: &tokens.Registry{Store: st}}
 	handler := api.New(e.apiOpts)
 	h.Store(&handler)
 	return e

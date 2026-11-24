@@ -715,7 +715,7 @@ func TestBoundGroups(t *testing.T) {
 	for _, g := range out {
 		total += len(g)
 	}
-	if !cut || total > maxSessionGroupBytes || len(out) > maxSessionGroups {
+	if !cut || total > maxSessionClaimBytes || len(out) > maxSessionClaims {
 		t.Fatalf("%d groups, %d bytes, cut %v", len(out), total, cut)
 	}
 }
