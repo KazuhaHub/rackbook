@@ -99,6 +99,10 @@ const (
 	// KindAnchorInvalid: an anchor that cannot be one: its day is in the future, or its day or
 	// seq does not come after the anchor before it.
 	KindAnchorInvalid = "anchor_invalid"
+	// KindAnchorUnreadable: the anchors could not be read or checked at all (the file at the tip is
+	// not a regular file, the history could not be checked, git's answer did not fit, a version is too
+	// large). The reason is in the problem.
+	KindAnchorUnreadable = "anchor_unreadable"
 	// KindAnchorMore: more anchors are wrong than one pass records one by one.
 	KindAnchorMore = "anchor_more"
 )
@@ -118,14 +122,12 @@ type AnchorSummary struct {
 type AnchorOptions struct {
 	// RetentionMonths is the server's --audit-retention-months. With 0 (keep everything) no
 	// anchor is ever skipped. With more, an anchor is skipped as removed by retention only if ALL
-	// of these hold: its seq is below the first line kept; its day is on or before the first day
-	// of the oldest month file kept (the writer can anchor a line of the month before just after
-	// midnight on the 1st); that oldest month is not newer than the month retention would keep
-	// from now, with a month of slack (retention never deletes a month younger than its cutoff, so
-	// if such months are gone that is not retention); and it is older in the file than the newest
-	// anchor that matched the log. head.json is not consulted: it can be rewritten together with the
-	// log. What a deletion that looks like retention can still hide is at most the lines retention
-	// itself would drop, plus the first day of the oldest kept month.
+	// of these hold: its seq is below the first line kept; its day is on or before the first day of
+	// the cutoff month (now minus N months; the writer can anchor a line of the month before just
+	// after midnight on the 1st); and it comes before the newest anchor that matched the log.
+	// head.json is not consulted: it can be rewritten together with the log. What a deletion that
+	// looks like retention can still hide is at most the lines retention itself would drop, plus the
+	// first day of the cutoff month.
 	RetentionMonths int
 	// Now is the time for "a day in the future" and for the retention cutoff; zero is time.Now().
 	Now time.Time
@@ -231,17 +233,18 @@ func evaluateAnchors(dir string, idx *offsetIndex, lastSeq int64, anchors Anchor
 		}
 	}
 
-	// Retention: what may be skipped, if anything.
+	// Retention: what may be skipped, if anything. Retention deletes whole month files older than
+	// the cutoff month (now minus N months), so what it can take away is lines from before that
+	// month began; an anchor is for a line of its own day or an earlier one, and the writer can anchor
+	// the last line of the month before just after midnight on the 1st. Which month files are present
+	// is not consulted beyond where the kept log begins: that can be forged.
 	skipBelow, skipDay := int64(0), ""
 	if opt.RetentionMonths > 0 && newest >= 0 && len(files) > 0 {
-		m := fileRe.FindStringSubmatch(files[0])[1]
-		if t, err := time.Parse("2006-01", m); err == nil && monthIndex(t) <= monthIndex(now)-opt.RetentionMonths+1 {
-			if f, err := os.Open(filepath.Join(dir, files[0])); err == nil {
-				skipBelow, _ = firstSeq(f)
-				f.Close()
-			}
-			skipDay = m + "-01"
+		if f, err := os.Open(filepath.Join(dir, files[0])); err == nil {
+			skipBelow, _ = firstSeq(f)
+			f.Close()
 		}
+		skipDay = time.Date(now.Year(), now.Month()-time.Month(opt.RetentionMonths), 1, 0, 0, 0, 0, time.UTC).Format("2006-01-02")
 	}
 
 	var out []Problem
@@ -301,6 +304,26 @@ func RewrittenAnchor(commit string, base, content []byte) Problem {
 	return Problem{Seq: seq, Kind: KindAnchorRewritten,
 		Detail:      "commit " + commit + " changed or removed lines that were already in " + AnchorsPath,
 		Fingerprint: fingerprint(KindAnchorRewritten, seq, "", commit)}
+}
+
+// RewrittenAnchorBecause is the problem for a commit whose anchor file is no regular file (a
+// directory, a symbolic link, a submodule) at that commit: reason is gitstore.ReasonNotRegular.
+func RewrittenAnchorBecause(commit, reason string) Problem {
+	return Problem{Seq: 1, Kind: KindAnchorRewritten,
+		Detail:      "commit " + commit + " left " + AnchorsPath + " as something that is not a regular file (" + reason + ")",
+		Fingerprint: fingerprint(KindAnchorRewritten, 1, "", commit+"|"+reason)}
+}
+
+// UnreadableAnchors is the problem for anchors that could not be read or checked. reason is a
+// short code (not_regular, too_large, history_error, history_desync, read_error) and tip the
+// commit it concerns ("" when not known); the fingerprint is both, so one failure is recorded once
+// per tip.
+func UnreadableAnchors(reason, tip, detail string) Problem {
+	d := "the anchors could not be read or checked (" + reason + ")"
+	if detail != "" {
+		d += ": " + detail
+	}
+	return Problem{Seq: 1, Kind: KindAnchorUnreadable, Detail: d, Fingerprint: fingerprint(KindAnchorUnreadable, 1, "", reason+"|"+tip)}
 }
 
 // firstChangedSeq is the seq of the first anchor of old that is not the same line in now; the

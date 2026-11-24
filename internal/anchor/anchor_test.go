@@ -2,6 +2,8 @@ package anchor
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -579,6 +581,151 @@ func TestAMergeTakingAForgedAnchorFileIsRecordedThroughTheServerCheck(t *testing
 		}
 	}
 	if !strings.Contains(got, merge) {
+		t.Fatalf("%+v", e.log.Status())
+	}
+}
+
+func problemsOfKind(st audit.Status, kind string) []audit.Problem {
+	var out []audit.Problem
+	for _, p := range st.Problems {
+		if p.Kind == kind {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// pushOdd pushes a commit that makes .rackbook/audit-anchors what mk makes of it, and has the server pull it.
+func pushOdd(t *testing.T, e *env, mk func(path string)) {
+	t.Helper()
+	laptop := filepath.Join(filepath.Dir(e.server), "laptop")
+	if _, err := os.Stat(laptop); err != nil {
+		sh(t, filepath.Dir(e.server), "clone", e.bare, laptop)
+	}
+	sh(t, laptop, "pull", "-q")
+	p := filepath.Join(laptop, filepath.FromSlash(audit.AnchorsPath))
+	_ = os.RemoveAll(p)
+	_ = os.MkdirAll(filepath.Dir(p), 0o755)
+	mk(p)
+	sh(t, laptop, "add", "-A", ".")
+	sh(t, laptop, "commit", "-qm", "odd")
+	sh(t, laptop, "push", "-q", "origin", "main")
+	if err := e.store.Pull(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestAnAnchorFileThatIsNoRegularFileAtTheTipIsRecordedNotSkipped(t *testing.T) {
+	for name, mk := range map[string]func(string){
+		"a symbolic link": func(p string) {
+			if err := os.Symlink("elsewhere", p); err != nil {
+				t.Skip("no symbolic links")
+			}
+		},
+		"a directory": func(p string) {
+			if err := os.MkdirAll(p, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(p, "x"), []byte("x\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			e := newEnv(t, "audit:\n  anchor: daily\n")
+			e.activity(2)
+			e.tick(t)
+			pushOdd(t, e, mk)
+			e.a.Verify(true)
+			st := e.log.Status()
+			un := problemsOfKind(st, audit.KindAnchorUnreadable)
+			if st.OK || len(un) != 1 || !strings.Contains(un[0].Detail, "(not_regular)") {
+				t.Fatalf("%+v", st)
+			}
+			if len(problemsOfKind(st, audit.KindAnchorRewritten)) != 1 {
+				t.Fatalf("the commit is refused as well: %+v", st)
+			}
+			// once per tip, however often it is checked, and acknowledged like any other problem
+			n := countEvents(t, e.logDir, audit.ChainProblemEvent)
+			e.a.Verify(false)
+			e.a.Verify(true)
+			if countEvents(t, e.logDir, audit.ChainProblemEvent) != n {
+				t.Fatal("recorded again for the same tip")
+			}
+			seq, _ := e.log.Head()
+			if err := e.log.Ack(nil, seq); err != nil {
+				t.Fatal(err)
+			}
+			if !e.log.Status().OK {
+				t.Fatal("acknowledged")
+			}
+		})
+	}
+}
+
+// failingHistory is a store whose history check fails as asked.
+type failingHistory struct {
+	Files
+	err error
+	tip string
+}
+
+func (f *failingHistory) CheckStateFileHistory(context.Context, string, string) (*gitstore.StateCheck, error) {
+	return &gitstore.StateCheck{Tip: f.tip}, f.err
+}
+
+func TestAHistoryCheckThatFailsIsRecordedWhenItRepeatsForTheSameTip(t *testing.T) {
+	e := newEnv(t, "audit:\n  anchor: daily\n")
+	e.activity(2)
+	e.tick(t)
+	var logs strings.Builder
+	f := &failingHistory{Files: e.store, err: errors.New("git: timed out"), tip: "aaaa"}
+	e.a = &Anchorer{Log: e.log, Store: f, Now: e.clk.Now, Logger: slog.New(slog.NewTextHandler(&logs, nil))}
+	count := func() int { return len(problemsOfKind(e.log.Status(), audit.KindAnchorUnreadable)) }
+
+	e.a.Verify(true) // the first time only warns: it may be a moment's trouble
+	if count() != 0 || !strings.Contains(logs.String(), "it is recorded if it happens again") {
+		t.Fatalf("%d, %s", count(), logs.String())
+	}
+	e.a.Verify(true) // the same failure for the same tip: recorded
+	if count() != 1 {
+		t.Fatalf("%+v", e.log.Status())
+	}
+	if p := problemsOfKind(e.log.Status(), audit.KindAnchorUnreadable)[0]; !strings.Contains(p.Detail, "(history_error)") {
+		t.Fatalf("%+v", p)
+	}
+	e.a.Verify(true)
+	e.a.Verify(true)
+	if count() != 1 {
+		t.Fatal("recorded more than once for one tip")
+	}
+	// a new tip that fails twice is a new problem
+	f.tip = "bbbb"
+	e.a.Verify(true)
+	e.a.Verify(true)
+	if count() != 2 {
+		t.Fatalf("%+v", e.log.Status())
+	}
+	// when it works again the count starts over
+	e.a.Store = e.store
+	e.a.Verify(true)
+	e.a.Store = f
+	f.tip = "cccc"
+	e.a.Verify(true)
+	if count() != 2 {
+		t.Fatalf("a failure after a success is a first failure: %d", count())
+	}
+}
+
+func TestADesyncedGitAnswerIsRecordedAtOnce(t *testing.T) {
+	e := newEnv(t, "audit:\n  anchor: daily\n")
+	e.activity(2)
+	e.tick(t)
+	f := &failingHistory{Files: e.store, err: fmt.Errorf("%w: asked for x", gitstore.ErrStateDesync), tip: "aaaa"}
+	e.a = &Anchorer{Log: e.log, Store: f, Now: e.clk.Now}
+	e.a.Verify(true)
+	un := problemsOfKind(e.log.Status(), audit.KindAnchorUnreadable)
+	if len(un) != 1 || !strings.Contains(un[0].Detail, "(history_desync)") {
 		t.Fatalf("%+v", e.log.Status())
 	}
 }

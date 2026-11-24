@@ -283,7 +283,7 @@ func forgedHead(t *testing.T, retention int) (*Log, string, []Anchor) {
 			e.Time = at(2026, m, d)
 			l.Record(e)
 		}
-		anchors = append(anchors, anchorOf(t, l, "2026-"+pad(int(m))+"-03"))
+		anchors = append(anchors, anchorOf(t, l, "2026-"+pad(int(m))+"-01"))
 	}
 	l.Close()
 	files, _ := listFiles(dir)
@@ -329,8 +329,8 @@ func TestAForgedHeadFileCannotHideAnchorsWhenTheServerKeepsEverything(t *testing
 }
 
 func TestAForgedHeadFileCannotHideAnchorsOfTheKeptMonths(t *testing.T) {
-	// With a retention, only anchors of months older than the oldest file kept may be skipped, and
-	// never the newest.
+	// With a retention of 2 in November the cutoff month is September: only anchors dated on or
+	// before 2026-09-01 may be skipped, and never the newest that matched.
 	l, dir, anchors := forgedHead(t, 2)
 	rev, err := l.ReviewAnchors(anchorFile(anchors...), nil, full)
 	if err != nil || rev.Summary.Skipped != 2 || rev.Summary.Checked != 2 {
@@ -339,9 +339,9 @@ func TestAForgedHeadFileCannotHideAnchorsOfTheKeptMonths(t *testing.T) {
 	if st := l.Status(); !st.OK {
 		t.Fatalf("August and September are older than the kept October: %+v", st)
 	}
-	// the same files with an anchor day inside the oldest kept month, whose line is gone: a problem
+	// the same files with an anchor day after the first of the cutoff month, whose line is gone: a problem
 	moved := append([]Anchor{}, anchors...)
-	moved[0].Day = "2026-10-02" // the 1st itself would be allowed: the writer can anchor the month before just after midnight
+	moved[0].Day = "2026-09-02" // the 1st of the cutoff month itself would be allowed: the writer can anchor the month before just after midnight
 	rep, err := VerifyWithAnchors(dir, anchorFile(moved...), AnchorOptions{RetentionMonths: 2, Now: at(2026, 11, 22)})
 	if err != nil || rep.OK || rep.Problems[0].Kind != KindAnchorMismatch || rep.Problems[0].Seq != anchors[0].Seq {
 		t.Fatalf("%+v %v", rep, err)

@@ -10,9 +10,11 @@ package anchor
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -60,6 +62,7 @@ type Anchorer struct {
 	checked   string          // the commit the history of the anchor file was last checked up to (memory only)
 	warned    map[string]bool // problems with the setup, said once
 	malformed string          // the malformed lines last reported
+	failures  map[string]int  // checks that failed, by reason and tip: a repeat is recorded
 }
 
 func (a *Anchorer) log() *slog.Logger {
@@ -98,13 +101,22 @@ func (a *Anchorer) clearWarning(key string) {
 }
 
 // Verify checks the anchors against the audit log, and has a problem that is not in the chain yet
-// written into it. It reads the anchor file at the tip of the data repository, and walks the
-// commits that touch it, on every side of every merge, to see that each is its parent's file with lines
-// appended (anchor_rewritten otherwise). full checks every anchor and the whole history: at the start. After
-// a pull only the anchors not verified before in this process, and the newest, are looked up, and
-// the history is walked from the commit it was last checked up to (from the start again when that
-// commit is no longer an ancestor of the tip). It does not depend on audit.anchor: an anchor file
-// left behind when the setting was switched off still catches tampering.
+// written into it. It reads the anchor file at the tip of the data repository, and checks every
+// commit that touches it, on every side of every merge, to see that each is its parent's file with
+// lines appended and a regular file of reasonable size (anchor_rewritten otherwise). full checks
+// every anchor and the whole history: at the start. After a pull only the anchors not verified
+// before in this process, and the newest that matched, are looked up, and the history is checked
+// from the commit it was last checked up to (from the start again when that commit is no longer an
+// ancestor of the tip). It does not depend on audit.anchor: an anchor file left behind when the
+// setting was switched off still catches tampering.
+//
+// A check that cannot be done must not pass quietly: it is recorded as anchor_unreadable (reason and
+// tip are its fingerprint, so once per tip), and goes through the banner and acknowledgement like any
+// other problem. A reason that git or the disk can cause for a moment (a timeout, a failed command)
+// only warns the first time; if the same check fails again for the same tip it is recorded. A
+// reason that is no accident (the file is not a regular file, git's answer does not fit what was
+// asked, a version is too large) is recorded at once. Problems found in the same pass are recorded
+// as well.
 func (a *Anchorer) Verify(full bool) {
 	if a.Log == nil || a.Store == nil || !a.Store.GitEnabled() {
 		return
@@ -117,25 +129,31 @@ func (a *Anchorer) Verify(full bool) {
 	if full {
 		after = ""
 	}
-	if h, err := a.Store.CheckStateFileHistory(context.Background(), audit.AnchorsPath, after); err != nil {
-		a.log().Warn("audit anchors: could not check the history of the anchor file", "err", err)
-	} else {
+	checkedOK := false
+	h, err := a.Store.CheckStateFileHistory(context.Background(), audit.AnchorsPath, after)
+	if h != nil {
 		tip = h.Tip
-		seen := map[string]bool{}
-		for _, v := range h.Violations {
-			if !seen[v.Commit] { // one problem per commit, however many of its parents differ
-				seen[v.Commit] = true
-				extra = append(extra, audit.RewrittenAnchor(v.Commit, v.Base, v.Content))
-			}
+	}
+	if err != nil {
+		if p, ok := a.failure(err, "history_error", tip, "the history of the anchor file could not be checked"); ok {
+			extra = append(extra, p)
 		}
+	} else {
+		checkedOK = true
+		a.clearFailure("history_error")
+		extra = append(extra, ProblemsOf(h)...)
 	}
 	b, _, err := a.Store.StateFile(audit.AnchorsPath)
 	if err != nil {
-		a.log().Warn("audit anchors: could not read the anchor file", "err", err)
-		return
+		if p, ok := a.failure(err, "read_error", tip, "the anchor file could not be read"); ok {
+			extra = append(extra, p)
+		}
+		b = nil
+	} else {
+		a.clearFailure("read_error")
 	}
 	if len(b) == 0 && len(extra) == 0 {
-		if tip != "" {
+		if checkedOK {
 			a.mu.Lock()
 			a.checked = tip
 			a.mu.Unlock()
@@ -148,7 +166,7 @@ func (a *Anchorer) Verify(full bool) {
 		return
 	}
 	a.mu.Lock()
-	if tip != "" {
+	if checkedOK {
 		a.checked = tip
 	}
 	m := ""
@@ -161,6 +179,70 @@ func (a *Anchorer) Verify(full bool) {
 	if changed && m != "" {
 		a.log().Warn("audit anchors: lines of the anchor file are not anchors; they are left as they are", "lines", rev.Summary.Malformed)
 	}
+}
+
+// ProblemsOf turns what a history check refused into problems, one per commit however many of
+// its parents differ.
+func ProblemsOf(c *gitstore.StateCheck) []audit.Problem {
+	var out []audit.Problem
+	seen := map[string]bool{}
+	for _, v := range c.Violations {
+		if seen[v.Commit] {
+			continue
+		}
+		seen[v.Commit] = true
+		switch v.Reason {
+		case gitstore.ReasonRewritten:
+			out = append(out, audit.RewrittenAnchor(v.Commit, v.Base, v.Content))
+		case gitstore.ReasonTooLarge:
+			out = append(out, audit.UnreadableAnchors("too_large", v.Commit, "commit "+v.Commit+" has a version above the size limit"))
+		default:
+			out = append(out, audit.RewrittenAnchorBecause(v.Commit, v.Reason))
+		}
+	}
+	return out
+}
+
+// failure decides what a failed read or check comes to. A failure that is no accident is returned as
+// a problem at once; one that may be an accident only warns, and is returned as a problem when the
+// same one comes again for the same tip. temporary is the reason code of a failure that may be an accident.
+func (a *Anchorer) failure(err error, temporary, tip, what string) (audit.Problem, bool) {
+	reason := temporary
+	switch {
+	case errors.Is(err, gitstore.ErrStateDesync):
+		reason = "history_desync"
+	case errors.Is(err, gitstore.ErrStateNotRegular):
+		reason = "not_regular"
+	}
+	if reason == "history_desync" || reason == "not_regular" {
+		a.log().Error("audit anchors: "+what, "reason", reason, "tip", tip, "err", err)
+		return audit.UnreadableAnchors(reason, tip, err.Error()), true
+	}
+	key := reason + "|" + tip
+	a.mu.Lock()
+	if a.failures == nil {
+		a.failures = map[string]int{}
+	}
+	a.failures[key]++
+	n := a.failures[key]
+	a.mu.Unlock()
+	if n < 2 {
+		a.log().Warn("audit anchors: "+what+"; it is recorded if it happens again for the same commit", "reason", reason, "tip", tip, "err", err)
+		return audit.Problem{}, false
+	}
+	a.log().Error("audit anchors: "+what+" again", "reason", reason, "tip", tip, "err", err)
+	return audit.UnreadableAnchors(reason, tip, err.Error()), true
+}
+
+// clearFailure forgets the failures of a reason once it works again.
+func (a *Anchorer) clearFailure(reason string) {
+	a.mu.Lock()
+	for k := range a.failures {
+		if strings.HasPrefix(k, reason+"|") {
+			delete(a.failures, k)
+		}
+	}
+	a.mu.Unlock()
 }
 
 // Tick writes today's anchor if audit.anchor is daily (read from the current
