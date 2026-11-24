@@ -410,8 +410,8 @@ must not decide who sees infra.
      appended. Checking edges rather than one line of history matters: default history simplification follows
      one side of a merge, so a branch cut before the file existed, with a forged file, merged into main taking the
      branch's version, would never have been compared with main's real anchors. A violating commit is an
-     `anchor_rewritten` problem naming it (one per commit). The files are read with one `git cat-file --batch`
-     call (the guarded runner allows exactly `cat-file --batch`; `log` gained only `--full-history`). With a
+     `anchor_rewritten` problem naming it (one per commit). The blobs are read with `git cat-file --batch` in chunks of a few commits (the
+     guarded runner allows exactly `cat-file --batch`; `log` gained only `--full-history`). With a
      previous tip that is an ancestor of the new tip only `old..new` is looked at, otherwise everything. The last
      checked tip is kept in memory only (a file in `--state-dir` would be one more thing for somebody with that
      directory to forge, and a full check at start is cheap). `audit verify --repo` runs the same check on the
@@ -424,15 +424,28 @@ must not decide who sees infra.
      rewrites the anchor file. The change stays in Git history, visible to anyone with a clone or on the Git
      host, and Rackbook flags it; it is not prevented.
    - Retention. An anchor is skipped as removed by retention only if all of these hold: `--audit-retention-months`
-     is above 0; its seq is below the first line kept; its day is on or before the first day of the oldest kept
-     month file (the writer can anchor a line of the previous month just after midnight on the 1st); that month is
-     not newer than the month retention would keep from now, plus one month of slack (retention never deletes a
-     month younger than its cutoff); and it comes before the newest anchor that matched the log. `head.json` is not
-     read for this: an earlier version trusted it. What a deletion that looks like retention can still hide is at
-     most the lines retention itself would drop, plus the first day of the oldest kept month. A quiet stretch of
-     months without a month file can make a legitimate retention fail the cutoff test, and the anchors of the
-     deleted months are then reported (the cost of not trusting `head.json`). `audit verify --retention-months N`
-     takes the server's number; its default of 0 skips nothing.
+     is above 0; its seq is below the first line kept; its day is on or before the first day of the cutoff month
+     (now minus N months; the 1st itself is allowed because the writer can anchor the last line of the month
+     before just after midnight); and it comes before the newest anchor that matched the log. `head.json` is not
+     read for this, and the set of month files is read only for where the kept log begins: an earlier version
+     trusted both. What a deletion that looks like retention can still hide is at most the lines retention itself
+     would drop, plus the first day of the cutoff month. `audit verify --retention-months N` takes the server's
+     number; its default of 0 skips nothing.
+   - Checks that cannot be done. A failure to read or check the anchors is `anchor_unreadable`, never a silent
+     pass: the file at the tip is not a regular file (`gitstore.ErrStateNotRegular`), the history check errored,
+     git's answer did not fit (`gitstore.ErrStateDesync`), or a version is above 4 MiB (known from the object's
+     header, so it is refused before it is read; larger outputs are cut). Fingerprint: reason and tip, so once
+     per tip. Judgement: `history_error` and `read_error` may be a moment's trouble, so the first failure for a
+     tip only warns and the second is recorded; `not_regular`, `history_desync` and `too_large` are recorded at
+     once. `audit verify --repo` turns the same failures into an `anchor_unreadable` problem or an error, so
+     the exit status is 1; a directory that is no Git repository only gets a note.
+   - The history check resolves each commit's entry with `git ls-tree -z <commit> -- .rackbook/audit-anchors`
+     (the guard allows ls-tree on that one state file, and no other), so a tree, a symbolic link (mode 120000)
+     or a gitlink (160000) at the path is an `anchor_rewritten` ("not a regular file"), never an empty file. Blobs
+     are then read by object id with `cat-file --batch`, each header checked to name the id asked for and to be
+     a blob, and exactly `size` bytes plus the closing newline consumed, a few commits at a time. An earlier
+     version treated a tree as missing without consuming its body and read everything after it from the wrong
+     place.
    - Lines of the anchor file that are not anchors are reported by `audit verify` (and logged once), not as a
      chain problem: they do not fail the exit status.
    - `rackbook audit verify` had no data repository path; `--repo <clone>` is the narrowest addition. It reads the

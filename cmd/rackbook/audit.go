@@ -13,6 +13,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 
+	"github.com/kazuhahub/rackbook/internal/anchor"
 	"github.com/kazuhahub/rackbook/internal/audit"
 	"github.com/kazuhahub/rackbook/internal/auth"
 	"github.com/kazuhahub/rackbook/internal/config"
@@ -124,12 +125,17 @@ file is checked as well, as the server does: for every commit that touches it an
 that commit's parents (so every side of every merge), the file must be the parent's with
 lines appended, else the commit is an anchor_rewritten problem.
 
+If the history cannot be checked (a git failure, an answer that does not fit what was asked), or
+the anchor file cannot be read, that is a failure: exit status 1 (anchor_unreadable, or an error),
+never a pass. A directory that is no Git repository is the one exception: the file is checked and
+a note says the history was not. A version of the file above 4 MiB, or that is not a regular file,
+is a problem too.
+
 By default no anchor is skipped. If the server runs with --audit-retention-months, pass the
 same number as --retention-months: only then an anchor that is below the first kept line,
-dated on or before the first day of the oldest kept month, older in the file than the newest
-anchor that matched, and not in a month that retention would have kept, is skipped (and
-counted). This works whether or not audit.anchor is on. Without --repo the anchors are not
-checked.`,
+dated on or before the first day of the cutoff month (now minus that many months), and older
+in the file than the newest anchor that matched, is skipped (and counted). This works whether
+or not audit.anchor is on. Without --repo the anchors are not checked.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			dir, _ := cmd.Flags().GetString("state-dir")
@@ -149,16 +155,22 @@ checked.`,
 				}
 				var extra []audit.Problem
 				var note string
-				if chk, herr := gitstore.CheckStateFileInClone(cmd.Context(), repo, audit.AnchorsPath); herr != nil {
+				switch chk, herr := gitstore.CheckStateFileInClone(cmd.Context(), repo, audit.AnchorsPath); {
+				case errors.Is(herr, gitstore.ErrNotRepository):
 					note = "the history of " + audit.AnchorsPath + " was not checked: " + herr.Error()
-				} else {
-					seen := map[string]bool{}
-					for _, v := range chk.Violations {
-						if !seen[v.Commit] {
-							seen[v.Commit] = true
-							extra = append(extra, audit.RewrittenAnchor(v.Commit, v.Base, v.Content))
-						}
+				case herr != nil:
+					// a check that cannot be done is a failure, not a pass
+					reason := "history_error"
+					if errors.Is(herr, gitstore.ErrStateDesync) {
+						reason = "history_desync"
 					}
+					tip := ""
+					if chk != nil {
+						tip = chk.Tip
+					}
+					extra = append(extra, audit.UnreadableAnchors(reason, tip, herr.Error()))
+				default:
+					extra = anchor.ProblemsOf(chk)
 				}
 				rep, err = audit.VerifyWithAnchors(filepath.Join(dir, "audit"), anchors, audit.AnchorOptions{RetentionMonths: months}, extra...)
 				if err == nil && note != "" && rep.Anchors != nil {

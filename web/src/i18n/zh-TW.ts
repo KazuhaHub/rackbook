@@ -948,6 +948,7 @@ const messages = {
         anchor_rewritten: '有提交修改了錨點檔案裡已有的行',
         anchor_invalid: '有每日錨點不可能是對的（日期在未來，或不在前一個錨點之後）',
         anchor_more: '出錯的每日錨點比這裡列出的更多',
+        anchor_unreadable: '無法讀取或檢查每日錨點',
       } as Record<string, string>,
       acknowledge: '我已檢查，確認',
       adminsAcknowledge: '只有管理員可以確認。',

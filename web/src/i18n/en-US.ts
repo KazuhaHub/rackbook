@@ -954,6 +954,7 @@ const messages = {
         anchor_rewritten: 'A commit changed lines that were already in the anchor file',
         anchor_invalid: 'A daily anchor cannot be right (its day is in the future, or it does not come after the one before)',
         anchor_more: 'More daily anchors are wrong than are listed',
+        anchor_unreadable: 'The daily anchors could not be read or checked',
       } as Record<string, string>,
       acknowledge: 'I have checked — acknowledge',
       adminsAcknowledge: 'Only admins can acknowledge.',

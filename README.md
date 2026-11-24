@@ -960,7 +960,7 @@ the log as failed, because appending would glue a line onto a partial one.
 
 **Checking.** `rackbook audit verify --state-dir <dir>` reads the log and prints what it found: the number of
 lines and files, and each problem (`edited`, `missing`, `reordered`, `cut_from_end`, `head_mismatch`,
-`anchor_mismatch`, `anchor_ahead`, `anchor_invalid`) with the `seq` it starts at. `--repo <clone>` also checks the
+`anchor_mismatch`, `anchor_ahead`, `anchor_invalid`, `anchor_unreadable`) with the `seq` it starts at. `--repo <clone>` also checks the
 [daily anchors](#the-daily-anchor) in that clone of the data repository. A problem the server already wrote down is listed as `recorded at seq N` and still counts;
 once acknowledged it is also listed as `acknowledged at seq N`, and still counts. It never changes a file. It exits 1 on any problem, and 0 when the chain is intact; a torn
 last line or a `head.json` one line behind alone are warnings and exit 0. `--json` prints the report as JSON.
@@ -1030,18 +1030,28 @@ does not depend on the setting: a leftover file still catches tampering after `a
   baseline, so a forged line does not make the real anchors after it invalid.
 - *Retention.* With `--audit-retention-months 0` (keep everything) no anchor is ever skipped. With a retention,
   an anchor is skipped (and counted) only if all of these hold: its `seq` is below the first line kept; its day is
-  on or before the first day of the oldest kept month file (the writer can anchor a line of the previous month
-  just after midnight on the 1st); that oldest month is not newer than the month retention would keep from now,
-  with a month of slack (retention never deletes a month younger than its cutoff, so if such months are gone
-  that is not retention); and it comes before the newest anchor that matched the log (not simply the last line of
-  the file). `head.json` is not consulted: it can be rewritten together with the log. What a deletion that
-  looks like retention can still hide is at most the lines retention itself would drop, plus the first day of
-  the oldest kept month. A log with a quiet stretch (months without any event, so without a month file) can
-  make a legitimate retention look like it removed too much, and then its old anchors are reported: pass the
-  right `--retention-months` and read the problem. `rackbook audit verify --repo` skips nothing unless it is
-  given `--retention-months` with the server's number. `--repo` reads the clone without following a symbolic
-  link: `.rackbook` and the file are opened relative to the clone with `os.OpenRoot`, and a link in place of
-  either is refused.
+  on or before the first day of the cutoff month (now minus N months; the writer can anchor the last line of the
+  month before just after midnight on the 1st, so the 1st itself is allowed); and it comes before the newest
+  anchor that matched the log (not simply the last line of the file). `head.json` is not consulted, and neither is
+  which month files are present beyond where the kept log begins: both can be forged. What a deletion that looks
+  like retention can still hide is at most the lines retention itself would drop, plus the first day of the
+  cutoff month. `rackbook audit verify --repo` skips nothing unless it is given `--retention-months` with the
+  server's number. `--repo` reads the clone without following a symbolic link: `.rackbook` and the file are
+  opened relative to the clone with `os.OpenRoot`, and a link in place of either is refused.
+- *A check that cannot be done is a problem, not a pass.* If the anchor file at the tip is not a regular file (a
+  symbolic link, a directory), the history check fails or git's answer does not fit what was asked, or a version
+  of the file is above 4 MiB, the server records an `anchor_unreadable` problem with a reason (`not_regular`,
+  `history_error`, `history_desync`, `too_large`, `read_error`), shown in the banner and acknowledged like any
+  other. It is recorded once per reason and tip. A reason that git or the disk can cause for a moment
+  (`history_error`, `read_error`: a timeout, a failed command) only warns the first time; the same failure again
+  for the same tip is recorded. The others are no accident and are recorded at once. `rackbook audit verify
+  --repo` exits 1 when the history check or the read fails (a directory that is no Git repository is the one
+  exception: the file is checked and a note says the history was not).
+- A commit that leaves the anchor file as a directory, a symbolic link or a submodule is an `anchor_rewritten`
+  too. The history check reads each commit's entry with `git ls-tree -z` (the runner allows that for this one
+  state file only) and the blobs by object id with `git cat-file --batch`, checking that each answer is the
+  object asked for and consuming exactly its size, a few commits at a time: it does not hold the history in
+  memory.
 
 **Direct push only.** The anchor is a commit of its own, so `rackbook check` refuses `anchor: daily` with
 `write.mode: pr` (it would open a pull request every day, and nothing would be anchored until someone merged

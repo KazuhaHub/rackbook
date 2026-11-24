@@ -233,7 +233,7 @@ func TestAuditVerifyRetentionMonthsDecidesWhatMaySkip(t *testing.T) {
 	for _, m := range []time.Month{8, 9, 10, 11} {
 		l.Record(audit.Event{Event: "login", Identity: "ann@example.com", Time: time.Date(2026, m, 3, 9, 0, 0, 0, time.UTC)})
 		seq, hash := l.Head()
-		as = append(as, audit.Anchor{Day: time.Date(2026, m, 3, 0, 0, 0, 0, time.UTC).Format("2006-01-02"), Seq: seq, Hash: hash, At: "2026-01-01T00:00:00Z"})
+		as = append(as, audit.Anchor{Day: time.Date(2026, m, 1, 0, 0, 0, 0, time.UTC).Format("2006-01-02"), Seq: seq, Hash: hash, At: "2026-01-01T00:00:00Z"})
 	}
 	l.Close()
 	if err := os.Remove(filepath.Join(state, "audit", "audit-2026-08.jsonl")); err != nil {
@@ -288,5 +288,39 @@ func TestAuditVerifyRepoChecksTheHistoryOfTheAnchorFile(t *testing.T) {
 	out, err = run(t, "audit", "verify", "--state-dir", state, "--repo", anchorRepo(t, good))
 	if exitCode(err) != 0 || !strings.Contains(out, "note: the history of .rackbook/audit-anchors was not checked") {
 		t.Fatalf("%v %s", err, out)
+	}
+}
+
+func TestAuditVerifyRepoFailsWhenTheHistoryCannotBeChecked(t *testing.T) {
+	state, _ := auditState(t, 5)
+	l, err := audit.Open(filepath.Join(state, "audit"), audit.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	seq, hash := l.Head()
+	l.Close()
+	good := audit.Anchor{Day: "2026-11-02", Seq: seq, Hash: hash, At: "2026-11-02T03:00:00Z"}
+	repo := anchorRepo(t, good)
+	anchorGit(t, repo, "init", "-q", "-b", "main")
+	anchorGit(t, repo, "add", ".")
+	anchorGit(t, repo, "commit", "-qm", "anchor")
+	// the objects are gone: git can name HEAD but cannot walk from it
+	objs, _ := filepath.Glob(filepath.Join(repo, ".git", "objects", "??"))
+	for _, o := range objs {
+		if err := os.RemoveAll(o); err != nil {
+			t.Fatal(err)
+		}
+	}
+	out, err := run(t, "audit", "verify", "--state-dir", state, "--repo", repo)
+	if exitCode(err) != 1 || !strings.Contains(out, "anchor_unreadable") || !strings.Contains(out, "history_error") {
+		t.Fatalf("a check that cannot be done must not pass: %v %s", err, out)
+	}
+	// an anchor file that cannot be read at all (a directory) is an error too
+	dirRepo := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dirRepo, ".rackbook", "audit-anchors"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := run(t, "audit", "verify", "--state-dir", state, "--repo", dirRepo); exitCode(err) == 0 {
+		t.Fatal("a directory in place of the anchor file must fail")
 	}
 }
