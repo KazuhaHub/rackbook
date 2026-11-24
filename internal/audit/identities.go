@@ -64,6 +64,10 @@ type RoleObservation struct {
 	// sign-in, or a request under a new config) only a person already stored is
 	// compared, and only role and auditor are updated.
 	SignedIn bool
+	// Refused says a sign-in was refused (no role). A person already stored has the role
+	// compared and the last sign-in time moved to now, though no session was issued, so a
+	// session from before it cannot write an older role back as a change later (Session).
+	Refused bool
 	// Session is when the session in use was issued (a request under a new
 	// config). A person who has signed in again since is left to that newer
 	// session, so two sessions with different claims cannot write each other's
@@ -169,7 +173,10 @@ func (s *identityStore) observe(l *Log, o RoleObservation) (changed bool, err er
 			From: prev.Role, To: o.Role, AuditorFrom: &af, AuditorTo: &at, Cause: o.Cause})
 		changed = true
 	}
-	if existed && !o.SignedIn && !changed {
+	if o.Refused {
+		next.LastSignIn = l.opts.Now().UTC().Truncate(time.Second)
+	}
+	if existed && !o.SignedIn && !o.Refused && !changed {
 		return false, nil // nothing to store
 	}
 	s.m[o.Identity] = next

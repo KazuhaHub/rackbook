@@ -1,17 +1,18 @@
 package login
 
 import (
+	"bytes"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/kazuhahub/rackbook/internal/roles"
 	"net/http"
 	"os"
 	"strings"
 	"time"
-	"unicode/utf8"
 )
 
 // Cookie names. The __Host- prefix makes browsers require Secure, Path=/ and
@@ -25,8 +26,16 @@ const (
 	// enrolWindow is how recent an OIDC login must be to add a passkey.
 	enrolWindow = 10 * time.Minute
 
-	maxCookieBytes = 3800 // a browser keeps cookies of up to 4096 bytes, name and attributes included
+	// maxCookieBytes is the longest session cookie value the server reads.
+	maxCookieBytes = 4096
 )
+
+// maxSetCookieBytes bounds the whole Set-Cookie header (name, value and attributes) the
+// server sends: browsers keep a cookie of at most 4096 bytes. A variable for the tests.
+var maxSetCookieBytes = 4096
+
+// errCookieTooLarge says a session does not fit one cookie even without its groups and roles.
+var errCookieTooLarge = errors.New("the session does not fit a cookie")
 
 var (
 	errNoSession = errors.New("no session")
@@ -38,45 +47,11 @@ var (
 	errUnavailable = errors.New("passkey file unavailable")
 )
 
-// Bounds on each claim list (groups, app roles) kept in the session cookie,
-// which must stay small. The raw bytes are what the docs promise; the encoded
-// size is the safety net for values that JSON escapes (quotes, backslashes), so
-// that two full lists plus the rest of the session always fit maxCookieBytes.
-const (
-	maxSessionClaims       = 40
-	maxSessionClaimBytes   = 700 // total, of the raw values
-	maxSessionClaimEncoded = 900 // total, as JSON strings with their commas
-)
-
-// boundClaim keeps the first values that fit the cookie. truncated says some were
-// dropped for size; values that are empty, longer than 128 bytes or not UTF-8 are
-// skipped without counting as a cut. trim removes surrounding spaces (group ids,
-// which match without regard to them); app roles are kept exactly as sent.
-func boundClaim(in []string, trim bool) (out []string, truncated bool) {
-	total, encoded := 0, 0
-	for _, g := range in {
-		if trim {
-			g = strings.TrimSpace(g)
-		}
-		if strings.TrimSpace(g) == "" || len(g) > 128 || !utf8.ValidString(g) {
-			continue
-		}
-		enc, _ := json.Marshal(g)
-		if len(out) >= maxSessionClaims || total+len(g) > maxSessionClaimBytes || encoded+len(enc)+1 > maxSessionClaimEncoded {
-			return out, true
-		}
-		total += len(g)
-		encoded += len(enc) + 1
-		out = append(out, g)
-	}
-	return out, false
-}
-
 // boundGroups is boundClaim for the groups claim.
-func boundGroups(in []string) (out []string, truncated bool) { return boundClaim(in, true) }
+func boundGroups(in []string) (out []string, truncated bool) { return roles.BoundClaim(in, true) }
 
 // boundAppRoles is boundClaim for the roles claim.
-func boundAppRoles(in []string) (out []string, truncated bool) { return boundClaim(in, false) }
+func boundAppRoles(in []string) (out []string, truncated bool) { return roles.BoundClaim(in, false) }
 
 // session is the signed payload of the session cookie. It holds no role: the
 // role is evaluated from auth.roles on every request.
@@ -111,10 +86,13 @@ func (c codec) mac(payload string) []byte {
 
 func (c codec) seal(s session) (string, error) {
 	s.V = 1
-	b, err := json.Marshal(s)
-	if err != nil {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false) // & < > stay one byte; only quotes and backslashes grow
+	if err := enc.Encode(s); err != nil {
 		return "", err
 	}
+	b := bytes.TrimRight(buf.Bytes(), "\n")
 	p := base64.RawURLEncoding.EncodeToString(b)
 	return p + "." + base64.RawURLEncoding.EncodeToString(c.mac(p)), nil
 }

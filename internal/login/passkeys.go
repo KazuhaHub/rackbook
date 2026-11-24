@@ -327,7 +327,11 @@ func (p *passkeys) loginFinish(w http.ResponseWriter, r *http.Request) {
 		refused("no_role", id)
 		return
 	}
-	p.s.issue(w, id, auth.MethodPasskey, base64.RawURLEncoding.EncodeToString(res.Credential.ID))
+	if _, _, err := p.s.issue(w, id, auth.MethodPasskey, base64.RawURLEncoding.EncodeToString(res.Credential.ID)); err != nil {
+		fail(http.StatusInternalServerError, "session_too_large", "the session does not fit a cookie", "identity", id.ID)
+		refused("session_too_large", id)
+		return
+	}
 	p.s.log.Info("login", "identity", id.ID, "method", auth.MethodPasskey, "remote", r.RemoteAddr)
 	p.s.record(r, audit.Event{Event: "login", Identity: id.ID, Name: id.Name, Method: auth.MethodPasskey, Role: role.String()})
 	p.s.observeRole(r, id, audit.CauseSignIn, true)

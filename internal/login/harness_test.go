@@ -228,7 +228,7 @@ func newEnv(t *testing.T, o options) *env {
 	if err != nil {
 		t.Fatal(err)
 	}
-	authn, err := auth.New(context.Background(), auth.Config{Mode: auth.ModeOIDC, Sessions: e.svc, Config: st.Config})
+	authn, err := auth.New(context.Background(), auth.Config{Mode: auth.ModeOIDC, Sessions: e.svc, Config: st.Config, Degraded: func() bool { return st.ConfigProblem() != "" }})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -119,16 +119,24 @@ func TestRoleChangedAtSignInAndLazily(t *testing.T) {
 	}
 }
 
-func TestRefusedSignInStillCountsAsAChangeButNotAsASignIn(t *testing.T) {
+func TestRefusedSignInCountsAsAChangeAndMovesTheLastSignIn(t *testing.T) {
 	clk := &fakeClock{time.Date(2026, 11, 22, 10, 0, 0, 0, time.UTC)}
 	l, dir := newLog(t, Options{Now: clk.Now})
 	l.ObserveRole(signIn("a@example.com", "editor", false))
 	first := l.Identities()[0].LastSignIn
 	clk.t = clk.t.Add(time.Hour)
-	if !l.ObserveRole(RoleObservation{Identity: "a@example.com", Role: "none", Cause: CauseSignIn}) {
+	if !l.ObserveRole(RoleObservation{Identity: "a@example.com", Role: "none", Cause: CauseSignIn, Refused: true}) {
 		t.Fatal("losing the role is a change")
 	}
-	if got := l.Identities()[0]; got.Role != "none" || !got.LastSignIn.Equal(first) {
+	if got := l.Identities()[0]; got.Role != "none" || !got.LastSignIn.Equal(clk.t) || got.LastSignIn.Equal(first) {
+		t.Fatalf("a refused sign-in moves the last sign-in time: %+v", got)
+	}
+	// a session from before it cannot bring the old role back as a change
+	clk.t = clk.t.Add(time.Minute)
+	if l.ObserveRole(RoleObservation{Identity: "a@example.com", Role: "editor", Cause: CauseConfig, Session: first}) {
+		t.Fatal("an older session must not produce a role_changed")
+	}
+	if got := l.Identities()[0]; got.Role != "none" {
 		t.Fatalf("%+v", got)
 	}
 	if evs := roleEvents(t, dir); len(evs) != 1 || evs[0].To != "none" {

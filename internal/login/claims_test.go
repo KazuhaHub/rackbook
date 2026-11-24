@@ -3,6 +3,7 @@ package login
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/kazuhahub/rackbook/internal/roles"
 	"os"
 	"path/filepath"
 	"strings"
@@ -80,7 +81,7 @@ func TestAppRoleOnAuditors(t *testing.T) {
 }
 
 func TestSessionKeepsGroupsAndAppRolesWithinTheCookie(t *testing.T) {
-	// 19 GUIDs fill the groups budget, 19 long role values the roles budget: both lists at their cap,
+	// 20 GUIDs fill the groups budget, 22 long role values the roles budget: both lists at their cap,
 	// and the cookie must still be one the browser stores and the server accepts.
 	var groups, appRoles []string
 	for i := 0; i < 20; i++ {
@@ -101,15 +102,103 @@ func TestSessionKeepsGroupsAndAppRolesWithinTheCookie(t *testing.T) {
 	if n := len(b.cookie(SessionCookie).Value); n > maxCookieBytes || n > 3700 {
 		t.Fatalf("the cookie is %d bytes", n)
 	}
-	// worst case for the encoder: values full of characters JSON escapes
-	nasty := strings.Repeat(`"\"`, 40)
-	out, cut := boundGroups([]string{nasty, nasty, nasty, nasty, nasty, nasty, nasty, nasty, nasty, nasty})
-	enc, _ := json.Marshal(out)
-	if !cut && len(enc) > maxSessionClaimEncoded {
-		t.Fatalf("%d bytes encoded, cut %v", len(enc), cut)
+}
+
+// setCookieLens are the lengths of the whole Set-Cookie headers of a response for the session cookie.
+func setCookieLens(r resp) []int {
+	var out []int
+	for _, c := range r.Header.Values("Set-Cookie") {
+		if strings.HasPrefix(c, SessionCookie+"=") {
+			out = append(out, len(c))
+		}
 	}
-	if len(enc) > maxSessionClaimEncoded+2 {
-		t.Fatalf("the encoded size of a bounded list must stay within its budget: %d", len(enc))
+	return out
+}
+
+// Worst case: the longest name and identity made of characters JSON escapes, and both lists at
+// their limit made of quotes. Every Set-Cookie header, at sign-in and on refresh, fits the limit.
+func TestSessionCookieAlwaysFitsTheLimit(t *testing.T) {
+	e := newEnv(t, options{nogit: true, roles: "  roles:\n    viewer: [\"*\"]\n"})
+	quotes := strings.Repeat(`"`, 100)
+	var groups, appRoles []string
+	for i := 0; i < 8; i++ {
+		groups = append(groups, quotes+fmt.Sprint(i))
+		appRoles = append(appRoles, quotes+fmt.Sprint(i))
+	}
+	e.idp.Users["admin"] = map[string]any{"sub": "s", "preferred_username": strings.Repeat(`"`, 310) + "@x.org", "name": strings.Repeat(`&"\`, 66),
+		"tid": tenant, "groups": groups, "roles": appRoles}
+	b := e.browser()
+	r := b.login("admin", "")
+	if r.StatusCode != 303 || r.Loc() != "/" {
+		t.Fatalf("%d %q\n%s", r.StatusCode, r.Loc(), e.logs.String())
+	}
+	lens := setCookieLens(r)
+	if len(lens) == 0 {
+		t.Fatal("no session cookie")
+	}
+	e.clk.Advance(10 * time.Minute)
+	rr := b.get("/api/meta") // a refresh of the cookie
+	lens = append(lens, setCookieLens(rr)...)
+	for _, n := range lens {
+		if n > maxSetCookieBytes {
+			t.Fatalf("a Set-Cookie header of %d bytes", n)
+		}
+	}
+	if st, _ := b.meta(); st != 200 {
+		t.Fatalf("the cookie must be accepted: %d", st)
+	}
+}
+
+// When the cookie is too long, claim values go, last first from the longer list, and the sign-in
+// says so; when even empty lists do not fit the sign-in is refused with a reason, never a loop.
+func TestSessionCookieDropsClaimsThenRefuses(t *testing.T) {
+	e := newEnv(t, options{nogit: true, roles: "  roles:\n    viewer: [\"*\"]\n    admin: [\"group:g0\"]\n"})
+	var groups, appRoles []string
+	for i := 0; i < 10; i++ {
+		groups = append(groups, fmt.Sprintf("g%d-%s", i, strings.Repeat("x", 60)))
+		appRoles = append(appRoles, fmt.Sprintf("r%d-%s", i, strings.Repeat("y", 60)))
+	}
+	e.idp.Users["admin"]["groups"] = groups
+	e.idp.Users["admin"]["roles"] = appRoles
+	r := e.browser().login("admin", "") // the full size
+	fullLen := setCookieLens(r)[0]
+	old := maxSetCookieBytes
+	defer func() { maxSetCookieBytes = old }()
+	maxSetCookieBytes = fullLen - 300
+	b := e.browser()
+	r = b.login("admin", "")
+	if r.StatusCode != 303 || r.Loc() != "/" {
+		t.Fatalf("%d %q", r.StatusCode, r.Loc())
+	}
+	if n := setCookieLens(r)[0]; n > maxSetCookieBytes {
+		t.Fatalf("%d > %d", n, maxSetCookieBytes)
+	}
+	sess, err := e.svc.codec.open(b.cookie(SessionCookie).Value)
+	if err != nil || len(sess.Groups)+len(sess.Roles) >= 20 || len(sess.Groups) == 0 && len(sess.Roles) == 0 {
+		t.Fatalf("%v %d groups %d roles", err, len(sess.Groups), len(sess.Roles))
+	}
+	// the longer list loses first: neither is emptied while the other is as long
+	if d := len(sess.Groups) - len(sess.Roles); d > 1 || d < -1 {
+		t.Fatalf("%d groups %d roles", len(sess.Groups), len(sess.Roles))
+	}
+	// the first values are kept
+	if sess.Groups[0] != groups[0] || sess.Roles[0] != appRoles[0] {
+		t.Fatalf("%v %v", sess.Groups, sess.Roles)
+	}
+	if ev := e.kinds("login"); ev[len(ev)-1].Groups != "overage" || ev[len(ev)-1].AppRoles != "overage" {
+		t.Fatalf("the login event must say the lists were cut: %+v", ev[len(ev)-1])
+	}
+	// nothing fits
+	maxSetCookieBytes = 100
+	r = e.browser().login("admin", "")
+	if r.Loc() != "/auth/login?error=session_too_large" {
+		t.Fatalf("%d %q", r.StatusCode, r.Loc())
+	}
+	if ev := e.last(); ev.Event != "login_refused" || ev.Reason != "session_too_large" || ev.Identity == "" {
+		t.Fatalf("%+v", ev)
+	}
+	if len(setCookieLens(r)) != 0 {
+		t.Fatal("no session cookie may be sent")
 	}
 }
 
@@ -123,7 +212,7 @@ func TestBoundAppRolesKeepValuesExactly(t *testing.T) {
 		many = append(many, fmt.Sprintf("role-%d", i))
 	}
 	out, cut = boundAppRoles(many)
-	if !cut || len(out) != maxSessionClaims {
+	if !cut || len(out) != roles.MaxClaimValues {
 		t.Fatalf("%d values, cut %v", len(out), cut)
 	}
 }
@@ -594,6 +683,16 @@ func TestTokenCreationIsRefusedWhenTheRoleComesOnlyFromClaims(t *testing.T) {
 	if r := create(bm, "mixed-read", "read"); r.StatusCode != 201 {
 		t.Fatalf("%d %s", r.StatusCode, r.Body)
 	}
+	// editor by name, admin by group: a write token is fine, a push token needs admin by identity
+	user("pusher", "ed@kazuha.org", map[string]any{"groups": []string{"ops"}})
+	bp := e.browser()
+	bp.login("pusher", "")
+	if r := bp.postJSON("/api/admin/tokens", `{"name":"push","scope":"write","writeMode":"push","collections":["todo"]}`); r.StatusCode != 403 || !strings.Contains(r.Body, `"creator_role_from_claims"`) {
+		t.Fatalf("%d %s", r.StatusCode, r.Body)
+	}
+	if r := create(bp, "plain-write", "write"); r.StatusCode != 201 {
+		t.Fatalf("%d %s", r.StatusCode, r.Body)
+	}
 	// admin by name (and by group as well): allowed
 	e.idp.Users["admin"]["groups"] = []string{"ops"}
 	bn := e.browser()
@@ -623,5 +722,81 @@ func TestRoleChangedEventShapeInTheLog(t *testing.T) {
 		if !strings.Contains(line, want) {
 			t.Fatalf("missing %s in %s", want, line)
 		}
+	}
+}
+
+// The claims flag is decided at sign-in, and again at the first look after rackbook.yml
+// changed: when the identity entry that also granted the role goes, the session becomes
+// a claims session, one way, from its own issue time.
+func TestClaimsFlagIsSetLaterWhenTheIdentityEntryGoes(t *testing.T) {
+	e := newEnv(t, options{nogit: true, roles: "  roles:\n    admin: [kazuha@kazuha.org, \"group:ops\"]\n"})
+	e.idp.Users["admin"]["groups"] = []string{"ops"}
+	b := e.browser()
+	b.login("admin", "")
+	flag := func() bool {
+		s, err := e.svc.codec.open(b.cookie(SessionCookie).Value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return s.FromClaims
+	}
+	if flag() {
+		t.Fatal("the identity entry also grants the role: normal limit")
+	}
+	e.clk.Advance(10 * time.Hour)
+	b.meta()
+	e.rewriteRoles("  roles:\n    admin: [\"group:ops\"]\n")
+	if got := roleOfMeta(t, b); got != "admin" || !flag() {
+		t.Fatalf("role %s, flag %v: the first look under the new config must set the flag and issue the cookie again", got, flag())
+	}
+	// 10h after sign-in plus 15h: the absolute limit is issued+24h, not issued+7d
+	e.clk.Advance(5 * time.Hour)
+	if st, _ := b.meta(); st != 200 {
+		t.Fatalf("%d", st)
+	}
+	e.clk.Advance(10 * time.Hour)
+	if st, _ := b.meta(); st != 401 {
+		t.Fatalf("the session must end 24h after it was issued: %d", st)
+	}
+	// putting the entry back does not unset it for a session already marked (one way): a new session is normal
+	e.rewriteRoles("  roles:\n    admin: [kazuha@kazuha.org, \"group:ops\"]\n")
+	b2 := e.browser()
+	b2.login("admin", "")
+	if s, _ := e.svc.codec.open(b2.cookie(SessionCookie).Value); s.FromClaims {
+		t.Fatal("a new session is normal again")
+	}
+}
+
+// Under a degraded config roles are capped at viewer, which hides what the claims give: the
+// flag is not decided then, and the first look under a config that loads decides it.
+func TestClaimsFlagIsNotDecidedWhileTheConfigDoesNotLoad(t *testing.T) {
+	e := newEnv(t, options{nogit: true, roles: "  roles:\n    admin: [\"group:ops\"]\n    viewer: [kazuha@kazuha.org]\n"})
+	e.idp.Users["admin"]["groups"] = []string{"ops"}
+	p := filepath.Join(e.dir, "rackbook.yml")
+	good, _ := os.ReadFile(p)
+	if err := os.WriteFile(p, []byte("collections: [not valid"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	b := e.browser()
+	if r := b.login("admin", ""); r.StatusCode != 303 || r.Loc() != "/" {
+		t.Fatalf("%d %q", r.StatusCode, r.Loc())
+	}
+	flag := func() bool {
+		s, _ := e.svc.codec.open(b.cookie(SessionCookie).Value)
+		return s.FromClaims
+	}
+	if flag() {
+		t.Fatal("not decided on capped roles")
+	}
+	b.meta() // still degraded: nothing is decided
+	if flag() {
+		t.Fatal("still not")
+	}
+	if err := os.WriteFile(p, good, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	b.meta() // the store notices the good file on this request
+	if got := roleOfMeta(t, b); got != "admin" || !flag() {
+		t.Fatalf("role %s, flag %v: the first look under a config that loads decides it", got, flag())
 	}
 }

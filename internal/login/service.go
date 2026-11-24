@@ -328,7 +328,10 @@ func (s *Service) Identify(w http.ResponseWriter, r *http.Request) (*auth.Identi
 		s.setSession(w, sess)
 	}
 	s.users.touch(sess.ID, sess.Name, sess.Method, sess.Groups, sess.Roles, now)
-	s.observeConfig(sess)
+	sess, err = s.observeConfig(w, sess)
+	if err != nil {
+		return nil, unauth(err)
+	}
 	return identityOf(sess), nil
 }
 
@@ -346,18 +349,46 @@ func identityOf(sess session) *auth.Identity {
 	return id
 }
 
-func (s *Service) setSession(w http.ResponseWriter, sess session) {
-	v, err := s.codec.seal(sess)
-	if err != nil {
-		s.log.Error("could not sign a session", "err", err)
-		return
+// fit seals sess and checks that the whole Set-Cookie header fits maxSetCookieBytes. If
+// it does not, claim values are dropped, last first, from the longer list (groups when
+// they are equal), and it is sealed again, until it fits. cutGroups and cutRoles say a
+// list lost values. With both lists empty and still too long it is errCookieTooLarge.
+func (s *Service) fit(sess session) (out session, value string, maxAge int, cutGroups, cutRoles bool, err error) {
+	for {
+		left := time.Unix(sess.Issued, 0).Add(sess.absoluteLimit(s.absolute, s.claimsAbsolute)).Sub(s.now())
+		maxAge = max(1, int(left.Seconds()))
+		if value, err = s.codec.seal(sess); err != nil {
+			return sess, "", 0, cutGroups, cutRoles, err
+		}
+		c := http.Cookie{Name: SessionCookie, Value: value, Path: "/", MaxAge: maxAge, Secure: true, HttpOnly: true, SameSite: http.SameSiteLaxMode}
+		if len(c.String()) <= maxSetCookieBytes {
+			return sess, value, maxAge, cutGroups, cutRoles, nil
+		}
+		switch {
+		case len(sess.Groups) == 0 && len(sess.Roles) == 0:
+			return sess, "", 0, cutGroups, cutRoles, errCookieTooLarge
+		case len(strings.Join(sess.Roles, ",")) > len(strings.Join(sess.Groups, ",")):
+			sess.Roles, cutRoles = sess.Roles[:len(sess.Roles)-1], true
+		default:
+			sess.Groups, cutGroups = sess.Groups[:len(sess.Groups)-1], true
+		}
 	}
-	left := time.Unix(sess.Issued, 0).Add(sess.absoluteLimit(s.absolute, s.claimsAbsolute)).Sub(s.now())
-	setCookie(w, SessionCookie, v, max(1, int(left.Seconds())))
+}
+
+// setSession sends sess as the session cookie, with fewer claim values if it has to (see
+// fit). It returns what was sent; on an error nothing is sent.
+func (s *Service) setSession(w http.ResponseWriter, sess session) (session, bool, bool, error) {
+	sess, v, maxAge, cg, cr, err := s.fit(sess)
+	if err != nil {
+		s.log.Error("could not issue a session cookie", "err", err)
+		return sess, cg, cr, err
+	}
+	setCookie(w, SessionCookie, v, maxAge)
+	return sess, cg, cr, nil
 }
 
 // issue starts a session for id and returns it.
-func (s *Service) issue(w http.ResponseWriter, id *auth.Identity, method, cred string) session {
+func (s *Service) issue(w http.ResponseWriter, id *auth.Identity, method, cred string) (session, overage, error) {
 	now := s.now().Unix()
 	sess := session{ID: id.ID, Name: id.Name, Method: method, Issued: now, Seen: now, Cred: cred}
 	if method == auth.MethodOIDC {
@@ -372,13 +403,17 @@ func (s *Service) issue(w http.ResponseWriter, id *auth.Identity, method, cred s
 		// identity entry grants keeps the normal absolute lifetime
 		sess.FromClaims = id.FromClaims
 	}
-	s.setSession(w, sess)
+	sess, cg, cr, err := s.setSession(w, sess)
+	if err != nil {
+		return sess, overage{}, err
+	}
 	s.users.touch(id.ID, id.Name, method, sess.Groups, sess.Roles, s.now())
-	if s.authn != nil {
-		// the sign-in has just looked at this person under the current config
+	if s.authn != nil && !s.authn.Degraded() {
+		// the sign-in has just looked at this person under the current config (not while it
+		// does not load: the claims flag was decided on capped roles, observeConfig decides it again)
 		s.markChecked(sess, s.authn.Generation())
 	}
-	return sess
+	return sess, overage{groups: cg, appRoles: cr}, nil
 }
 
 // isAPI tells API-style requests (answered with JSON) from console pages
@@ -496,7 +531,7 @@ func (w *statusWriter) Write(b []byte) (int, error) {
 var loginErrors = map[string]int{
 	"no_role": http.StatusForbidden, "tenant": http.StatusForbidden,
 	"idp_error": http.StatusOK, "idp_unavailable": http.StatusOK, "expired": http.StatusOK,
-	"bad_callback": http.StatusOK, "claims": http.StatusOK, "logged_out": http.StatusOK, "passkey": http.StatusOK,
+	"bad_callback": http.StatusOK, "claims": http.StatusOK, "session_too_large": http.StatusOK, "logged_out": http.StatusOK, "passkey": http.StatusOK,
 }
 
 func (s *Service) loginPage(w http.ResponseWriter, r *http.Request, static http.Handler) {
@@ -594,7 +629,7 @@ func (s *Service) observeRole(r *http.Request, id *auth.Identity, cause string, 
 	}
 	s.o.Audit.ObserveRole(audit.RoleObservation{
 		Identity: id.ID, Name: id.Name, Method: id.Method, Role: id.EffectiveRole().String(), Auditor: id.IsAuditor(),
-		Addr: clientip.Of(r, s.trusted), Cause: cause, SignedIn: signedIn,
+		Addr: clientip.Of(r, s.trusted), Cause: cause, SignedIn: signedIn, Refused: !signedIn,
 	})
 }
 
@@ -618,18 +653,39 @@ func (s *Service) markChecked(sess session, gen any) bool {
 // since this session was last looked at, the role it has now is compared with the
 // stored one, once. A person who never comes back is not recomputed (their claims
 // are not kept). The cost on every other request is one map lookup.
-func (s *Service) observeConfig(sess session) {
-	if s.authn == nil || s.o.Audit == nil || s.authn.Degraded() {
-		return
+//
+// It also decides again whether claims contribute to the role. The flag is first
+// decided at sign-in, but a config change can make the claims the only source
+// (`admin: [alice@x, group:ops]` loses alice@x): the flag is then set, one way, and
+// the cookie is issued again, so the absolute limit becomes the shorter claims_absolute
+// from the session's own issue time. It is never decided while the config does not
+// load: roles are then capped at viewer, which would hide what the claims give. The
+// first look after it loads decides it (a sign-in under a degraded config leaves the
+// session unmarked and unchecked for that reason).
+func (s *Service) observeConfig(w http.ResponseWriter, sess session) (session, error) {
+	if s.authn == nil || s.authn.Degraded() {
+		return sess, nil
 	}
 	if !s.markChecked(sess, s.authn.Generation()) {
-		return
+		return sess, nil
 	}
 	id := s.evaluate(identityOf(sess))
-	s.o.Audit.ObserveRole(audit.RoleObservation{
-		Identity: id.ID, Name: id.Name, Method: id.Method, Role: id.EffectiveRole().String(), Auditor: id.IsAuditor(),
-		Cause: audit.CauseConfig, Session: time.Unix(sess.Issued, 0),
-	})
+	if id.FromClaims && !sess.FromClaims && sess.Method == auth.MethodOIDC {
+		sess.FromClaims = true
+		if err := sess.check(s.now(), s.idle, sess.absoluteLimit(s.absolute, s.claimsAbsolute)); err != nil {
+			return sess, err
+		}
+		if w != nil {
+			s.setSession(w, sess)
+		}
+	}
+	if s.o.Audit != nil {
+		s.o.Audit.ObserveRole(audit.RoleObservation{
+			Identity: id.ID, Name: id.Name, Method: id.Method, Role: id.EffectiveRole().String(), Auditor: id.IsAuditor(),
+			Cause: audit.CauseConfig, Session: time.Unix(sess.Issued, 0),
+		})
+	}
+	return sess, nil
 }
 
 // roleOf evaluates the role of an identity from the current config.

@@ -132,6 +132,9 @@ func (s *server) createToken(w http.ResponseWriter, r *http.Request) {
 		want := roles.Viewer
 		if b.Scope == tokens.ScopeWrite {
 			want = roles.Editor
+			if b.WriteMode == tokens.ModePush {
+				want = roles.Admin // a push token only counts while its creator is an admin by identity
+			}
 		}
 		if role, _ := s.o.Auth.CapabilitiesForVia(who.ID, who.Method); role < want && who.EffectiveRole() >= want {
 			writeError(w, http.StatusForbidden, "creator_role_from_claims",
