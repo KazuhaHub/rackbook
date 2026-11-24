@@ -21,6 +21,10 @@ const (
 const (
 	DefaultSessionIdle     = 12 * time.Hour
 	DefaultSessionAbsolute = 7 * 24 * time.Hour
+	// DefaultSessionClaimsAbsolute is the absolute lifetime of a session whose
+	// role came from groups or app roles: removal from a group takes effect at
+	// the latest then, because the claims are read only at sign-in.
+	DefaultSessionClaimsAbsolute = 24 * time.Hour
 )
 
 // Login is the part of the auth block that selects and configures how people
@@ -121,6 +125,20 @@ func (d *Duration) UnmarshalYAML(n *yaml.Node) error {
 type Session struct {
 	Idle     Duration `yaml:"idle"`
 	Absolute Duration `yaml:"absolute"`
+	// ClaimsAbsolute is the absolute lifetime of a session whose role (or auditor
+	// capability) came from group: or app-role: entries (default 24h), used when it
+	// is shorter than Absolute. A role an identity entry grants keeps Absolute.
+	ClaimsAbsolute Duration `yaml:"claims_absolute"`
+}
+
+// ClaimsAbsoluteOrDefault is the absolute lifetime of a session whose role came
+// from claims (default 24h), never above AbsoluteOrDefault.
+func (s Session) ClaimsAbsoluteOrDefault() time.Duration {
+	d := DefaultSessionClaimsAbsolute
+	if s.ClaimsAbsolute > 0 {
+		d = time.Duration(s.ClaimsAbsolute)
+	}
+	return min(d, s.AbsoluteOrDefault())
 }
 
 // IdleOrDefault is the idle timeout (default 12h).
@@ -190,11 +208,16 @@ func (l *Login) check() error {
 	if err := checkText("auth.oidc.label", l.OIDC.Label); err != nil {
 		return err
 	}
-	if l.Session.Idle < 0 || l.Session.Absolute < 0 {
+	if l.Session.Idle < 0 || l.Session.Absolute < 0 || l.Session.ClaimsAbsolute < 0 {
 		return fmt.Errorf("auth.session: durations must be positive")
 	}
 	if l.Session.IdleOrDefault() > l.Session.AbsoluteOrDefault() {
 		return fmt.Errorf("auth.session.idle must not exceed auth.session.absolute")
+	}
+	// An explicit claims_absolute must fit under the absolute limit; the default
+	// simply yields to a shorter absolute.
+	if time.Duration(l.Session.ClaimsAbsolute) > l.Session.AbsoluteOrDefault() {
+		return fmt.Errorf("auth.session.claims_absolute must not exceed auth.session.absolute")
 	}
 	switch l.Passkeys.UserVerification {
 	case "", "preferred", "required":
@@ -208,11 +231,53 @@ func (l *Login) check() error {
 		if err := l.OIDC.Check(); err != nil {
 			return err
 		}
-		if l.OIDC.BySubject() && l.Passkeys.Enabled {
-			return fmt.Errorf("auth.passkeys cannot be combined with auth.oidc.identity: subject (passkeys are stored by e-mail identity)")
-		}
 	}
 	return nil
+}
+
+// removedLoginKeys are keys of the auth block that were planned or built and are
+// gone. They are accepted (the file is not decoded strictly, so an older
+// rackbook.yml still loads) and reported as warnings.
+var removedLoginKeys = map[string]string{
+	"passkeys_oidc_max_age": "auth.passkeys_oidc_max_age is no longer used and is ignored: people who sign in through single sign-on are not offered passkeys (the identity provider is their second factor), so there is no age to limit; remove it",
+}
+
+// SSOConfigured reports that an OIDC provider is configured in the file, which
+// is what makes auth.passkeys moot. (--auth can still switch the mode on the
+// command line; the server says so again at start.)
+func (l Login) SSOConfigured() bool { return l.Mode == AuthModeOIDC || l.OIDC.Issuer != "" }
+
+// PasskeysIgnoredWarning is the warning for auth.passkeys beside an OIDC
+// provider, or "" when there is nothing to say.
+func (l Login) PasskeysIgnoredWarning() string {
+	if !l.Passkeys.Enabled || !l.SSOConfigured() {
+		return ""
+	}
+	return "auth.passkeys is ignored while an OIDC provider is configured: people who sign in through single sign-on get no passkey sign-in and no TOTP from Rackbook, their second factor is the identity provider's; passkeys are kept for local accounts"
+}
+
+// warnings lists what in the auth block of the file does nothing. top is the
+// root mapping of the file.
+func (l Login) warnings(top *yaml.Node) []string {
+	var out []string
+	if w := l.PasskeysIgnoredWarning(); w != "" {
+		out = append(out, w)
+	}
+	if top == nil || top.Kind != yaml.MappingNode {
+		return out
+	}
+	for i := 0; i+1 < len(top.Content); i += 2 {
+		if top.Content[i].Value != "auth" || top.Content[i+1].Kind != yaml.MappingNode {
+			continue
+		}
+		a := top.Content[i+1]
+		for j := 0; j+1 < len(a.Content); j += 2 {
+			if w, ok := removedLoginKeys[a.Content[j].Value]; ok {
+				out = append(out, w)
+			}
+		}
+	}
+	return out
 }
 
 // Check validates auth.oidc.
