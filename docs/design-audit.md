@@ -1,6 +1,6 @@
 # Audit history and roles from the identity provider
 
-Status: design, agreed 2026-11-22. Phase 1 pieces 1 to 4 are built (3.5); the rest is not. Phase 2
+Status: design, agreed 2026-11-22. Phase 1 (pieces 1 to 5) is built (3.5); the rest is not. Phase 2
 starts with the light version (2a); SCIM (2b) comes later. Phase 3 is accepted. The owner's decisions of
 2026-11-22 are in section 7; local accounts beside SSO, and the sign-in security settings, have their own
 design, [design-local-accounts.md](design-local-accounts.md).
@@ -378,7 +378,84 @@ must not decide who sees infra.
      tab stays an edit page; infra auditors see group membership on the host pages and through `GET /api/infra/groups`,
      but the console has no read-only groups view. (5) The audit `login` event still records the role (`viewer` for an
      auditor with no role); the capability is not in the event.
-5. The optional daily anchor.
+5. The optional daily anchor. **Done** (README, "The daily anchor"; docs/api.md, "Activity and the audit log"). Phase 1 is
+   complete. As built, and where it differs from 3.1:
+   - `audit.anchor: daily` (absent or `off`: off; anything else is a config error) is `config.Audit.Anchor`.
+     `rackbook check` refuses `daily` with `write.mode: pr`, through the same config load the server uses, so
+     the server refuses it at start too; a reload that carries it keeps the last good config as for any other
+     config error. The anchor job reads the setting from the current config on every check.
+   - `internal/anchor` writes the anchor: a loop (30 seconds after start, then hourly) that appends one JSON Lines
+     line to `.rackbook/audit-anchors` through `Store.MutateStateFile`, with the subject `audit: anchor seq N`.
+     The file is read again on a replay after a moved remote and only ever appended to; lines that are not
+     anchors are left alone (a missing final newline is added before the new line, nothing else is touched).
+   - "The head has advanced" ignores the anchor's own `commit` event, which always follows the anchored seq:
+     otherwise an idle server would anchor every day for ever. The anchor commit is made by a fixed identity,
+     `rackbook-audit-anchor` with method `system`, so that its `commit` line can be told from a person's (the
+     check needs both); OIDC and MCP sign-in refuse that identity. It shows in Activity as an ordinary
+     state-only ledger commit, verified.
+   - "Already anchored today" is decided only from the newest anchor that is valid and matched the log
+     (`Log.ReviewAnchors` returns those). A line dated far ahead cannot keep today's anchor away: the writer
+     warns and writes it. It writes nothing while the audit log has a problem nobody has acknowledged, except
+     `anchor_invalid`, which says nothing about the log. (Not in 3.1; a decision made while building.)
+   - Verification runs at start (everything), after each periodic pull (`gitstore.Options.AfterPull`; only anchors
+     not verified before in this process, and the newest) and in `rackbook audit verify --repo <clone>`, whether
+     or not the setting is on. Lines are found through the log's offset index (at most 512 lines read per
+     anchor). Kinds: `anchor_mismatch`, `anchor_ahead`, `anchor_invalid` (a day more than a day in the future,
+     or a day or seq not after the anchor before it), `anchor_rewritten` and `anchor_more`. Each wrong anchor
+     has its own fingerprint (anchor line, kind, what was found), so acknowledging one hides no other; at most 20
+     are recorded per pass, then one `anchor_more` entry.
+   - History. `Store.CheckStateFileHistory` lists every commit reachable from the tip that touches
+     `.rackbook/audit-anchors` with `git log --full-history --format='%H %P'` and, for each such commit and each of
+     its parents, requires the file at the commit to be the file at the parent (empty when absent) with lines
+     appended. Checking edges rather than one line of history matters: default history simplification follows
+     one side of a merge, so a branch cut before the file existed, with a forged file, merged into main taking the
+     branch's version, would never have been compared with main's real anchors. A violating commit is an
+     `anchor_rewritten` problem naming it (one per commit). The blobs are read with `git cat-file --batch` in chunks of a few commits (the
+     guarded runner allows exactly `cat-file --batch`; `log` gained only `--full-history`). With a
+     previous tip that is an ancestor of the new tip only `old..new` is looked at, otherwise everything. The last
+     checked tip is kept in memory only (a file in `--state-dir` would be one more thing for somebody with that
+     directory to forge, and a full check at start is cheap). `audit verify --repo` runs the same check on the
+     clone's HEAD (`gitstore.CheckStateFileInClone`) when the clone is a Git repository. A hand-made merge that
+     combines two sides' new lines is flagged too; the server never makes one.
+   - Order. The baseline an anchor must come after is the last anchor that matched the log; a line that did not
+     (ahead, mismatch, future) is never the baseline, so one forged line cannot turn the real anchors after it
+     into `anchor_invalid`, and acknowledging it changes nothing for them.
+   - What it does not do: a person with the server's push credentials can still push a forward commit that
+     rewrites the anchor file. The change stays in Git history, visible to anyone with a clone or on the Git
+     host, and Rackbook flags it; it is not prevented.
+   - Retention. An anchor is skipped as removed by retention only if all of these hold: `--audit-retention-months`
+     is above 0; its seq is below the first line kept; its day is on or before the first day of the cutoff month
+     (now minus N months; the 1st itself is allowed because the writer can anchor the last line of the month
+     before just after midnight); and it comes before the newest anchor that matched the log. `head.json` is not
+     read for this, and the set of month files is read only for where the kept log begins: an earlier version
+     trusted both. What a deletion that looks like retention can still hide is at most the lines retention itself
+     would drop, plus the first day of the cutoff month. `audit verify --retention-months N` takes the server's
+     number; its default of 0 skips nothing.
+   - Checks that cannot be done. A failure to read or check the anchors is `anchor_unreadable`, never a silent
+     pass: the file at the tip is not a regular file (`gitstore.ErrStateNotRegular`), the history check errored,
+     git's answer did not fit (`gitstore.ErrStateDesync`), or a version is above 4 MiB (known from the object's
+     header, so it is refused before it is read; larger outputs are cut). Fingerprint: reason and tip, so once
+     per tip. Judgement: `history_error` and `read_error` may be a moment's trouble, so the first failure only
+     warns and the second in a row of the same reason is recorded, whatever the tip is (the count is by reason; the
+     recorded problem is by reason and tip); `not_regular`, `history_desync` and `too_large` are recorded at
+     once. `audit verify --repo` turns the same failures into an `anchor_unreadable` problem or an error, so
+     the exit status is 1, also for a directory that is no Git repository (`not_repository`); `--no-history` says only the
+     file is wanted, and then it gets a note and does not fail.
+   - The history check resolves each commit's entry with `git ls-tree -z <commit> -- .rackbook/audit-anchors`
+     (the guard allows ls-tree on that one state file, and no other), so a tree, a symbolic link (mode 120000)
+     or a gitlink (160000) at the path is an `anchor_rewritten` ("not a regular file"), never an empty file. Blobs
+     are then read by object id with `cat-file --batch`, each header checked to name the id asked for and to be
+     a blob, and exactly `size` bytes plus the closing newline consumed, a few commits at a time. An earlier
+     version treated a tree as missing without consuming its body and read everything after it from the wrong
+     place.
+   - Lines of the anchor file that are not anchors are reported by `audit verify` (and logged once), not as a
+     chain problem: they do not fail the exit status.
+   - `rackbook audit verify` had no data repository path; `--repo <clone>` is the narrowest addition. It reads the
+     file as checked out (pull first), through `os.OpenRoot`, and refuses a symbolic link as the file or as
+     `.rackbook`.
+   - Not done: the anchor is not checked against the remote's tip rather than the checkout, and there is no
+     anchor in `/api/audit/status` beyond the problems. The console shows the two kinds in the banner in all three
+     languages; no other page changed.
 
 Each UI piece gets a demo with example data in three languages before merge.
 
@@ -476,7 +553,7 @@ The open questions of the first draft, as the owner decided them:
    audit log.
 3. **Passkeys under SSO:** passkey sign-in is disabled when SSO is configured, which makes
    `auth.passkeys_oidc_max_age` moot; it is dropped (section 4).
-4. **Daily anchor** (3.1): stays off.
+4. **Daily anchor** (3.1): stays off. It is built (piece 5) and off by default; this deployment does not turn it on.
 5. **Defaults:** this deployment runs with `--audit-addr full` (an IPv6 client is still kept as its /64);
    the default of the flag stays `truncate`.
    Audit retention is forever (`--audit-retention-months 0`, the default), and stays configurable through that

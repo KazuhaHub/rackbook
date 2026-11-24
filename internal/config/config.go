@@ -39,7 +39,9 @@ type Config struct {
 	Rules       []Rule        `yaml:"rules"`
 	Write       Write         `yaml:"write"`
 	Auth        Auth          `yaml:"auth"`
-	Types       Types         `yaml:"types"`
+	// Audit configures what Rackbook adds to the audit log kept in --state-dir.
+	Audit Audit `yaml:"audit"`
+	Types Types `yaml:"types"`
 	// Modules is the allow list of write modules (docs/modules.md), by name.
 	Modules  map[string]*Module `yaml:"modules"`
 	Branding Branding           `yaml:"branding"`
@@ -310,6 +312,18 @@ type Write struct {
 	Mode   string `yaml:"mode"` // push | pr
 	Branch string `yaml:"branch"`
 }
+
+// Audit is the audit block. The log itself, its retention and the client
+// address it keeps are server flags (docs/design-audit.md, 3.1): this file lives
+// in the data repository, so a key here could not weaken them.
+type Audit struct {
+	// Anchor is "daily" to commit the audit log's head to .rackbook/audit-anchors
+	// once a day; "" and "off" (the default) do not.
+	Anchor string `yaml:"anchor"`
+}
+
+// AuditAnchorDaily says audit.anchor is daily.
+func (c *Config) AuditAnchorDaily() bool { return c.Audit.Anchor == "daily" }
 
 // Auth holds the access policy. Roles is nil when rackbook.yml has no
 // auth.roles block (every authenticated identity may then edit). Editors is
@@ -827,6 +841,18 @@ func (c *Config) finish() error {
 	}
 	if c.Write.Mode != "push" && c.Write.Mode != "pr" {
 		return fmt.Errorf("write.mode must be push or pr, got %q", c.Write.Mode)
+	}
+	switch c.Audit.Anchor {
+	case "", "off":
+		c.Audit.Anchor = ""
+	case "daily":
+		// An anchor is a commit of its own, every day: in pull request mode it would
+		// open a pull request each time and nothing would be anchored until a person merged it.
+		if c.Write.Mode == "pr" {
+			return errors.New("audit.anchor: daily needs write.mode: push (in pr mode it would open a pull request every day)")
+		}
+	default:
+		return fmt.Errorf("audit.anchor must be daily or off, got %q", c.Audit.Anchor)
 	}
 	if c.I18n.Default == "" {
 		c.I18n.Default = locale.Default

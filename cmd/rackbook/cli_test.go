@@ -331,3 +331,40 @@ func TestCheckValidatesAuthAuditors(t *testing.T) {
 		t.Fatalf("a bad entry must fail and name the key: %v %s", err, out)
 	}
 }
+
+func TestCheckRefusesTheDailyAnchorInPullRequestMode(t *testing.T) {
+	for _, c := range []struct {
+		extra string
+		pr    bool
+		want  string // "" = ok
+	}{
+		{"audit:\n  anchor: daily\n", false, ""},
+		{"audit:\n  anchor: off\n", true, ""},
+		{"audit:\n  anchor: daily\n", true, "audit.anchor: daily needs write.mode: push"},
+		{"audit:\n  anchor: hourly\n", false, `audit.anchor must be daily or off, got "hourly"`},
+	} {
+		dir := testutil.CopyExample(t)
+		cfg := filepath.Join(dir, "rackbook.yml")
+		b, err := os.ReadFile(cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(cfg, append(b, []byte("\n"+c.extra)...), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if c.pr {
+			testutil.Replace(t, dir, "rackbook.yml", "mode: push", "mode: pr")
+		}
+		out, err := run(t, "check", "--config", cfg)
+		if c.want == "" {
+			if err != nil || !strings.HasPrefix(out, "ok:") {
+				t.Errorf("%q: %v %s", c.extra, err, out)
+			}
+			continue
+		}
+		var ee exitError
+		if !errors.As(err, &ee) || ee.code != 1 || !strings.Contains(out, c.want) {
+			t.Errorf("%q: %v %s", c.extra, err, out)
+		}
+	}
+}

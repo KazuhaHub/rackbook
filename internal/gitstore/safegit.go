@@ -80,7 +80,7 @@ var allowedOptions = map[string][]string{
 	"commit":     {"--quiet", "--no-verify", "-F", "-", "--only", "--"},
 	"fetch":      {"--quiet"},
 	"ls-tree":    {"-z", "--"},
-	"log":        {"-n", "--format=*", "--fixed-strings", "--grep=*", "--skip=*", "--name-only", "--date-order", "--"},
+	"log":        {"-n", "--format=*", "--fixed-strings", "--grep=*", "--skip=*", "--name-only", "--date-order", "--full-history", "--"},
 	"merge":      {"--quiet", "--ff-only"},
 	"merge-base": {"--is-ancestor"},
 	"push":       {},
@@ -91,6 +91,12 @@ var allowedOptions = map[string][]string{
 	"rev-parse":  {"--is-inside-work-tree", "--abbrev-ref", "--absolute-git-dir", "--show-prefix", "--verify", "--quiet", "--short"},
 	"status":     {"--porcelain", "-z", "--untracked-files=no", "--untracked-files=all", "--ignored=matching"},
 }
+
+// anchorsPath is the one state file that ls-tree may name: the daily audit anchors, whose history
+// is checked. Every other state file (tokens, passkeys) stays out of reach of what reads the history.
+const anchorsPath = ".rackbook/audit-anchors"
+
+func plainStatePath(p string) bool { return p == anchorsPath }
 
 func optionAllowed(sub, opt string) bool {
 	for _, a := range allowedOptions[sub] {
@@ -119,16 +125,16 @@ func refuseDestructive(args []string) error {
 		if len(rest) != 2 || rest[0] != "get-url" || rest[1] != "origin" {
 			return fmt.Errorf("%w: remote %s", errDestructive, strings.Join(rest, " "))
 		}
-	case "cat-file": // read only: one blob, by its object id, never an option or a name
-		if len(rest) != 2 || rest[0] != "blob" || !blobIDRe.MatchString(rest[1]) {
-			return fmt.Errorf("%w: cat-file %s (only \"cat-file blob <object id>\")", errDestructive, strings.Join(rest, " "))
+	case "cat-file": // read only: one blob by its object id, or "--batch" with the names on stdin; no other option
+		if !(len(rest) == 1 && rest[0] == "--batch") && (len(rest) != 2 || rest[0] != "blob" || !blobIDRe.MatchString(rest[1])) {
+			return fmt.Errorf("%w: cat-file %s (only \"cat-file blob <object id>\" and \"cat-file --batch\")", errDestructive, strings.Join(rest, " "))
 		}
 	case "ls-tree": // read only: "-z <commit> -- <up to 4 plain paths>"
 		if len(rest) < 4 || len(rest) > 7 || rest[0] != "-z" || !fullRevRe.MatchString(rest[1]) || rest[2] != "--" {
 			return fmt.Errorf("%w: ls-tree %s", errDestructive, strings.Join(rest, " "))
 		}
 		for _, p := range rest[3:] {
-			if _, err := safeHistPath(p); err != nil || strings.HasPrefix(p, "-") || strings.HasPrefix(p, ":") {
+			if _, err := safeHistPath(p); (err != nil && !plainStatePath(p)) || strings.HasPrefix(p, "-") || strings.HasPrefix(p, ":") {
 				return fmt.Errorf("%w: ls-tree path %q", errDestructive, p)
 			}
 		}

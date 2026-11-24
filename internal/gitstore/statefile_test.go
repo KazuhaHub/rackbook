@@ -3,6 +3,7 @@ package gitstore
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -130,4 +131,320 @@ func roleOf(s string) roles.Role {
 		return roles.Editor
 	}
 	return roles.Viewer
+}
+
+const anchorsRel = ".rackbook/audit-anchors"
+
+func appendState(t *testing.T, s *Store, line string) string {
+	t.Helper()
+	if _, err := s.MutateStateFile(context.Background(), anchorsRel, "anchor "+line, nil, appendLine(line)); err != nil {
+		t.Fatal(err)
+	}
+	return sh(t, s.repo.Dir, "rev-parse", "HEAD")
+}
+
+func TestStateFileHistoryAcceptsAppendsAndFindsOtherChanges(t *testing.T) {
+	e := newEnv(t)
+	s := open(t, e.server, nil)
+	ctx := context.Background()
+	var commits []string
+	for _, line := range []string{"a", "b", "c"} {
+		commits = append(commits, appendState(t, s, line))
+		// a commit that does not touch the file is no concern of it
+		if _, err := s.MutateStateFile(ctx, ".rackbook/other.yml", "other "+line, nil, appendLine("x: "+line)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	tip := sh(t, e.server, "rev-parse", "HEAD")
+	c, err := s.CheckStateFileHistory(ctx, anchorsRel, "")
+	if err != nil || c.Restarted || len(c.Violations) != 0 || c.Commits != 3 || c.Tip != tip {
+		t.Fatalf("%+v %v", c, err)
+	}
+	// nothing new since the tip; and from an earlier commit only what came after is looked at
+	if c, err = s.CheckStateFileHistory(ctx, anchorsRel, tip); err != nil || c.Commits != 0 || c.Restarted {
+		t.Fatalf("%+v %v", c, err)
+	}
+	if c, err = s.CheckStateFileHistory(ctx, anchorsRel, commits[0]); err != nil || c.Commits != 2 || len(c.Violations) != 0 {
+		t.Fatalf("%+v %v", c, err)
+	}
+	// a rewrite of the first line by a forward commit
+	sh(t, e.laptop, "pull", "--quiet")
+	if err := os.WriteFile(filepath.Join(e.laptop, anchorsRel), []byte("A\nb\nc\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sh(t, e.laptop, "commit", "-qam", "tidy")
+	sh(t, e.laptop, "push", "--quiet", "origin", "main")
+	bad := sh(t, e.laptop, "rev-parse", "HEAD")
+	if err := s.Pull(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for _, after := range []string{"", tip} {
+		c, err = s.CheckStateFileHistory(ctx, anchorsRel, after)
+		if err != nil || len(c.Violations) != 1 || c.Violations[0].Commit != bad || c.Violations[0].Parent != tip || string(c.Violations[0].Base) != "a\nb\nc\n" {
+			t.Fatalf("after %q: %+v %v", after, c, err)
+		}
+	}
+	// a commit that is not an ancestor of the tip (the history was rewritten): everything again
+	sh(t, e.laptop, "checkout", "-q", "--orphan", "other")
+	sh(t, e.laptop, "commit", "-q", "--allow-empty", "-m", "elsewhere")
+	foreign := sh(t, e.laptop, "rev-parse", "HEAD")
+	sh(t, e.server, "fetch", "--quiet", e.laptop, "other")
+	if c, err = s.CheckStateFileHistory(ctx, anchorsRel, foreign); err != nil || !c.Restarted || c.Commits != 4 || len(c.Violations) != 1 {
+		t.Fatalf("%+v %v", c, err)
+	}
+	if c, err = s.CheckStateFileHistory(ctx, anchorsRel, "--output=/tmp/x"); err != nil || c.Commits != 4 {
+		t.Fatalf("%+v %v", c, err)
+	}
+	for _, p := range []string{"rackbook.yml", ".rackbook", "../x", ".rackbook/../rackbook.yml"} {
+		if _, err := s.CheckStateFileHistory(ctx, p, ""); err == nil {
+			t.Errorf("%q must be refused", p)
+		}
+	}
+	// and a clone that no server owns can be checked the same way
+	cc, err := CheckStateFileInClone(ctx, e.laptop, anchorsRel)
+	if err != nil || len(cc.Violations) != 0 && cc.Commits == 0 {
+		t.Fatalf("%+v %v", cc, err)
+	}
+	if _, err := CheckStateFileInClone(ctx, t.TempDir(), anchorsRel); err == nil {
+		t.Fatal("not a repository")
+	}
+}
+
+// mergeEnv makes a branch that was cut before the anchor file existed (so its file can only be
+// the forged one) and gives the server's main two real anchors.
+func mergeEnv(t *testing.T) (e env, s *Store, forged string) {
+	t.Helper()
+	e = newEnv(t)
+	sh(t, e.laptop, "checkout", "-q", "-b", "forged")
+	if err := os.MkdirAll(filepath.Join(e.laptop, ".rackbook"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(e.laptop, anchorsRel), []byte("FORGED\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sh(t, e.laptop, "add", ".")
+	sh(t, e.laptop, "commit", "-qm", "a branch with its own anchors")
+	forged = sh(t, e.laptop, "rev-parse", "HEAD")
+	s = open(t, e.server, nil)
+	appendState(t, s, "real1")
+	appendState(t, s, "real2")
+	sh(t, e.laptop, "fetch", "--quiet", "origin", "main")
+	return e, s, forged
+}
+
+func TestAMergeThatTakesAForgedAnchorFileIsFoundOnEitherSide(t *testing.T) {
+	ctx := context.Background()
+	t.Run("forged side is the second parent", func(t *testing.T) {
+		e, s, _ := mergeEnv(t)
+		sh(t, e.laptop, "checkout", "-q", "main")
+		sh(t, e.laptop, "merge", "--quiet", "origin/main")
+		sh(t, e.laptop, "merge", "--quiet", "-X", "theirs", "forged", "-m", "merge the branch")
+		if got := sh(t, e.laptop, "show", "HEAD:"+anchorsRel); got != "FORGED" {
+			t.Fatalf("the merge did not take the forged file: %q", got)
+		}
+		merge := sh(t, e.laptop, "rev-parse", "HEAD")
+		sh(t, e.laptop, "push", "--quiet", "origin", "main")
+		if err := s.Pull(ctx); err != nil {
+			t.Fatal(err)
+		}
+		c, err := s.CheckStateFileHistory(ctx, anchorsRel, "")
+		if err != nil || !hasViolation(c, merge) {
+			t.Fatalf("%+v %v", c, err)
+		}
+	})
+	t.Run("forged side is the first parent", func(t *testing.T) {
+		e, s, forged := mergeEnv(t)
+		sh(t, e.laptop, "checkout", "-q", "forged")
+		sh(t, e.laptop, "merge", "--quiet", "-X", "ours", "origin/main", "-m", "merge main into the branch")
+		if got := sh(t, e.laptop, "show", "HEAD:"+anchorsRel); got != "FORGED" {
+			t.Fatalf("the merge did not keep the forged file: %q", got)
+		}
+		if p := sh(t, e.laptop, "rev-parse", "HEAD^1"); p != forged {
+			t.Fatalf("first parent %s", p)
+		}
+		merge := sh(t, e.laptop, "rev-parse", "HEAD")
+		sh(t, e.laptop, "push", "--quiet", "origin", "HEAD:main")
+		if err := s.Pull(ctx); err != nil {
+			t.Fatal(err)
+		}
+		c, err := s.CheckStateFileHistory(ctx, anchorsRel, "")
+		if err != nil || !hasViolation(c, merge) {
+			t.Fatalf("%+v %v", c, err)
+		}
+		// the incremental check from the tip before the merge sees it as well
+		c, err = s.CheckStateFileHistory(ctx, anchorsRel, sh(t, e.server, "rev-parse", "HEAD^2"))
+		if err != nil || !hasViolation(c, merge) {
+			t.Fatalf("incremental: %+v %v", c, err)
+		}
+	})
+	t.Run("a harmless merge passes", func(t *testing.T) {
+		e := newEnv(t)
+		sh(t, e.laptop, "checkout", "-q", "-b", "side")
+		if err := os.WriteFile(filepath.Join(e.laptop, "notes.txt"), []byte("hi\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		sh(t, e.laptop, "add", ".")
+		sh(t, e.laptop, "commit", "-qm", "notes")
+		s := open(t, e.server, nil)
+		appendState(t, s, "real1")
+		appendState(t, s, "real2")
+		sh(t, e.laptop, "fetch", "--quiet", "origin", "main")
+		sh(t, e.laptop, "checkout", "-q", "main")
+		sh(t, e.laptop, "merge", "--quiet", "origin/main")
+		sh(t, e.laptop, "merge", "--quiet", "--no-ff", "side", "-m", "merge notes")
+		sh(t, e.laptop, "push", "--quiet", "origin", "main")
+		if err := s.Pull(ctx); err != nil {
+			t.Fatal(err)
+		}
+		c, err := s.CheckStateFileHistory(ctx, anchorsRel, "")
+		if err != nil || len(c.Violations) != 0 || c.Commits < 2 {
+			t.Fatalf("%+v %v", c, err)
+		}
+	})
+}
+
+func hasViolation(c *StateCheck, commit string) bool {
+	for _, v := range c.Violations {
+		if v.Commit == commit {
+			return true
+		}
+	}
+	return false
+}
+
+// pushFromLaptop commits what is in the laptop's work tree and pushes it, and has the server take it in.
+// With staged the index was prepared by hand (a submodule entry): the work tree is not added.
+func pushFromLaptop(t *testing.T, e env, s *Store, msg string, staged ...bool) string {
+	t.Helper()
+	if len(staged) == 0 || !staged[0] {
+		sh(t, e.laptop, "add", "-A", ".")
+	}
+	sh(t, e.laptop, "commit", "-qm", msg)
+	sh(t, e.laptop, "push", "--quiet", "origin", "main")
+	if err := s.Pull(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	return sh(t, e.laptop, "rev-parse", "HEAD")
+}
+
+func TestStateFileHistoryRefusesWhatIsNoRegularFileAndNeverDesyncs(t *testing.T) {
+	ctx := context.Background()
+	abs := func(e env) string { return filepath.Join(e.laptop, anchorsRel) }
+	clear := func(t *testing.T, e env) {
+		t.Helper()
+		if err := os.RemoveAll(abs(e)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	setFile := func(t *testing.T, e env, body string) {
+		t.Helper()
+		clear(t, e)
+		if err := os.MkdirAll(filepath.Dir(abs(e)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(abs(e), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cases := []struct {
+		name   string
+		middle func(t *testing.T, e env)
+		staged bool // the middle step prepares the index itself
+	}{
+		{"a directory", func(t *testing.T, e env) {
+			clear(t, e)
+			// inside it, a name with a newline and what looks like the header of the next object
+			fake := "x\n0123456789abcdef0123456789abcdef01234567 blob 3\nabc"
+			if err := os.MkdirAll(abs(e), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(abs(e), fake), []byte("zz\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}, false},
+		{"a symbolic link", func(t *testing.T, e env) {
+			clear(t, e)
+			if err := os.Symlink("somewhere-else", abs(e)); err != nil {
+				t.Skip("no symbolic links here")
+			}
+		}, false},
+		{"a submodule", func(t *testing.T, e env) {
+			clear(t, e)
+			sh(t, e.laptop, "rm", "-q", "--cached", "-r", "--ignore-unmatch", anchorsRel)
+			sh(t, e.laptop, "update-index", "--add", "--cacheinfo", "160000,"+sh(t, e.laptop, "rev-parse", "HEAD")+","+anchorsRel)
+		}, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			e := newEnv(t)
+			s := open(t, e.server, nil)
+			setFile(t, e, "a\n")
+			first := pushFromLaptop(t, e, s, "a")
+			c.middle(t, e)
+			bad := pushFromLaptop(t, e, s, "odd", c.staged)
+			setFile(t, e, "a\nb\n")
+			last := pushFromLaptop(t, e, s, "b again")
+			setFile(t, e, "a\nb\nc\n")
+			pushFromLaptop(t, e, s, "c")
+			for _, after := range []string{"", first} {
+				ck, err := s.CheckStateFileHistory(ctx, anchorsRel, after)
+				if err != nil {
+					t.Fatalf("after %q: %v", after, err)
+				}
+				// only the odd commit is refused: the honest ones around it were read correctly
+				if len(ck.Violations) != 1 || ck.Violations[0].Commit != bad || ck.Violations[0].Reason != ReasonNotRegular {
+					t.Fatalf("after %q: %+v", after, ck.Violations)
+				}
+				_ = last
+			}
+		})
+	}
+}
+
+func TestStateFileHistoryRefusesAVersionAboveTheLimit(t *testing.T) {
+	e := newEnv(t)
+	s := open(t, e.server, nil)
+	if err := os.MkdirAll(filepath.Join(e.laptop, ".rackbook"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	big := strings.Repeat("0123456789abcdef\n", (MaxStateFileBytes/17)+10)
+	if err := os.WriteFile(filepath.Join(e.laptop, anchorsRel), []byte(big), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	bigCommit := pushFromLaptop(t, e, s, "big")
+	if err := os.WriteFile(filepath.Join(e.laptop, anchorsRel), []byte(big+"more\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	pushFromLaptop(t, e, s, "bigger")
+	ck, err := s.CheckStateFileHistory(context.Background(), anchorsRel, "")
+	if err != nil || len(ck.Violations) != 2 || ck.Violations[0].Reason != ReasonTooLarge || ck.Violations[1].Reason != ReasonTooLarge || ck.Violations[1].Commit != bigCommit && ck.Violations[0].Commit != bigCommit {
+		t.Fatalf("%+v %v", ck, err)
+	}
+	if ck.Violations[0].Content != nil {
+		t.Fatal("a version above the limit must not be kept")
+	}
+}
+
+func TestStateFileHistoryDoesNotAcceptAnAnswerThatIsNotWhatWasAsked(t *testing.T) {
+	e := newEnv(t)
+	s := open(t, e.server, nil)
+	appendState(t, s, "a")
+	appendState(t, s, "b")
+	s.repo.Runner = answerWrong{inner: RealRunner()}
+	ck, err := s.CheckStateFileHistory(context.Background(), anchorsRel, "")
+	if !errors.Is(err, ErrStateDesync) || ck == nil || ck.Tip == "" {
+		t.Fatalf("%+v %v", ck, err)
+	}
+}
+
+// answerWrong lets everything through, but answers cat-file --batch with the right header for
+// another object.
+type answerWrong struct{ inner Runner }
+
+func (a answerWrong) Run(ctx context.Context, c Cmd) (string, string, error) {
+	out, errOut, err := a.inner.Run(ctx, c)
+	if len(c.Args) >= 2 && c.Args[0] == "cat-file" && c.Args[1] == "--batch" && len(out) > 3 {
+		out = "0000000000000000000000000000000000000000" + out[40:]
+	}
+	return out, errOut, err
 }

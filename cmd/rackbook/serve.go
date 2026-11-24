@@ -169,7 +169,11 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		defer auditLog.Close()
 	}
 
+	// The audit anchors are checked at start and after each pull; audit.anchor: daily also writes
+	// them (a loop started below). The hook runs only once the pull loop does.
+	anchors := &anchorWiring{log: auditLog, logger: logger}
 	store, err := gitstore.Open(ctx, gitstore.Options{GitHubApp: appSource, OnCommit: commitHook(auditLog, "ledger", filepath.Base(cfg.Dir)), StateDir: stateDir,
+		AfterPull:  anchors.AfterPull,
 		ConfigPath: path, NoGit: noGit, Committer: committer, PullInterval: interval,
 		GitHubToken: os.Getenv("RACKBOOK_GITHUB_TOKEN"), GitHubRepo: ghRepo, GitHubAPI: ghAPI, Logger: logger,
 	})
@@ -183,6 +187,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		}
 		logger.Warn("accepted the remote history", "remote", hash)
 	}
+	anchors.Start(ctx, store, readOnlyFlag(f))
 	go store.Run(ctx)
 
 	// auth.roles and auth.editors are read from the store's current config on every

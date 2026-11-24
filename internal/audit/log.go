@@ -54,7 +54,9 @@ type Log struct {
 	firstFile string
 	firstPrev string
 	status    Status
-	failed    string // set when the log cannot safely append: Record then writes nothing
+	failed    string          // set when the log cannot safely append: Record then writes nothing
+	known     map[string]bool // recorded chain problems, by problemKey: what ReviewAnchors must not record twice
+	anchorOK  anchorCache     // anchors that matched the log in this process
 
 	stat func(*os.File) (os.FileInfo, error) // test seam: f.Stat
 
@@ -179,6 +181,10 @@ func (l *Log) check() error {
 		l.setState(s)
 	}
 	rep := s.report
+	l.known = map[string]bool{}
+	for _, p := range s.recorded {
+		l.known[problemKey(p.Kind, p.Seq, p.Fingerprint)] = true
+	}
 	pending := rep.Pending()
 	l.status = Status{OK: len(pending) == 0, Problems: pending}
 	if l.failed != "" {

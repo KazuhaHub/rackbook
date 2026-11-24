@@ -292,3 +292,38 @@ func TestParseAuditors(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestAuditAnchorKey(t *testing.T) {
+	base := sample + "\n"
+	for _, c := range []struct {
+		yml     string
+		daily   bool
+		wantErr string
+	}{
+		{"", false, ""},
+		{"audit: {}\n", false, ""},
+		{"audit:\n  anchor: off\n", false, ""},
+		{"audit:\n  anchor: \"\"\n", false, ""},
+		{"audit:\n  anchor: daily\n", true, ""},
+		{"audit:\n  anchor: daily\nwrite: {mode: push}\n", true, ""},
+		{"audit:\n  anchor: weekly\n", false, `audit.anchor must be daily or off, got "weekly"`},
+		{"audit:\n  anchor: true\n", false, `audit.anchor must be daily or off`},
+		{"audit:\n  anchor: daily\nwrite: {mode: pr}\n", false, "audit.anchor: daily needs write.mode: push"},
+		{"audit:\n  anchor: off\nwrite: {mode: pr}\n", false, ""},
+	} {
+		cfg, err := Parse([]byte(base+c.yml), "/r/rackbook.yml")
+		if c.wantErr != "" {
+			if err == nil || !strings.Contains(err.Error(), c.wantErr) {
+				t.Errorf("%q: err = %v, want %q", c.yml, err, c.wantErr)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("%q: %v", c.yml, err)
+			continue
+		}
+		if cfg.AuditAnchorDaily() != c.daily {
+			t.Errorf("%q: daily = %v", c.yml, cfg.AuditAnchorDaily())
+		}
+	}
+}

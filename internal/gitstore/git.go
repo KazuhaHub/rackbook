@@ -249,6 +249,22 @@ func (r *Repo) runStream(ctx context.Context, each func([]byte) bool, args ...st
 	return nil
 }
 
+// runLimitedStdin is runLimited with standard input.
+func (r *Repo) runLimitedStdin(ctx context.Context, max int, stdin string, args ...string) (out string, truncated bool, err error) {
+	rn := r.Runner
+	if rn == nil {
+		rn = defaultRunner
+	}
+	out, errOut, err := rn.Run(ctx, Cmd{Dir: r.Dir, Args: args, Stdin: stdin, IgnoreUserConfig: r.IgnoreUserConfig, MaxStdout: max})
+	if errors.Is(err, ErrOutputLimit) {
+		return out, true, nil
+	}
+	if err != nil {
+		return "", false, &GitError{Args: args, Stderr: errOut, Err: err}
+	}
+	return out, false, nil
+}
+
 // runLimited is runRaw with the output cut at max bytes; truncated says it was.
 func (r *Repo) runLimited(ctx context.Context, max int, args ...string) (out string, truncated bool, err error) {
 	rn := r.Runner

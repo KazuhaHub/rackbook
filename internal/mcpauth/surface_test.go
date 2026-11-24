@@ -2,6 +2,7 @@ package mcpauth_test
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"os"
 	"strconv"
 	"strings"
@@ -9,6 +10,8 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/kazuhahub/rackbook/internal/anchor"
+	"github.com/kazuhahub/rackbook/internal/audit"
 	"github.com/kazuhahub/rackbook/internal/auth/oauth/oauthtest"
 	"github.com/kazuhahub/rackbook/internal/gitstore"
 )
@@ -616,5 +619,52 @@ func TestToolsListHonoursATokensActionsAndCollections(t *testing.T) {
 				t.Errorf("caller %v", c)
 			}
 		})
+	}
+}
+
+func TestTheAuditAnchorIdentityCannotSignInWithAnAccessToken(t *testing.T) {
+	h := newHarness(t, hopts{git: true})
+	for _, sub := range []string{"rackbook-audit-anchor", "Rackbook-Audit-Anchor"} {
+		code, _, _ := h.do("POST", "/mcp", h.jwt(oauthtest.Options{Subject: sub, Scope: "rackbook:write"}), map[string]any{"jsonrpc": "2.0", "id": 1, "method": "ping"},
+			"Accept", "application/json, text/event-stream")
+		if code != 401 {
+			t.Errorf("%s: %d, want 401", sub, code)
+		}
+	}
+	if code, _, _ := h.do("POST", "/mcp", h.jwt(oauthtest.Options{Subject: "alice", Scope: "rackbook:write"}), map[string]any{"jsonrpc": "2.0", "id": 1, "method": "ping"},
+		"Accept", "application/json, text/event-stream"); code == 401 {
+		t.Errorf("an ordinary user: %d", code)
+	}
+}
+
+func TestAnchorCommitsDoNotShowInMCPHistoryForAViewer(t *testing.T) {
+	h := newHarness(t, hopts{git: true, mcpYAML: "    direct_push:\n      - {users: [\"mcphub:alice\"], collections: [todo]}\n"})
+	alice := h.mcpSession(h.jwt(oauthtest.Options{Subject: "alice", Scope: "rackbook:write"}))
+	if out, isErr := call(t, alice, "records_create", map[string]any{"collection": "todo", "data": todo("hist")}); isErr {
+		t.Fatalf("%v", out)
+	}
+	// the daily anchor's commit, as the anchor job makes it
+	a := audit.Anchor{Day: "2026-11-20", Seq: 4, Hash: "sha256:" + strings.Repeat("a", 64), At: "2026-11-20T10:00:00Z"}
+	res, err := h.store.MutateStateFile(t.Context(), audit.AnchorsPath, "audit: anchor seq 4", anchor.Identity,
+		func(old []byte, _ bool) ([]byte, error) { return append(old, a.Line()...), nil })
+	if err != nil || res.Commit == "" {
+		t.Fatalf("%+v %v", res, err)
+	}
+	full := git(t, h.dir, "rev-parse", "HEAD")
+
+	vic := h.mcpSession(h.jwt(oauthtest.Options{Subject: "vic"})) // a viewer
+	for _, args := range []map[string]any{{"collection": "todo"}, {"collection": "todo", "id": "hist"}, {"collection": "todo", "limit": 100}} {
+		list, isErr := call(t, vic, "history_list", args)
+		raw, _ := json.Marshal(list)
+		if isErr || strings.Contains(string(raw), "audit: anchor") || strings.Contains(string(raw), full) {
+			t.Errorf("%v: %v", args, list)
+		}
+	}
+	// and the commit itself reads as one that does not exist, for the viewer and for the editor
+	for name, cs := range map[string]*mcp.ClientSession{"viewer": vic, "editor": alice} {
+		out, isErr := call(t, cs, "history_diff", map[string]any{"commit": full})
+		if !isErr || out["error"] != "not_found" {
+			t.Errorf("%s: %v", name, out)
+		}
 	}
 }

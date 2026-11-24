@@ -87,3 +87,35 @@ func (fo *fileOffsets) extend(f *os.File, end int64) {
 		fo.size = off
 	}
 }
+
+// startFor returns the offset of the last mark whose seq is at most seq: a line
+// start from which reading forward reaches that seq, at most offsetEvery lines
+// away. It is -1 when the file cannot be seeked in (read it from its start).
+func (o *offsetIndex) startFor(name string, f *os.File, seq int64) int64 {
+	st, err := f.Stat()
+	if err != nil {
+		return -1
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.files == nil {
+		o.files = map[string]*fileOffsets{}
+	}
+	fo := o.files[name]
+	if fo == nil || !os.SameFile(fo.info, st) || st.Size() < fo.size {
+		fo = &fileOffsets{info: st}
+		o.files[name] = fo
+	}
+	fo.info = st
+	if !fo.bad && st.Size() > fo.size {
+		fo.extend(f, st.Size())
+	}
+	if fo.bad {
+		return -1
+	}
+	i := sort.Search(len(fo.marks), func(i int) bool { return fo.marks[i].seq > seq })
+	if i == 0 {
+		return -1
+	}
+	return fo.marks[i-1].off
+}

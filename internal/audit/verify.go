@@ -66,6 +66,9 @@ type Report struct {
 	Files    int       `json:"files"`
 	Lines    int       `json:"lines"`
 	Problems []Problem `json:"problems"`
+	// Anchors says what the anchor file was compared with; set only when the
+	// anchors were checked (VerifyWithAnchors).
+	Anchors *AnchorSummary `json:"anchors,omitempty"`
 }
 
 // Repairable says every problem is one of the two crash cases the server

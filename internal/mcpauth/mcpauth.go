@@ -185,6 +185,9 @@ func (r *Resource) accessToken(req *http.Request, raw string) (*auth.Identity, e
 	if user == "" {
 		return nil, r.invalidToken(req, "empty user")
 	}
+	if user == auth.AnchorIdentity {
+		return nil, r.invalidToken(req, "reserved user")
+	}
 	id := &auth.Identity{ID: user, Name: c.Username, Method: auth.MethodOAuth, Client: c.ClientID, Issuer: c.Alias,
 		Scopes: c.Scopes, ScopeLimited: true, Via: "mcp"}
 	if c.Kind == config.KindMCPHub {
