@@ -64,17 +64,24 @@ func humanSubject(r *http.Request) (Subject, bool) {
 	case auth.MethodToken, auth.MethodOAuth, auth.MethodMCPHub:
 		return Subject{}, false
 	}
-	sub := Subject{ID: roles.FoldASCII(id.ID), Email: id.Email, Name: id.Name, Method: id.Method, Groups: boundGroups(id.Groups)}
+	sub := Subject{ID: roles.FoldASCII(id.ID), Email: id.Email, Name: id.Name, Method: id.Method, Groups: boundGroups(id.Groups), AppRoles: boundAppRoles(id.AppRoles)}
 	return sub, true
 }
 
 // boundGroups keeps the groups a grant stores small, like the session cookie does.
-func boundGroups(in []string) []string {
+func boundGroups(in []string) []string { return boundClaim(in, true) }
+
+// boundAppRoles is the same for the roles claim, whose values are kept exactly as sent.
+func boundAppRoles(in []string) []string { return boundClaim(in, false) }
+
+func boundClaim(in []string, trim bool) []string {
 	var out []string
 	total := 0
 	for _, g := range in {
-		g = strings.TrimSpace(g)
-		if g == "" || len(g) > 128 || len(out) >= 40 || total+len(g) > 700 {
+		if trim {
+			g = strings.TrimSpace(g)
+		}
+		if strings.TrimSpace(g) == "" || len(g) > 128 || len(out) >= 40 || total+len(g) > 700 {
 			continue
 		}
 		total += len(g)

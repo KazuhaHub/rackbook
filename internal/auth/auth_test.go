@@ -485,3 +485,68 @@ func TestDegradedConfigStillCapsAnAuditorAtViewer(t *testing.T) {
 		t.Fatalf("%v", id.EffectiveRole())
 	}
 }
+
+// A token's creator is evaluated by identity alone: groups and app roles never count,
+// and oauth: and mcphub: entries never match a creator, whatever method signed them in.
+func TestTokenCreatorsAreEvaluatedByIdentityOnly(t *testing.T) {
+	spec := &roles.Spec{
+		Admin:  []string{"group:ops", "app-role:Rackbook.Admin", "mcphub:boss", "oauth:corp:boss"},
+		Editor: []string{"ed@example.com"},
+		Viewer: []string{"*@example.org", "oidc:sub-9"},
+	}
+	a, _ := authWith(t, spec, []string{"app-role:Aud", "aud@example.com"}, nil)
+	for _, c := range []struct {
+		identity, method string
+		want             roles.Role
+		aud              bool
+	}{
+		{"ed@example.com", MethodOIDC, roles.Editor, false},
+		{"x@example.org", MethodOIDC, roles.Viewer, false}, // *@domain
+		{"oidc:sub-9", MethodOIDC, roles.Viewer, false},
+		{"boss", MethodOIDC, roles.None, false}, // mcphub: and oauth: never match a creator
+		{"boss", MethodNone, roles.None, false},
+		{"aud@example.com", MethodOIDC, roles.Viewer, true},
+		{"claims@example.com", MethodOIDC, roles.None, false}, // would be admin by group, auditor by app role
+	} {
+		r, aud := a.CapabilitiesForVia(c.identity, c.method)
+		if r != c.want || aud != c.aud {
+			t.Errorf("%s (%s): %v %v, want %v %v", c.identity, c.method, r, aud, c.want, c.aud)
+		}
+	}
+}
+
+func TestEvaluateSetsFromClaimsOnlyWhenTheClaimsMadeTheDifference(t *testing.T) {
+	spec := &roles.Spec{Admin: []string{"boss@example.com"}, Editor: []string{"group:eng", "app-role:Eng"}, Viewer: []string{"vic@example.com"}}
+	a, _ := authWith(t, spec, []string{"group:audit"}, nil)
+	for _, c := range []struct {
+		name string
+		id   Identity
+		role roles.Role
+		from bool
+	}{
+		{"identity entry only", Identity{ID: "boss@example.com", Method: MethodOIDC}, roles.Admin, false},
+		{"identity entry wins over a matching group", Identity{ID: "boss@example.com", Method: MethodOIDC, Groups: []string{"eng"}}, roles.Admin, false},
+		{"group beats a lower identity entry", Identity{ID: "vic@example.com", Method: MethodOIDC, Groups: []string{"eng"}}, roles.Editor, true},
+		{"app role only", Identity{ID: "z@example.com", Method: MethodOIDC, AppRoles: []string{"Eng"}}, roles.Editor, true},
+		{"claims that match nothing", Identity{ID: "boss@example.com", Method: MethodOIDC, Groups: []string{"x"}, AppRoles: []string{"y"}}, roles.Admin, false},
+		{"auditor by group makes the session claim-derived", Identity{ID: "boss@example.com", Method: MethodOIDC, Groups: []string{"audit"}}, roles.Admin, true},
+		{"no claims at all", Identity{ID: "vic@example.com", Method: MethodOIDC}, roles.Viewer, false},
+	} {
+		id := a.Evaluate(&c.id)
+		if id.Role != c.role || id.FromClaims != c.from {
+			t.Errorf("%s: role %v fromClaims %v, want %v %v", c.name, id.Role, id.FromClaims, c.role, c.from)
+		}
+	}
+}
+
+func TestGenerationChangesWithTheConfig(t *testing.T) {
+	a, set := authWith(t, &roles.Spec{Admin: []string{"a@x.org"}}, nil, nil)
+	g1 := a.Generation()
+	if a.Generation() != g1 {
+		t.Fatal("stable while the config is")
+	}
+	set(&roles.Spec{Admin: []string{"a@x.org"}}, nil)
+	if a.Generation() == g1 {
+		t.Fatal("a reload is a new generation")
+	}
+}

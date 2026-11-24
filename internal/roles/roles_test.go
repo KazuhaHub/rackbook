@@ -325,3 +325,133 @@ func TestInvalidAuditorEntriesNameTheKey(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// app-role:<value> matches the ID token's roles claim, exactly and case-sensitively.
+func TestAppRoleEntries(t *testing.T) {
+	spec := &Spec{
+		Admin:  []string{"app-role:Rackbook.Admin"},
+		Editor: []string{"App-Role:Rackbook.Editor", "  app-role: Spaced Role  "},
+		Viewer: []string{"app-role:rackbook.viewer"},
+	}
+	for _, c := range []struct {
+		name string
+		s    Subject
+		want Role
+	}{
+		{"exact", Subject{ID: "a@x.org", AppRoles: []string{"Rackbook.Admin"}}, Admin},
+		{"case matters", Subject{ID: "a@x.org", AppRoles: []string{"rackbook.admin"}}, None},
+		{"case matters, the other way", Subject{ID: "a@x.org", AppRoles: []string{"Rackbook.Viewer"}}, None},
+		{"lower case entry matches lower case value", Subject{ID: "a@x.org", AppRoles: []string{"rackbook.viewer"}}, Viewer},
+		{"the prefix is not case-sensitive, the value is kept as written", Subject{ID: "a@x.org", AppRoles: []string{"Rackbook.Editor"}}, Editor},
+		{"inner spaces are part of the value, outer ones are trimmed", Subject{ID: "a@x.org", AppRoles: []string{"Spaced Role"}}, Editor},
+		{"highest wins", Subject{ID: "a@x.org", AppRoles: []string{"rackbook.viewer", "Rackbook.Admin"}}, Admin},
+		{"a group is not an app role", Subject{ID: "a@x.org", Groups: []string{"Rackbook.Admin"}}, None},
+		{"no roles claim", Subject{ID: "a@x.org"}, None},
+		{"a prefix of the value is not the value", Subject{ID: "a@x.org", AppRoles: []string{"Rackbook.Admin.Extra"}}, None},
+	} {
+		if got := eval(t, spec, c.s); got != c.want {
+			t.Errorf("%s: got %v want %v", c.name, got, c.want)
+		}
+	}
+	// a group entry still folds case, an app role does not
+	g := &Spec{Admin: []string{"group:Ops", "app-role:Ops"}}
+	if eval(t, g, Subject{ID: "a@x.org", Groups: []string{"OPS"}}) != Admin || eval(t, g, Subject{ID: "a@x.org", AppRoles: []string{"OPS"}}) != None {
+		t.Error("groups fold case; app roles do not")
+	}
+	// subject logins match only oidc: entries, as with groups
+	if got := eval(t, &Spec{Admin: []string{"app-role:X"}}, Subject{ID: "oidc:sub-1", AppRoles: []string{"X"}}); got != None {
+		t.Errorf("a login named by its subject matches oidc: entries only: %v", got)
+	}
+	// only an OIDC-style login carries them: MCPHub and OAuth identities never match
+	for _, m := range []string{"mcphub", "oauth", "token"} {
+		if got := eval(t, &Spec{Admin: []string{"app-role:X"}}, Subject{ID: "a", Method: m, AppRoles: []string{"X"}}); got != None {
+			t.Errorf("%s: %v", m, got)
+		}
+	}
+}
+
+func TestAppRoleEntriesAreValidatedLikeAnyOther(t *testing.T) {
+	for _, bad := range []string{"app-role:", "app-role:   ", "APP-ROLE:", "app-role:a*", "app-role:*", "app-role:a\nb"} {
+		if _, err := Compile(&Spec{Editor: []string{bad}}, Options{}); err == nil {
+			t.Errorf("%q accepted in auth.roles", bad)
+		}
+		_, err := CompileAuditors(nil, []string{bad}, Options{})
+		if err == nil || !strings.Contains(err.Error(), "auth.auditors") {
+			t.Errorf("%q in auth.auditors: %v", bad, err)
+		}
+	}
+	for _, ok := range []string{"app-role:Rackbook.Admin", "app-role:Role With Spaces", "app-role:a:b"} {
+		if _, err := CompileAuditors(&Spec{Admin: []string{ok}}, []string{ok}, Options{}); err != nil {
+			t.Errorf("%q: %v", ok, err)
+		}
+	}
+}
+
+func TestAppRoleOnAuditors(t *testing.T) {
+	p, err := CompileAuditors(&Spec{Admin: []string{"a@x.org"}}, []string{"app-role:Rackbook.Auditor"}, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !p.IsAuditor(Subject{ID: "z@x.org", Method: "oidc", AppRoles: []string{"Rackbook.Auditor"}}) {
+		t.Error("an app role on auth.auditors")
+	}
+	if p.IsAuditor(Subject{ID: "z@x.org", Method: "oidc", AppRoles: []string{"rackbook.auditor"}}) {
+		t.Error("case matters there too")
+	}
+}
+
+func TestSubjectWithoutClaimsIsWhatATokenCreatorIs(t *testing.T) {
+	p, err := Compile(&Spec{Admin: []string{"app-role:A", "group:g"}, Viewer: []string{"*@x.org"}}, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := Subject{ID: "a@x.org", Method: "oidc", Groups: []string{"g"}, AppRoles: []string{"A"}}
+	if p.Evaluate(s) != Admin || p.Evaluate(s.WithoutClaims()) != Viewer {
+		t.Fatal("the creator is evaluated by identity alone")
+	}
+	if s.Groups == nil || s.AppRoles == nil {
+		t.Fatal("WithoutClaims must not change the original")
+	}
+}
+
+func TestSources(t *testing.T) {
+	p, err := CompileAuditors(&Spec{
+		Admin:  []string{"boss@x.org", "group:ops", "app-role:Admin"},
+		Editor: []string{"app-role:Edit", "*@x.org"},
+		Viewer: []string{"group:all"},
+	}, []string{"group:audit", "aud@x.org"}, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		name          string
+		s             Subject
+		role, auditor string
+	}{
+		{"identity only", Subject{ID: "boss@x.org", Method: "oidc"}, "identity", ""},
+		{"group and app role agree with the identity", Subject{ID: "boss@x.org", Method: "oidc", Groups: []string{"ops"}, AppRoles: []string{"Admin"}}, "app-role,group,identity", ""},
+		{"only the list of the highest role counts", Subject{ID: "e@x.org", Method: "oidc", AppRoles: []string{"Edit"}, Groups: []string{"all"}}, "app-role,identity", ""},
+		{"group only", Subject{ID: "g@y.org", Method: "oidc", Groups: []string{"ops"}}, "group", ""},
+		{"auditor by group, no role: the floor comes from the same entries", Subject{ID: "g@y.org", Method: "oidc", Groups: []string{"audit"}}, "group", "group"},
+		{"auditor by name", Subject{ID: "aud@x.org", Method: "oidc"}, "identity", "identity"},
+		{"nothing", Subject{ID: "n@y.org", Method: "oidc"}, "", ""},
+	} {
+		r, a := p.Sources(c.s)
+		if strings.Join(r, ",") != c.role || strings.Join(a, ",") != c.auditor {
+			t.Errorf("%s: role %v auditor %v, want %q %q", c.name, r, a, c.role, c.auditor)
+		}
+	}
+	// without a roles block everybody is an editor, by no entry at all
+	if r, _ := mustCompile(t, nil).Sources(Subject{ID: "a", Method: "oidc"}); strings.Join(r, ",") != "identity" {
+		t.Errorf("%v", r)
+	}
+}
+
+func mustCompile(t *testing.T, spec *Spec) *Policy {
+	t.Helper()
+	p, err := Compile(spec, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return p
+}

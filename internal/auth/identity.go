@@ -38,7 +38,15 @@ type Identity struct {
 	Method string // one of the Method constants
 	Client string // e.g. the MCPHub OAuth client_id
 	Issuer string // method oauth: alias of the trusted issuer
-	Groups []string
+	// Groups and AppRoles are the ID token's groups and roles claims of an OIDC
+	// login, bounded as the session cookie keeps them. They feed the group: and
+	// app-role: entries of auth.roles and auth.auditors.
+	Groups   []string
+	AppRoles []string
+	// FromClaims says the role or the auditor capability this identity has now
+	// depends on those claims: it would be lower, or absent, if only entries
+	// that name the identity matched. Set by Authenticator.Evaluate.
+	FromClaims bool
 
 	// OIDC sessions only: the issuer and client ID the login was made under
 	// (the values of the running server at that moment) and when the person
@@ -136,7 +144,7 @@ func (i *Identity) Anonymous() bool { return i == nil || i.ID == "" }
 
 // Subject is the view of the identity that roles are matched against.
 func (i *Identity) Subject() roles.Subject {
-	return roles.Subject{ID: roles.FoldASCII(i.ID), Email: i.Email, Method: i.Method, Issuer: i.Issuer, Groups: i.Groups}
+	return roles.Subject{ID: roles.FoldASCII(i.ID), Email: i.Email, Method: i.Method, Issuer: i.Issuer, Groups: i.Groups, AppRoles: i.AppRoles}
 }
 
 type ctxKey struct{}

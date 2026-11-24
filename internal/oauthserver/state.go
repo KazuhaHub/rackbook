@@ -28,6 +28,8 @@ type Subject struct {
 	Name   string   `json:"name,omitempty"`
 	Method string   `json:"method"`
 	Groups []string `json:"groups,omitempty"`
+	// AppRoles is the ID token's roles claim at approval, for app-role: entries.
+	AppRoles []string `json:"app_roles,omitempty"`
 }
 
 // Client is a client registered with RFC 7591.

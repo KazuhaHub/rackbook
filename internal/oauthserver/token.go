@@ -72,7 +72,7 @@ func (s *Server) token(w http.ResponseWriter, r *http.Request) {
 // role is the role auth.roles gives the grant's subject right now.
 func (s *Server) role(sub Subject) roles.Role {
 	id := &auth.Identity{ID: sub.ID, Email: sub.Email, Method: auth.MethodOAuth}
-	s.o.Auth.EvaluateSubject(id, roles.Subject{ID: roles.FoldASCII(sub.ID), Email: sub.Email, Method: sub.Method, Groups: sub.Groups})
+	s.o.Auth.EvaluateSubject(id, roles.Subject{ID: roles.FoldASCII(sub.ID), Email: sub.Email, Method: sub.Method, Groups: sub.Groups, AppRoles: sub.AppRoles})
 	return id.Role
 }
 
