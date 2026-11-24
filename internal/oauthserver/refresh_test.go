@@ -521,3 +521,66 @@ func TestAuditorCannotRevokeAnotherPersonsGrantOnAnyRoute(t *testing.T) {
 		t.Fatal("an auditor revoked the editor's grant")
 	}
 }
+
+// The groups and app roles of a grant are a snapshot of the sign-in that approved
+// it. They count for claims_absolute (24h) after the approval; then the grant is
+// evaluated by identity entries alone, like an API token.
+func TestGrantClaimsStopCountingAfterClaimsAbsolute(t *testing.T) {
+	for _, kind := range []string{"app role", "group"} {
+		t.Run(kind, func(t *testing.T) {
+			e := newEnv(t, opts{})
+			if kind == "group" {
+				e.claimGroups = "ops"
+			} else {
+				e.claimRoles = "Ops"
+			}
+			e.setRoles(&roles.Spec{
+				Admin:  []string{boss, "app-role:Ops", "group:ops"},
+				Viewer: []string{"vic@example.com", "ed@example.com"},
+			})
+			canWrite := func(user, grant string) bool {
+				for _, g := range e.get(user, "/api/account/grants").json()["grants"].([]any) {
+					if m := g.(map[string]any); m["id"] == grant {
+						return m["canWrite"] == true
+					}
+				}
+				t.Fatal("grant not listed")
+				return false
+			}
+			// ed is a viewer by name and an admin by the claim; boss is an admin by name and carries the claim too
+			cidEd, ed := e.login("ed@example.com", "ed-client")
+			cidBoss, bo := e.login(boss, "boss-client")
+			if !canWrite("ed@example.com", ed.grant) || !canWrite(boss, bo.grant) {
+				t.Fatal("both can write while the claims count")
+			}
+			e.clock.advance(23 * time.Hour)
+			r := e.refresh(cidEd, ed.refresh)
+			if r.StatusCode != 200 || !canWrite("ed@example.com", ed.grant) {
+				t.Fatalf("inside claims_absolute: %d %s", r.StatusCode, r.body)
+			}
+			ed.refresh = r.str("refresh_token")
+			e.clock.advance(2 * time.Hour)
+			// refresh still works: the grant falls to the identity role (viewer), not to nothing
+			r = e.refresh(cidEd, ed.refresh)
+			if r.StatusCode != 200 {
+				t.Fatalf("refresh after claims_absolute: %d %s", r.StatusCode, r.body)
+			}
+			if canWrite("ed@example.com", ed.grant) {
+				t.Fatal("the claim must not count after claims_absolute")
+			}
+			if e.mcpStatus(r.str("access_token")).StatusCode != 200 {
+				t.Fatal("the viewer by name keeps a working grant")
+			}
+			// an admin by name is unaffected
+			rb := e.refresh(cidBoss, bo.refresh)
+			if rb.StatusCode != 200 || !canWrite(boss, bo.grant) {
+				t.Fatalf("an identity admin: %d %s", rb.StatusCode, rb.body)
+			}
+			// with no identity entry at all the grant ends at the next refresh
+			e.setRoles(&roles.Spec{Admin: []string{boss, "app-role:Ops", "group:ops"}})
+			if r := e.refresh(cidEd, r.str("refresh_token")); r.str("error") != "invalid_grant" {
+				t.Fatalf("no identity role left: %s", r.body)
+			}
+		})
+	}
+}

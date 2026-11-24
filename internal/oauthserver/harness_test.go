@@ -52,6 +52,9 @@ func (userStub) Identify(_ http.ResponseWriter, r *http.Request) (*auth.Identity
 	if g := r.Header.Get("X-Test-Groups"); g != "" {
 		id.Groups = strings.Split(g, ",")
 	}
+	if g := r.Header.Get("X-Test-Roles"); g != "" {
+		id.AppRoles = strings.Split(g, ",")
+	}
 	return id, nil
 }
 func (userStub) Public(*http.Request) bool { return false }
@@ -109,6 +112,8 @@ type env struct {
 	ts       *httptest.Server
 	prefs    *prefs.Store // the console languages people saved
 	apiOpts  api.Options  // what the handler was built from (to list its routes)
+	// the groups and app roles (comma-separated) the stub console login carries
+	claimGroups, claimRoles string
 }
 
 func (e *env) config() *config.Config {
@@ -258,6 +263,12 @@ func (e *env) do(user, method, path string, body io.Reader, hdr ...string) resp 
 	}
 	if user != "" {
 		req.Header.Set("X-Test-User", user)
+		if e.claimGroups != "" {
+			req.Header.Set("X-Test-Groups", e.claimGroups)
+		}
+		if e.claimRoles != "" {
+			req.Header.Set("X-Test-Roles", e.claimRoles)
+		}
 	}
 	for i := 0; i+1 < len(hdr); i += 2 {
 		req.Header.Set(hdr[i], hdr[i+1])

@@ -40,7 +40,7 @@ func (s *Server) list(w http.ResponseWriter, keep func(*Grant) bool, admin bool)
 	out := []grantOut{}
 	for _, g := range s.store.grants(func(g *Grant) bool { return keep(g) && s.live(g) }) {
 		o := grantOut{ID: g.ID, ClientID: g.ClientID, ClientName: g.ClientName, Scopes: g.Scopes, Created: g.Created, LastUsed: g.LastUsed}
-		o.CanWrite = s.canWrite(g.Subject, g.Scopes)
+		o.CanWrite = s.canWrite(s.effective(&g), g.Scopes)
 		if o.Scopes == nil {
 			o.Scopes = []string{}
 		}

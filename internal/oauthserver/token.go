@@ -76,6 +76,21 @@ func (s *Server) role(sub Subject) roles.Role {
 	return id.Role
 }
 
+// effective is the grant's subject as it counts now. The groups and app roles in
+// it are a snapshot of the sign-in that approved the grant: they count for
+// auth.session.claims_absolute after the approval and not a moment longer, then the
+// grant is evaluated by identity entries alone, like an API token. So a role
+// removed at the identity provider cannot outlive that bound by refreshing. A
+// grant with no approval time (made before it was recorded) has no claims left.
+func (s *Server) effective(g *Grant) Subject {
+	sub := g.Subject
+	limit := s.o.Config().Auth.Session.ClaimsAbsoluteOrDefault()
+	if g.Created.IsZero() || !s.now().Before(g.Created.Add(limit)) {
+		sub.Groups, sub.AppRoles = nil, nil
+	}
+	return sub
+}
+
 func (s *Server) exchangeCode(w http.ResponseWriter, r *http.Request) {
 	f := r.PostForm
 	now := s.now()
@@ -217,7 +232,7 @@ func (s *Server) refresh(w http.ResponseWriter, r *http.Request) {
 	case now.Sub(g.LastUsed) > s.cfg().IdleExpiryOrDefault():
 		end("idle")
 		return
-	case s.role(g.Subject) == roles.None:
+	case s.role(s.effective(g)) == roles.None:
 		end("role removed")
 		return
 	case len(s.cfg().AllowedClients) > 0 && !contains(s.cfg().AllowedClients, g.ClientID):
@@ -439,7 +454,7 @@ func (s *Server) VerifyAccess(raw string) (*Claims, error) {
 		now.Sub(g.LastUsed) > s.cfg().IdleExpiryOrDefault() {
 		return nil, ErrInvalidToken
 	}
-	return &Claims{Subject: g.Subject, ClientID: g.ClientID, ClientName: g.ClientName, Scopes: strings.Fields(c.Scope), GrantID: g.ID}, nil
+	return &Claims{Subject: s.effective(g), ClientID: g.ClientID, ClientName: g.ClientName, Scopes: strings.Fields(c.Scope), GrantID: g.ID}, nil
 }
 
 // revoke ends a grant. It reports whether one existed, and an error when the
