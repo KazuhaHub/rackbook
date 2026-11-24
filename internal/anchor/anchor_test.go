@@ -699,14 +699,18 @@ func TestAHistoryCheckThatFailsIsRecordedWhenItRepeatsForTheSameTip(t *testing.T
 	if count() != 1 {
 		t.Fatal("recorded more than once for one tip")
 	}
-	// a new tip that fails twice is a new problem
+	// the consecutive failures are counted whatever the tip: a failure for a new tip, after the
+	// reason has failed before, is recorded at once, with its own fingerprint
 	f.tip = "bbbb"
-	e.a.Verify(true)
 	e.a.Verify(true)
 	if count() != 2 {
 		t.Fatalf("%+v", e.log.Status())
 	}
-	// when it works again the count starts over
+	e.a.Verify(true)
+	if count() != 2 {
+		t.Fatal("once per tip")
+	}
+	// when it works again the count starts over: the next failure only warns
 	e.a.Store = e.store
 	e.a.Verify(true)
 	e.a.Store = f
@@ -716,6 +720,40 @@ func TestAHistoryCheckThatFailsIsRecordedWhenItRepeatsForTheSameTip(t *testing.T
 		t.Fatalf("a failure after a success is a first failure: %d", count())
 	}
 }
+
+func TestTheTipChangingBetweenTwoFailuresDoesNotRestartTheCount(t *testing.T) {
+	e := newEnv(t, "audit:\n  anchor: daily\n")
+	e.activity(2)
+	e.tick(t)
+	f := &failingHistory{Files: e.store, err: errors.New("git: timed out"), tip: "aaaa"}
+	e.a = &Anchorer{Log: e.log, Store: f, Now: e.clk.Now}
+	e.a.Verify(true) // first: only a warning
+	f.tip = "bbbb"   // the branch moved meanwhile
+	e.a.Verify(true) // second in a row, for another tip: recorded, fingerprinted by reason and that tip
+	un := problemsOfKind(e.log.Status(), audit.KindAnchorUnreadable)
+	if len(un) != 1 || !strings.Contains(un[0].Detail, "(history_error)") {
+		t.Fatalf("%+v", e.log.Status())
+	}
+	if want := audit.UnreadableAnchors("history_error", "bbbb", "").Fingerprint; un[0].Fingerprint != want {
+		t.Fatalf("fingerprint %s, want %s", un[0].Fingerprint, want)
+	}
+	// the same for the read error
+	r := &failingRead{Files: e.store, err: errors.New("input/output error")}
+	e.a = &Anchorer{Log: e.log, Store: r, Now: e.clk.Now}
+	e.a.Verify(true)
+	e.a.Verify(true)
+	if len(problemsOfKind(e.log.Status(), audit.KindAnchorUnreadable)) != 2 {
+		t.Fatalf("%+v", e.log.Status())
+	}
+}
+
+// failingRead is a store whose anchor file cannot be read.
+type failingRead struct {
+	Files
+	err error
+}
+
+func (f *failingRead) StateFile(string) ([]byte, bool, error) { return nil, false, f.err }
 
 func TestADesyncedGitAnswerIsRecordedAtOnce(t *testing.T) {
 	e := newEnv(t, "audit:\n  anchor: daily\n")

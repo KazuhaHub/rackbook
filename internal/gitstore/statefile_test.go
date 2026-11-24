@@ -312,16 +312,13 @@ func hasViolation(c *StateCheck, commit string) bool {
 	return false
 }
 
-// staged says the index was prepared by hand (a submodule entry): do not add the work tree.
-var staged bool
-
 // pushFromLaptop commits what is in the laptop's work tree and pushes it, and has the server take it in.
-func pushFromLaptop(t *testing.T, e env, s *Store, msg string) string {
+// With staged the index was prepared by hand (a submodule entry): the work tree is not added.
+func pushFromLaptop(t *testing.T, e env, s *Store, msg string, staged ...bool) string {
 	t.Helper()
-	if !staged {
+	if len(staged) == 0 || !staged[0] {
 		sh(t, e.laptop, "add", "-A", ".")
 	}
-	staged = false
 	sh(t, e.laptop, "commit", "-qm", msg)
 	sh(t, e.laptop, "push", "--quiet", "origin", "main")
 	if err := s.Pull(context.Background()); err != nil {
@@ -352,6 +349,7 @@ func TestStateFileHistoryRefusesWhatIsNoRegularFileAndNeverDesyncs(t *testing.T)
 	cases := []struct {
 		name   string
 		middle func(t *testing.T, e env)
+		staged bool // the middle step prepares the index itself
 	}{
 		{"a directory", func(t *testing.T, e env) {
 			clear(t, e)
@@ -363,19 +361,18 @@ func TestStateFileHistoryRefusesWhatIsNoRegularFileAndNeverDesyncs(t *testing.T)
 			if err := os.WriteFile(filepath.Join(abs(e), fake), []byte("zz\n"), 0o644); err != nil {
 				t.Fatal(err)
 			}
-		}},
+		}, false},
 		{"a symbolic link", func(t *testing.T, e env) {
 			clear(t, e)
 			if err := os.Symlink("somewhere-else", abs(e)); err != nil {
 				t.Skip("no symbolic links here")
 			}
-		}},
+		}, false},
 		{"a submodule", func(t *testing.T, e env) {
 			clear(t, e)
 			sh(t, e.laptop, "rm", "-q", "--cached", "-r", "--ignore-unmatch", anchorsRel)
 			sh(t, e.laptop, "update-index", "--add", "--cacheinfo", "160000,"+sh(t, e.laptop, "rev-parse", "HEAD")+","+anchorsRel)
-			staged = true
-		}},
+		}, true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -384,7 +381,7 @@ func TestStateFileHistoryRefusesWhatIsNoRegularFileAndNeverDesyncs(t *testing.T)
 			setFile(t, e, "a\n")
 			first := pushFromLaptop(t, e, s, "a")
 			c.middle(t, e)
-			bad := pushFromLaptop(t, e, s, "odd")
+			bad := pushFromLaptop(t, e, s, "odd", c.staged)
 			setFile(t, e, "a\nb\n")
 			last := pushFromLaptop(t, e, s, "b again")
 			setFile(t, e, "a\nb\nc\n")

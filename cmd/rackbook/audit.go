@@ -127,9 +127,10 @@ lines appended, else the commit is an anchor_rewritten problem.
 
 If the history cannot be checked (a git failure, an answer that does not fit what was asked), or
 the anchor file cannot be read, that is a failure: exit status 1 (anchor_unreadable, or an error),
-never a pass. A directory that is no Git repository is the one exception: the file is checked and
-a note says the history was not. A version of the file above 4 MiB, or that is not a regular file,
-is a problem too.
+never a pass. That includes a directory that is no Git repository (anchor_unreadable,
+not_repository): give --no-history to say that only the file is wanted; it is then checked, and
+a note says the history was not. A version of the file above 4 MiB, or that is not a regular
+file, is a problem too.
 
 By default no anchor is skipped. If the server runs with --audit-retention-months, pass the
 same number as --retention-months: only then an anchor that is below the first kept line,
@@ -155,22 +156,28 @@ or not audit.anchor is on. Without --repo the anchors are not checked.`,
 				}
 				var extra []audit.Problem
 				var note string
-				switch chk, herr := gitstore.CheckStateFileInClone(cmd.Context(), repo, audit.AnchorsPath); {
-				case errors.Is(herr, gitstore.ErrNotRepository):
-					note = "the history of " + audit.AnchorsPath + " was not checked: " + herr.Error()
-				case herr != nil:
-					// a check that cannot be done is a failure, not a pass
-					reason := "history_error"
-					if errors.Is(herr, gitstore.ErrStateDesync) {
-						reason = "history_desync"
+				if noHistory, _ := cmd.Flags().GetBool("no-history"); noHistory {
+					note = "the history of " + audit.AnchorsPath + " was not checked (--no-history)"
+				} else {
+					switch chk, herr := gitstore.CheckStateFileInClone(cmd.Context(), repo, audit.AnchorsPath); {
+					case herr != nil:
+						// a check that cannot be done is a failure, not a pass: that includes a directory
+						// that is no Git repository, unless --no-history says the history is not wanted
+						reason := "history_error"
+						switch {
+						case errors.Is(herr, gitstore.ErrNotRepository):
+							reason = "not_repository"
+						case errors.Is(herr, gitstore.ErrStateDesync):
+							reason = "history_desync"
+						}
+						tip := ""
+						if chk != nil {
+							tip = chk.Tip
+						}
+						extra = append(extra, audit.UnreadableAnchors(reason, tip, herr.Error()))
+					default:
+						extra = anchor.ProblemsOf(chk)
 					}
-					tip := ""
-					if chk != nil {
-						tip = chk.Tip
-					}
-					extra = append(extra, audit.UnreadableAnchors(reason, tip, herr.Error()))
-				default:
-					extra = anchor.ProblemsOf(chk)
 				}
 				rep, err = audit.VerifyWithAnchors(filepath.Join(dir, "audit"), anchors, audit.AnchorOptions{RetentionMonths: months}, extra...)
 				if err == nil && note != "" && rep.Anchors != nil {
@@ -204,6 +211,7 @@ or not audit.anchor is on. Without --repo the anchors are not checked.`,
 	}
 	verify.Flags().String("state-dir", "", "the server's --state-dir (the log is in its audit directory)")
 	verify.Flags().String("repo", "", "a clone of the data repository: also check the daily anchors in its .rackbook/audit-anchors (as checked out)")
+	verify.Flags().Bool("no-history", false, "with --repo: check only the anchor file as checked out, not the history of the file in Git (needed for a directory that is not a Git repository)")
 	verify.Flags().Int("retention-months", 0, "with --repo: the server's --audit-retention-months. 0 (the default) means no anchor is skipped; with more, only an anchor that retention could have removed is (see the long help)")
 	verify.Flags().Bool("json", false, "print the report as JSON")
 	cmd.AddCommand(verify)

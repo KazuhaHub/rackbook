@@ -1042,11 +1042,13 @@ does not depend on the setting: a leftover file still catches tampering after `a
   symbolic link, a directory), the history check fails or git's answer does not fit what was asked, or a version
   of the file is above 4 MiB, the server records an `anchor_unreadable` problem with a reason (`not_regular`,
   `history_error`, `history_desync`, `too_large`, `read_error`), shown in the banner and acknowledged like any
-  other. It is recorded once per reason and tip. A reason that git or the disk can cause for a moment
-  (`history_error`, `read_error`: a timeout, a failed command) only warns the first time; the same failure again
-  for the same tip is recorded. The others are no accident and are recorded at once. `rackbook audit verify
-  --repo` exits 1 when the history check or the read fails (a directory that is no Git repository is the one
-  exception: the file is checked and a note says the history was not).
+  other. It is recorded once per reason and tip (its fingerprint). A reason that git or the disk can cause for a
+  moment (`history_error`, `read_error`: a timeout, a failed command) only warns the first time; the second
+  failure in a row of the same reason is recorded, whatever the tip is (the tip may move while git is in trouble),
+  and a success starts the count again. The others are no accident and are recorded at once. `rackbook audit
+  verify --repo` exits 1 when the history check or the read fails, and also for a directory that is no Git
+  repository (`anchor_unreadable`, reason `not_repository`): with `--no-history` it checks only the file as
+  checked out, prints a note that the history was not checked, and does not fail.
 - A commit that leaves the anchor file as a directory, a symbolic link or a submodule is an `anchor_rewritten`
   too. The history check reads each commit's entry with `git ls-tree -z` (the runner allows that for this one
   state file only) and the blobs by object id with `git cat-file --batch`, checking that each answer is the

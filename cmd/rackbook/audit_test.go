@@ -160,7 +160,7 @@ func TestAuditVerifyChecksTheAnchorsOfAClone(t *testing.T) {
 	l.Close()
 	good := audit.Anchor{Day: "2026-11-02", Seq: seq, Hash: hash, At: "2026-11-02T03:00:00Z"}
 
-	out, err := run(t, "audit", "verify", "--state-dir", state, "--repo", anchorRepo(t, good))
+	out, err := run(t, "audit", "verify", "--state-dir", state, "--no-history", "--repo", anchorRepo(t, good))
 	if exitCode(err) != 0 || !strings.Contains(out, "ok: 5 lines") || !strings.Contains(out, "anchors: 1 checked") {
 		t.Fatalf("%v %s", err, out)
 	}
@@ -169,21 +169,21 @@ func TestAuditVerifyChecksTheAnchorsOfAClone(t *testing.T) {
 		t.Fatalf("%v %s", err, out)
 	}
 	// a clone with no anchor file has nothing to check
-	if out, err = run(t, "audit", "verify", "--state-dir", state, "--repo", anchorRepo(t)); exitCode(err) != 0 || !strings.Contains(out, "anchors: 0 checked") {
+	if out, err = run(t, "audit", "verify", "--state-dir", state, "--no-history", "--repo", anchorRepo(t)); exitCode(err) != 0 || !strings.Contains(out, "anchors: 0 checked") {
 		t.Fatalf("%v %s", err, out)
 	}
 
 	// an anchor whose hash is not the line's: exit 1, with the day and seq
 	bad := good
 	bad.Seq, bad.Hash = 3, good.Hash
-	out, err = run(t, "audit", "verify", "--state-dir", state, "--repo", anchorRepo(t, bad))
+	out, err = run(t, "audit", "verify", "--state-dir", state, "--no-history", "--repo", anchorRepo(t, bad))
 	if exitCode(err) != 1 || !strings.Contains(out, "anchor_mismatch at seq 3") || !strings.Contains(out, "2026-11-02") {
 		t.Fatalf("%v %s", err, out)
 	}
 	// an anchor past the end of the log
 	ahead := good
 	ahead.Seq, ahead.Day = seq+10, "2026-11-03"
-	out, err = run(t, "audit", "verify", "--state-dir", state, "--repo", anchorRepo(t, good, ahead), "--json")
+	out, err = run(t, "audit", "verify", "--state-dir", state, "--no-history", "--repo", anchorRepo(t, good, ahead), "--json")
 	var rep audit.Report
 	if exitCode(err) != 1 || json.Unmarshal([]byte(out), &rep) != nil || rep.OK || len(rep.Problems) != 1 ||
 		rep.Problems[0].Kind != audit.KindAnchorAhead || rep.Anchors == nil || rep.Anchors.Checked != 2 {
@@ -194,13 +194,13 @@ func TestAuditVerifyChecksTheAnchorsOfAClone(t *testing.T) {
 	f, _ := os.OpenFile(filepath.Join(repo, ".rackbook", "audit-anchors"), os.O_APPEND|os.O_WRONLY, 0)
 	f.WriteString("{\"future\":1}\n")
 	f.Close()
-	out, err = run(t, "audit", "verify", "--state-dir", state, "--repo", repo)
+	out, err = run(t, "audit", "verify", "--state-dir", state, "--no-history", "--repo", repo)
 	if exitCode(err) != 0 || !strings.Contains(out, "lines [2] of .rackbook/audit-anchors are not anchors") {
 		t.Fatalf("%v %s", err, out)
 	}
 	// the log is never changed by looking
 	// a --repo that is not a directory, or an anchor file that is a link, is an error
-	if _, err = run(t, "audit", "verify", "--state-dir", state, "--repo", filepath.Join(repo, "nope")); err == nil {
+	if _, err = run(t, "audit", "verify", "--state-dir", state, "--no-history", "--repo", filepath.Join(repo, "nope")); err == nil {
 		t.Fatal("a missing --repo must fail")
 	}
 	// a symbolic link in place of .rackbook, even to a directory inside the clone, is refused too
@@ -208,7 +208,7 @@ func TestAuditVerifyChecksTheAnchorsOfAClone(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(dirLink, "elsewhere"), 0o755); err == nil {
 		_ = os.WriteFile(filepath.Join(dirLink, "elsewhere", "audit-anchors"), good.Line(), 0o644)
 		if err := os.Symlink("elsewhere", filepath.Join(dirLink, ".rackbook")); err == nil {
-			if _, err = run(t, "audit", "verify", "--state-dir", state, "--repo", dirLink); err == nil {
+			if _, err = run(t, "audit", "verify", "--state-dir", state, "--no-history", "--repo", dirLink); err == nil {
 				t.Fatal("a linked .rackbook directory must be refused")
 			}
 		}
@@ -216,41 +216,49 @@ func TestAuditVerifyChecksTheAnchorsOfAClone(t *testing.T) {
 	link := anchorRepo(t)
 	_ = os.MkdirAll(filepath.Join(link, ".rackbook"), 0o755)
 	if err := os.Symlink(filepath.Join(repo, ".rackbook", "audit-anchors"), filepath.Join(link, ".rackbook", "audit-anchors")); err == nil {
-		if _, err = run(t, "audit", "verify", "--state-dir", state, "--repo", link); err == nil {
+		if _, err = run(t, "audit", "verify", "--state-dir", state, "--no-history", "--repo", link); err == nil {
 			t.Fatal("a linked anchor file must be refused")
 		}
 	}
 }
 
 func TestAuditVerifyRetentionMonthsDecidesWhatMaySkip(t *testing.T) {
+	// the dates come from the clock: four months back from this month, the oldest one deleted
+	now := time.Now().UTC()
+	first := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
 	state := t.TempDir()
-	clk := time.Date(2026, 11, 22, 10, 0, 0, 0, time.UTC)
-	l, err := audit.Open(filepath.Join(state, "audit"), audit.Options{Now: func() time.Time { return clk }})
+	l, err := audit.Open(filepath.Join(state, "audit"), audit.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	var as []audit.Anchor
-	for _, m := range []time.Month{8, 9, 10, 11} {
-		l.Record(audit.Event{Event: "login", Identity: "ann@example.com", Time: time.Date(2026, m, 3, 9, 0, 0, 0, time.UTC)})
+	var oldest string
+	for back := 4; back >= 1; back-- {
+		m := first.AddDate(0, -back, 0)
+		l.Record(audit.Event{Event: "login", Identity: "ann@example.com", Time: m.AddDate(0, 0, 2).Add(9 * time.Hour)})
 		seq, hash := l.Head()
-		as = append(as, audit.Anchor{Day: time.Date(2026, m, 1, 0, 0, 0, 0, time.UTC).Format("2006-01-02"), Seq: seq, Hash: hash, At: "2026-01-01T00:00:00Z"})
+		as = append(as, audit.Anchor{Day: m.Format("2006-01-02"), Seq: seq, Hash: hash, At: m.Format(time.RFC3339)})
+		if oldest == "" {
+			oldest = "audit-" + m.Format("2006-01") + ".jsonl"
+		}
 	}
 	l.Close()
-	if err := os.Remove(filepath.Join(state, "audit", "audit-2026-08.jsonl")); err != nil {
+	if err := os.Remove(filepath.Join(state, "audit", oldest)); err != nil {
 		t.Fatal(err)
 	}
 	repo := anchorRepo(t, as...)
-	// by default nothing is skipped: the anchor of the August line, which is gone, is a problem
-	out, err := run(t, "audit", "verify", "--state-dir", state, "--repo", repo)
+	// by default nothing is skipped: the anchor of the oldest line, which is gone, is a problem
+	out, err := run(t, "audit", "verify", "--state-dir", state, "--no-history", "--repo", repo)
 	if exitCode(err) != 1 || !strings.Contains(out, "anchor_mismatch at seq 1") {
 		t.Fatalf("%v %s", err, out)
 	}
-	// with the retention of the server (a gap in the chain aside) that anchor may be skipped
-	out, _ = run(t, "audit", "verify", "--state-dir", state, "--repo", repo, "--retention-months", "3")
+	// with the retention of the server (a gap in the chain aside) that anchor may be skipped: it is
+	// dated on or before the first day of the cutoff month (this month minus 3)
+	out, _ = run(t, "audit", "verify", "--state-dir", state, "--no-history", "--repo", repo, "--retention-months", "3")
 	if !strings.Contains(out, "anchors: 3 checked, 1 before the first kept line skipped") || strings.Contains(out, "anchor_mismatch") {
 		t.Fatalf("%s", out)
 	}
-	if _, err := run(t, "audit", "verify", "--state-dir", state, "--repo", repo, "--retention-months", "-1"); err == nil {
+	if _, err := run(t, "audit", "verify", "--state-dir", state, "--no-history", "--repo", repo, "--retention-months", "-1"); err == nil {
 		t.Fatal("a negative retention must be refused")
 	}
 }
@@ -285,8 +293,19 @@ func TestAuditVerifyRepoChecksTheHistoryOfTheAnchorFile(t *testing.T) {
 		t.Fatalf("%v %s", err, out)
 	}
 	// a directory that is no repository: the file is checked, the history is said not to be
+	// a directory that is no repository fails, because the history cannot be checked ...
 	out, err = run(t, "audit", "verify", "--state-dir", state, "--repo", anchorRepo(t, good))
-	if exitCode(err) != 0 || !strings.Contains(out, "note: the history of .rackbook/audit-anchors was not checked") {
+	if exitCode(err) != 1 || !strings.Contains(out, "anchor_unreadable") || !strings.Contains(out, "not_repository") {
+		t.Fatalf("%v %s", err, out)
+	}
+	// ... unless --no-history says only the file is wanted: then a note says what was not checked
+	out, err = run(t, "audit", "verify", "--state-dir", state, "--no-history", "--repo", anchorRepo(t, good))
+	if exitCode(err) != 0 || !strings.Contains(out, "note: the history of .rackbook/audit-anchors was not checked (--no-history)") {
+		t.Fatalf("%v %s", err, out)
+	}
+	// and --no-history skips the history of a real repository as well
+	out, err = run(t, "audit", "verify", "--state-dir", state, "--no-history", "--repo", repo)
+	if exitCode(err) != 0 || strings.Contains(out, "anchor_rewritten") {
 		t.Fatalf("%v %s", err, out)
 	}
 }
@@ -320,7 +339,7 @@ func TestAuditVerifyRepoFailsWhenTheHistoryCannotBeChecked(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(dirRepo, ".rackbook", "audit-anchors"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := run(t, "audit", "verify", "--state-dir", state, "--repo", dirRepo); exitCode(err) == 0 {
+	if _, err := run(t, "audit", "verify", "--state-dir", state, "--no-history", "--repo", dirRepo); exitCode(err) == 0 {
 		t.Fatal("a directory in place of the anchor file must fail")
 	}
 }

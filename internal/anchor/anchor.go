@@ -14,7 +14,6 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
-	"strings"
 	"sync"
 	"time"
 
@@ -113,7 +112,7 @@ func (a *Anchorer) clearWarning(key string) {
 // A check that cannot be done must not pass quietly: it is recorded as anchor_unreadable (reason and
 // tip are its fingerprint, so once per tip), and goes through the banner and acknowledgement like any
 // other problem. A reason that git or the disk can cause for a moment (a timeout, a failed command)
-// only warns the first time; if the same check fails again for the same tip it is recorded. A
+// only warns the first time; if the same check fails again (whatever the tip is) it is recorded. A
 // reason that is no accident (the file is not a regular file, git's answer does not fit what was
 // asked, a version is too large) is recorded at once. Problems found in the same pass are recorded
 // as well.
@@ -205,7 +204,7 @@ func ProblemsOf(c *gitstore.StateCheck) []audit.Problem {
 
 // failure decides what a failed read or check comes to. A failure that is no accident is returned as
 // a problem at once; one that may be an accident only warns, and is returned as a problem when the
-// same one comes again for the same tip. temporary is the reason code of a failure that may be an accident.
+// same reason comes again. temporary is the reason code of a failure that may be an accident.
 func (a *Anchorer) failure(err error, temporary, tip, what string) (audit.Problem, bool) {
 	reason := temporary
 	switch {
@@ -218,16 +217,17 @@ func (a *Anchorer) failure(err error, temporary, tip, what string) (audit.Proble
 		a.log().Error("audit anchors: "+what, "reason", reason, "tip", tip, "err", err)
 		return audit.UnreadableAnchors(reason, tip, err.Error()), true
 	}
-	key := reason + "|" + tip
+	// consecutive failures of one reason are counted whatever the tip is (the tip moves while git is
+	// in trouble); the problem recorded for the second and later ones is fingerprinted by reason and tip
 	a.mu.Lock()
 	if a.failures == nil {
 		a.failures = map[string]int{}
 	}
-	a.failures[key]++
-	n := a.failures[key]
+	a.failures[reason]++
+	n := a.failures[reason]
 	a.mu.Unlock()
 	if n < 2 {
-		a.log().Warn("audit anchors: "+what+"; it is recorded if it happens again for the same commit", "reason", reason, "tip", tip, "err", err)
+		a.log().Warn("audit anchors: "+what+"; it is recorded if it happens again", "reason", reason, "tip", tip, "err", err)
 		return audit.Problem{}, false
 	}
 	a.log().Error("audit anchors: "+what+" again", "reason", reason, "tip", tip, "err", err)
@@ -237,11 +237,7 @@ func (a *Anchorer) failure(err error, temporary, tip, what string) (audit.Proble
 // clearFailure forgets the failures of a reason once it works again.
 func (a *Anchorer) clearFailure(reason string) {
 	a.mu.Lock()
-	for k := range a.failures {
-		if strings.HasPrefix(k, reason+"|") {
-			delete(a.failures, k)
-		}
-	}
+	delete(a.failures, reason)
 	a.mu.Unlock()
 }
 

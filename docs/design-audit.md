@@ -435,10 +435,12 @@ must not decide who sees infra.
      pass: the file at the tip is not a regular file (`gitstore.ErrStateNotRegular`), the history check errored,
      git's answer did not fit (`gitstore.ErrStateDesync`), or a version is above 4 MiB (known from the object's
      header, so it is refused before it is read; larger outputs are cut). Fingerprint: reason and tip, so once
-     per tip. Judgement: `history_error` and `read_error` may be a moment's trouble, so the first failure for a
-     tip only warns and the second is recorded; `not_regular`, `history_desync` and `too_large` are recorded at
+     per tip. Judgement: `history_error` and `read_error` may be a moment's trouble, so the first failure only
+     warns and the second in a row of the same reason is recorded, whatever the tip is (the count is by reason; the
+     recorded problem is by reason and tip); `not_regular`, `history_desync` and `too_large` are recorded at
      once. `audit verify --repo` turns the same failures into an `anchor_unreadable` problem or an error, so
-     the exit status is 1; a directory that is no Git repository only gets a note.
+     the exit status is 1, also for a directory that is no Git repository (`not_repository`); `--no-history` says only the
+     file is wanted, and then it gets a note and does not fail.
    - The history check resolves each commit's entry with `git ls-tree -z <commit> -- .rackbook/audit-anchors`
      (the guard allows ls-tree on that one state file, and no other), so a tree, a symbolic link (mode 120000)
      or a gitlink (160000) at the path is an `anchor_rewritten` ("not a regular file"), never an empty file. Blobs
