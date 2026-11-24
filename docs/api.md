@@ -302,7 +302,7 @@ Admin only, and never with a token (`403 forbidden`); `404` unless token support
 is on (it is in `rackbook serve`).
 
 - `GET /api/admin/tokens` → `{"tokens": [{name, prefix, scope, collections?, actions?, writeMode?, createdBy, created, expires?, revoked?, status: active|revoked|expired, lastUsed?, creatorRole, creatorAuditor?, module?, warnings: [creator_no_role|limited_by_creator|push_needs_admin]}], "mcpUrl"}`; `module` names the module (rackbook.yml `modules:`) that uses the token. `creatorAuditor: true` says the creator is on `auth.auditors` now; the token then carries the capability (`user.auditor` in its `/api/meta`) for as long as that holds, but it cannot reach the activity or audit routes (it is limited to the paths below).
-- `POST /api/admin/tokens` `{"name", "scope": "read"|"write", "collections": [], "actions": ["create","update","delete"], "writeMode": ""|"pr"|"push", "expiresDays": 0}` → `201 {"token", "secret", "snippet", "claudeCode", "commit", "pullRequest"}`. The secret is shown only here. `400` for invalid input, `409 exists` for a taken name.
+- `POST /api/admin/tokens` `{"name", "scope": "read"|"write", "collections": [], "actions": ["create","update","delete"], "writeMode": ""|"pr"|"push", "expiresDays": 0}` → `201 {"token", "secret", "snippet", "claudeCode", "commit", "pullRequest"}`. The secret is shown only here. `400` for invalid input, `409 exists` for a taken name. `403 creator_role_from_claims` when the creator's role for this token (viewer for `read`, editor for `write`) comes only from `group:` or `app-role:` entries: a token is evaluated for its creator by identity alone (an exact entry, `*@domain`, `oidc:<sub>`, `*`), without the claims of their sign-in, so it would have no role or less than it says. `oauth:` and `mcphub:` entries never match a creator. An existing token whose creator loses the identity entry stops working (`creator_no_role` in the list), like any role loss.
 - `DELETE /api/admin/tokens/{name}` → `200 {"ok", "commit"}`; `404` for an unknown name.
 
 Bearer tokens are accepted on `/mcp`, `/api/c/…`, `/api/meta`, `/api/check`, `/api/history`, `/api/expiring`, `/api/modules/…` (only the calls of the modules panel below), `/export.*` and `/llms*` (`403 forbidden` on any other path); `401
@@ -343,25 +343,32 @@ Public endpoints (no session):
   on success, else to `/auth/login?error=<code>`).
 - `POST /auth/logout` (same-origin only) → `200 {"login": "/auth/login?error=logged_out"}`
   when `Accept: application/json`, else `303`.
-- `POST /auth/passkey/begin` → `{"ceremony": "<id>", "options": <WebAuthn request options>}`;
-  `POST /auth/passkey/finish?ceremony=<id>[&return=<path>]` with the assertion JSON →
-  `200 {"return": "<path>"}` and a session, `401 passkey_failed`, `403 no_role`,
-  `503 passkey_unavailable`. Only with `auth.passkeys`.
+- `POST /auth/passkey/begin`, `POST /auth/passkey/finish` — passkey sign-in. People who sign in through
+  the OIDC provider get none: `auth.passkeys` is ignored while a provider is configured (a warning at
+  start and in `rackbook check`), and both routes answer `403 {"error": "passkey_sso"}` when `auth.passkeys`
+  is set (the routes are not registered when it is not). `GET /auth/config` then has `"passkeys": false`. The code that
+  serves them is kept for local accounts (design-local-accounts.md, 2.2).
 
 With a session:
 
 - `GET /api/account` → `{"id", "name", "email", "role", "auditor", "authMethod", "passkeysEnabled",
-  "canEnrol", "enrolUntil", "locale"?, "passkeys": [{"id", "name", "created"}], "passkeyError"?}`.
-- `POST /api/account/passkeys/begin` `{"name": "MacBook"}` → `{"ceremony", "options": <creation options>}`;
-  `POST /api/account/passkeys/finish?ceremony=<id>` with the attestation JSON →
-  `201 {"passkeys": […]}`. `403 recent_login_required` unless the session's OIDC
-  login is at most 10 minutes old, `403 read_only`. Each add is a Git commit.
+  "canEnrol", "enrolUntil", "locale"?, "passkeys": [{"id", "name", "created"}], "passkeyError"?,
+  "roleFrom": [...], "auditorFrom": [...], "claimsAbsolute"?, "sessionEnds"?}`. `roleFrom` and `auditorFrom`
+  list the kinds of entry that grant the role and the auditor capability now (`identity`: an exact entry,
+  `*@domain`, `oidc:<sub>`, `*`; `group`; `app-role`), sorted, only the entries of the list of the
+  highest matching role. `claimsAbsolute` (seconds) and `sessionEnds` (RFC 3339) are present when the session's
+  role or capability came from claims at sign-in: it ends at the latest then (`auth.session.claims_absolute`).
+  `passkeysEnabled` is false under OIDC.
+- `POST /api/account/passkeys/begin` `{"name": "MacBook"}`, `POST /api/account/passkeys/finish?ceremony=<id>`:
+  `403 passkey_sso` while `auth.passkeys` is ignored (always, with an OIDC provider); the console does not show
+  them to SSO identities.
 - With a passkey session, an unreadable or missing `.rackbook/passkeys.yml` (for example during a pull) answers `503 passkey_unavailable` and keeps the cookie; only a file that loads without the credential ends the session. These endpoints refuse API tokens and OAuth access tokens (`403`).
-- `DELETE /api/account/passkeys/{id}` → `200 {"ok": true}` (own passkeys only, `404` otherwise).
+- `DELETE /api/account/passkeys/{id}`: `403 passkey_sso` while `auth.passkeys` is ignored.
 - Admin: `GET /api/admin/users` → `{"users": [{"id", "name", "method", "role", "auditor"?, "seen",
   "firstSeen", "lastSeen", "passkeys"}], "passkeysEnabled"}` (users seen since the
   server started plus users with passkeys; `role` is the effective role, `none` if
-  they have none) and `DELETE /api/admin/passkeys/{id}`.
+  they have none; group and app-role entries are evaluated with the claims of the person's last sign-in)
+  and `DELETE /api/admin/passkeys/{id}` (`403 passkey_sso` while `auth.passkeys` is ignored).
 
 ## Built-in authorization server
 
@@ -470,6 +477,8 @@ area is decided in one place (`canSee` in `internal/api/activity.go`):
 - `GET /api/activity/commit/{area}/{hash}` → `{area, hash, files, moreFiles}`. `ledger`: `.rackbook/` files only for admins and auditors. `infra`: infra administrators and infra auditors (secret files are listed without a patch).
 - `GET /api/audit/status` → `{enabled, ok, problems, lastSeq, failed?}`. Admins and auditors. A problem is `{kind, seq, file?, detail?, recordedAt}`; `kind` is `edited`, `missing`, `reordered`, `cut_from_end`, `head_mismatch`, `first_file_mismatch` or, with the optional daily anchor (README, *The daily anchor*), `anchor_mismatch`, `anchor_ahead`, `anchor_invalid`, `anchor_rewritten` (`detail` names the commit), `anchor_unreadable` (the anchors could not be read or checked; `detail` gives the reason) or `anchor_more` (`seq` is the anchored seq and `detail` names its day).
 - A daily anchor is an ordinary Activity row in the `ledger` area: `subject` `audit: anchor seq <N>`, `identity` `rackbook-audit-anchor`, `method` `system`, `state` `only`, so it follows the same visibility as any `.rackbook/` commit (admins and auditors) in every list, history and diff.
+- `GET /api/audit/identities` → `{enabled, max, identities: [{identity, name?, role, auditor?, lastSignIn, method}]}`, the content of `audit/identities.json`, most recent sign-in first (`max` is the cap, 5 000: past it the oldest sign-ins are dropped). `role` is the effective role the last time Rackbook looked (`none`, `viewer`, `editor`, `admin`), `auditor` is the `auth.auditors` flag then. No groups and no claims. **Admins and auditors**, like the sign-in events it summarises (`seeAudit`); every other role, and a token, gets `403 forbidden`. `enabled: false` and no entries without `--state-dir`.
+- Audit events of a sign-in: `login` and `login_refused` carry `"groups": "overage"` when the ID token's groups were cut off (Entra sends no `groups` past 200 and sets `_claim_names.groups` or `hasgroups: true`; or more than 40 values or 700 bytes) and `"app_roles": "overage"` when the `roles` claim was; the sign-in itself succeeded with the values that fit. `role_changed` is `{identity, name?, method, from, to, auditor_from, auditor_to, cause, addr?}`: `from` and `to` are roles (`none` included), `auditor_from` and `auditor_to` booleans, `cause` is `sign_in` (seen at sign-in, also at a sign-in refused for having no role) or `config` (seen at the person's next request after `rackbook.yml` changed, written once). A person Rackbook has not seen before has no `role_changed`. Activity items carry these fields (`groups`, `app_roles`, `from`, `to`, `auditor_from`, `auditor_to`, `cause`) on audit rows, and the JSONL export too.
 - `POST /api/audit/ack` `{"through": <seq>}` → the status. **Admins only**: an auditor, an editor, a token and a read-only server are `403`; `409 nothing_to_ack | no_audit_log`; `400` for a bad body.
 
 An auditor never gets a success from any write route (`403`), and the only write open to every signed-in person is

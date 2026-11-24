@@ -106,7 +106,7 @@ Cloudflare in front provides TLS.
    URI is `<base-url>/auth/oidc/callback`, e.g.
    `https://ledger.example.com/auth/oidc/callback`. Note the issuer URL, the
    client ID and the client secret (Entra walkthrough: see
-   [Built-in login](#built-in-login-oidc-passkeys)).
+   [Built-in login](#built-in-login-oidc)).
 3. **Configure `rackbook.yml`** in the data repository: the issuer, the client
    ID and **roles**. Nobody who matches no role gets in.
 
@@ -155,13 +155,14 @@ Cloudflare in front provides TLS.
    Point your reverse proxy (Caddy, nginx, Traefik) or Cloudflare Tunnel at
    `127.0.0.1:8080` and terminate TLS there. `RACKBOOK_BASE_URL` is the public
    `https` URL: it is the base of the IdP redirect, the host of the session
-   cookies and the passkey relying-party ID, and it is used in `llms.txt`.
+   cookies, and it is used in `llms.txt`.
    `--trusted-proxy` lists the CIDRs of the proxy as the container sees it, so
    login and token rate limits use the real client address (the
    `CF-Connecting-IP` header) instead of the proxy's. Sessions are signed
    cookies (`RACKBOOK_SESSION_KEY`); the server keeps no state of its own.
-5. **Passkeys (optional).** `auth.passkeys: true` lets signed-in users register
-   a passkey for later logins; see [Built-in login](#built-in-login-oidc-passkeys).
+5. **Passkeys.** Not for people who sign in through the identity provider: their second
+   factor is the provider's own. `auth.passkeys` is ignored beside an OIDC provider (with a
+   warning); see [SSO and passkeys](#sso-and-passkeys).
 6. **AI agents.** `/mcp` and `/.well-known/oauth-protected-resource*`
    authenticate with their own bearer tokens (API tokens or OAuth access tokens,
    below); no proxy login is needed in front of them. Or run `rackbook mcp`
@@ -202,14 +203,17 @@ auth:
     viewer: ["*"]
 ```
 
-Entries are exact identities, `*@domain`, `mcphub:<username>`, `group:<id>` or
-`*` (anyone authenticated), matched case-insensitively; the highest role wins.
+Entries are exact identities, `*@domain`, `mcphub:<username>`, `group:<id>`, `app-role:<value>` or
+`*` (anyone authenticated), matched case-insensitively (except `app-role:`, which is exact and
+case-sensitive); the highest role wins.
 Viewers read, editors also create, edit and delete records, admins also do
 administrative actions. Without a `roles` block every authenticated identity
 is an editor, and `auth.editors` keeps working. Matching folds ASCII case only.
 MCPHub users match only `mcphub:<username>` entries (or `mcphub:*`), plus
 exact/`*@domain` entries only for a *verified* e-mail address (the token's `email` with `email_verified: true`, or an issuer marked `emails_verified: true`) if `auth.mcp.match_email: true`; a username that merely looks like an address never matches. Roles are read from the
-current config on every request, so a change pulled from Git applies at once.
+current config on every request, so a change pulled from Git applies at once; for `group:` and
+`app-role:` entries what is read at once is the entry, while the claims it is matched against are
+read at sign-in (see [Roles from the identity provider's claims](#roles-from-the-identity-providers-claims)).
 `/api/meta` reports `user.role`, `user.canEdit` and `user.canAdmin`.
 
 #### Auditors
@@ -223,8 +227,8 @@ auth:
 
 An **auditor** is not a fourth role. The roles are a scale (viewer < editor < admin, the highest wins);
 auditing is a separate capability granted by its own list, `auth.auditors`, which takes the same entries as a
-role list (an identity, `*@domain`, `group:<id>`, `oauth:<alias>:<user>`, `mcphub:<username>`, `oidc:<sub>`,
-`*`) and the same validation (`rackbook check` reports a bad entry under `auth.auditors`). It is read from the
+role list (an identity, `*@domain`, `group:<id>`, `app-role:<value>`, `oauth:<alias>:<user>`,
+`mcphub:<username>`, `oidc:<sub>`, `*`) and the same validation (`rackbook check` reports a bad entry under `auth.auditors`). It is read from the
 current config on every request, like the roles, so a change pulled from Git applies at once.
 
 - **What it adds.** Seeing and exporting the audit areas of [Activity](#activity) (sign-ins, refusals,
@@ -237,14 +241,15 @@ current config on every request, like the roles, so a change pulled from Git app
 - **An admin is not automatically an auditor.** Admins already see everything auditors see, so in practice the
   only difference is the label: `user.auditor` in `/api/meta`, and the *Auditor* badge on the account page,
   appear only for people who are on the list.
-- **Tokens and grants.** An API token, or an OAuth/MCP grant, carries the capability of the person who made it
-  for as long as that person is on the list, the same way it carries their role; removing them takes it away
-  at the next request. Neither can reach the activity or audit routes anyway (tokens are limited to record
-  paths).
+- **Tokens and grants.** An API token carries the capability of the person who made it for as long as that
+  person is on the list *by identity* (a name or `*@domain`; a `group:` or `app-role:` entry does not count, as
+  it does not for the role, see [API tokens](#api-tokens)); removing them takes it away at the next request. An
+  OAuth/MCP grant keeps the claims of the sign-in that approved it. Neither can reach the activity or audit
+  routes anyway (tokens are limited to record paths).
 - **Older servers** ignore `auth.auditors` (the file is not decoded strictly), so on them it grants nothing.
   Bump the Rackbook version in the ledger's CI first so that CI checks the key.
-- `app-role:` entries come with the roles from the provider's claims (design, phase 2a); until roles accept
-  them, auditors do not either.
+- `app-role:<value>` entries work here as in a role list. An auditor by group or app role has the capability
+  for as long as the session lasts (see `claims_absolute` below), and `role_changed` records the flag too.
 
 For `/infra` the auditors are a separate deploy flag, `--infra-auditors` (see below).
 
@@ -515,6 +520,15 @@ only its SHA-256 (committed as `rackbook(auth): create token <name>` /
   role**: if the creator is demoted the token shrinks, if the creator loses
   every role it stops working (the token list warns). Tokens never manage tokens,
   data types or users.
+- **A token works through a role its creator holds by identity**: an exact entry, `*@domain`, `oidc:<sub>`
+  or `*`. The creator is evaluated again on every request with the sign-in method recorded in the token, and
+  the claims of their sign-in are not kept, so `group:` and `app-role:` entries never count, and `oauth:` and
+  `mcphub:` entries never match (those identities do not sign in to the console). So a token cannot be made
+  by an admin whose role (for what the token is to do: read needs viewer, write needs editor) comes only
+  from a group or an app role: `POST /api/admin/tokens` answers `403 creator_role_from_claims` and the
+  console says why. Ask an admin to list you by name in `auth.roles`. A token whose creator later loses the
+  identity entry stops working, like any role loss (`creator_no_role` in the list). The same rule holds for
+  the auditor capability: a token carries it only while its creator is on `auth.auditors` by identity.
 - Writes by a token are pull requests (`rackbook/token/<name>/<time>`) and
   deletes always are. An admin may give a token `write_mode: push` for
   create and update on named collections; it only counts while the creator is
@@ -801,13 +815,13 @@ revert, a write refused for a stale sign-in or for the wrong person, a secret re
 `--state-dir`, written to the [audit log](#audit-log) (issue codes, never values). Commits are their own
 record in Git; the audit log also holds one `commit` line for each commit Rackbook pushed.
 
-## Built-in login (OIDC, passkeys)
+## Built-in login (OIDC)
 
 Rackbook logs people in itself with OpenID Connect (the primary way to deploy
 it; tested with Microsoft Entra ID, and any standards-compliant IdP such as
-Keycloak, Authentik or Google works the same way), optionally with passkeys. It keeps no
-database: sessions are signed cookies, roles live in `rackbook.yml`, and passkey
-public keys are committed to `.rackbook/passkeys.yml` in the data repository.
+Keycloak, Authentik or Google works the same way). It keeps no database: sessions are signed
+cookies and roles live in `rackbook.yml`. People who sign in this way are not offered passkeys
+(see [SSO and passkeys](#sso-and-passkeys)).
 
 ```yaml
 # rackbook.yml
@@ -821,8 +835,7 @@ auth:
     identity: claim                      # or subject: iss|sub, matched by oidc:<sub> role entries
     name_claim: name                     # default
     allowed_tenants: [<tenant-id>]       # checked against the tid claim
-  passkeys: true                         # or {user_verification: required}
-  session: {idle: 12h, absolute: 7d}     # defaults
+  session: {idle: 12h, absolute: 7d, claims_absolute: 24h}   # defaults
   roles:
     admin:  [owner@example.com]
     editor: ["*@example.com"]
@@ -837,7 +850,7 @@ rackbook serve --base-url https://ledger.example.com
 `--auth`, `RACKBOOK_AUTH` and the other flags still override the file, so v0.1
 deployments keep working unchanged. `--base-url` is required and must be
 `https`: the IdP redirects to `<base-url>/auth/oidc/callback`, session cookies are
-`__Host-` cookies, and the passkey relying-party ID is the host of the base URL.
+`__Host-` cookies.
 Behind a reverse proxy this is just the public URL. For local testing, serve
 HTTPS directly with `--tls-cert` and `--tls-key` and use `https://localhost:<port>`
 (see `examples/homelab-login/`); `--oidc-ca-file` adds a private CA for the IdP.
@@ -860,9 +873,10 @@ HTTPS directly with `--tls-cert` and `--tls-key` and use `https://localhost:<por
    another person's address becomes that person. `preferred_username`/`upn` with
    `allowed_tenants`, or a verified `email`, are fine; anything else logs a
    warning at startup. `identity: subject` names logins by `iss|sub`
-   (`oidc:<sub>` in `auth.roles`; it matches only such entries, not `*`, domains
-   or groups, and does not combine with passkeys). The ID token's `groups`
-   claim (bounded to what fits the cookie) serves `group:<id>` entries.
+   (`oidc:<sub>` in `auth.roles`; it matches only such entries, not `*`, domains,
+   groups or app roles). The ID token's `groups` and `roles` claims (bounded to what
+   fits the cookie) serve the `group:<id>` and `app-role:<value>` entries, see
+   [Roles from the identity provider's claims](#roles-from-the-identity-providers-claims).
 5. Copy the Directory (tenant) ID into the issuer and into `allowed_tenants`, and the
    Application (client) ID into `client_id`.
 
@@ -880,28 +894,118 @@ login may need no password.
 **Sessions.** The cookie `__Host-rackbook_session` (`Secure`, `HttpOnly`,
 `SameSite=Lax`) holds `{identity, method, issued, last_seen}` signed with
 HMAC-SHA256; the server stores nothing. It expires after `idle` without activity (the
-cookie is refreshed at most every 5 minutes) and after `absolute` in any case. It does
+cookie is refreshed at most every 5 minutes) and after `absolute` in any case (and after
+`claims_absolute` when the role came from claims, see below). It does
 not contain the role: roles are evaluated from `auth.roles` on every request, so
-removing someone from Git locks them out within one pull interval. Rotating
+removing someone from Git locks them out within one pull interval (it does carry the
+groups and app roles of the sign-in, because the entries that name them are matched on
+every request). Rotating
 `RACKBOOK_SESSION_KEY` logs everyone out. API calls without a session get
 `401 {"error":"login_required","login":"/auth/login?return=…"}`; console pages redirect
 to the login page. Users with no role are refused (a tenant-wide Entra app does not
 open the ledger to the whole tenant), so configure `auth.roles`; without it every
 authenticated user is an editor, and Rackbook logs a warning at startup.
 
-**Passkeys.** With `passkeys: true` the login page also offers "sign in with a
-passkey" (discoverable credentials: no username). Add one on the **My account** page
-(**我的账户**), which requires an OIDC login within the last 10 minutes; passkeys
-are an alternative to OIDC, not a second factor, and the role is evaluated exactly as
-for OIDC, so a passkey never outlives a removal from `roles`; deleting a passkey also
-ends the sessions that were opened with it. Credentials are committed
-to `.rackbook/passkeys.yml` (`rackbook(auth): add passkey for <id>` /
-`remove passkey`, authored by the user) straight to the tracked branch even when
-`write.mode` is `pr`. Sign counters are not stored, so there is no clone detection
-(synced passkeys report 0 anyway). Admins see users and passkeys on **用户** and can
-delete passkeys. `.rackbook/` is not a collection: it is hidden from the console,
-exports and MCP, and cannot be configured as a data file. If nobody can log in,
-edit `rackbook.yml` or `.rackbook/passkeys.yml` in Git.
+### SSO and passkeys
+
+People who sign in through the identity provider get **no passkey sign-in and no TOTP from Rackbook**:
+their second factor is the provider's own (Entra, for one, supports passkeys itself). A passkey session
+never asks the provider, so it could not see a disabled account; this closes that gap instead of limiting
+how old a passkey may be.
+
+- `auth.passkeys` is **ignored** while an OIDC provider is configured. It is not an error, so an older
+  `rackbook.yml` still loads: the server logs a warning at start and `rackbook check` prints
+  `warning: auth.passkeys is ignored while an OIDC provider is configured`.
+- The passkey routes stay and refuse: `POST /auth/passkey/begin|finish`, `POST /api/account/passkeys/begin|finish`
+  and `DELETE /api/account/passkeys/{id}`, `DELETE /api/admin/passkeys/{id}` answer `403 passkey_sso`; nothing
+  is written to `.rackbook/passkeys.yml`. The login page offers no passkey button, and the console hides
+  the passkey part of **My account** and the passkey column of **Users** for an SSO identity.
+- `auth.passkeys_oidc_max_age`, a refusal named `passkey_needs_oidc` and a `last_oidc` field were planned
+  and are not built; nothing needs migrating. A `passkeys_oidc_max_age` key in `rackbook.yml` is reported by
+  `rackbook check` as a warning (`no longer used and is ignored`), never as an error.
+- The passkey code stays in Rackbook for local accounts, which will use it as a second factor
+  ([design](docs/design-local-accounts.md), sections 2.2 and 14). Without an OIDC provider (there is no
+  built-in login then) nothing about passkeys changed: `auth.passkeys` with another `auth.mode` is
+  still an error.
+
+### Roles from the identity provider's claims
+
+`group:<id>` and `app-role:<value>` entries in `auth.roles` and `auth.auditors` match the ID token's
+`groups` and `roles` claims (arrays of strings). The claims are read **at sign-in** and kept in the signed
+session cookie; the entries are read on every request.
+
+**App roles.** `app-role:<value>` matches one value of the top-level `roles` claim, exactly and
+**case-sensitively**, like Entra app role values (a `group:` entry folds ASCII case, group ids being
+GUIDs; app role values are names that differ by case). The prefix `app-role:` itself is not case-sensitive.
+Only the top-level `roles` claim is read, never Keycloak's `resource_access` or `realm_access`.
+
+```yaml
+auth:
+  roles:
+    admin:   ["app-role:Rackbook.Admin"]
+    editor:  ["app-role:Rackbook.Editor", "group:<entra-group-id>"]
+  auditors:  ["app-role:Rackbook.Auditor"]
+```
+
+Per provider:
+
+- **Entra ID.** App registrations, your app, *App roles*, *Create app role*: display name, *Allowed member
+  types* Users/Groups, **Value** `Rackbook.Admin`. Then Enterprise applications, your app, *Users and groups*,
+  assign people (any plan) or groups (Entra ID P1 or higher; nested groups are not expanded). Assigned roles
+  arrive in the ID token as `roles` without further configuration. Prefer them to `group:` entries: a
+  role is a readable name and does not depend on how many groups a person is in.
+- **Keycloak.** Client roles arrive under `resource_access.<client>.roles`, which Rackbook does not read. Add a
+  mapper to the client (Clients, your client, *Client scopes*, `<client>-dedicated`, *Add mapper*, *By
+  configuration*, **User Client Role**): *Client ID* your client, *Token Claim Name* `roles`, *Claim JSON Type*
+  String, *Multivalued* on, **Add to ID token** on. (**User Realm Role** does the same for realm roles.)
+- **Authentik.** Add a scope mapping (Customization, Property Mappings, *Scope Mapping*) whose expression returns
+  the roles, for example `return {"roles": [g.name for g in request.user.ak_groups.all()]}`, add it to the
+  provider's scopes and list that scope in `auth.oidc.scopes`.
+
+**Too many groups, too many roles.** Only the first 40 values of each claim, at most 700 bytes, are kept (about
+19 Entra group IDs), so that the cookie stays small. Entra sends no `groups` claim at all to a person in more
+than 200 groups; the token has `_claim_names` with a `groups` entry (and often `hasgroups: true`) instead, and
+Rackbook detects both. In each case **the sign-in succeeds** with the values that fit (none, for Entra's
+overage: groups the token carries next to `hasgroups`/`_claim_names` are not used either), so a person whose
+only role is a group role is refused as having no role, and anyone else gets the roles their other
+entries give. The `login` (or `login_refused`) audit event carries `"groups": "overage"` and, for the roles
+claim, `"app_roles": "overage"`, and the server logs a warning. The way out is
+app roles, or, in Entra, *Token configuration, Add groups claim, Groups assigned to the application*, which
+sends only the groups the app uses.
+
+**How fast a removal takes effect.** Claims are read only at sign-in. Someone removed from a group or app role at
+the provider keeps the role until their next sign-in, and `auth.session.claims_absolute` (default `24h`) bounds
+that: a session whose role (or auditor capability) came from `group:` or `app-role:` entries ends after that
+long, whatever `idle` and `absolute` say, if it is shorter than `absolute`. The decision is made at sign-in
+from which entries granted the role: a role an identity entry also grants (an exact entry, `*@domain`,
+`oidc:<sub>`, `*`) keeps the normal limit, even when a group entry matches too. A role that only the claims
+give (including a group entry that grants more than the identity entries do) is a claims session. It must
+be positive and at most `absolute`; `rackbook check` reports a value that is not, and a default of 24 h under
+a shorter `absolute` simply gives way to it. Like `idle` and `absolute` it is read at start. **My account**
+says where the role comes from (*account name*, *a group*, *an app role*) and, for a claims session, when it
+ends at the latest. Removing someone *by name* in `rackbook.yml` applies at the next pull, unless a domain,
+group or app-role entry also matches them. A session issued before an upgrade has the normal limit until it
+ends. OAuth grants made through the built-in authorization server keep the claims of the sign-in that approved
+them (groups and roles) until they expire or are revoked.
+
+**`audit/identities.json` and `role_changed`.** For every person who has signed in, Rackbook keeps in
+`<state-dir>/audit/identities.json` (mode 0600, replaced atomically through a temp file, fsync and rename)
+their `name`, the last effective `role`, the `auditor` flag, the time of the last sign-in and its `method`.
+It keeps **no groups and no claims**. At each sign-in the effective role and auditor flag are compared with the
+stored ones, and a difference appends a `role_changed` event
+(`{identity, from, to, auditor_from, auditor_to, cause: "sign_in"}`); someone seen for the first time has
+nothing to be compared with, so no event. A sign-in refused for having no role is compared too (`to: none`),
+without counting as a sign-in. After `rackbook.yml` changes (a pull), the new role is computed **lazily**, at a
+person's next request: once for each session and each version of the policy (the memory is per process, so one
+extra comparison follows a restart), the role is compared with the stored one, and a difference is written
+once as `role_changed` with `cause: "config"`; the stored role then moves on, so the next sign-in does not repeat
+it. People who never come back are not recomputed, because their claims are not kept. A session older than the person's last
+sign-in is left to the newer one, nothing is compared while `rackbook.yml` does not load (roles are then capped at viewer),
+and the cause `claims` of the design is `sign_in` here: the only time claims change is a sign-in. The file is bounded to
+5 000 people; past that, those with the oldest last sign-in are dropped, and they are simply new at their next
+sign-in. `GET /api/audit/identities` lists it, for administrators and auditors, who also see the
+sign-in events it summarises (see [docs/api.md](docs/api.md)). Activity writes `role_changed` as a sentence in all three languages, for example
+*role changed from Editor to Viewer (after a rackbook.yml change)*.
 
 Logins, refusals and logouts go to the server log (stdout) and, with `--state-dir`, to the
 [audit log](#audit-log). Starting a login or a
@@ -917,7 +1021,11 @@ With `--state-dir`, Rackbook keeps an append-only audit log in `<state-dir>/audi
 **What is recorded.**
 
 - Sign-ins: `login` and `logout` (identity, name, method, the effective role at sign-in, client address), and
-  `login_refused` with a `reason`: `no_role`, `tenant`, `claims` or `passkey_failed`.
+  `login_refused` with a `reason`: `no_role`, `tenant`, `claims` or `passkey_failed`. A sign-in whose groups or
+  app roles could not be used whole carries `"groups": "overage"` or `"app_roles": "overage"`.
+- `role_changed`: a person's effective role or auditor flag differs from the one Rackbook stored for them:
+  `from`, `to`, `auditor_from`, `auditor_to` and `cause` (`sign_in`, or `config` after a `rackbook.yml` change).
+  The stored values are in `audit/identities.json` (see [Roles from the identity provider's claims](#roles-from-the-identity-providers-claims)).
 - Writes that did not end in a commit on `/infra`: `write_refused` (with the `area` and a `code` such as
   `conflict`, `forbidden`, `validation_failed`).
 - Secrets: `secret_revealed`, `secret_reveal_refused` and `reencrypted`: who, which host and file, never a value.
@@ -1088,7 +1196,7 @@ to) are in the URL, so a link reproduces the view; "Load more" pages through old
 |---|---|---|
 | `ledger` | commits of the data repository that touch ledger files | every role |
 | `ledger`, state | commits that touch `.rackbook/` (tokens, passkeys, audit anchors) | admins, auditors |
-| `audit` | sign-ins, refusals, `write_refused`, acknowledgements, chain problems | admins, auditors |
+| `audit` | sign-ins, refusals, `role_changed`, `write_refused`, acknowledgements, chain problems | admins, auditors |
 | `infra` | commits of the infra repository and the infra audit events (secret reveals, re-encryption) | `--infra-admins` and `--infra-auditors`, signed in with the console login |
 
 Without `area`, a request returns every area its caller may see. Naming an area the caller may not see is a `403`.
@@ -1758,7 +1866,11 @@ Authentik、Google 等）。在 IdP 注册应用，重定向地址为 `<base-url
 Rackbook 校验 `Cf-Access-Jwt-Assertion` 并用其中的邮箱作为提交作者；此时才需要为 `/mcp` 配置 Access 的 Bypass 策略。
 
 会话是 HMAC 签名的 Cookie，不存数据库；角色每次请求都按 `auth.roles` 重新计算，没有角色的账号会被拒绝（403）。
-可选通行密钥（`auth.passkeys`），凭据提交到数据仓库的 `.rackbook/passkeys.yml`。
+通过单点登录进来的人没有 Rackbook 的通行密钥登录，也没有 TOTP：第二重验证由身份提供方负责，`auth.passkeys` 在配置了
+OIDC 时被忽略（启动日志和 `rackbook check` 会给出警告）。角色可以来自身份提供方的用户组（`group:`）或应用角色
+（`app-role:<值>`，对应 ID 令牌的 `roles` 声明，区分大小写）；声明只在登录时读取，由声明得到的角色的会话最长
+`auth.session.claims_absolute`（默认 24 小时）。每次登录和 `rackbook.yml` 改动后的下一次请求都会与 `audit/identities.json`
+里记录的角色比较，不同就写一条 `role_changed` 审计事件。API 令牌只沿用创建者按名称（或 `*@域名`）得到的角色。
 
 登录页不会出现任何身份提供方的名字。可在 `rackbook.yml` 里用 `auth.oidc.label`（按钮文字，如“使用 Kazuha Hub SSO 登录”）
 和 `branding.name` / `branding.logo` / `branding.favicon`（图片放在数据仓库里，SVG 或 PNG，不超过 256 KiB）定制，见上文 “Branding and the sign-in button”。
