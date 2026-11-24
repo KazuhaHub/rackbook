@@ -3,6 +3,7 @@ package gitstore
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -309,4 +310,144 @@ func hasViolation(c *StateCheck, commit string) bool {
 		}
 	}
 	return false
+}
+
+// staged says the index was prepared by hand (a submodule entry): do not add the work tree.
+var staged bool
+
+// pushFromLaptop commits what is in the laptop's work tree and pushes it, and has the server take it in.
+func pushFromLaptop(t *testing.T, e env, s *Store, msg string) string {
+	t.Helper()
+	if !staged {
+		sh(t, e.laptop, "add", "-A", ".")
+	}
+	staged = false
+	sh(t, e.laptop, "commit", "-qm", msg)
+	sh(t, e.laptop, "push", "--quiet", "origin", "main")
+	if err := s.Pull(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	return sh(t, e.laptop, "rev-parse", "HEAD")
+}
+
+func TestStateFileHistoryRefusesWhatIsNoRegularFileAndNeverDesyncs(t *testing.T) {
+	ctx := context.Background()
+	abs := func(e env) string { return filepath.Join(e.laptop, anchorsRel) }
+	clear := func(t *testing.T, e env) {
+		t.Helper()
+		if err := os.RemoveAll(abs(e)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	setFile := func(t *testing.T, e env, body string) {
+		t.Helper()
+		clear(t, e)
+		if err := os.MkdirAll(filepath.Dir(abs(e)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(abs(e), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cases := []struct {
+		name   string
+		middle func(t *testing.T, e env)
+	}{
+		{"a directory", func(t *testing.T, e env) {
+			clear(t, e)
+			// inside it, a name with a newline and what looks like the header of the next object
+			fake := "x\n0123456789abcdef0123456789abcdef01234567 blob 3\nabc"
+			if err := os.MkdirAll(abs(e), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(abs(e), fake), []byte("zz\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"a symbolic link", func(t *testing.T, e env) {
+			clear(t, e)
+			if err := os.Symlink("somewhere-else", abs(e)); err != nil {
+				t.Skip("no symbolic links here")
+			}
+		}},
+		{"a submodule", func(t *testing.T, e env) {
+			clear(t, e)
+			sh(t, e.laptop, "rm", "-q", "--cached", "-r", "--ignore-unmatch", anchorsRel)
+			sh(t, e.laptop, "update-index", "--add", "--cacheinfo", "160000,"+sh(t, e.laptop, "rev-parse", "HEAD")+","+anchorsRel)
+			staged = true
+		}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			e := newEnv(t)
+			s := open(t, e.server, nil)
+			setFile(t, e, "a\n")
+			first := pushFromLaptop(t, e, s, "a")
+			c.middle(t, e)
+			bad := pushFromLaptop(t, e, s, "odd")
+			setFile(t, e, "a\nb\n")
+			last := pushFromLaptop(t, e, s, "b again")
+			setFile(t, e, "a\nb\nc\n")
+			pushFromLaptop(t, e, s, "c")
+			for _, after := range []string{"", first} {
+				ck, err := s.CheckStateFileHistory(ctx, anchorsRel, after)
+				if err != nil {
+					t.Fatalf("after %q: %v", after, err)
+				}
+				// only the odd commit is refused: the honest ones around it were read correctly
+				if len(ck.Violations) != 1 || ck.Violations[0].Commit != bad || ck.Violations[0].Reason != ReasonNotRegular {
+					t.Fatalf("after %q: %+v", after, ck.Violations)
+				}
+				_ = last
+			}
+		})
+	}
+}
+
+func TestStateFileHistoryRefusesAVersionAboveTheLimit(t *testing.T) {
+	e := newEnv(t)
+	s := open(t, e.server, nil)
+	if err := os.MkdirAll(filepath.Join(e.laptop, ".rackbook"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	big := strings.Repeat("0123456789abcdef\n", (MaxStateFileBytes/17)+10)
+	if err := os.WriteFile(filepath.Join(e.laptop, anchorsRel), []byte(big), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	bigCommit := pushFromLaptop(t, e, s, "big")
+	if err := os.WriteFile(filepath.Join(e.laptop, anchorsRel), []byte(big+"more\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	pushFromLaptop(t, e, s, "bigger")
+	ck, err := s.CheckStateFileHistory(context.Background(), anchorsRel, "")
+	if err != nil || len(ck.Violations) != 2 || ck.Violations[0].Reason != ReasonTooLarge || ck.Violations[1].Reason != ReasonTooLarge || ck.Violations[1].Commit != bigCommit && ck.Violations[0].Commit != bigCommit {
+		t.Fatalf("%+v %v", ck, err)
+	}
+	if ck.Violations[0].Content != nil {
+		t.Fatal("a version above the limit must not be kept")
+	}
+}
+
+func TestStateFileHistoryDoesNotAcceptAnAnswerThatIsNotWhatWasAsked(t *testing.T) {
+	e := newEnv(t)
+	s := open(t, e.server, nil)
+	appendState(t, s, "a")
+	appendState(t, s, "b")
+	s.repo.Runner = answerWrong{inner: RealRunner()}
+	ck, err := s.CheckStateFileHistory(context.Background(), anchorsRel, "")
+	if !errors.Is(err, ErrStateDesync) || ck == nil || ck.Tip == "" {
+		t.Fatalf("%+v %v", ck, err)
+	}
+}
+
+// answerWrong lets everything through, but answers cat-file --batch with the right header for
+// another object.
+type answerWrong struct{ inner Runner }
+
+func (a answerWrong) Run(ctx context.Context, c Cmd) (string, string, error) {
+	out, errOut, err := a.inner.Run(ctx, c)
+	if len(c.Args) >= 2 && c.Args[0] == "cat-file" && c.Args[1] == "--batch" && len(out) > 3 {
+		out = "0000000000000000000000000000000000000000" + out[40:]
+	}
+	return out, errOut, err
 }

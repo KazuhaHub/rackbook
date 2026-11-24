@@ -14,6 +14,10 @@ import (
 	"github.com/kazuhahub/rackbook/internal/secretscan"
 )
 
+// ErrStateNotRegular is matched by errors.Is when a state file, or the directory it is in, is a
+// symbolic link, a directory or anything else that is not a regular file.
+var ErrStateNotRegular = errors.New("not a regular file")
+
 // StateResult is the outcome of MutateStateFile.
 type StateResult struct {
 	// Commit is the short commit hash, the pull request URL (PullRequest set),
@@ -39,7 +43,7 @@ func (s *Store) statePath(rel string) (string, error) {
 	abs := filepath.Join(s.cur.Load().Config.Dir, filepath.FromSlash(clean))
 	for _, p := range []string{filepath.Dir(abs), abs} {
 		if st, err := os.Lstat(p); err == nil && st.Mode()&os.ModeSymlink != 0 {
-			return "", fmt.Errorf("state path %q is a symbolic link", filepath.Base(p))
+			return "", fmt.Errorf("state path %q is a symbolic link: %w", filepath.Base(p), ErrStateNotRegular)
 		}
 	}
 	return abs, nil
@@ -126,6 +130,9 @@ func (s *Store) StateFile(rel string) ([]byte, bool, error) {
 	abs, err := s.statePath(rel)
 	if err != nil {
 		return nil, false, err
+	}
+	if st, err := os.Lstat(abs); err == nil && !st.Mode().IsRegular() {
+		return nil, false, fmt.Errorf("state path %q is not a regular file: %w", filepath.Base(abs), ErrStateNotRegular)
 	}
 	b, err := os.ReadFile(abs)
 	if errors.Is(err, os.ErrNotExist) {

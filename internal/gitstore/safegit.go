@@ -92,6 +92,12 @@ var allowedOptions = map[string][]string{
 	"status":     {"--porcelain", "-z", "--untracked-files=no", "--untracked-files=all", "--ignored=matching"},
 }
 
+// anchorsPath is the one state file that ls-tree may name: the daily audit anchors, whose history
+// is checked. Every other state file (tokens, passkeys) stays out of reach of what reads the history.
+const anchorsPath = ".rackbook/audit-anchors"
+
+func plainStatePath(p string) bool { return p == anchorsPath }
+
 func optionAllowed(sub, opt string) bool {
 	for _, a := range allowedOptions[sub] {
 		if a == opt || (strings.HasSuffix(a, "*") && strings.HasPrefix(opt, strings.TrimSuffix(a, "*"))) {
@@ -128,7 +134,7 @@ func refuseDestructive(args []string) error {
 			return fmt.Errorf("%w: ls-tree %s", errDestructive, strings.Join(rest, " "))
 		}
 		for _, p := range rest[3:] {
-			if _, err := safeHistPath(p); err != nil || strings.HasPrefix(p, "-") || strings.HasPrefix(p, ":") {
+			if _, err := safeHistPath(p); (err != nil && !plainStatePath(p)) || strings.HasPrefix(p, "-") || strings.HasPrefix(p, ":") {
 				return fmt.Errorf("%w: ls-tree path %q", errDestructive, p)
 			}
 		}

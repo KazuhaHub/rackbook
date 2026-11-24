@@ -257,6 +257,13 @@ func TestRuntimeGuardRefusesDestructiveCommands(t *testing.T) {
 		{"log", "-n", "1", "--textconv"},
 		// cat-file reads one blob, and only that (a record at a commit)
 		{"cat-file", "-p", "HEAD:rackbook.yml"},
+		{"ls-tree", "-z", "0123456789abcdef0123456789abcdef01234567", "--", ".rackbook/.."},
+		{"ls-tree", "-z", "0123456789abcdef0123456789abcdef01234567", "--", ".rackbook/a/b"},
+		{"ls-tree", "-z", "0123456789abcdef0123456789abcdef01234567", "--", ".rackbook"},
+		{"ls-tree", "-z", "0123456789abcdef0123456789abcdef01234567", "--", ".rackbook/"},
+		{"ls-tree", "-z", "0123456789abcdef0123456789abcdef01234567", "--", ".rackbook/a\nb"},
+		{"ls-tree", "-z", "0123456789abcdef0123456789abcdef01234567", "--", ".git/config"},
+		{"ls-tree", "-r", "-z", "0123456789abcdef0123456789abcdef01234567", "--", ".rackbook/x"},
 		{"cat-file", "--batch-check"},
 		{"cat-file", "--batch=%(rest)"},
 		{"cat-file", "--batch-command"},
@@ -310,6 +317,7 @@ func TestRuntimeGuardRefusesDestructiveCommands(t *testing.T) {
 		{"cat-file", "blob", "0123456789abcdef0123456789abcdef01234567"}, {"ls-tree", "-z", "0123456789abcdef0123456789abcdef01234567", "--", "rackbook.yml", "data/a.yml"},
 		{"log", "--full-history", "--format=%H %P", "0123456789abcdef0123456789abcdef01234567", "^0123456789abcdef0123456789abcdef01234568", "--", ".rackbook/audit-anchors"},
 		{"cat-file", "--batch"},
+		{"ls-tree", "-z", "0123456789abcdef0123456789abcdef01234567", "--", ".rackbook/audit-anchors"},
 		{"log", "--format=%H", "--date-order", "--skip=1", "-n", "5", "0123456789abcdef0123456789abcdef01234567", "^0123456789abcdef0123456789abcdef01234568", "--", "data/a.yml"}} {
 		if err := refuseDestructive(args); err != nil {
 			t.Errorf("%v refused: %v", args, err)
