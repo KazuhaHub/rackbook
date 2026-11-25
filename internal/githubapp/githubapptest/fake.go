@@ -52,7 +52,7 @@ type API struct {
 // NewAPI starts the fake. now is the shared test clock (nil = real time).
 func NewAPI(t testing.TB, appID string, now func() time.Time) *API {
 	t.Helper()
-	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	key, err := appKey()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -295,3 +295,9 @@ func (g *Git) Path(t testing.TB, repo string) string {
 
 // URL is the clone URL of owner/repo.
 func (g *Git) URL(repo string) string { return g.Server.URL + "/" + repo + ".git" }
+
+// appKey is the one App key of the test process. A 2048-bit RSA key takes
+// hundreds of milliseconds to generate under -race and most tests start a fake;
+// no test needs two fakes with different keys (one that needs a foreign key
+// makes its own).
+var appKey = sync.OnceValues(func() (*rsa.PrivateKey, error) { return rsa.GenerateKey(rand.Reader, 2048) })
