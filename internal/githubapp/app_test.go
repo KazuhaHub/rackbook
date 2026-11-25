@@ -2,6 +2,8 @@ package githubapp_test
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
 	"errors"
 	"strings"
 	"sync"
@@ -94,7 +96,7 @@ func TestPermissionsAreCachedSeparately(t *testing.T) {
 }
 
 func TestNotInstalledAndBadKeyErrorsNeverCarryATokenOrKey(t *testing.T) {
-	api, app, _ := setup(t)
+	api, app, clk := setup(t)
 	_, err := app.Token(context.Background(), "org", "missing", write)
 	if err == nil || !strings.Contains(err.Error(), "installed on org/missing") {
 		t.Fatalf("want a not-installed hint, got %v", err)
@@ -103,10 +105,16 @@ func TestNotInstalledAndBadKeyErrorsNeverCarryATokenOrKey(t *testing.T) {
 	if !errors.As(err, &se) || se.Status != 404 {
 		t.Fatalf("want a 404 StatusError, got %v", err)
 	}
-	// An App with someone else's key is refused by the API.
-	other := githubapptest.NewAPI(t, "12345", nil)
-	key, _ := githubapp.ParseKey(other.KeyPEM())
-	bad, _ := githubapp.New(githubapp.Options{AppID: "12345", Key: key, API: api.URL})
+	// An App with someone else's key is refused by the API: its own key (the
+	// fakes share one per process) and the fake's clock, so only the signature is wrong.
+	otherKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bad, err := githubapp.New(githubapp.Options{AppID: "12345", Key: otherKey, API: api.URL, Now: clk.now})
+	if err != nil {
+		t.Fatal(err)
+	}
 	api.Install("org/ledger")
 	_, err = bad.Token(context.Background(), "org", "ledger", write)
 	if err == nil || !errors.As(err, &se) || se.Status != 401 {
