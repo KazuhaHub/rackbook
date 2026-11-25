@@ -83,10 +83,13 @@ jobs:
       - name: Go version matches go.mod
         shell: bash
         run: test "$(go env GOVERSION)" = "go$(go list -m -f '{{.GoVersion}}')"
+      - run: make pkgs-check
       - run: make fmt-check
       - run: make vet
       - run: make staticcheck
       - run: make actionlint
+      # The release build of the binaries, run once (also on PRs that skip cross-compile).
+      - run: make smoke-build
 
   # Three jobs at once, each a share of the packages (make test-shard); the
   # runner has 4 CPUs, which one job alone keeps busy for about two minutes.
@@ -172,15 +175,15 @@ jobs:
       # lint, typecheck, the check: scripts other than i18n-dom, and the build
       - run: make web-check
 
-  # Two jobs at once, each half of the language pairs (I18N_DOM_SHARD).
+  # Four jobs at once, one language pair each (I18N_DOM_SHARD).
   web-i18n-dom:
-    name: web-i18n-dom (${{ matrix.shard }}/2)
+    name: web-i18n-dom (${{ matrix.shard }}/4)
     needs: changes
     if: ${{ !cancelled() && needs.changes.outputs.web != 'false' }}
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2]
+        shard: [1, 2, 3, 4]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -199,7 +202,7 @@ jobs:
       # fresh load (headless Chrome, mock API); the pairs run side by side
       - run: make web-i18n-dom
         env:
-          I18N_DOM_SHARD: ${{ matrix.shard }}/2
+          I18N_DOM_SHARD: ${{ matrix.shard }}/4
 
   web:
     name: web
@@ -306,16 +309,7 @@ jobs:
           done
       # Build for the runner itself and run it once. The full smoke test runs natively on every platform in verify.yml at release.
       - name: Smoke test linux/amd64
-        env:
-          CGO_ENABLED: "0"
-        run: |
-          go build -trimpath -o rackbook ./cmd/rackbook
-          ./rackbook version
-          ./rackbook check --config examples/homelab/rackbook.yml
-          go build -trimpath -o rackbook-entra ./cmd/rackbook-entra
-          go build -trimpath -o rackbook-notify ./cmd/rackbook-notify
-          ./rackbook-entra --version
-          ./rackbook-notify --version
+        run: make smoke-build
 
   # Pull requests run it only when the Dockerfile, .dockerignore or the
   # dependencies (go.mod, go.sum, web/package*.json) change; the code itself is

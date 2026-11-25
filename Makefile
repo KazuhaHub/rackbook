@@ -14,7 +14,7 @@ ACTIONLINT  := github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
 # CI adds -count=1 so a run never reuses cached results.
 TESTFLAGS ?=
 
-.PHONY: build web go-build test test-shard vet pkgs-check fmt-check staticcheck actionlint go-lint web-check web-i18n-dom ci check smoke run docker clean
+.PHONY: build web go-build test test-shard vet pkgs-check smoke-build fmt-check staticcheck actionlint go-lint web-check web-i18n-dom ci check smoke run docker clean
 
 # Full build: console first (it is embedded into the binary), then the binary.
 build: web go-build
@@ -33,7 +33,7 @@ vet:
 
 # Every Go file git tracks or would track (node_modules is ignored).
 fmt-check:
-	@out="$$(gofmt -l $$(git ls-files -co --exclude-standard '*.go'))"; if [ -n "$$out" ]; then echo "These files are not gofmt-formatted:"; echo "$$out"; exit 1; fi
+	@out="$$(git ls-files -z -co --exclude-standard '*.go' | xargs -0 gofmt -l)" || exit 1; if [ -n "$$out" ]; then echo "These files are not gofmt-formatted:"; echo "$$out"; exit 1; fi
 
 staticcheck:
 	go run $(STATICCHECK) $(GOPKGS)
@@ -49,8 +49,19 @@ pkgs-check:
 	  && missing="$$(printf '%s\n' "$$all" | grep -v /node_modules/ | grep -vxF -e "$$listed" || true)" \
 	  && if [ -n "$$missing" ]; then echo "packages missing from GOPKGS in the Makefile:"; echo "$$missing"; exit 1; fi
 
+# Builds the three binaries as releases are built (static, -trimpath) and runs
+# each once (CI job go-lint, and cross-compile for every target).
+smoke-build:
+	CGO_ENABLED=0 go build -trimpath -o rackbook ./cmd/rackbook
+	./rackbook version
+	./rackbook check --config examples/homelab/rackbook.yml
+	CGO_ENABLED=0 go build -trimpath -o rackbook-entra ./cmd/rackbook-entra
+	CGO_ENABLED=0 go build -trimpath -o rackbook-notify ./cmd/rackbook-notify
+	./rackbook-entra --version
+	./rackbook-notify --version
+
 # The Go checks other than the tests (CI job go-lint).
-go-lint: pkgs-check fmt-check vet staticcheck actionlint
+go-lint: pkgs-check fmt-check vet staticcheck actionlint smoke-build
 
 # With sops and age on PATH the secrets editor is tested against them; without
 # them those tests skip, unless RACKBOOK_REQUIRE_SOPS=1 (set in CI) makes them fail.
