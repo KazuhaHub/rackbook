@@ -10,8 +10,13 @@
 //
 // Runs the console with the mock API (vite --mode mock) and a headless Chrome
 // driven over the DevTools protocol. CHROME=<path> picks the browser
-// (default google-chrome); PORT the dev server port (default 5199); CPU_THROTTLE
+// (default google-chrome); PORT the first dev server port (default 5199); CPU_THROTTLE
 // slows the page down (e.g. 6) to check it does not depend on timing.
+//
+// Each language pair runs in a worker process of its own, all at the same time:
+// its own dev server (the mock keeps one saved language for its one user, so two
+// pairs cannot share it) and its own Chrome. Pair i uses ports PORT + 2i and
+// PORT + 2i + 1. I18N_DOM_JOBS caps how many run at once (default: all).
 import { spawn, type ChildProcess } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -21,16 +26,59 @@ import zhTW from '../src/i18n/zh-TW.ts'
 import enUS from '../src/i18n/en-US.ts'
 
 const root = path.resolve(import.meta.dirname, '..')
-const PORT = Number(process.env.PORT ?? 5199)
-const DEBUG_PORT = PORT + 1
-const BASE = `http://127.0.0.1:${PORT}`
-const messages: Record<string, unknown> = { 'zh-CN': zhCN, 'zh-TW': zhTW, 'en-US': enUS }
-const pairs: [string, string][] = [
+const allPairs: [string, string][] = [
   ['zh-CN', 'en-US'],
   ['en-US', 'zh-TW'],
   ['zh-TW', 'zh-CN'],
   ['en-US', 'zh-CN'],
 ]
+
+// --- coordinator: one worker per pair --------------------------------------------
+if (process.env.I18N_DOM_PAIR === undefined) {
+  const first = Number(process.env.PORT ?? 5199)
+  const jobs = Math.max(1, Number(process.env.I18N_DOM_JOBS ?? allPairs.length) || allPairs.length)
+  const running = new Set<ChildProcess>()
+  for (const sig of ['SIGINT', 'SIGTERM'] as const)
+    process.on(sig, () => {
+      for (const c of running) c.kill('SIGTERM')
+      process.exit(130)
+    })
+  const results: { out: string; ok: boolean }[] = []
+  let next = 0
+  const worker = async () => {
+    while (next < allPairs.length) {
+      const i = next++
+      const child = spawn(process.execPath, [...process.execArgv, import.meta.filename], {
+        env: { ...process.env, I18N_DOM_PAIR: String(i), PORT: String(first + 2 * i) },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      })
+      running.add(child)
+      let out = ''
+      child.stdout.on('data', (d) => (out += d))
+      child.stderr.on('data', (d) => (out += d))
+      const code = await new Promise<number | null>((r) => child.on('close', (c) => r(c)))
+      running.delete(child)
+      // A worker passes only by exiting 0 after printing its summary line: one
+      // that died or stopped early fails the check.
+      const ok = code === 0 && /^\d+ pages x 1 switches, failures 0$/m.test(out)
+      results[i] = { out: `== ${allPairs[i].join(' -> ')} (exit ${code})\n${out}`, ok }
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(jobs, allPairs.length) }, worker))
+  for (const r of results) process.stdout.write(r.out)
+  const failed = results.filter((r) => !r.ok).length
+  console.log(`${allPairs.length} switches in ${allPairs.length} workers, ${failed} failed`)
+  process.exit(failed ? 1 : 0)
+}
+
+// --- worker: the pair I18N_DOM_PAIR -----------------------------------------------
+const PORT = Number(process.env.PORT ?? 5199)
+const DEBUG_PORT = PORT + 1
+const BASE = `http://127.0.0.1:${PORT}`
+const messages: Record<string, unknown> = { 'zh-CN': zhCN, 'zh-TW': zhTW, 'en-US': enUS }
+const pair = allPairs[Number(process.env.I18N_DOM_PAIR)]
+if (!pair) throw new Error(`I18N_DOM_PAIR must be 0..${allPairs.length - 1}`)
+const pairs: [string, string][] = [pair]
 
 /** Every text message of a language (trimmed, two characters or more). */
 function texts(m: unknown, out = new Set<string>()): Set<string> {
@@ -148,14 +196,41 @@ await cdp('Runtime.enable')
 // CPU_THROTTLE=6 slows the page down like a busy CI runner, to shake out timing assumptions
 if (process.env.CPU_THROTTLE) await cdp('Emulation.setCPUThrottlingRate', { rate: Number(process.env.CPU_THROTTLE) })
 
-/** Waits until the page has stopped changing (lazy chunks, queries). */
+/**
+ * Waits until the page has stopped changing (lazy chunks, queries): the
+ * document has loaded (every module script has run) and then nothing in the
+ * DOM changed for QUIET ms: no node, no text, none of the attributes TEXT reads.
+ * Gives up quietly after 10 s, like the sampling loop this replaced (40 samples
+ * of 250 ms), and the comparison that follows then reports what it sees.
+ */
+const QUIET = 250
+const SETTLE = `new Promise((resolve) => {
+  const start = performance.now()
+  let timer
+  const done = () => { obs.disconnect(); clearTimeout(timer); resolve(true) }
+  const arm = () => {
+    clearTimeout(timer)
+    if (performance.now() - start > 10000) return done()
+    timer = setTimeout(() => (document.readyState === 'complete' ? done() : arm()), ${QUIET})
+  }
+  const obs = new MutationObserver(arm)
+  obs.observe(document, { subtree: true, childList: true, characterData: true, attributes: true, attributeFilter: ['title', 'aria-label', 'placeholder', 'alt', 'lang'] })
+  arm()
+})`
 async function settle() {
-  let last = ''
-  for (let i = 0; i < 40; i++) {
-    await sleep(250)
-    const now = await evaluate<string>('(document.body ? document.body.innerText.length : -1) + ":" + document.querySelectorAll("*").length')
-    if (now === last && !now.startsWith("-1")) return
-    last = now
+  for (let i = 0; ; i++) {
+    try {
+      await evaluate(SETTLE)
+      return
+    } catch (e) {
+      // a navigation that commits while the observer runs replaces the page
+      // under it: wait on the new page instead
+      if (i < 20 && /context was destroyed|Cannot find context/i.test(String(e))) {
+        await sleep(50)
+        continue
+      }
+      throw e
+    }
   }
 }
 
@@ -187,7 +262,9 @@ async function synced() {
 }
 
 async function open(url: string, lang: string) {
-  await cdp('Page.navigate', { url: `${BASE}/` })
+  // Any page of the origin gives access to its localStorage and cookies; a
+  // static file runs no console code that could write either back meanwhile.
+  await cdp('Page.navigate', { url: `${BASE}/favicon.svg` })
   await settle()
   // the browser's choice and the signed-in person's saved preference (which wins)
   await evaluate(`localStorage.setItem('rackbook.locale', ${JSON.stringify(lang)})`)
