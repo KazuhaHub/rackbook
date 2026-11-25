@@ -1,5 +1,8 @@
 {
   "compilerOptions": {
+    // incremental: tsc -b skips the check when nothing changed since the last one
+    // (lint, typecheck and build each run tsc -b).
+    "incremental": true,
     "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.app.tsbuildinfo",
     "target": "es2023",
     "lib": ["ES2023", "DOM"],
