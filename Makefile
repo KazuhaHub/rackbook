@@ -14,7 +14,7 @@ ACTIONLINT  := github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
 # CI adds -count=1 so a run never reuses cached results.
 TESTFLAGS ?=
 
-.PHONY: build web go-build test vet fmt-check staticcheck actionlint go-lint web-check web-i18n-dom ci check smoke run docker clean
+.PHONY: build web go-build test test-shard vet fmt-check staticcheck actionlint go-lint web-check web-i18n-dom ci check smoke run docker clean
 
 # Full build: console first (it is embedded into the binary), then the binary.
 build: web go-build
@@ -48,6 +48,20 @@ go-lint: fmt-check vet staticcheck actionlint
 # them those tests skip, unless RACKBOOK_REQUIRE_SOPS=1 (set in CI) makes them fail.
 test:
 	go test -race $(TESTFLAGS) $(GOPKGS)
+
+# CI runs the tests in three jobs at once (make test-shard SHARD=1..3). Shards 1
+# and 2 name the slowest packages (measured); shard 3 is every other package, so
+# a new package always lands in a shard. Together they are exactly make test.
+SHARD_1 := ./internal/api ./internal/oauthserver
+SHARD_2 := ./internal/gitstore ./internal/mcpauth ./internal/mcpserver
+test-shard:
+	@case "$(SHARD)" in \
+	  1) pkgs="$(SHARD_1)" ;; \
+	  2) pkgs="$(SHARD_2)" ;; \
+	  3) named="$$(go list $(SHARD_1) $(SHARD_2))" && all="$$(go list $(GOPKGS))" && \
+	     pkgs="$$(printf '%s\n' "$$all" | grep -vxF -e "$$named")" && [ -n "$$pkgs" ] ;; \
+	  *) echo "SHARD must be 1, 2 or 3"; exit 2 ;; \
+	esac && echo go test -race $(TESTFLAGS) $$pkgs && go test -race $(TESTFLAGS) $$pkgs
 
 # The console checks (CI job web-check); run npm --prefix web ci first.
 web-check:

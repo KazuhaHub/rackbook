@@ -17,6 +17,8 @@
 // its own dev server (the mock keeps one saved language for its one user, so two
 // pairs cannot share it) and its own Chrome. Pair i uses ports PORT + 2i and
 // PORT + 2i + 1. I18N_DOM_JOBS caps how many run at once (default: all).
+// I18N_DOM_SHARD=k/n runs only the pairs whose index is k-1 modulo n, for CI
+// jobs that split the pairs between them (the n shards cover every pair once).
 import { spawn, type ChildProcess } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -36,6 +38,16 @@ const allPairs: [string, string][] = [
 // --- coordinator: one worker per pair --------------------------------------------
 if (process.env.I18N_DOM_PAIR === undefined) {
   const first = Number(process.env.PORT ?? 5199)
+  const shard = (process.env.I18N_DOM_SHARD ?? '1/1').match(/^([1-9]\d*)\/([1-9]\d*)$/)
+  if (!shard || Number(shard[1]) > Number(shard[2])) {
+    console.error(`I18N_DOM_SHARD must be k/n with 1 <= k <= n, not ${process.env.I18N_DOM_SHARD}`)
+    process.exit(2)
+  }
+  const mine = allPairs.map((_, i) => i).filter((i) => i % Number(shard[2]) === Number(shard[1]) - 1)
+  if (mine.length === 0) {
+    console.error(`shard ${shard[0]} has no pairs (there are ${allPairs.length})`)
+    process.exit(2)
+  }
   const jobs = Math.max(1, Number(process.env.I18N_DOM_JOBS ?? allPairs.length) || allPairs.length)
   const running = new Set<ChildProcess>()
   for (const sig of ['SIGINT', 'SIGTERM'] as const)
@@ -46,8 +58,8 @@ if (process.env.I18N_DOM_PAIR === undefined) {
   const results: { out: string; ok: boolean }[] = []
   let next = 0
   const worker = async () => {
-    while (next < allPairs.length) {
-      const i = next++
+    while (next < mine.length) {
+      const i = mine[next++]
       const child = spawn(process.execPath, [...process.execArgv, import.meta.filename], {
         env: { ...process.env, I18N_DOM_PAIR: String(i), PORT: String(first + 2 * i) },
         stdio: ['ignore', 'pipe', 'pipe'],
@@ -64,10 +76,11 @@ if (process.env.I18N_DOM_PAIR === undefined) {
       results[i] = { out: `== ${allPairs[i].join(' -> ')} (exit ${code})\n${out}`, ok }
     }
   }
-  await Promise.all(Array.from({ length: Math.min(jobs, allPairs.length) }, worker))
-  for (const r of results) process.stdout.write(r.out)
-  const failed = results.filter((r) => !r.ok).length
-  console.log(`${allPairs.length} switches in ${allPairs.length} workers, ${failed} failed`)
+  await Promise.all(Array.from({ length: Math.min(jobs, mine.length) }, worker))
+  const ran = mine.map((i) => results[i])
+  for (const [k, r] of ran.entries()) process.stdout.write(r?.out ?? `== ${allPairs[mine[k]].join(' -> ')}: never ran\n`)
+  const failed = ran.filter((r) => !r?.ok).length
+  console.log(`${mine.length} of ${allPairs.length} switches (shard ${shard[0]}), ${failed} failed`)
   process.exit(failed ? 1 : 0)
 }
 
