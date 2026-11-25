@@ -1636,7 +1636,7 @@ checks what CI checks:
 make go-lint       # gofmt, go vet, staticcheck, actionlint
 make test          # CI splits it: make test-shard SHARD=1..3 TESTFLAGS=-count=1, RACKBOOK_REQUIRE_SOPS=1
 make web-check     # console lint, typecheck, check: scripts and build (after npm --prefix web ci)
-make web-i18n-dom  # every page in every language pair, in headless Chrome (CI: I18N_DOM_SHARD=1/2, 2/2)
+make web-i18n-dom  # every page in every language pair, in headless Chrome (CI: one pair per job, I18N_DOM_SHARD=1/4 .. 4/4)
 make ci            # all of the above
 ```
 

@@ -191,6 +191,8 @@ const pending = new Map<number, (v: any) => void>()
 // Requests the page has in flight (lazy chunks, API queries), for settle. Long-lived
 // connections (the dev server's WebSocket, an EventSource) never finish: not counted.
 const inflight = new Set<string>()
+// the loader of the last document that replaced the page (see navigate)
+let committed = ''
 ws.onmessage = (ev) => {
   const msg = JSON.parse(String(ev.data))
   if (msg.id !== undefined) pending.get(msg.id)?.(msg)
@@ -198,7 +200,21 @@ ws.onmessage = (ev) => {
     if (msg.params.type !== 'WebSocket' && msg.params.type !== 'EventSource') inflight.add(msg.params.requestId)
   } else if (msg.method === 'Network.loadingFinished' || msg.method === 'Network.loadingFailed') inflight.delete(msg.params.requestId)
   // a new document: requests of the old one may never report back
-  else if (msg.method === 'Page.frameNavigated' && !msg.params.frame.parentId) inflight.clear()
+  else if (msg.method === 'Page.frameNavigated' && !msg.params.frame.parentId) {
+    inflight.clear()
+    committed = msg.params.frame.loaderId
+  }
+}
+
+/** Navigates and waits until the new document has replaced the old one. */
+async function navigate(url: string) {
+  here = url
+  const { loaderId, errorText } = await cdp('Page.navigate', { url })
+  if (errorText) throw new Error(`${url}: ${errorText}`)
+  for (let i = 0; committed !== loaderId; i++) {
+    if (i > 400) throw new Error(`${url} never committed`)
+    await sleep(25)
+  }
 }
 function cdp(method: string, params: Record<string, unknown> = {}): Promise<any> {
   const id = ++nextId
@@ -229,28 +245,34 @@ const QUIET = 250
 const SETTLE = `new Promise((resolve) => {
   const start = performance.now()
   let timer
-  const done = () => { obs.disconnect(); clearTimeout(timer); resolve(true) }
+  const done = (quiet) => { obs.disconnect(); clearTimeout(timer); resolve(quiet) }
   const arm = () => {
     clearTimeout(timer)
-    if (performance.now() - start > 10000) return done()
-    timer = setTimeout(() => (document.readyState === 'complete' ? done() : arm()), ${QUIET})
+    if (performance.now() - start > 10000) return done(false)
+    timer = setTimeout(() => (document.readyState === 'complete' ? done(true) : arm()), ${QUIET})
   }
   const obs = new MutationObserver(arm)
   obs.observe(document, { subtree: true, childList: true, characterData: true, attributes: true, attributeFilter: ['title', 'aria-label', 'placeholder', 'alt', 'lang'] })
   arm()
 })`
 let gaveUp = 0
+let here = '' // the page settle waits on, for the give-up message
 async function settle() {
   const deadline = Date.now() + 10000
   for (let i = 0; ; i++) {
     try {
-      await evaluate(SETTLE)
+      if (!(await evaluate<boolean>(SETTLE))) {
+        gaveUp++
+        console.log(`${here}: not loaded, or the DOM still changing, after 10 s`)
+        return
+      }
       // and nothing is still loading: a lazy chunk or query in flight can change the
       // page after a quiet spell (a Suspense fallback that waits on the network)
       if (inflight.size === 0) return
       while (inflight.size > 0 && Date.now() < deadline) await sleep(25)
       if (Date.now() >= deadline) {
         gaveUp++
+        console.log(`${here}: ${inflight.size} requests still in flight after 10 s`)
         return
       }
       i = -1 // the DOM may change once the requests land: wait for quiet again
@@ -297,14 +319,14 @@ async function synced() {
 async function open(url: string, lang: string) {
   // Any page of the origin gives access to its localStorage and cookies; a
   // static file runs no console code that could write either back meanwhile.
-  await cdp('Page.navigate', { url: `${BASE}/favicon.svg` })
+  await navigate(`${BASE}/favicon.svg`)
   await settle()
   // the browser's choice and the signed-in person's saved preference (which wins)
   await evaluate(`localStorage.setItem('rackbook.locale', ${JSON.stringify(lang)})`)
   await evaluate(
     `fetch('/api/account/preferences', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ locale: ${JSON.stringify(lang)} }) }).then((r) => r.status)`,
   )
-  await cdp('Page.navigate', { url })
+  await navigate(url)
   await settle()
   await synced()
   await settle()
@@ -353,6 +375,15 @@ collect(meta)
 for (const c of meta.collections) collect(await (await fetch(`${BASE}/api/c/${c.name}`)).json())
 for (const extra of ['/api/expiring', '/api/check']) collect(await (await fetch(BASE + extra)).json())
 
+// Warm-up, not checked: the dev server compiles the console on its first load,
+// which can take longer than the 10 s a checked page gets on a busy machine.
+await navigate(`${BASE}/`)
+for (let i = 0; !(await evaluate<boolean>(`document.readyState === 'complete'`)); i++) {
+  if (i > 600) throw new Error('the console did not load within 120 s')
+  await sleep(200)
+}
+for (let i = 0; inflight.size > 0 && i < 600; i++) await sleep(100)
+
 let failures = 0
 for (const [a, b] of pairs) {
   const old = new Set([...differing(messages[a], messages[b])].filter((s) => !data.has(s)))
@@ -377,7 +408,11 @@ for (const [a, b] of pairs) {
     }
   }
 }
-console.log(`settle gave up after 10 s with requests in flight: ${gaveUp} times`)
+// a page that never settled was compared half loaded: that proves nothing
+if (gaveUp) {
+  console.log(`settle gave up after 10 s (DOM still changing or requests in flight) ${gaveUp} times`)
+  failures++
+}
 console.log(`${pages.length} pages x ${pairs.length} switches, failures ${failures}`)
 ws.close()
 cleanup()
