@@ -65,10 +65,7 @@ type actOpts struct {
 // that the store's commit hook writes to, as `rackbook serve` wires it.
 func newActEnv(t *testing.T, o actOpts) *actEnv {
 	t.Helper()
-	// a slow machine (the race detector) must not cut a page of versions short
-	oldV, oldD := gitstore.VersionTimeBudget, gitstore.DeletedTimeBudget
-	gitstore.VersionTimeBudget, gitstore.DeletedTimeBudget = time.Hour, time.Hour
-	t.Cleanup(func() { gitstore.VersionTimeBudget, gitstore.DeletedTimeBudget = oldV, oldD })
+	// the time budgets are raised once for the whole package in TestMain
 	e := &actEnv{root: t.TempDir()}
 	e.bare, e.laptop = filepath.Join(e.root, "origin.git"), filepath.Join(e.root, "laptop")
 	seed := withRoles(t, testutil.CopyExample(t))
@@ -240,6 +237,7 @@ func find(its []map[string]any, kv ...string) map[string]any {
 }
 
 func TestActivityVerifiedFromARealAuditLogAndARealCommit(t *testing.T) {
+	t.Parallel()
 	e := newActEnv(t, actOpts{})
 	e.write(t, editorU, "made by the server")
 	e.laptopCommit(t, "2026-03-01T10:00:00Z", "edit by hand", map[string]string{"notes.txt": "x\n"})
@@ -298,6 +296,7 @@ func TestActivityVerifiedFromARealAuditLogAndARealCommit(t *testing.T) {
 }
 
 func TestActivityWithoutAnAuditLogShowsEveryCommitUnverified(t *testing.T) {
+	t.Parallel()
 	e := newActEnv(t, actOpts{noAudit: true})
 	code, _, _ := e.do(t, "POST", "/api/c/todo", map[string]any{"data": map[string]any{"item": "x", "status": "待办"}}, map[string]string{"X-User": editorU})
 	_ = code
@@ -331,6 +330,7 @@ func TestActivityWithoutAnAuditLogShowsEveryCommitUnverified(t *testing.T) {
 }
 
 func TestActivityPermissionTable(t *testing.T) {
+	t.Parallel()
 	e := newActEnv(t, actOpts{})
 	// a state commit, a sign-in, an infra audit event and an infra commit
 	e.laptopCommit(t, "2026-03-01T10:00:00Z", "state only", map[string]string{".rackbook/x.yml": "a: 1\n"})
@@ -445,6 +445,7 @@ func TestActivityPermissionTable(t *testing.T) {
 }
 
 func TestActivityCommitDiffVisibility(t *testing.T) {
+	t.Parallel()
 	e := newActEnv(t, actOpts{})
 	e.laptopCommit(t, "2026-03-01T10:00:00Z", "state only", map[string]string{".rackbook/x.yml": "a: 1\n"})
 	e.laptopCommit(t, "2026-03-02T10:00:00Z", "mixed", map[string]string{".rackbook/x.yml": "a: 2\n", "notes.txt": "hello\n"})
@@ -533,6 +534,7 @@ func TestActivityCommitDiffVisibility(t *testing.T) {
 }
 
 func TestActivityPagesHaveNoDuplicatesOrGapsAcrossEqualTimes(t *testing.T) {
+	t.Parallel()
 	e := newActEnv(t, actOpts{})
 	same := "2026-03-01T10:00:00Z"
 	// history with committer dates that never go back, as Rackbook's own commits are
@@ -618,6 +620,7 @@ func jsonNum(v any) string {
 }
 
 func TestActivityFiltersCollectionAndRecord(t *testing.T) {
+	t.Parallel()
 	e := newActEnv(t, actOpts{})
 	e.write(t, editorU, "first item")
 	e.write(t, editorU, "second item")
@@ -701,6 +704,7 @@ func TestActivityJSONLExport(t *testing.T) {
 }
 
 func TestAuditStatusAndAcknowledgement(t *testing.T) {
+	t.Parallel()
 	// an audit log with a recorded problem: a line cut from the end, found at start
 	auditDir := filepath.Join(t.TempDir(), "audit")
 	clk := time.Date(2026, 1, 20, 12, 0, 0, 0, time.UTC)
@@ -801,6 +805,7 @@ func TestAuditStatusAndAcknowledgement(t *testing.T) {
 }
 
 func TestAckNeedsAWritableServer(t *testing.T) {
+	t.Parallel()
 	e := newActEnv(t, actOpts{readOnly: true})
 	if code, out, _ := e.do(t, "POST", "/api/audit/ack", map[string]any{"through": 1}, map[string]string{"X-User": adminU}); code != 403 || out["error"] != "read_only" {
 		t.Fatalf("%d %v", code, out)
@@ -811,6 +816,7 @@ func TestAckNeedsAWritableServer(t *testing.T) {
 // next page asked for "until the last date seen". Paging is by position in the
 // walk now: every commit appears exactly once.
 func TestActivityPagingUnderClockSkewLosesNothing(t *testing.T) {
+	t.Parallel()
 	e := newActEnv(t, actOpts{})
 	for i, d := range []string{"09:00", "12:00", "10:00", "10:30"} {
 		e.laptopCommit(t, "2026-03-01T"+d+":00Z", "at "+d, map[string]string{"f" + string(rune('a'+i)) + ".txt": d + "\n"})
@@ -1031,6 +1037,7 @@ func TestActivityWalkBudgetPageResumes(t *testing.T) {
 // A cursor made up by the caller is refused: it would tell whether a commit
 // exists. One person's cursor is no use to another.
 func TestActivityCursorsAreAuthenticated(t *testing.T) {
+	t.Parallel()
 	e := newActEnv(t, actOpts{})
 	e.write(t, editorU, "one")
 	e.write(t, editorU, "two")
@@ -1063,6 +1070,7 @@ func TestActivityCursorsAreAuthenticated(t *testing.T) {
 
 // A cursor is bound to the filters it was made for.
 func TestActivityCursorIsBoundToItsFilters(t *testing.T) {
+	t.Parallel()
 	e := newActEnv(t, actOpts{})
 	e.write(t, editorU, "one")
 	e.write(t, editorU, "two")

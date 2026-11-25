@@ -33,6 +33,7 @@ all:
 `
 
 func TestParseInventoryGroupsAndVarsFile(t *testing.T) {
+	t.Parallel()
 	hosts, err := ParseInventory([]byte(inventory), func(h string) bool { return h == "alpha" })
 	if err != nil {
 		t.Fatal(err)
@@ -61,6 +62,7 @@ func TestParseInventoryGroupsAndVarsFile(t *testing.T) {
 }
 
 func TestParseInventoryRejectsBadInput(t *testing.T) {
+	t.Parallel()
 	for name, in := range map[string]string{
 		"not yaml":     "all: [",
 		"hosts a list": "all:\n  hosts: [a]\n",
@@ -75,6 +77,7 @@ func TestParseInventoryRejectsBadInput(t *testing.T) {
 }
 
 func TestParseInventorySkipsNamesThatAreNotPlainHostNames(t *testing.T) {
+	t.Parallel()
 	in := "all:\n  hosts:\n    ok-host:\n    ../etc:\n    a/b:\n    'web[01:03]':\n    ok2:\n"
 	hosts, err := ParseInventory([]byte(in), nil)
 	if err != nil || len(hosts) != 2 || hosts[0].Name != "ok-host" || hosts[1].Name != "ok2" {
@@ -140,6 +143,7 @@ func newFixture(t *testing.T) fixture {
 }
 
 func TestRefreshFollowsOriginAndReadsTheClone(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	now := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
 	r, err := New(Options{Dir: f.work, Branch: "main", Now: func() time.Time { return now }})
@@ -176,6 +180,7 @@ func TestRefreshFollowsOriginAndReadsTheClone(t *testing.T) {
 }
 
 func TestRefreshFailureIsReportedAndRecovers(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	r, _ := New(Options{Dir: f.work, Branch: "main"})
 	git(t, f.work, "remote", "set-url", "origin", filepath.Join(filepath.Dir(f.work), "gone.git"))
@@ -192,6 +197,7 @@ func TestRefreshFailureIsReportedAndRecovers(t *testing.T) {
 }
 
 func TestRefreshNeverWritesToTheRemote(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	before := git(t, f.bare, "for-each-ref")
 	r, _ := New(Options{Dir: f.work, Branch: "main"})
@@ -233,6 +239,7 @@ func TestRunRefreshesRepeatedly(t *testing.T) {
 }
 
 func TestHostDetailRedactsSecretsAndReadsFeatures(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	r, _ := New(Options{Dir: f.work, Branch: "main"})
 	d, err := r.Host("alpha")
@@ -278,6 +285,7 @@ func TestHostDetailRedactsSecretsAndReadsFeatures(t *testing.T) {
 }
 
 func TestSymlinkedHostVarsAreNotFollowed(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	outside := filepath.Join(t.TempDir(), "secret.yml")
 	write(t, filepath.Dir(outside), "secret.yml", "leak: yes\n")
@@ -295,6 +303,7 @@ func TestSymlinkedHostVarsAreNotFollowed(t *testing.T) {
 }
 
 func TestRedactionFollowsAliasesAndScrubsComments(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	vars := "# api_token: ghp_abcdefghijklmnopqrstuvwxyz0123456789\n" +
 		"shared: &a s3cretvalue\n" +
@@ -324,6 +333,7 @@ func TestRedactionFollowsAliasesAndScrubsComments(t *testing.T) {
 }
 
 func TestSymlinkedDirectoryOutsideTheCloneIsNotFollowed(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	outside := t.TempDir()
 	write(t, outside, "alpha.yml", "leak: yes\n")
@@ -342,6 +352,7 @@ func TestSymlinkedDirectoryOutsideTheCloneIsNotFollowed(t *testing.T) {
 }
 
 func TestHostDetailsReadsTheInventoryOnceForAllHosts(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	r, _ := New(Options{Dir: f.work, Branch: "main"})
 	ds, err := r.HostDetails()

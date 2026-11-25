@@ -16,6 +16,7 @@ import (
 var cliSecret = "gh" + "p_" + strings.Repeat("a1B2", 9)
 
 func TestCLIAddAndSetRefuseSecretsAndCheckReportsThem(t *testing.T) {
+	t.Parallel()
 	dir := testutil.CopyExample(t)
 	cfg := filepath.Join(dir, "rackbook.yml")
 	read := func() string { b, _ := os.ReadFile(filepath.Join(dir, "docs/ledger/services.yml")); return string(b) }
@@ -60,6 +61,7 @@ func TestCLIAddAndSetRefuseSecretsAndCheckReportsThem(t *testing.T) {
 }
 
 func TestInvalidSecretScanConfigIsAConfigError(t *testing.T) {
+	t.Parallel()
 	dir := testutil.CopyExample(t)
 	cfg := filepath.Join(dir, "rackbook.yml")
 	f, _ := os.OpenFile(cfg, os.O_APPEND|os.O_WRONLY, 0o644)
@@ -73,6 +75,7 @@ func TestInvalidSecretScanConfigIsAConfigError(t *testing.T) {
 }
 
 func TestExamplesPassTheSecretScanClean(t *testing.T) {
+	t.Parallel()
 	for _, ex := range []string{"homelab", "homelab-login"} {
 		out, err := run(t, "check", "--config", filepath.Join(testutil.RepoRoot(t), "examples", ex, "rackbook.yml"))
 		if err != nil || !strings.HasPrefix(out, "ok: ") {
@@ -82,6 +85,7 @@ func TestExamplesPassTheSecretScanClean(t *testing.T) {
 }
 
 func TestCheckScansStateFileLabelsButNotKeysOrHashes(t *testing.T) {
+	t.Parallel()
 	dir := testutil.CopyExample(t)
 	cfg := filepath.Join(dir, "rackbook.yml")
 	os.MkdirAll(filepath.Join(dir, ".rackbook"), 0o755)
@@ -110,6 +114,7 @@ func gitIn(t *testing.T, dir string, args ...string) string {
 }
 
 func TestConfirmTierIsAWarningInCheckAndConfirmationIsRecorded(t *testing.T) {
+	t.Parallel()
 	dir := testutil.CopyExample(t)
 	cfg := filepath.Join(dir, "rackbook.yml")
 	gitIn(t, dir, "init", "-q", "-b", "main")

@@ -46,6 +46,7 @@ func goodDoc(redirects ...string) func(string) any {
 }
 
 func TestCIMD(t *testing.T) {
+	t.Parallel()
 	doc := newCIMD(t, goodDoc(testRedirect))
 	e := newEnv(t, opts{cimdClient: doc.Client()})
 	id := doc.URL + "/client.json"
@@ -87,6 +88,7 @@ func TestCIMD(t *testing.T) {
 }
 
 func TestCIMDRefusals(t *testing.T) {
+	t.Parallel()
 	_, ch := pkce()
 	tests := map[string]func(c *cimdServer){
 		"client_id mismatch": func(c *cimdServer) {
@@ -130,6 +132,7 @@ func TestCIMDRefusals(t *testing.T) {
 	}
 	for name, setup := range tests {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			c := newCIMD(t, goodDoc(testRedirect))
 			setup(c)
 			e := newEnv(t, opts{cimdClient: c.Client()})
@@ -142,6 +145,7 @@ func TestCIMDRefusals(t *testing.T) {
 }
 
 func TestCIMDRefusesPrivateAddresses(t *testing.T) {
+	t.Parallel()
 	// The default client refuses to connect to loopback, private and link-local
 	// addresses, whatever name or address the client_id uses.
 	c := newCIMD(t, goodDoc(testRedirect))
@@ -161,6 +165,7 @@ func TestCIMDRefusesPrivateAddresses(t *testing.T) {
 }
 
 func TestCIMDAllowList(t *testing.T) {
+	t.Parallel()
 	c := newCIMD(t, goodDoc(testRedirect))
 	allowed := c.URL + "/client.json"
 	e := newEnv(t, opts{cimdClient: c.Client(), builtinYAML: "      allowed_clients: [\"" + allowed + "\"]\n"})
@@ -178,6 +183,7 @@ func TestCIMDAllowList(t *testing.T) {
 }
 
 func TestCIMDClientIDShape(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t, opts{cimdSafe: true})
 	_, ch := pkce()
 	for _, id := range []string{"https://example.com", "https://example.com/", "https://example.com/a/../b", "https://user@example.com/c", "https://example.com/c#frag", "http://example.com/c", "https://" + strings.Repeat("a", 600) + ".example/c"} {
@@ -188,6 +194,7 @@ func TestCIMDClientIDShape(t *testing.T) {
 }
 
 func TestDCR(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t, opts{})
 	post := func(v any) resp { return e.postJSON("", "/oauth/register", v) }
 
@@ -232,6 +239,7 @@ func TestDCR(t *testing.T) {
 }
 
 func TestDCRPruneKeepsClientsWithGrants(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t, opts{})
 	cid, tok := e.login(boss, "keeper")
 	e.clock.advance(40 * 24 * time.Hour) // far beyond both prune times

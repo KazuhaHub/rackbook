@@ -61,10 +61,10 @@ type code struct {
 	expires   time.Time
 }
 
-// New returns a provider that signs with a fresh RSA key. issuer is the
-// https URL it will be served at.
+// New returns a provider that signs with the RSA key of the test process
+// (signingKey). issuer is the https URL it will be served at.
 func New(issuer, clientID, secret string, redirectURIs ...string) *IdP {
-	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	key, err := signingKey()
 	if err != nil {
 		panic(err)
 	}
@@ -246,3 +246,9 @@ func (p *IdP) sign(claims map[string]any) (string, error) {
 	}
 	return obj.CompactSerialize()
 }
+
+// signingKey is the one signing key of the test process. A 2048-bit RSA key
+// takes hundreds of milliseconds to generate under -race and every login test
+// starts a provider; no test needs two providers with different keys (one that
+// needs a foreign key makes its own).
+var signingKey = sync.OnceValues(func() (*rsa.PrivateKey, error) { return rsa.GenerateKey(rand.Reader, 2048) })

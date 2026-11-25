@@ -41,6 +41,7 @@ func gitEnv(t *testing.T, who string) (f *fixture, bare, laptop, server string, 
 }
 
 func TestRewrittenHistoryOverHTTP(t *testing.T) {
+	t.Parallel()
 	f, bare, laptop, _, store := gitEnv(t, "Boss <boss@example.com>")
 	ctx := context.Background()
 	good := sh(t, bare, "rev-parse", "main")
@@ -108,6 +109,7 @@ func TestRewrittenHistoryOverHTTP(t *testing.T) {
 }
 
 func TestAcceptRemoteIsAdminOnly(t *testing.T) {
+	t.Parallel()
 	for who, want := range map[string]int{"Tom <tom@team.example.com>": 403, "Guest <guest@example.com>": 403, "Boss <boss@example.com>": 409} {
 		f, bare, _, _, _ := gitEnv(t, who)
 		tip := sh(t, bare, "rev-parse", "main")
@@ -125,6 +127,7 @@ func TestAcceptRemoteIsAdminOnly(t *testing.T) {
 }
 
 func TestPerRecordHistoryAndTrailersOverHTTP(t *testing.T) {
+	t.Parallel()
 	f, bare, _, _, _ := gitEnv(t, "Tom <tom@team.example.com>")
 	for _, item := range []string{"alpha", "beta"} {
 		if code, r, _ := f.do(t, "POST", "/api/c/todo", map[string]any{"data": map[string]any{"item": item, "status": "待办"}}, nil); code != 201 {
@@ -151,6 +154,7 @@ func TestPerRecordHistoryAndTrailersOverHTTP(t *testing.T) {
 }
 
 func TestAcceptRemoteRefusedInReadOnlyMode(t *testing.T) {
+	t.Parallel()
 	f, bare, laptop, _, store := gitEnv(t, "Boss <boss@example.com>")
 	// Rewrite the remote and let the server notice.
 	p := filepath.Join(laptop, "docs/ledger/todo.yml")
@@ -175,6 +179,7 @@ func TestAcceptRemoteRefusedInReadOnlyMode(t *testing.T) {
 }
 
 func TestBrokenConfigFailsClosedForWritesAndAdminButKeepsReading(t *testing.T) {
+	t.Parallel()
 	dir := withRoles(t, testutil.CopyExample(t))
 	f := newFixtureWithConfigSource(t, "Boss <boss@example.com>", dir)
 	_, m, _ := f.do(t, "GET", "/api/meta", nil, nil)

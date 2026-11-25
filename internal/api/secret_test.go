@@ -50,6 +50,7 @@ func wantSecret(t *testing.T, code int, r map[string]any, rule, path string) {
 }
 
 func TestAPIRefusesSecretsOnCreateAndUpdate(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t, nil, "")
 	before := tree(t, f.dir)
 	code, r, _ := f.do(t, "POST", "/api/c/todo", map[string]any{"data": map[string]any{"item": "use " + apiToken, "status": "待办"}}, nil)
@@ -72,6 +73,7 @@ func TestAPIRefusesSecretsOnCreateAndUpdate(t *testing.T) {
 }
 
 func TestCheckEndpointReportsHandCommittedSecrets(t *testing.T) {
+	t.Parallel()
 	dir := testutil.CopyExample(t)
 	testutil.Replace(t, dir, "docs/ledger/todo.yml", "scope: gw, status: 待决定", "scope: \"gw "+apiToken+"\", status: 待决定")
 	f := newFixture(t, nil, dir)
@@ -87,6 +89,7 @@ func TestCheckEndpointReportsHandCommittedSecrets(t *testing.T) {
 }
 
 func TestAPIRefusesSecretsInDataTypes(t *testing.T) {
+	t.Parallel()
 	f := adminFixture(t)
 	before := tree(t, f.dir)
 	ty := typeOf(t, f, "todo")
@@ -114,6 +117,7 @@ func TestAPIRefusesSecretsInDataTypes(t *testing.T) {
 }
 
 func TestTypeTitlesDescriptionsAndConfigEntryAreScanned(t *testing.T) {
+	t.Parallel()
 	f := adminFixture(t)
 	before := tree(t, f.dir)
 	for name, mut := range map[string]func(ty map[string]any){

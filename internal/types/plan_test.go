@@ -58,6 +58,7 @@ func file(p *Plan, path string) *FileChange {
 }
 
 func TestPlanNoChange(t *testing.T) {
+	t.Parallel()
 	cfg, _ := setup(t)
 	p := update(t, cfg, "services", func(*Type) {})
 	if !p.Clean || p.Changed || len(p.Files) != 0 {
@@ -66,6 +67,7 @@ func TestPlanNoChange(t *testing.T) {
 }
 
 func TestPlanAddOptionalField(t *testing.T) {
+	t.Parallel()
 	cfg, _ := setup(t)
 	p := update(t, cfg, "services", func(ty *Type) {
 		ty.Fields = append(ty.Fields, Field{Name: "owner", Title: "负责人", Type: TText})
@@ -83,6 +85,7 @@ func TestPlanAddOptionalField(t *testing.T) {
 }
 
 func TestPlanRequiredFieldOffersDefaultMigration(t *testing.T) {
+	t.Parallel()
 	cfg, _ := setup(t)
 	add := func(ty *Type) {
 		ty.Fields = append(ty.Fields, Field{Name: "owner", Type: TText, Required: true, Default: "ops"})
@@ -110,6 +113,7 @@ func TestPlanRequiredFieldOffersDefaultMigration(t *testing.T) {
 }
 
 func TestPlanRemoveFieldWithValuesOffersMigration(t *testing.T) {
+	t.Parallel()
 	cfg, _ := setup(t)
 	drop := func(ty *Type) {
 		var keep []Field
@@ -152,6 +156,7 @@ func TestPlanRemoveFieldWithValuesOffersMigration(t *testing.T) {
 }
 
 func TestPlanNarrowingIsRefused(t *testing.T) {
+	t.Parallel()
 	cfg, _ := setup(t)
 	p := update(t, cfg, "devices", func(ty *Type) { ty.Field("os").Type = TIPv4 })
 	r := hasRefusal(p, "narrowing")
@@ -164,6 +169,7 @@ func TestPlanNarrowingIsRefused(t *testing.T) {
 }
 
 func TestPlanLooseningIsClean(t *testing.T) {
+	t.Parallel()
 	cfg, _ := setup(t)
 	p := update(t, cfg, "devices", func(ty *Type) { ty.Field("os").Type = TTextarea })
 	if !p.Clean {
@@ -172,6 +178,7 @@ func TestPlanLooseningIsClean(t *testing.T) {
 }
 
 func TestPlanRefusals(t *testing.T) {
+	t.Parallel()
 	cfg, _ := setup(t)
 	p := update(t, cfg, "services", func(ty *Type) { ty.Name = "svc" })
 	if hasRefusal(p, "rename") == nil || p.Clean {
@@ -224,6 +231,7 @@ func TestPlanRefusals(t *testing.T) {
 }
 
 func TestPlanAddReference(t *testing.T) {
+	t.Parallel()
 	cfg, _ := setup(t)
 	p := update(t, cfg, "todo", func(ty *Type) {
 		ty.Fields = append(ty.Fields, Field{Name: "device", Type: TRef, Ref: &Ref{To: "devices", ToField: "name", BackrefTitle: "相关待办", BackrefColumns: []string{"item", "status"}}})
@@ -244,6 +252,7 @@ func TestPlanAddReference(t *testing.T) {
 }
 
 func TestPlanReferenceToUnknownTargetIsRefused(t *testing.T) {
+	t.Parallel()
 	cfg, _ := setup(t)
 	p := update(t, cfg, "todo", func(ty *Type) {
 		ty.Fields = append(ty.Fields, Field{Name: "x", Type: TRef, Ref: &Ref{To: "nope", ToField: "name"}})
@@ -260,6 +269,7 @@ func TestPlanReferenceToUnknownTargetIsRefused(t *testing.T) {
 }
 
 func TestPlanUniqueRule(t *testing.T) {
+	t.Parallel()
 	cfg, _ := setup(t)
 	p := update(t, cfg, "devices", func(ty *Type) {
 		ty.Field("category").Unique = true // several devices share a category
@@ -277,6 +287,7 @@ func TestPlanUniqueRule(t *testing.T) {
 }
 
 func TestPlanRemoveReferenceDropsRule(t *testing.T) {
+	t.Parallel()
 	cfg, _ := setup(t)
 	p := update(t, cfg, "addresses", func(ty *Type) { ty.Field("device").Type = TText; ty.Field("device").Ref = nil })
 	if !p.Clean {
@@ -301,6 +312,7 @@ func newType() *Type {
 }
 
 func TestPlanCreate(t *testing.T) {
+	t.Parallel()
 	cfg, _ := setup(t)
 	p, err := Build(cfg, Request{Op: OpCreate, Name: "contacts", Type: newType()})
 	if err != nil {
@@ -339,6 +351,7 @@ func TestPlanCreate(t *testing.T) {
 }
 
 func TestPlanDelete(t *testing.T) {
+	t.Parallel()
 	cfg, dir := setup(t)
 	p, _ := Build(cfg, Request{Op: OpDelete, Name: "devices"})
 	if p.Clean || hasRefusal(p, "not-empty") == nil || hasRefusal(p, "referenced") == nil {
@@ -364,6 +377,7 @@ func TestPlanDelete(t *testing.T) {
 }
 
 func TestApplyWritesAndReloads(t *testing.T) {
+	t.Parallel()
 	cfg, dir := setup(t)
 	res, err := Apply(cfg, Request{Op: OpCreate, Name: "contacts", Type: newType()})
 	if err != nil {
@@ -403,6 +417,7 @@ func TestApplyWritesAndReloads(t *testing.T) {
 }
 
 func TestApplyKeepsRackbookYmlComments(t *testing.T) {
+	t.Parallel()
 	cfg, dir := setup(t)
 	nt := current(t, cfg, "services")
 	nt.Icon = "server"
@@ -422,6 +437,7 @@ func TestApplyKeepsRackbookYmlComments(t *testing.T) {
 }
 
 func TestCreateRefusesRackbookStateDir(t *testing.T) {
+	t.Parallel()
 	cfg, dir := setup(t)
 	for _, tc := range []struct{ file, schema string }{
 		{".rackbook/contacts.yml", ""},
@@ -440,6 +456,7 @@ func TestCreateRefusesRackbookStateDir(t *testing.T) {
 }
 
 func TestRemovingAFieldWithValuesNeedsTheMigrationEvenWhenTheSchemaIsOpen(t *testing.T) {
+	t.Parallel()
 	cfg, dir := setup(t)
 	sp := filepath.Join(dir, cfg.Collection("services").Schema)
 	b, err := os.ReadFile(sp)
@@ -480,6 +497,7 @@ func TestRemovingAFieldWithValuesNeedsTheMigrationEvenWhenTheSchemaIsOpen(t *tes
 }
 
 func TestCreateRefusesFilesAnotherPartOwns(t *testing.T) {
+	t.Parallel()
 	cfg, dir := setup(t)
 	if err := os.MkdirAll(filepath.Join(dir, ".git"), 0o755); err != nil {
 		t.Fatal(err)

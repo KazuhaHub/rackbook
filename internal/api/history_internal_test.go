@@ -3,6 +3,7 @@ package api
 import "testing"
 
 func TestRedactPathHidesWhatIsBelowAHiddenValue(t *testing.T) {
+	t.Parallel()
 	for _, c := range []struct {
 		path   string
 		hidden []string

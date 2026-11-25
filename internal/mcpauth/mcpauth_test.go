@@ -11,6 +11,7 @@ import (
 )
 
 func TestProtectedResourceMetadataAndChallenges(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t, hopts{})
 	for _, p := range []string{"/.well-known/oauth-protected-resource", "/.well-known/oauth-protected-resource/mcp"} {
 		code, m, _ := h.do("GET", p, "", nil)
@@ -44,6 +45,7 @@ func TestProtectedResourceMetadataAndChallenges(t *testing.T) {
 }
 
 func TestMCPHubUserReadsAndWritesViaPullRequest(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t, hopts{git: true})
 	cs := h.mcpSession(h.jwt(oauthtest.Options{Subject: "Alice", Scope: "rackbook:write", ClientID: "cursor"}))
 
@@ -100,6 +102,7 @@ func TestMCPHubUserReadsAndWritesViaPullRequest(t *testing.T) {
 }
 
 func TestScopeNarrowsAndRolesDecide(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t, hopts{git: true})
 	// No write scope: reads work, writes are refused with insufficient_scope.
 	cs := h.mcpSession(h.jwt(oauthtest.Options{Subject: "alice", Scope: "other"}))
@@ -126,6 +129,7 @@ func TestScopeNarrowsAndRolesDecide(t *testing.T) {
 }
 
 func TestDirectPushAndDeletesAlwaysPR(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t, hopts{git: true, mcpYAML: "    direct_push:\n      - {users: [\"mcphub:alice\"], collections: [todo]}\n"})
 	alice := h.mcpSession(h.jwt(oauthtest.Options{Subject: "alice", Scope: "rackbook:write"}))
 	// Listed user + collection: a create goes straight to main.
@@ -160,6 +164,7 @@ func TestDirectPushAndDeletesAlwaysPR(t *testing.T) {
 }
 
 func TestWritesFailLikeTheAPIWhenTheStoreIsNotHealthy(t *testing.T) {
+	t.Parallel()
 	// No Git: a pull request cannot be opened, the error says so.
 	h := newHarness(t, hopts{})
 	cs := h.mcpSession(h.jwt(oauthtest.Options{Subject: "alice", Scope: "rackbook:write"}))
@@ -190,6 +195,7 @@ func TestWritesFailLikeTheAPIWhenTheStoreIsNotHealthy(t *testing.T) {
 }
 
 func TestAnyOAuthIssuerEntraStyle(t *testing.T) {
+	t.Parallel()
 	// An Entra-like issuer: RS256, typ JWT, scp scopes, a /v2.0 path, OIDC metadata only.
 	entra := oauthtest.NewWith(t, oauthtest.Config{Alg: "RS256", Path: "/v2.0", Discovery: "oidc"})
 	h := newHarness(t, hopts{git: true,
@@ -227,6 +233,7 @@ func TestAnyOAuthIssuerEntraStyle(t *testing.T) {
 }
 
 func TestMatchEmailUsesOnlyVerifiedEmails(t *testing.T) {
+	t.Parallel()
 	entra := oauthtest.NewWith(t, oauthtest.Config{Alg: "RS256", Path: "/v2.0", Discovery: "oidc"})
 	h := newHarness(t, hopts{git: true,
 		rolesYAML:   "    admin: [boss@example.com]\n    editor: [\"carol@example.com\"]\n",

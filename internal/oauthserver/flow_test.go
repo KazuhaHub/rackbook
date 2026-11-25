@@ -11,6 +11,7 @@ import (
 const boss = "boss@example.com"
 
 func TestMetadata(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t, opts{})
 	r := e.get("", "/.well-known/oauth-authorization-server")
 	if r.StatusCode != 200 {
@@ -51,6 +52,7 @@ func TestMetadata(t *testing.T) {
 }
 
 func TestCORSOnlyOnPublicEndpoints(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t, opts{})
 	for _, p := range []string{"/.well-known/oauth-authorization-server", "/oauth/jwks"} {
 		if e.get("", p, "Origin", "https://app.example").Header.Get("Access-Control-Allow-Origin") != "*" {
@@ -84,6 +86,7 @@ func TestCORSOnlyOnPublicEndpoints(t *testing.T) {
 }
 
 func TestAuthorizeRequiresSignIn(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t, opts{})
 	cid := e.register("c")
 	_, ch := pkce()
@@ -100,6 +103,7 @@ func TestAuthorizeRequiresSignIn(t *testing.T) {
 }
 
 func TestAuthorizeChecks(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t, opts{})
 	cid := e.register("c")
 	_, ch := pkce()
@@ -157,6 +161,7 @@ func TestAuthorizeChecks(t *testing.T) {
 }
 
 func TestTokenChecks(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t, opts{})
 	cid := e.register("c")
 	v, ch := pkce()
@@ -197,6 +202,7 @@ func TestTokenChecks(t *testing.T) {
 }
 
 func TestCodeIsSingleUseAndExpires(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t, opts{})
 	cid := e.register("c")
 	v, ch := pkce()
@@ -227,6 +233,7 @@ func TestCodeIsSingleUseAndExpires(t *testing.T) {
 }
 
 func TestConsentIsBoundToThePerson(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t, opts{})
 	cid := e.register("My Client")
 	_, ch := pkce()
@@ -273,6 +280,7 @@ func TestConsentIsBoundToThePerson(t *testing.T) {
 }
 
 func TestOnlyPeopleCanAuthorize(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t, opts{})
 	_, tok := e.login(boss, "c")
 	cid := e.register("c2")
@@ -285,6 +293,7 @@ func TestOnlyPeopleCanAuthorize(t *testing.T) {
 }
 
 func TestScopes(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t, opts{})
 	cid := e.register("c")
 	v, ch := pkce()

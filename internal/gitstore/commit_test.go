@@ -10,6 +10,7 @@ import (
 )
 
 func TestAuthorAndTrailers(t *testing.T) {
+	t.Parallel()
 	ann := &auth.Identity{ID: "ann@example.com", Name: "Ann", Email: "Ann@Example.com", Method: auth.MethodOIDC}
 	if a := AuthorOf(ann); a != (Identity{"Ann", "Ann@Example.com"}) {
 		t.Fatalf("%+v", a)
@@ -67,6 +68,7 @@ func TestAuthorAndTrailers(t *testing.T) {
 }
 
 func TestRecordTrailerAndPerRecordHistory(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	s := open(t, e.server, nil)
 	ctx := context.Background()
@@ -108,6 +110,7 @@ func TestRecordTrailerAndPerRecordHistory(t *testing.T) {
 }
 
 func TestLongAndAwkwardIDsKeepAStableTrailer(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	sh(t, e.server, "config", "grep.patternType", "perl") // must not change how History searches
 	s := open(t, e.server, nil)
@@ -144,6 +147,7 @@ func TestLongAndAwkwardIDsKeepAStableTrailer(t *testing.T) {
 }
 
 func TestRecordRefIsOneLine(t *testing.T) {
+	t.Parallel()
 	if got := edit.RecordRef("todo", "a\nEdited-by: root"); got != "todo/a Edited-by: root" {
 		t.Fatalf("%q", got)
 	}

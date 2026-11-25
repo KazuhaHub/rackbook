@@ -11,6 +11,7 @@ import (
 )
 
 func TestWriteOptionsForModules(t *testing.T) {
+	t.Parallel()
 	cfg := &config.Config{Modules: map[string]*config.Module{
 		"fast": {Token: "fast-token", Collection: "creds", Fields: []string{"expires"}, DirectPush: true},
 		"slow": {Token: "slow-token", Collection: "creds", Fields: []string{"expires"}},
@@ -40,6 +41,7 @@ func TestWriteOptionsForModules(t *testing.T) {
 }
 
 func TestModuleGuard(t *testing.T) {
+	t.Parallel()
 	cfg := &config.Config{Modules: map[string]*config.Module{"bot": {Token: "bot-token", Collection: "creds", Fields: []string{"expires"}}}}
 	who := &auth.Identity{ID: "x@y.z", Method: auth.MethodToken, Token: "bot-token"}
 	op, err := ModuleGuard(who, cfg, edit.Op{Kind: edit.Add, Collection: "creds"})

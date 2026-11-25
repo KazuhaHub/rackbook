@@ -22,6 +22,7 @@ func seqs(es []Event) string {
 }
 
 func TestReadNewestFirstWithFiltersAndACursor(t *testing.T) {
+	t.Parallel()
 	l, dir := newLog(t, Options{})
 	for i := 1; i <= 8; i++ {
 		e := Event{Event: "login", Identity: "a@example.com"}
@@ -77,6 +78,7 @@ func TestReadNewestFirstWithFiltersAndACursor(t *testing.T) {
 }
 
 func TestReadIgnoresAnUnfinishedLastLineAndAFileThatIsGone(t *testing.T) {
+	t.Parallel()
 	l, dir := newLog(t, Options{})
 	fill(t, l, 6) // two in October, four in November
 	f, _ := os.OpenFile(filepath.Join(dir, "audit-2026-11.jsonl"), os.O_APPEND|os.O_WRONLY, 0o600)
@@ -94,6 +96,7 @@ func TestReadIgnoresAnUnfinishedLastLineAndAFileThatIsGone(t *testing.T) {
 }
 
 func TestReadAcrossManyBlocks(t *testing.T) {
+	t.Parallel()
 	l, dir := newLog(t, Options{})
 	pad := strings.Repeat("x", 300)
 	const n = 1500 // about 600 KiB: many 64 KiB blocks
@@ -139,6 +142,7 @@ const (
 )
 
 func TestCommitIndexIsACacheOfTheChain(t *testing.T) {
+	t.Parallel()
 	l, dir := newLog(t, Options{})
 	l.Record(commitEv("ledger", hashA, "a@example.com", "token:ci"))
 	l.Record(ev("login"))
@@ -187,6 +191,7 @@ func TestCommitIndexIsACacheOfTheChain(t *testing.T) {
 }
 
 func TestCommitIndexCanAlwaysBeDeletedOrBroken(t *testing.T) {
+	t.Parallel()
 	l, dir := newLog(t, Options{})
 	l.Record(commitEv("ledger", hashA, "a@example.com"))
 	l.Record(ev("login"))
@@ -241,6 +246,7 @@ func TestCommitIndexCanAlwaysBeDeletedOrBroken(t *testing.T) {
 }
 
 func TestCommitIndexMatchesOlderShortHashesOnlyWhenTheyAreUnambiguous(t *testing.T) {
+	t.Parallel()
 	l, _ := newLog(t, Options{})
 	l.Record(commitEv("ledger", hashA[:7], "a@example.com"))
 	l.Record(commitEv("ledger", hashB[:10], "b@example.com"))
@@ -263,6 +269,7 @@ func TestCommitIndexMatchesOlderShortHashesOnlyWhenTheyAreUnambiguous(t *testing
 }
 
 func TestAckClearsARecordedProblemAndUnblocksRetention(t *testing.T) {
+	t.Parallel()
 	clk := &fakeClock{at(2026, 1, 20)}
 	l, dir := newLog(t, Options{Now: clk.Now})
 	for _, m := range []time.Month{1, 2} {
@@ -357,6 +364,7 @@ func countChainProblems(t *testing.T, dir string) int { return len(chainProblems
 // An acknowledgement covers the evidence the administrator saw: a line that is
 // rewritten afterwards is a new problem even though kind and seq are the same.
 func TestAckDoesNotHideALineRewrittenAfterwards(t *testing.T) {
+	t.Parallel()
 	l, dir := newLog(t, Options{})
 	fill(t, l, 6)
 	l.Close()
@@ -397,6 +405,7 @@ func TestAckDoesNotHideALineRewrittenAfterwards(t *testing.T) {
 }
 
 func TestAckDoesNotHideANewHeadProblemAndANewCut(t *testing.T) {
+	t.Parallel()
 	l, dir := newLog(t, Options{})
 	fill(t, l, 6)
 	l.Close()
@@ -438,6 +447,7 @@ func TestAckDoesNotHideANewHeadProblemAndANewCut(t *testing.T) {
 // An entry added to index.json by hand does not verify a commit: each hit is
 // checked against the chain.
 func TestForgedIndexEntryDoesNotVerify(t *testing.T) {
+	t.Parallel()
 	l, dir := newLog(t, Options{})
 	l.Record(commitEv("ledger", hashA, "a@example.com"))
 	l.Record(ev("login"))
@@ -467,6 +477,7 @@ func TestForgedIndexEntryDoesNotVerify(t *testing.T) {
 // Resuming after a scan budget ran out reaches every match, and a file of a
 // later month than Until is not read at all.
 func TestReadResumesAfterTheScanBudgetAndSkipsNewerMonths(t *testing.T) {
+	t.Parallel()
 	l, dir := newLog(t, Options{})
 	for i := 1; i <= 30; i++ {
 		e := Event{Event: "login", Identity: "a@example.com"}
@@ -521,6 +532,7 @@ func TestReadResumesAfterTheScanBudgetAndSkipsNewerMonths(t *testing.T) {
 // A chain break right after a commit line makes that one commit unverified; it
 // does not make every lookup rebuild the index.
 func TestChainBreakAfterACommitLineDoesNotRebuildTheIndexEveryTime(t *testing.T) {
+	t.Parallel()
 	l, dir := newLog(t, Options{})
 	l.Record(ev("login"))
 	l.Record(commitEv("ledger", hashA, "a@example.com"))

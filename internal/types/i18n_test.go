@@ -31,6 +31,7 @@ func readFile(t *testing.T, dir, rel string) []byte {
 func field(ty *Type, name string) *Field { return ty.Field(name) }
 
 func TestReadEnumForms(t *testing.T) {
+	t.Parallel()
 	cfg, _ := labelSetup(t)
 	ty := current(t, cfg, "devices")
 	if ty.Title != "设备" || ty.I18n["en-US"]["title"] != "Devices" || ty.I18n["en-US"]["group"] != "Network" || ty.I18n["zh-TW"]["title"] != "設備" {
@@ -67,6 +68,7 @@ func TestReadEnumForms(t *testing.T) {
 }
 
 func TestEnumAndOneOfTogetherStayAdvanced(t *testing.T) {
+	t.Parallel()
 	prop := `{"type":"string","enum":["a"],"oneOf":[{"const":"a"}]}`
 	v, _ := parseOrdered([]byte(prop))
 	f := fieldFromProp("x", v, nil)
@@ -87,6 +89,7 @@ func TestEnumAndOneOfTogetherStayAdvanced(t *testing.T) {
 }
 
 func TestNoChangeIsByteForByte(t *testing.T) {
+	t.Parallel()
 	cfg, dir := labelSetup(t)
 	before := readFile(t, dir, "schemas/device.json")
 	cfgBefore := readFile(t, dir, "rackbook.yml")
@@ -103,6 +106,7 @@ func TestNoChangeIsByteForByte(t *testing.T) {
 }
 
 func TestEditLabelsKeepsOtherKeys(t *testing.T) {
+	t.Parallel()
 	_, dir := labelSetup(t)
 	// an unknown key in a locale object, an unsupported language, and unknown keys on the property
 	testutil.Replace(t, dir, "schemas/device.json", `"zh-TW": {"title": "IPv4 類型", "enum"`, `"fr-FR": {"title": "Type IPv4"}, "zh-TW": {"note": "keep me", "title": "IPv4 類型", "enum"`)
@@ -151,6 +155,7 @@ func TestEditLabelsKeepsOtherKeys(t *testing.T) {
 // Adding labels to a legacy enum writes the oneOf form; removing them again
 // returns to the plain enum, in the same place in the property.
 func TestSwitchBetweenEnumAndOneOf(t *testing.T) {
+	t.Parallel()
 	cfg, dir := labelSetup(t)
 	orig := readFile(t, dir, "schemas/device.json")
 	set := func(mutate func(*Field)) {
@@ -214,6 +219,7 @@ func TestSwitchBetweenEnumAndOneOf(t *testing.T) {
 }
 
 func TestIconsAreWrittenAndSwitchedOff(t *testing.T) {
+	t.Parallel()
 	cfg, _ := labelSetup(t)
 	p := update(t, cfg, "devices", func(ty *Type) {
 		f := field(ty, "status")
@@ -242,6 +248,7 @@ func TestIconsAreWrittenAndSwitchedOff(t *testing.T) {
 }
 
 func TestPlanRefusesBadTranslations(t *testing.T) {
+	t.Parallel()
 	cfg, _ := labelSetup(t)
 	cases := []struct {
 		name   string
@@ -287,6 +294,7 @@ func TestPlanRefusesBadTranslations(t *testing.T) {
 }
 
 func TestTypeTranslationsInRackbookYml(t *testing.T) {
+	t.Parallel()
 	cfg, dir := labelSetup(t)
 	p := update(t, cfg, "devices", func(ty *Type) {
 		ty.I18n["en-US"]["title"] = "Machines"
@@ -325,6 +333,7 @@ func TestTypeTranslationsInRackbookYml(t *testing.T) {
 }
 
 func TestNewTypeWithTranslations(t *testing.T) {
+	t.Parallel()
 	cfg, dir := labelSetup(t)
 	nt := &Type{Name: "sites", Title: "站点", I18n: map[string]map[string]string{"en-US": {"title": "Sites", "group": "Places"}},
 		Fields: []Field{
@@ -362,6 +371,7 @@ func TestNewTypeWithTranslations(t *testing.T) {
 }
 
 func TestSecretInTranslationIsRefused(t *testing.T) {
+	t.Parallel()
 	cfg, _ := labelSetup(t)
 	const secret = "ghp_" + "abcdefghijklmnopqrstuvwxyz0123456789"
 	for name, mutate := range map[string]func(*Type){
@@ -383,6 +393,7 @@ func TestSecretInTranslationIsRefused(t *testing.T) {
 // A reference rule's translations survive a type edit that does not mention
 // them, and can be changed through Ref.I18n.
 func TestRefRuleTranslations(t *testing.T) {
+	t.Parallel()
 	cfg, dir := labelSetup(t)
 	ty := current(t, cfg, "devices")
 	owner := field(ty, "owner")
@@ -425,6 +436,7 @@ func TestRefRuleTranslations(t *testing.T) {
 // An existing x-rackbook-i18n the console cannot read is kept, and a request
 // that would write translations next to it is refused, not silently dropped.
 func TestMalformedI18nRefusesNewTranslations(t *testing.T) {
+	t.Parallel()
 	_, dir := labelSetup(t)
 	testutil.Replace(t, dir, "schemas/device.json", `"x-rackbook-i18n": {"en-US": {"title": "Name"}}`, `"x-rackbook-i18n": {"en-US": {"title": 5}}`)
 	cfg := testutil.LoadConfig(t, dir)
@@ -457,6 +469,7 @@ func TestMalformedI18nRefusesNewTranslations(t *testing.T) {
 
 // x-rackbook-i18n keys the editor does not manage for a field type are never deleted.
 func TestHandWrittenEnumLabelsOnOtherTypesSurvive(t *testing.T) {
+	t.Parallel()
 	_, dir := labelSetup(t)
 	testutil.Replace(t, dir, "schemas/device.json", `"owner": {"type": "string"}`, `"owner": {"type": "string"},
     "legacy": {"type": "string", "oneOf": [{"const": "a", "description": "x"}], "x-rackbook-i18n": {"en-US": {"enum": {"a": "A"}, "title": "Old"}}}`)
@@ -479,6 +492,7 @@ func TestHandWrittenEnumLabelsOnOtherTypesSurvive(t *testing.T) {
 
 // Translations left out of a request are kept; an empty object clears them.
 func TestOmittedTranslationsAreKept(t *testing.T) {
+	t.Parallel()
 	cfg, _ := labelSetup(t)
 	p := update(t, cfg, "devices", func(ty *Type) {
 		ty.I18n = nil
@@ -510,6 +524,7 @@ func TestOmittedTranslationsAreKept(t *testing.T) {
 }
 
 func TestPlanRefusesLabelClashesAndLongIcons(t *testing.T) {
+	t.Parallel()
 	cfg, _ := labelSetup(t)
 	cases := []struct {
 		name   string
@@ -547,6 +562,7 @@ func TestPlanRefusesLabelClashesAndLongIcons(t *testing.T) {
 // A malformed x-rackbook-i18n on one field blocks only changes of that field's
 // translations, not other edits of the type, and the oneOf titles never count.
 func TestMalformedI18nDoesNotBlockOtherEdits(t *testing.T) {
+	t.Parallel()
 	_, dir := labelSetup(t)
 	testutil.Replace(t, dir, "schemas/device.json", `"zh-TW": {"title": "IPv4 類型", "enum": {"static": "靜態", "dynamic": "動態"}}`, `"zh-TW": 7`)
 	cfg := testutil.LoadConfig(t, dir)
@@ -568,6 +584,7 @@ func TestMalformedI18nDoesNotBlockOtherEdits(t *testing.T) {
 
 // Label clashes are checked for fields whose choices changed, not for every field.
 func TestLabelClashesOnlyForChangedFields(t *testing.T) {
+	t.Parallel()
 	_, dir := labelSetup(t)
 	testutil.Replace(t, dir, "schemas/device.json", `{"const": "dynamic", "title": "动态"}`, `{"const": "dynamic", "title": "静态"}`)
 	cfg := testutil.LoadConfig(t, dir)

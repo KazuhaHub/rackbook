@@ -57,6 +57,7 @@ func (e *env) toolSet(cs *mcp.ClientSession) map[string]bool {
 // A viewer's built-in token sees no write tools; an admin token creates a
 // record through the new MCP surface and the commit names the client.
 func TestBuiltinTokenOnTheMCPSurface(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t, opts{git: true, mcpYAML: "    direct_push:\n      - {roles: [admin], collections: [\"*\"]}\n"})
 	git := func(args ...string) string {
 		cmd := exec.Command("git", args...)

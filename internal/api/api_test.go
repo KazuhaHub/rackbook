@@ -13,6 +13,7 @@ import (
 	"strings"
 	"testing"
 	"testing/fstest"
+	"time"
 
 	"github.com/kazuhahub/rackbook/internal/api"
 	"github.com/kazuhahub/rackbook/internal/auth"
@@ -20,6 +21,14 @@ import (
 	"github.com/kazuhahub/rackbook/internal/mcpserver"
 	"github.com/kazuhahub/rackbook/internal/testutil"
 )
+
+// TestMain raises the history time budgets once, before any test runs: a slow
+// machine (the race detector, parallel tests) must not cut a page of versions
+// short, and tests that run in parallel must not write these package variables.
+func TestMain(m *testing.M) {
+	gitstore.VersionTimeBudget, gitstore.DeletedTimeBudget = time.Hour, time.Hour
+	os.Exit(m.Run())
+}
 
 type fixture struct {
 	dir string
@@ -85,6 +94,7 @@ func arr(t *testing.T, v any) []any {
 }
 
 func TestMetaListGetCheck(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t, nil, "")
 	code, m, _ := f.do(t, "GET", "/api/meta", nil, nil)
 	if code != 200 || m["title"] != "示例网络台账" || m["writeMode"] != "push" || m["readOnly"] != false || m["alert"] != nil {
@@ -154,6 +164,7 @@ func TestMetaListGetCheck(t *testing.T) {
 }
 
 func TestCheckReportsErrors(t *testing.T) {
+	t.Parallel()
 	dir := testutil.CopyExample(t)
 	testutil.Replace(t, dir, "docs/ledger/addresses.yml", "{device: laptop-me-pc, network", "{device: ghost, network")
 	f := newFixture(t, nil, dir)
@@ -166,6 +177,7 @@ func TestCheckReportsErrors(t *testing.T) {
 }
 
 func TestWriteFlow(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t, nil, "")
 	id := url.PathEscape("web-hostco-ashburn-va-us-dc/SSH")
 	_, g, _ := f.do(t, "GET", "/api/c/services/"+id, nil, nil)
@@ -236,6 +248,7 @@ func r0(t *testing.T, f *fixture, coll, id string) string {
 }
 
 func TestIDsWithSlashAndPercent(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t, nil, "")
 	code, r, _ := f.do(t, "POST", "/api/c/todo", map[string]any{"data": map[string]any{"item": "50% of a/b", "status": "待办"}}, nil)
 	if code != 201 || r["id"] != "50%25 of a%2Fb" {
@@ -289,6 +302,7 @@ func TestIDsWithSlashAndPercent(t *testing.T) {
 }
 
 func TestReadOnlyAndEditors(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t, func(o *api.Options) { o.ReadOnly = true }, "")
 	code, r, _ := f.do(t, "POST", "/api/c/todo", map[string]any{"data": map[string]any{"item": "x", "status": "待办"}}, nil)
 	if code != 403 || r["error"] != "read_only" {
@@ -315,6 +329,7 @@ func TestReadOnlyAndEditors(t *testing.T) {
 }
 
 func TestAuthRequiredAndHealthz(t *testing.T) {
+	t.Parallel()
 	a, _ := auth.New(context.Background(), auth.Config{Mode: auth.ModeCloudflareAccess, Team: "t", Audience: "a"})
 	f := newFixture(t, func(o *api.Options) { o.Auth = a }, "")
 	for _, p := range []string{"/api/meta", "/", "/llms.txt", "/export.json"} {
@@ -328,6 +343,7 @@ func TestAuthRequiredAndHealthz(t *testing.T) {
 }
 
 func TestExports(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t, nil, "")
 	for path, want := range map[string]string{
 		"/export.md":     "text/markdown; charset=utf-8",
@@ -355,6 +371,7 @@ func TestExports(t *testing.T) {
 }
 
 func TestConsoleAndSecurityHeaders(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t, nil, "")
 	for path, want := range map[string]string{"/": "console", "/c/services/foo": "console", "/assets/app.js": "js"} {
 		resp, err := http.Get(f.ts.URL + path)
@@ -404,6 +421,7 @@ func TestConsoleAndSecurityHeaders(t *testing.T) {
 }
 
 func TestMCPMounted(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t, func(o *api.Options) {
 		o.MCP = mcpserver.Handler(mcpserver.New(o.Store.Ledger, "test"), false)
 	}, "")
@@ -433,6 +451,7 @@ func sh(t *testing.T, dir string, args ...string) string {
 }
 
 func TestGitBackedWriteAndHistory(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	bare := filepath.Join(root, "origin.git")
 	sh(t, root, "init", "--bare", "-b", "main", bare)
@@ -465,6 +484,7 @@ func TestGitBackedWriteAndHistory(t *testing.T) {
 }
 
 func TestWriteGuards(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t, nil, "")
 	body := `{"data":{"item":"x","status":"待办"}}`
 	post := func(hdr map[string]string) int {
@@ -503,6 +523,7 @@ func TestWriteGuards(t *testing.T) {
 }
 
 func TestHostRestrictionWithoutAuth(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t, func(o *api.Options) { o.RestrictHost = true; o.BaseURL = "https://ledger.example.com" }, "")
 	get := func(host string) int {
 		req, _ := http.NewRequest("GET", f.ts.URL+"/api/meta", nil)
@@ -522,6 +543,7 @@ func TestHostRestrictionWithoutAuth(t *testing.T) {
 }
 
 func TestInternalErrorsAreGeneric(t *testing.T) {
+	t.Parallel()
 	if os.Geteuid() == 0 {
 		t.Skip("directory permissions do not apply to root")
 	}
@@ -539,6 +561,7 @@ func TestInternalErrorsAreGeneric(t *testing.T) {
 }
 
 func TestDirtyCloneIs503(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	seed := testutil.CopyExample(t)
 	sh(t, seed, "init", "-b", "main")
@@ -565,6 +588,7 @@ func TestDirtyCloneIs503(t *testing.T) {
 }
 
 func TestWriteGuardBehindRewritingProxy(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t, func(o *api.Options) { o.BaseURL = "https://ledger.example.com" }, "")
 	do := func(hdr map[string]string) int {
 		req, _ := http.NewRequest("POST", f.ts.URL+"/api/c/todo", strings.NewReader(`{"data":{"item":"`+hdr["item"]+`","status":"待办"}}`))

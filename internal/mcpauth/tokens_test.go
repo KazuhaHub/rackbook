@@ -21,6 +21,7 @@ func (h *harness) createToken(body map[string]any) (string, map[string]any) {
 }
 
 func TestTokenLifecycle(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t, hopts{git: true})
 	secret, m := h.createToken(map[string]any{"name": "ci", "scope": "write", "collections": []string{"todo"}, "expiresDays": 30})
 	if !strings.HasPrefix(secret, "rbk_") || len(secret) != 47 {
@@ -133,6 +134,7 @@ func TestTokenLifecycle(t *testing.T) {
 }
 
 func TestReadTokenAndDirectPushToken(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t, hopts{git: true})
 	read, _ := h.createToken(map[string]any{"name": "ro", "scope": "read"})
 	if code, _, _ := h.do("GET", "/api/c/todo", read, nil); code != 200 {
@@ -163,6 +165,7 @@ func TestReadTokenAndDirectPushToken(t *testing.T) {
 }
 
 func TestTokenIsBoundedByItsCreatorsCurrentRole(t *testing.T) {
+	t.Parallel()
 	// Without Git, so edits to rackbook.yml apply at once; nothing here needs a PR.
 	h := newHarness(t, hopts{})
 	secret, _ := h.createToken(map[string]any{"name": "w", "scope": "write", "collections": []string{"todo"}})
@@ -208,6 +211,7 @@ func TestTokenIsBoundedByItsCreatorsCurrentRole(t *testing.T) {
 }
 
 func TestFailedTokenAttemptsAreRateLimitedPerIP(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t, hopts{})
 	bad := "rbk_" + strings.Repeat("a", 43)
 	for i := 0; i < 10; i++ {
@@ -235,6 +239,7 @@ func TestFailedTokenAttemptsAreRateLimitedPerIP(t *testing.T) {
 }
 
 func TestClearReferencesNeedsUpdateRightsOnTheReferencingCollections(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t, hopts{git: true})
 	secret, _ := h.createToken(map[string]any{"name": "dev-only", "scope": "write", "collections": []string{"devices"}, "actions": []string{"delete"}})
 	id := "web-hostco-ashburn-va-us-dc" // referenced by services
@@ -256,6 +261,7 @@ func TestClearReferencesNeedsUpdateRightsOnTheReferencingCollections(t *testing.
 // A token carries the auditor capability of its creator for as long as the
 // creator is on auth.auditors, re-evaluated per request like the role.
 func TestTokenCarriesTheAuditorCapabilityOfItsCreator(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t, hopts{})
 	cfg := filepath.Join(h.dir, "rackbook.yml")
 	setAuditors := func(list string) {

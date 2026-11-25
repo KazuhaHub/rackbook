@@ -6,6 +6,7 @@ import (
 )
 
 func TestBlockedAddr(t *testing.T) {
+	t.Parallel()
 	blocked := []string{
 		"127.0.0.1", "::1", "10.1.2.3", "172.16.0.1", "192.168.0.1", "169.254.169.254", "0.0.0.0", "0.1.2.3", "100.64.0.1",
 		"192.0.0.5", "198.18.0.1", "240.0.0.1", "255.255.255.255", "224.0.0.1", "::", "::7f00:1", "::a00:1", "::ffff:127.0.0.1",
@@ -24,6 +25,7 @@ func TestBlockedAddr(t *testing.T) {
 }
 
 func TestValidateRedirectCharacters(t *testing.T) {
+	t.Parallel()
 	good := []string{
 		"https://app.example/cb", "http://localhost:7777/callback", "http://127.0.0.1:1/x", "http://[::1]:5/x",
 		"cursor://anysphere.cursor/oauth/callback", "https://xn--e1afmkfd.example/cb", "https://a.example/cb?x=%E4%B8%AD",
@@ -60,12 +62,14 @@ func TestValidateRedirectCharacters(t *testing.T) {
 }
 
 func TestCleanNameDropsFormatCharacters(t *testing.T) {
+	t.Parallel()
 	if got := cleanName("Safe\u202eEvil\u200bName", "x"); got != "SafeEvilName" {
 		t.Fatalf("%q", got)
 	}
 }
 
 func TestPunycodeLabels(t *testing.T) {
+	t.Parallel()
 	for host, want := range map[string]bool{"app.example": false, "xn--e1afmkfd.example": true, "a.XN--p1ai": true, "xn.example": false, "axn--b.example": false} {
 		if hasPunycode(host) != want {
 			t.Errorf("%s: %v", host, !want)
@@ -76,6 +80,7 @@ func TestPunycodeLabels(t *testing.T) {
 // A percent-encoded host would pass a check on the raw text and show as letters
 // from another script once decoded.
 func TestPercentEncodedHostsAreRefused(t *testing.T) {
+	t.Parallel()
 	for _, u := range []string{"https://%D0%B0pple.com/cb", "https://app%2Eexample/cb", "cursor://%D0%B0.example/cb", "https://app.example%00/cb", "http://[fe80::1%25en0]/cb"} {
 		if err := validateRedirect(u); err == nil {
 			t.Errorf("redirect %q should be refused", u)

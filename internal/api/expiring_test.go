@@ -11,6 +11,7 @@ import (
 )
 
 func TestExpiringAndMeta(t *testing.T) {
+	t.Parallel()
 	dir := testutil.CopyExample(t)
 	testutil.Replace(t, dir, "schemas/todo.json", `"status":`, `"due": {"type": ["string", "null"], "x-rackbook": {"expires": true}}, "gone": {"type": ["string", "null"], "x-rackbook": {"revoked": true}}, "status":`)
 	day := func(n int) string { return time.Now().UTC().AddDate(0, 0, n).Format("2006-01-02") }

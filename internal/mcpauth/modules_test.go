@@ -29,6 +29,7 @@ func todoBody(item, status, source string) map[string]any {
 }
 
 func TestModuleTokenWrites(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t, hopts{git: true, modules: modulesYAML})
 	bot, _ := h.createToken(map[string]any{"name": "bot-token", "scope": "write", "actions": []string{"create", "update", "delete"}})
 	prBot, _ := h.createToken(map[string]any{"name": "pr-token", "scope": "write"})
@@ -107,6 +108,7 @@ func TestModuleTokenWrites(t *testing.T) {
 }
 
 func TestModuleTokenOverMCP(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t, hopts{git: true, modules: modulesYAML})
 	bot, _ := h.createToken(map[string]any{"name": "bot-token", "scope": "write", "actions": []string{"create", "update", "delete"}})
 	cs := h.mcpSession(bot)

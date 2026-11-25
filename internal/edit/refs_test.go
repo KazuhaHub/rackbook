@@ -47,6 +47,7 @@ rules:
 }
 
 func TestDeleteOfAReferencedRecordIsRefusedWithTheReferences(t *testing.T) {
+	t.Parallel()
 	dir := refLedger(t)
 	cfg := testutil.LoadConfig(t, dir)
 	before := read(t, dir, "data/people.yml")
@@ -68,6 +69,7 @@ func TestDeleteOfAReferencedRecordIsRefusedWithTheReferences(t *testing.T) {
 }
 
 func TestDeleteClearingReferencesIsOneChange(t *testing.T) {
+	t.Parallel()
 	dir := refLedger(t)
 	cfg := testutil.LoadConfig(t, dir)
 	res, err := edit.Apply(cfg, edit.Op{Kind: edit.Delete, Collection: "people", ID: "ann", ClearReferences: true})

@@ -1625,9 +1625,31 @@ requests).
 
 ```bash
 make build        # web console (npm) + Go binary with the console embedded
-make test         # go test ./...
+make test         # go test -race over every package
 npm --prefix web run dev:mock   # console against a mock API built from the example
 ```
+
+CI (`.github/workflows/ci.yml`) runs the same Makefile targets, so a local run
+checks what CI checks:
+
+```bash
+make go-lint       # gofmt, go vet, staticcheck, actionlint
+make test          # CI splits it: make test-shard SHARD=1..3 TESTFLAGS=-count=1, RACKBOOK_REQUIRE_SOPS=1
+make web-check     # console lint, typecheck, check: scripts and build (after npm --prefix web ci)
+make web-i18n-dom  # every page in every language pair, in headless Chrome (CI: one pair per job, I18N_DOM_SHARD=1/4 .. 4/4)
+make ci            # all of the above
+```
+
+Tests run in parallel (`t.Parallel`). A test stays serial when it changes
+process-wide state: environment variables, package-level variables, a fixed
+port, or when it measures time or memory. `make web-i18n-dom` runs each
+language pair in its own dev server and Chrome at the same time, on ports
+`PORT` (default 5199) to `PORT + 7`; `I18N_DOM_JOBS=1` runs them one by one.
+
+On a pull request CI skips the jobs the change cannot affect
+(`scripts/ci-changes.sh` decides from the changed files); a push to `main`
+runs everything, including `cross-compile`, `docker` and `fuzz`, which pull
+requests run only when platform code, the image or the secret scanner change.
 
 ## Versioning and compatibility
 

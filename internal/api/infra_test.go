@@ -181,6 +181,7 @@ func (e *infraEnv) writeStatus(t *testing.T, at time.Time, applied string) {
 var infraPaths = []string{"/api/infra/hosts", "/api/infra/hosts/alpha", "/api/infra/certs", "/api/infra/iplists", "/api/infra/commits"}
 
 func TestInfraOnlyForListedOIDCSessions(t *testing.T) {
+	t.Parallel()
 	e := newInfraEnv(t, "me@kazuha.org")
 	e.writeStatus(t, e.now, e.head(t))
 	admin := map[string]string{"X-User": "me@kazuha.org"}
@@ -216,6 +217,7 @@ func TestInfraOnlyForListedOIDCSessions(t *testing.T) {
 }
 
 func TestInfraAdminIsNotTakenFromTheLedgerRoles(t *testing.T) {
+	t.Parallel()
 	// The ledger grants me@ admin and everybody else editor (no roles block);
 	// the infra list names somebody else, so the ledger admin is refused.
 	e := newInfraEnv(t, "someone-else@kazuha.org")
@@ -225,6 +227,7 @@ func TestInfraAdminIsNotTakenFromTheLedgerRoles(t *testing.T) {
 }
 
 func TestInfraNeverOnMCP(t *testing.T) {
+	t.Parallel()
 	e := newInfraEnv(t, "me@kazuha.org")
 	for _, p := range []string{"/mcp/api/infra/hosts", "/mcp/infra"} {
 		if code, _, _ := e.do(t, "GET", p, nil, map[string]string{"X-User": "me@kazuha.org"}); code == 200 {
@@ -256,6 +259,7 @@ func TestInfraNeverOnMCP(t *testing.T) {
 }
 
 func TestInfraHostsJoinTheHubStatus(t *testing.T) {
+	t.Parallel()
 	e := newInfraEnv(t, "me@kazuha.org")
 	admin := map[string]string{"X-User": "me@kazuha.org"}
 	head := e.head(t)
@@ -299,6 +303,7 @@ func TestInfraHostsJoinTheHubStatus(t *testing.T) {
 }
 
 func TestInfraStatusUnavailable(t *testing.T) {
+	t.Parallel()
 	e := newInfraEnv(t, "me@kazuha.org")
 	admin := map[string]string{"X-User": "me@kazuha.org"}
 	check := func(state string) {
@@ -329,6 +334,7 @@ func TestInfraStatusUnavailable(t *testing.T) {
 }
 
 func TestInfraHostPageCertsListsAndCommits(t *testing.T) {
+	t.Parallel()
 	e := newInfraEnv(t, "me@kazuha.org")
 	admin := map[string]string{"X-User": "me@kazuha.org"}
 	e.writeStatus(t, e.now, e.head(t))
@@ -367,6 +373,7 @@ func TestInfraHostPageCertsListsAndCommits(t *testing.T) {
 }
 
 func TestInfraOffWithoutOptions(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t, nil, "")
 	if code, _, _ := f.do(t, "GET", "/api/infra/hosts", nil, nil); code != http.StatusNotFound {
 		t.Fatalf("%d", code)
@@ -374,6 +381,7 @@ func TestInfraOffWithoutOptions(t *testing.T) {
 }
 
 func TestMetaTellsOnlyInfraAdmins(t *testing.T) {
+	t.Parallel()
 	e := newInfraEnv(t, "me@kazuha.org")
 	user := func(hdr map[string]string) map[string]any {
 		_, body, _ := e.do(t, "GET", "/api/meta", nil, hdr)
@@ -391,6 +399,7 @@ func TestMetaTellsOnlyInfraAdmins(t *testing.T) {
 }
 
 func TestInfraBehindNeedsAFullEnoughHashAndAWorkingRefresh(t *testing.T) {
+	t.Parallel()
 	e := newInfraEnv(t, "me@kazuha.org")
 	admin := map[string]string{"X-User": "me@kazuha.org"}
 	head := e.head(t)

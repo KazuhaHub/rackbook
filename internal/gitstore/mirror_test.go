@@ -40,6 +40,7 @@ func mirrorFixture(t *testing.T) (bare, work, seed string) {
 }
 
 func TestMirrorFollowsOriginAndDiscardsLocalChanges(t *testing.T) {
+	t.Parallel()
 	_, work, seed := mirrorFixture(t)
 	m := &Mirror{Dir: work, Branch: "main"}
 	ctx := context.Background()
@@ -70,6 +71,7 @@ func TestMirrorFollowsOriginAndDiscardsLocalChanges(t *testing.T) {
 }
 
 func TestMirrorNeverWritesToTheRemote(t *testing.T) {
+	t.Parallel()
 	bare, work, _ := mirrorFixture(t)
 	before := gitIn(t, bare, "for-each-ref")
 	m := &Mirror{Dir: work, Branch: "main"}
@@ -87,6 +89,7 @@ func TestMirrorNeverWritesToTheRemote(t *testing.T) {
 }
 
 func TestMirrorRefusesWhatIsNotAClone(t *testing.T) {
+	t.Parallel()
 	m := &Mirror{Dir: t.TempDir(), Branch: "main"}
 	if _, err := m.Sync(context.Background()); err == nil {
 		t.Fatal("want an error for a directory that is not a work tree")
@@ -97,6 +100,7 @@ func TestMirrorRefusesWhatIsNotAClone(t *testing.T) {
 }
 
 func TestMirrorSSHCommandIsInTheEnvironmentOnly(t *testing.T) {
+	t.Parallel()
 	m := &Mirror{Dir: "/x", Branch: "main", SSHKey: "/data/ssh/it's key", KnownHosts: "/data/ssh/known_hosts"}
 	env := m.env()
 	if len(env) != 1 || !strings.HasPrefix(env[0], "GIT_SSH_COMMAND=ssh -i '/data/ssh/it'\\''s key' ") ||

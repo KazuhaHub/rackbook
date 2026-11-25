@@ -30,6 +30,7 @@ func (s *Store) readState(rel string) ([]byte, error) {
 }
 
 func TestStateFileCommitsAsTheUserAndPushes(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	s := open(t, e.server, nil)
 	if b, err := s.readState(stateRel); err != nil || b != nil {
@@ -60,6 +61,7 @@ func TestStateFileCommitsAsTheUserAndPushes(t *testing.T) {
 }
 
 func TestStateFileReplaysOnAMovedRemote(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	s := open(t, e.server, nil)
 	moved := false
@@ -85,6 +87,7 @@ func TestStateFileReplaysOnAMovedRemote(t *testing.T) {
 }
 
 func TestStateFileFailedPushLeavesNoDebris(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	s := open(t, e.server, nil)
 	s.pushFn = func(context.Context, string) error { return errors.New("network down") }
@@ -101,6 +104,7 @@ func TestStateFileFailedPushLeavesNoDebris(t *testing.T) {
 }
 
 func TestStateFileWithoutGitWritesInPlace(t *testing.T) {
+	t.Parallel()
 	dir := testutil.CopyExample(t)
 	s := open(t, dir, func(o *Options) { o.NoGit = true })
 	if err := s.updateState(context.Background(), stateRel, &auth.Identity{ID: "a@b.c"}, "x", appendLine("a: 1")); err != nil {
@@ -112,6 +116,7 @@ func TestStateFileWithoutGitWritesInPlace(t *testing.T) {
 }
 
 func TestStateFileRefusesPathsOutsideStateDir(t *testing.T) {
+	t.Parallel()
 	dir := testutil.CopyExample(t)
 	s := open(t, dir, func(o *Options) { o.NoGit = true })
 	for _, p := range []string{"rackbook.yml", "../x", ".rackbook", "docs/x.yml", "/etc/passwd", ".rackbook/../rackbook.yml"} {
@@ -125,6 +130,7 @@ func TestStateFileRefusesPathsOutsideStateDir(t *testing.T) {
 }
 
 func TestStateFileCommitsAreNotLedgerHistory(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	s := open(t, e.server, nil)
 	if err := s.updateState(context.Background(), stateRel, editor, "rackbook(auth): add passkey for ann@example.com", appendLine("a: 1")); err != nil {
@@ -147,6 +153,7 @@ func TestStateFileCommitsAreNotLedgerHistory(t *testing.T) {
 }
 
 func TestStateFileRefusesSymlinks(t *testing.T) {
+	t.Parallel()
 	dir := testutil.CopyExample(t)
 	outside := t.TempDir()
 	testutil.Symlink(t, outside, filepath.Join(dir, ".rackbook"))
@@ -160,6 +167,7 @@ func TestStateFileRefusesSymlinks(t *testing.T) {
 }
 
 func TestStateSettledIsFalseWhileAnUpdateRuns(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	s := open(t, e.server, nil)
 	if !s.StateSettled() {

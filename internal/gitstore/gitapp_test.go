@@ -129,6 +129,7 @@ func (w *appWorld) noSecretAnywhere(t *testing.T, logs string) {
 }
 
 func TestAppPushesAndFetchesOverHTTPS(t *testing.T) {
+	t.Parallel()
 	w := newAppWorld(t)
 	var logs bytes.Buffer
 	s := w.open(t, &logs)
@@ -169,6 +170,7 @@ func TestAppPushesAndFetchesOverHTTPS(t *testing.T) {
 }
 
 func TestAppTokenRefreshesAcrossTheHour(t *testing.T) {
+	t.Parallel()
 	w := newAppWorld(t)
 	s := w.open(t, nil)
 	if _, err := s.Write(context.Background(), sshEdit(t, s, "TCP 22"), editor); err != nil {
@@ -191,6 +193,7 @@ func TestAppTokenRefreshesAcrossTheHour(t *testing.T) {
 }
 
 func TestAppWithoutAValidTokenCannotPush(t *testing.T) {
+	t.Parallel()
 	w := newAppWorld(t)
 	// The same server clone without the App: the git server refuses.
 	s := open(t, w.server, func(o *Options) { o.Runner = w.spy })
@@ -203,6 +206,7 @@ func TestAppWithoutAValidTokenCannotPush(t *testing.T) {
 }
 
 func TestAppPRModeUsesAPullRequestToken(t *testing.T) {
+	t.Parallel()
 	w := newAppWorld(t)
 	// the clone is already at the seed commit
 	testutil.Replace(t, w.server, "rackbook.yml", "mode: push", "mode: pr")
@@ -236,6 +240,7 @@ func TestAppPRModeUsesAPullRequestToken(t *testing.T) {
 }
 
 func TestMirrorFetchesOverHTTPSWithAReadOnlyToken(t *testing.T) {
+	t.Parallel()
 	w := newAppWorld(t)
 	infra := bareRepo(t, w.git, "org/infra")
 	seed := t.TempDir()
@@ -284,6 +289,7 @@ func (stubSource) Token(context.Context, string, string, githubapp.Permissions) 
 func (stubSource) API() string { return githubapp.DefaultAPI }
 
 func TestGitAuthEnvScopesTheHeaderAndRefusesUnsafeRemotes(t *testing.T) {
+	t.Parallel()
 	w := newAppWorld(t)
 	w.api.Install("org/ledger")
 	a := &GitAuth{Source: stubSource{}, Perms: githubapp.Permissions{Contents: "write"}}
@@ -318,6 +324,7 @@ func TestGitAuthEnvScopesTheHeaderAndRefusesUnsafeRemotes(t *testing.T) {
 }
 
 func TestGitHubRepoMustMatchOrigin(t *testing.T) {
+	t.Parallel()
 	w := newAppWorld(t)
 	_, err := Open(context.Background(), Options{ConfigPath: filepath.Join(w.server, "rackbook.yml"), GitHubApp: w.app, GitHubRepo: "org/other", Runner: w.spy})
 	if err == nil || !strings.Contains(err.Error(), "does not match the origin") {
@@ -326,6 +333,7 @@ func TestGitHubRepoMustMatchOrigin(t *testing.T) {
 }
 
 func TestInheritedEnvIsScrubbed(t *testing.T) {
+	t.Parallel()
 	in := []string{"PATH=/bin", "GIT_TRACE=1", "GIT_TRACE_CURL=/x", "GIT_CURL_VERBOSE=1", "GIT_SSL_NO_VERIFY=1", "GIT_CONFIG_PARAMETERS='a'",
 		"GIT_ASKPASS=/x", "SSH_ASKPASS=/x", "GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=a", "GIT_TRACE_REDACT=0", "HOME=/h"}
 	got := inheritedEnv(in)
@@ -335,6 +343,7 @@ func TestInheritedEnvIsScrubbed(t *testing.T) {
 }
 
 func TestEnvAllowList(t *testing.T) {
+	t.Parallel()
 	ok := [][]string{
 		{"GIT_SSH_COMMAND=ssh -i k", "GIT_AUTHOR_NAME=x"},
 		{"GIT_CONFIG_COUNT=2", "GIT_CONFIG_KEY_0=http.https://h/o/r.git.extraheader", "GIT_CONFIG_VALUE_0=Authorization: Basic eA==", "GIT_CONFIG_KEY_1=http.followRedirects", "GIT_CONFIG_VALUE_1=false"},

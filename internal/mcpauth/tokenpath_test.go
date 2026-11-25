@@ -3,6 +3,7 @@ package mcpauth
 import "testing"
 
 func TestTokensReachOnlyRecordPaths(t *testing.T) {
+	t.Parallel()
 	for p, want := range map[string]bool{
 		"/mcp": true, "/api/c/devices": true, "/api/c/devices/x": true, "/api/meta": true, "/api/expiring": true, "/export.md": true, "/llms.txt": true,
 		"/api/account": false, "/api/account/passkeys/abc": false, "/api/admin/users": false, "/api/admin/tokens": false,

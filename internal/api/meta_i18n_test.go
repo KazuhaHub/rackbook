@@ -9,6 +9,7 @@ import (
 )
 
 func TestMetaCarriesTranslationsAsRawMaps(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t, nil, testutil.CopyFixture(t, "labels"))
 	_, m, _ := f.do(t, "GET", "/api/meta", nil, nil)
 	j := func(v any) string { b, _ := json.Marshal(v); return string(b) }
@@ -57,6 +58,7 @@ func TestMetaCarriesTranslationsAsRawMaps(t *testing.T) {
 
 // The write path gives the same hint as `rackbook check`.
 func TestWriteRefusalNamesTheCode(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t, nil, testutil.CopyFixture(t, "labels"))
 	code, r, _ := f.do(t, "POST", "/api/c/devices", map[string]any{"data": map[string]any{"name": "x", "ipv4_type": "静态", "status": "UP"}}, nil)
 	if code != 422 || r["error"] != "invalid" {
@@ -75,6 +77,7 @@ func TestWriteRefusalNamesTheCode(t *testing.T) {
 // The data types list carries the same collection translations as /api/meta,
 // so the types page can show titles and groups in the viewer's language.
 func TestTypesListCarriesTranslations(t *testing.T) {
+	t.Parallel()
 	f := newFixtureWithConfigSource(t, "Boss <boss@example.com>", withRoles(t, testutil.CopyFixture(t, "labels")))
 	code, r, _ := f.do(t, "GET", "/api/types", nil, nil)
 	if code != 200 {

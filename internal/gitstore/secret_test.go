@@ -14,6 +14,7 @@ import (
 )
 
 func TestStateFileLabelsAreScannedButPublicKeysAreNot(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	s := open(t, e.server, nil)
 	ctx := context.Background()
@@ -40,6 +41,7 @@ func TestStateFileLabelsAreScannedButPublicKeysAreNot(t *testing.T) {
 }
 
 func TestDisabledScanWarnsAtStartup(t *testing.T) {
+	t.Parallel()
 	var buf bytes.Buffer
 	for _, c := range []struct {
 		yml  string

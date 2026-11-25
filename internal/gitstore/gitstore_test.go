@@ -76,6 +76,7 @@ func sshEdit(t *testing.T, s *Store, port string) edit.Op {
 }
 
 func TestWritePushesCommitWithAuthorAndTrailers(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	s := open(t, e.server, nil)
 	res, err := s.Write(context.Background(), sshEdit(t, s, "TCP 22"), editor)
@@ -111,6 +112,7 @@ func TestWritePushesCommitWithAuthorAndTrailers(t *testing.T) {
 }
 
 func TestPushRaceReplaysEditOnNewTip(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	s := open(t, e.server, nil)
 	raced := 0
@@ -149,6 +151,7 @@ func TestPushRaceReplaysEditOnNewTip(t *testing.T) {
 }
 
 func TestPushRaceOnSameRecordConflicts(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	s := open(t, e.server, nil)
 	s.beforePush = func() {
@@ -170,6 +173,7 @@ func TestPushRaceOnSameRecordConflicts(t *testing.T) {
 }
 
 func TestStaleHashIs409AndInvalidIs422(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	s := open(t, e.server, nil)
 	op := sshEdit(t, s, "TCP 22")
@@ -196,6 +200,7 @@ func TestStaleHashIs409AndInvalidIs422(t *testing.T) {
 }
 
 func TestDirtyCloneIsRefused(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	s := open(t, e.server, nil)
 	f := filepath.Join(e.server, "docs/ledger/todo.yml")
@@ -207,6 +212,7 @@ func TestDirtyCloneIsRefused(t *testing.T) {
 }
 
 func TestPullFastForwardsAndReloads(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	s := open(t, e.server, nil)
 	p := filepath.Join(e.laptop, "docs/ledger/todo.yml")
@@ -223,6 +229,7 @@ func TestPullFastForwardsAndReloads(t *testing.T) {
 }
 
 func TestHistory(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	s := open(t, e.server, nil)
 	if _, err := s.Write(context.Background(), sshEdit(t, s, "TCP 22"), editor); err != nil {
@@ -239,6 +246,7 @@ func TestHistory(t *testing.T) {
 }
 
 func TestPRMode(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	sh(t, e.server, "pull", "--quiet")
 	testutil.Replace(t, e.server, "rackbook.yml", "mode: push", "mode: pr")
@@ -287,6 +295,7 @@ func TestPRMode(t *testing.T) {
 }
 
 func TestNoGitMode(t *testing.T) {
+	t.Parallel()
 	dir := testutil.CopyExample(t)
 	s := open(t, dir, nil)
 	if s.GitEnabled() {
@@ -313,6 +322,7 @@ func TestNoGitMode(t *testing.T) {
 }
 
 func TestParseRemoteAndIdentity(t *testing.T) {
+	t.Parallel()
 	for in, want := range map[string]string{
 		"git@github.com:acme/ledger.git":          "github.com acme ledger",
 		"https://github.com/acme/ledger":          "github.com acme ledger",
@@ -339,6 +349,7 @@ func TestParseRemoteAndIdentity(t *testing.T) {
 }
 
 func TestCommitFilesInWorkingTree(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	sh(t, e.server, "config", "user.name", "Me")
 	sh(t, e.server, "config", "user.email", "me@example.com")
@@ -372,6 +383,7 @@ func localRepo(t *testing.T) string {
 }
 
 func TestDirtyTreeRefusedWithoutRemoteToo(t *testing.T) {
+	t.Parallel()
 	dir := localRepo(t)
 	s := open(t, dir, nil)
 	if !s.GitEnabled() || s.HasRemote() {
@@ -395,6 +407,7 @@ func TestDirtyTreeRefusedWithoutRemoteToo(t *testing.T) {
 }
 
 func TestDiscardOnlyTouchesTheEditedFiles(t *testing.T) {
+	t.Parallel()
 	dir := localRepo(t)
 	s := open(t, dir, nil)
 	parent, _ := s.repo.Head(context.Background())
@@ -415,6 +428,7 @@ func TestDiscardOnlyTouchesTheEditedFiles(t *testing.T) {
 }
 
 func TestPushThatSucceededDespiteErrorIsNotReplayed(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	s := open(t, e.server, nil)
 	r := &Repo{Dir: e.server}
@@ -434,6 +448,7 @@ func TestPushThatSucceededDespiteErrorIsNotReplayed(t *testing.T) {
 }
 
 func TestPRModeNeverSendsTheTokenToAnUnknownHost(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	testutil.Replace(t, e.server, "rackbook.yml", "mode: push", "mode: pr")
 	sh(t, e.server, "commit", "-qam", "pr mode")
@@ -470,6 +485,7 @@ func subdirRepo(t *testing.T) (root, dir string) {
 }
 
 func TestDiscardInASubdirectoryNeverDeletesExistingFiles(t *testing.T) {
+	t.Parallel()
 	_, dir := subdirRepo(t)
 	s := open(t, dir, nil)
 	parent, _ := s.repo.Head(context.Background())
@@ -488,6 +504,7 @@ func TestDiscardInASubdirectoryNeverDeletesExistingFiles(t *testing.T) {
 }
 
 func TestFailedCommitInASubdirectoryKeepsFiles(t *testing.T) {
+	t.Parallel()
 	_, dir := subdirRepo(t)
 	s := open(t, dir, nil)
 	// A pre-commit-independent failure: make the commit fail through a broken index lock.
@@ -509,6 +526,7 @@ func TestFailedCommitInASubdirectoryKeepsFiles(t *testing.T) {
 // checkout's HEAD: a commit left at HEAD (a pull request commit that a crash or
 // a failed reset did not remove) is neither listed nor diffable.
 func TestHistoryReadsStartFromTheTrackedTipNotHEAD(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	s := open(t, e.server, nil)
 	ctx := context.Background()
@@ -543,6 +561,7 @@ func TestHistoryReadsStartFromTheTrackedTipNotHEAD(t *testing.T) {
 
 // Without a remote the configured branch is the tracked branch.
 func TestHistoryReadsInARepositoryWithoutRemote(t *testing.T) {
+	t.Parallel()
 	dir := localRepo(t)
 	s := open(t, dir, nil)
 	ctx := context.Background()
@@ -563,6 +582,7 @@ func TestHistoryReadsInARepositoryWithoutRemote(t *testing.T) {
 // CommitChanges reads refs and objects only: it never waits for the write lock,
 // which a push or a GitHub call can hold for a long time.
 func TestCommitChangesDoesNotWaitForTheWriteLock(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	s := open(t, e.server, nil)
 	rev := sh(t, e.server, "rev-parse", "HEAD")
@@ -584,6 +604,7 @@ func TestCommitChangesDoesNotWaitForTheWriteLock(t *testing.T) {
 }
 
 func TestOnCommitReportsOwnPushedCommitsOnly(t *testing.T) {
+	t.Parallel()
 	type call struct {
 		hash, who, record string
 	}

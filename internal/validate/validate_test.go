@@ -25,12 +25,14 @@ func expect(t *testing.T, issues []ledger.Issue, rule, collection, contains stri
 }
 
 func TestExampleIsValid(t *testing.T) {
+	t.Parallel()
 	if issues := run(t, testutil.CopyExample(t)); len(issues) != 0 {
 		t.Fatalf("unexpected issues: %v", issues)
 	}
 }
 
 func TestOldValidatorRules(t *testing.T) {
+	t.Parallel()
 	const dev = "docs/ledger/devices.yml"
 	const svc = "docs/ledger/services.yml"
 	const adr = "docs/ledger/addresses.yml"
@@ -81,6 +83,7 @@ func TestOldValidatorRules(t *testing.T) {
 }
 
 func TestSchemaErrorPaths(t *testing.T) {
+	t.Parallel()
 	dir := testutil.CopyExample(t)
 	testutil.Replace(t, dir, "docs/ledger/devices.yml", "  managed: false\n  notes: 站点网关", "  managed: \"no\"\n  color: red\n  notes: 站点网关")
 	var paths []string
@@ -99,6 +102,7 @@ func TestSchemaErrorPaths(t *testing.T) {
 }
 
 func TestExplicitUniqueAndMany(t *testing.T) {
+	t.Parallel()
 	dir := testutil.CopyExample(t)
 	testutil.Replace(t, dir, "rackbook.yml", "rules:\n", "rules:\n  - unique: {collection: devices, fields: [domain]}\n")
 	testutil.Replace(t, dir, "docs/ledger/devices.yml", "  domain: standby.vpsco.sanjose.ca.us.vps.example.com", "  domain: web.hostco.ashburn.va.us.dc.example.com")
@@ -106,6 +110,7 @@ func TestExplicitUniqueAndMany(t *testing.T) {
 }
 
 func TestIntroduced(t *testing.T) {
+	t.Parallel()
 	a := []ledger.Issue{{Rule: "ref", Message: "x"}}
 	b := []ledger.Issue{{Rule: "ref", Message: "x"}, {Rule: "schema", Message: "y"}}
 	got := validate.Introduced(a, b)
@@ -118,6 +123,7 @@ func TestIntroduced(t *testing.T) {
 }
 
 func TestDuplicateYAMLKeyAndBadPath(t *testing.T) {
+	t.Parallel()
 	dir := testutil.CopyExample(t)
 	testutil.Replace(t, dir, "docs/ledger/todo.yml", "{item: 评估关闭路由器 WAN 上的 Web 后台, scope: gw, status: 待决定}", "{item: 评估关闭路由器 WAN 上的 Web 后台, scope: gw, status: 待决定, scope: dup}")
 	expect(t, run(t, dir), "yaml", "todo", "line 2: duplicate mapping key \"scope\"")
@@ -131,12 +137,14 @@ func TestDuplicateYAMLKeyAndBadPath(t *testing.T) {
 }
 
 func TestMultilineKeyRejected(t *testing.T) {
+	t.Parallel()
 	dir := testutil.CopyExample(t)
 	testutil.Replace(t, dir, "docs/ledger/todo.yml", "{item: 统一代理入站端口,", `{item: "a\nb",`)
 	expect(t, run(t, dir), "schema", "todo", "control characters")
 }
 
 func TestIntroducedMatchesByHashForShiftingIDs(t *testing.T) {
+	t.Parallel()
 	before := []ledger.Issue{{Collection: "c", ID: "#3", Rule: "schema", Path: "/x", Message: "bad", Hash: "h1"}}
 	after := []ledger.Issue{{Collection: "c", ID: "#2", Rule: "schema", Path: "/x", Message: "bad", Hash: "h1"}}
 	if got := validate.Introduced(before, after); len(got) != 0 {
@@ -155,6 +163,7 @@ func TestIntroducedMatchesByHashForShiftingIDs(t *testing.T) {
 }
 
 func TestKeyValuesWithDotsOrControlCharsRejected(t *testing.T) {
+	t.Parallel()
 	for _, bad := range []string{`"."`, `".."`, `"a\u0001b"`, `"a\u007fb"`, `"a\tb"`} {
 		dir := testutil.CopyExample(t)
 		testutil.Replace(t, dir, "docs/ledger/todo.yml", "{item: 统一代理入站端口,", "{item: "+bad+",")
