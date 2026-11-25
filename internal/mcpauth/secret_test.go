@@ -12,6 +12,7 @@ var slackName = "xox" + "b-1234567890-abcdefghij"
 var leak = "gh" + "p_" + strings.Repeat("a1B2", 9)
 
 func TestMCPWriteToolsRefuseSecretsAndTokenNamesToo(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t, hopts{git: true})
 	cs := h.mcpSession(h.jwt(oauthtest.Options{Subject: "alice", Scope: "rackbook:write"}))
 	headBefore := git(t, h.bare, "rev-parse", "main")
@@ -48,6 +49,7 @@ func TestMCPWriteToolsRefuseSecretsAndTokenNamesToo(t *testing.T) {
 }
 
 func TestConfirmNotSecretOverAPIAndMCP(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t, hopts{git: true})
 	suspect := map[string]any{"item": "root密码：Hunter2Hunter2", "status": "待办"}
 	create := func(body map[string]any, bearer string) (int, map[string]any) {

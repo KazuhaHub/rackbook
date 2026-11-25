@@ -16,6 +16,7 @@ entra:
 `
 
 func TestConfigDefaults(t *testing.T) {
+	t.Parallel()
 	c, err := parseConfig([]byte(baseCfg))
 	if err != nil {
 		t.Fatal(err)
@@ -28,6 +29,7 @@ func TestConfigDefaults(t *testing.T) {
 }
 
 func TestConfigErrors(t *testing.T) {
+	t.Parallel()
 	cases := map[string]struct{ yml, want string }{
 		"unknown key":       {baseCfg + "bogus: 1\n", "bogus"},
 		"unknown nested":    {strings.Replace(baseCfg, "client_id: c", "client_id: c\n  clientid: x", 1), "clientid"},
@@ -53,6 +55,7 @@ func TestConfigErrors(t *testing.T) {
 }
 
 func TestConfigLoopbackHTTPAllowed(t *testing.T) {
+	t.Parallel()
 	y := baseCfg + "  graph_url: http://127.0.0.1:9/v1.0/\n  authority_host: http://localhost:9\n"
 	c, err := parseConfig([]byte(y))
 	if err != nil {
@@ -64,6 +67,7 @@ func TestConfigLoopbackHTTPAllowed(t *testing.T) {
 }
 
 func TestLoadKeyPair(t *testing.T) {
+	t.Parallel()
 	key, cert := genKey(t, 2048)
 	for _, pkcs8 := range []bool{true, false} {
 		if _, _, err := loadKeyPair(writePEM(t, key, pkcs8, cert)); err != nil {

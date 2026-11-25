@@ -74,12 +74,14 @@ func codes(is []Issue) []string {
 }
 
 func TestValidateGoodTree(t *testing.T) {
+	t.Parallel()
 	if is := Validate(goodTree(), DefaultRules(), nil); len(is) != 0 {
 		t.Fatalf("%+v", is)
 	}
 }
 
 func TestValidateTable(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		edit func(m memTree)
@@ -219,6 +221,7 @@ func TestValidateTable(t *testing.T) {
 }
 
 func TestValidateRulesAreConfigurable(t *testing.T) {
+	t.Parallel()
 	m := goodTree()
 	delete(m, "secrets/b.sops.yaml")
 	if len(Validate(m, Rules{ManagedGroup: "managed"}, nil)) != 0 {
@@ -238,6 +241,7 @@ func TestValidateRulesAreConfigurable(t *testing.T) {
 }
 
 func TestOldProblemsDoNotBlockAnEdit(t *testing.T) {
+	t.Parallel()
 	before := goodTree()
 	delete(before, "secrets/b.sops.yaml") // already broken
 	after := goodTree()
@@ -255,6 +259,7 @@ func TestOldProblemsDoNotBlockAnEdit(t *testing.T) {
 }
 
 func TestSecretScanConfirmTier(t *testing.T) {
+	t.Parallel()
 	m := goodTree()
 	m["inventory/host_vars/b.yaml"] = "db_password: hunter2hunter2\n"
 	iss := Validate(m, DefaultRules(), nil)
@@ -277,6 +282,7 @@ func TestSecretScanConfirmTier(t *testing.T) {
 }
 
 func TestParseFeatureSpec(t *testing.T) {
+	t.Parallel()
 	f, err := ParseFeatureSpec([]byte(featSpec))
 	if err != nil {
 		t.Fatal(err)
@@ -295,6 +301,7 @@ func TestParseFeatureSpec(t *testing.T) {
 }
 
 func TestSettingsFromInput(t *testing.T) {
+	t.Parallel()
 	f, _ := ParseFeatureSpec([]byte(featSpec))
 	f.Name = "demo"
 	s, known, sec, iss := f.SettingsFromInput(map[string]any{"name": "x", "port": float64(80), "mode": "", "verbose": true, "token": "abc"})
@@ -326,6 +333,7 @@ func TestSettingsFromInput(t *testing.T) {
 }
 
 func TestUnifiedDiff(t *testing.T) {
+	t.Parallel()
 	a := "l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9\nl10\nl11\nl12\n"
 	b := "l1\nl2\nL3\nl4\nl5\nl6\nl7\nl8\nl9\nl10\nl11\nl12\nl13\n"
 	d := unifiedDiff("f.yml", []byte(a), []byte(b))
@@ -355,6 +363,7 @@ func TestUnifiedDiff(t *testing.T) {
 // A file that is already broken must not let the rest of its content through
 // unchecked: everything in the result of an edit is checked.
 func TestBrokenFileStillGetsEveryCheck(t *testing.T) {
+	t.Parallel()
 	m := goodTree()
 	m["inventory/host_vars/b.yaml"] = "a: 1\na: 2\nx: '{{ lookup(\"pipe\", \"id\") }}'\nfeatures:\n  demo: {name: x, hub_url: 'http://x'}\n"
 	got := strings.Join(codes(Validate(m, DefaultRules(), nil)), ",")

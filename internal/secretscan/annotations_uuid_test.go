@@ -3,6 +3,7 @@ package secretscan
 import "testing"
 
 func TestUUIDKind(t *testing.T) {
+	t.Parallel()
 	ann := Annotations{"/ids/*": KindUUID}
 	for _, tc := range []struct {
 		v      string

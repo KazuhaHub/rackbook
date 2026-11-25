@@ -52,6 +52,7 @@ func subjects(cs []ActivityCommit) string {
 }
 
 func TestActivityListsCommitsWithTheirTrailers(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	s := open(t, e.server, nil)
 	ctx := context.Background()
@@ -78,6 +79,7 @@ func TestActivityListsCommitsWithTheirTrailers(t *testing.T) {
 }
 
 func TestActivityFilters(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	commitAt(t, e, "2026-03-01T10:00:00Z", "edit todo", map[string]string{"docs/ledger/todo.yml": "- {item: x, status: 完成}\n"})
 	commitAt(t, e, "2026-03-01T10:00:00Z", "same second", map[string]string{"notes.txt": "a\n"})
@@ -112,6 +114,7 @@ func TestActivityFilters(t *testing.T) {
 // committer dates are out of order loses nothing, and commits that land between
 // two pages change nothing.
 func TestActivityPagesByWalkPositionUnderClockSkew(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	for i, d := range []string{"09:00", "12:00", "10:00", "10:30"} {
 		commitAt(t, e, "2026-03-01T"+d+":00Z", "at "+d, map[string]string{"f" + string(rune('a'+i)) + ".txt": d + "\n"})
@@ -156,6 +159,7 @@ func TestActivityPagesByWalkPositionUnderClockSkew(t *testing.T) {
 }
 
 func TestActivityByRecordIsAnExactTrailerMatchWithoutFallback(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	s := open(t, e.server, nil)
 	ctx := context.Background()
@@ -182,6 +186,7 @@ func TestActivityByRecordIsAnExactTrailerMatchWithoutFallback(t *testing.T) {
 }
 
 func TestMirrorActivity(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	commitAt(t, e, "2026-03-01T10:00:00Z", "infra a", map[string]string{"a.yml": "a: 1\n", ".rackbook/x.yml": "a: 1\n"})
 	m := &Mirror{Dir: e.server, Branch: "main"}
@@ -196,6 +201,7 @@ func TestMirrorActivity(t *testing.T) {
 }
 
 func TestCommitDiff(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	big := strings.Repeat("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n", 6000) // 390 KB
 	commitAt(t, e, "2026-03-01T10:00:00Z", "mixed", map[string]string{".rackbook/x.yml": "a: 1\n", "notes.txt": "hello\n"})
@@ -253,6 +259,7 @@ func TestCommitDiff(t *testing.T) {
 }
 
 func TestCommitDiffOnlyForCommitsOfTheTrackedBranch(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	s := open(t, e.server, nil)
 	ctx := context.Background()
@@ -271,6 +278,7 @@ func TestCommitDiffOnlyForCommitsOfTheTrackedBranch(t *testing.T) {
 }
 
 func TestMirrorCommitDiffAppliesTheOptions(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	commitAt(t, e, "2026-03-01T10:00:00Z", "infra", map[string]string{"secrets/a.sops.yaml": "ENC[x]\n", "inventory/hosts.yml": "all: {}\n"})
 	m := &Mirror{Dir: e.server, Branch: "main"}
@@ -296,6 +304,7 @@ func TestMirrorCommitDiffAppliesTheOptions(t *testing.T) {
 // git appends the nearest top-level line above a hunk to its header; for a
 // YAML file that can be a secret.
 func TestCommitDiffDropsTheFunctionContextOfHunkHeaders(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	var body strings.Builder
 	body.WriteString("ansible_become_password: hunter2hunter2\n")
@@ -340,6 +349,7 @@ func (r *recordRunner) Run(ctx context.Context, c Cmd) (string, string, error) {
 
 // One process reads the patches, through a limit, however many files changed.
 func TestCommitDiffRunsOneLimitedGitProcess(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	files := map[string]string{}
 	for _, n := range []string{"a", "b", "c", "d", "e"} {
@@ -378,6 +388,7 @@ func TestCommitDiffRunsOneLimitedGitProcess(t *testing.T) {
 // "diff --git" sections: the sections belong to files by the path in their own
 // header, not by position.
 func TestCommitDiffSectionsFollowTheirPathsAcrossATypeChange(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	commitAt(t, e, "2026-03-01T10:00:00Z", "files", map[string]string{"a.yml": "a: 1\n", "b.yml": "b: 1\n", "c.yml": "c: 1\n"})
 	sh(t, e.laptop, "pull", "--quiet")
@@ -425,6 +436,7 @@ func TestCommitDiffSectionsFollowTheirPathsAcrossATypeChange(t *testing.T) {
 
 // The arguments of the patch process do not grow with the number of files.
 func TestCommitDiffArgumentsStayBoundedForAHugeCommit(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	files := map[string]string{}
 	for i := 0; i < 1000; i++ {

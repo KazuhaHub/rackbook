@@ -12,6 +12,7 @@ import (
 )
 
 func TestFormats(t *testing.T) {
+	t.Parallel()
 	good := map[string][]string{
 		"ip":          {"10.0.0.1", "255.255.255.255", "::1", "2001:db8::1", "fe80::1", "::ffff:1.2.3.4"},
 		"ipv4":        {"0.0.0.0", "192.168.1.10", "100.64.0.1"},
@@ -66,6 +67,7 @@ func strRepeat(s string, n int) string {
 
 // the formats are asserted by the schema validator, not only available
 func TestFormatsAreEnforcedByTheLedgerCheck(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	w := func(rel, s string) {
 		if err := os.MkdirAll(filepath.Dir(filepath.Join(dir, rel)), 0o755); err != nil {
@@ -98,6 +100,7 @@ func TestFormatsAreEnforcedByTheLedgerCheck(t *testing.T) {
 }
 
 func TestCountriesMatchTestdata(t *testing.T) {
+	t.Parallel()
 	raw, err := os.ReadFile("testdata/countries.txt")
 	if err != nil {
 		t.Fatal(err)
@@ -122,6 +125,7 @@ func TestCountriesMatchTestdata(t *testing.T) {
 // TestCountriesWebList checks that the console's static list is the same set.
 // A missing file is a failure: the console cannot validate countries without it.
 func TestCountriesWebList(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join("..", "..", "web", "src", "lib", "countries.ts")
 	raw, err := os.ReadFile(path)
 	if err != nil {

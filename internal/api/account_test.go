@@ -50,6 +50,7 @@ func identified(t *testing.T, dir, who string, mut func(*api.Options)) *fixture 
 }
 
 func TestPreferencesIdentified(t *testing.T) {
+	t.Parallel()
 	dir := testutil.CopyExample(t)
 	state := filepath.Join(t.TempDir(), "preferences.json")
 	f := identified(t, dir, "Tom <Tom@example.com>", func(o *api.Options) {
@@ -101,6 +102,7 @@ func TestPreferencesIdentified(t *testing.T) {
 }
 
 func TestPreferencesProtection(t *testing.T) {
+	t.Parallel()
 	f := identified(t, testutil.CopyExample(t), "Tom <tom@example.com>", nil)
 	body := map[string]any{"locale": "en-US"}
 	if code, out, _ := f.do(t, "PUT", "/api/account/preferences", body, map[string]string{"Sec-Fetch-Site": "cross-site"}); code != 403 || out["error"] != "cross_site" {
@@ -115,6 +117,7 @@ func TestPreferencesProtection(t *testing.T) {
 }
 
 func TestPreferencesAnonymousRefused(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t, nil, "")
 	code, out := putLocale(t, f, map[string]any{"locale": "en-US"}, nil)
 	if code != 409 || out["error"] != "no_identity" {
@@ -128,6 +131,7 @@ func TestPreferencesAnonymousRefused(t *testing.T) {
 }
 
 func TestMetaLocaleFollowsConfigDefault(t *testing.T) {
+	t.Parallel()
 	for _, c := range []struct{ block, accept, want, def string }{
 		{"", "", "zh-CN", "zh-CN"},
 		{"\ni18n: {default: en-US}\n", "", "en-US", "en-US"},

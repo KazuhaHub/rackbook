@@ -15,6 +15,7 @@ import (
 // so does every repeat inside the grace window: both sessions hold the same
 // refresh token and keep working through several rotations.
 func TestConcurrentRefreshesGetTheSameAnswer(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t, opts{})
 	cid, tok := e.login(boss, "c")
 	cur := tok.refresh
@@ -42,6 +43,7 @@ func TestConcurrentRefreshesGetTheSameAnswer(t *testing.T) {
 // A response that never arrived: the retry inside the grace window gets exactly
 // the same answer, and the state does not change.
 func TestRetryAfterLostResponse(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t, opts{})
 	cid, tok := e.login(boss, "c")
 	first := e.refresh(cid, tok.refresh)
@@ -64,6 +66,7 @@ func TestRetryAfterLostResponse(t *testing.T) {
 // response), so nothing is gained from a single replay. After the window the
 // replay ends the grant.
 func TestThiefReplayInsideAndAfterGrace(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t, opts{})
 	cid, tok := e.login(boss, "c")
 	legit := e.refresh(cid, tok.refresh)
@@ -86,6 +89,7 @@ func TestThiefReplayInsideAndAfterGrace(t *testing.T) {
 
 // A token from an older rotation ends the grant.
 func TestOldGenerationReuseRevokes(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t, opts{})
 	cid, tok := e.login(boss, "c")
 	t1 := e.refresh(cid, tok.refresh)
@@ -121,6 +125,7 @@ func TestRestartInsideGraceRefusesWithoutRevoking(t *testing.T) {
 
 // A refused refresh does not use the token up.
 func TestRefusedRefreshKeepsTheToken(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t, opts{})
 	cid, tok := e.login(boss, "c")
 	bad := []url.Values{
@@ -143,6 +148,7 @@ func TestRefusedRefreshKeepsTheToken(t *testing.T) {
 
 // A grant whose client is no longer in allowed_clients ends at the next refresh.
 func TestRefreshChecksAllowedClients(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t, opts{})
 	cid, tok := e.login(boss, "c")
 	e.setAllowed([]string{"https://other.example/client.json"})
@@ -157,6 +163,7 @@ func TestRefreshChecksAllowedClients(t *testing.T) {
 
 // A revoke that cannot be saved must not claim success.
 func TestRevokeReportsWriteFailure(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" || os.Getuid() == 0 {
 		t.Skip("needs a read-only directory")
 	}
@@ -185,6 +192,7 @@ func TestRevokeReportsWriteFailure(t *testing.T) {
 // Replaying an authorization code revokes the grant it made; if that cannot be
 // saved the request fails instead of pretending.
 func TestCodeReplayRevokeFailureSurfaces(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" || os.Getuid() == 0 {
 		t.Skip("needs a read-only directory")
 	}

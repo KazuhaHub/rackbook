@@ -56,6 +56,7 @@ func ids(out map[string]any) []string {
 }
 
 func TestSurfaceListsNewToolsAndDeprecatedAliases(t *testing.T) {
+	t.Parallel()
 	cs := connect(t)
 	res, err := cs.ListTools(context.Background(), nil)
 	if err != nil {
@@ -104,6 +105,7 @@ func TestSurfaceListsNewToolsAndDeprecatedAliases(t *testing.T) {
 }
 
 func TestLedgerInfo(t *testing.T) {
+	t.Parallel()
 	cs := connect(t)
 	out, isErr := structured(t, cs, "ledger_info", nil)
 	if isErr {
@@ -138,6 +140,7 @@ func TestLedgerInfo(t *testing.T) {
 }
 
 func TestCollectionsListAndDescribe(t *testing.T) {
+	t.Parallel()
 	cs := connect(t)
 	out, isErr := structured(t, cs, "collections_list", nil)
 	if isErr || len(out["collections"].([]any)) < 5 {
@@ -175,6 +178,7 @@ func TestCollectionsListAndDescribe(t *testing.T) {
 }
 
 func TestRecordsQuery(t *testing.T) {
+	t.Parallel()
 	cs := connect(t)
 	const web = "web-hostco-ashburn-va-us-dc"
 	tests := []struct {
@@ -228,6 +232,7 @@ func TestRecordsQuery(t *testing.T) {
 }
 
 func TestRecordsQueryOrderAndPaging(t *testing.T) {
+	t.Parallel()
 	cs := connect(t)
 	all, _ := structured(t, cs, "records_query", map[string]any{"collection": "services"})
 	want := ids(all)
@@ -283,6 +288,7 @@ func TestRecordsQueryOrderAndPaging(t *testing.T) {
 }
 
 func TestRecordsGetInclude(t *testing.T) {
+	t.Parallel()
 	cs := connect(t)
 	const web = "web-hostco-ashburn-va-us-dc"
 	out, isErr := structured(t, cs, "records_get", map[string]any{"collection": "devices", "id": web})
@@ -309,6 +315,7 @@ func TestRecordsGetInclude(t *testing.T) {
 }
 
 func TestLedgerSearch(t *testing.T) {
+	t.Parallel()
 	cs := connect(t)
 	out, isErr := structured(t, cs, "ledger_search", map[string]any{"query": "10511"})
 	if isErr || out["total"].(float64) < 5 {
@@ -369,6 +376,7 @@ func structuredTotal(t *testing.T, cs *mcp.ClientSession, q string) float64 {
 }
 
 func TestLedgerCheckMergesProblemsAndFilters(t *testing.T) {
+	t.Parallel()
 	dir := testutil.CopyExample(t)
 	testutil.Replace(t, dir, "docs/ledger/todo.yml", "{item: 评估关闭路由器 WAN 上的 Web 后台, ", "{")
 	l := ledger.Load(testutil.LoadConfig(t, dir), nil)
@@ -436,6 +444,7 @@ func TestLedgerCheckMergesProblemsAndFilters(t *testing.T) {
 }
 
 func TestLedgerExport(t *testing.T) {
+	t.Parallel()
 	cs := connect(t)
 	md, isErr := structured(t, cs, "ledger_export", nil)
 	if isErr || md["format"] != "markdown" || !strings.HasPrefix(md["content"].(string), "# 示例网络台账") || md["bytes"] != float64(len(md["content"].(string))) {
@@ -498,6 +507,7 @@ func bigClient(t *testing.T) *mcp.ClientSession {
 // agent would: it must end, whatever limit was asked for, even one above the
 // server's maximum of 500 (which the tool already capped).
 func TestSuggestedLimitAlwaysMakesProgress(t *testing.T) {
+	t.Parallel()
 	cs := bigClient(t)
 	for _, tool := range []struct {
 		name string
@@ -507,33 +517,36 @@ func TestSuggestedLimitAlwaysMakesProgress(t *testing.T) {
 		{"ledger_search", map[string]any{"query": "bigrow"}},
 	} {
 		for _, asked := range []int{1000, 500, 400, 100000} {
-			args := map[string]any{"limit": asked}
-			for k, v := range tool.args {
-				args[k] = v
-			}
-			var tried []float64
-			for step := 0; ; step++ {
-				out, isErr := structured(t, cs, tool.name, args)
-				if !isErr {
-					break
+			t.Run(fmt.Sprintf("%s limit=%d", tool.name, asked), func(t *testing.T) {
+				t.Parallel()
+				args := map[string]any{"limit": asked}
+				for k, v := range tool.args {
+					args[k] = v
 				}
-				if out["error"] != "too_large" {
-					t.Fatalf("%s limit=%d: %.300v", tool.name, asked, out)
+				var tried []float64
+				for step := 0; ; step++ {
+					out, isErr := structured(t, cs, tool.name, args)
+					if !isErr {
+						break
+					}
+					if out["error"] != "too_large" {
+						t.Fatalf("%s limit=%d: %.300v", tool.name, asked, out)
+					}
+					d := out["details"].(map[string]any)
+					if d["suggested_limit"] == nil {
+						t.Fatalf("%s limit=%d: %v", tool.name, asked, d)
+					}
+					n, sug := d["returned"].(float64), d["suggested_limit"].(float64)
+					if out["error"] != "too_large" || step > 6 || sug < 1 || sug >= n {
+						t.Fatalf("%s limit=%d step %d: suggested %v for %v returned (tried %v)", tool.name, asked, step, sug, n, tried)
+					}
+					tried = append(tried, sug)
+					args["limit"] = sug
 				}
-				d := out["details"].(map[string]any)
-				if d["suggested_limit"] == nil {
-					t.Fatalf("%s limit=%d: %v", tool.name, asked, d)
+				if len(tried) == 0 {
+					t.Fatalf("%s limit=%d was meant to be too large", tool.name, asked)
 				}
-				n, sug := d["returned"].(float64), d["suggested_limit"].(float64)
-				if out["error"] != "too_large" || step > 6 || sug < 1 || sug >= n {
-					t.Fatalf("%s limit=%d step %d: suggested %v for %v returned (tried %v)", tool.name, asked, step, sug, n, tried)
-				}
-				tried = append(tried, sug)
-				args["limit"] = sug
-			}
-			if len(tried) == 0 {
-				t.Fatalf("%s limit=%d was meant to be too large", tool.name, asked)
-			}
+			})
 		}
 	}
 	// A single record that alone is over the cap: no limit helps, the resource does.
@@ -549,6 +562,7 @@ func TestSuggestedLimitAlwaysMakesProgress(t *testing.T) {
 }
 
 func TestEveryResultIsCappedAt1MiB(t *testing.T) {
+	t.Parallel()
 	cs := bigClient(t)
 	const web = "web-hostco-ashburn-va-us-dc"
 	tests := []struct {
@@ -565,6 +579,7 @@ func TestEveryResultIsCappedAt1MiB(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			out, isErr := structured(t, cs, tt.tool, tt.args)
 			if !isErr || out["error"] != "too_large" {
 				t.Fatalf("%.300v", out)
@@ -604,6 +619,7 @@ func TestEveryResultIsCappedAt1MiB(t *testing.T) {
 }
 
 func TestResourcesAndPrompts(t *testing.T) {
+	t.Parallel()
 	cs := connect(t)
 	ctx := context.Background()
 	res, err := cs.ListResources(ctx, nil)

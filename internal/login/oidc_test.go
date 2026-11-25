@@ -19,6 +19,7 @@ func userOf(t *testing.T, m map[string]any) map[string]any {
 }
 
 func TestOIDCLoginSuccess(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t, options{})
 	b := e.browser()
 
@@ -81,6 +82,7 @@ func TestOIDCLoginSuccess(t *testing.T) {
 }
 
 func TestRolesPerRequest(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t, options{nogit: true}) // without Git the config is re-read on every request
 	for user, want := range map[string]string{"admin": "admin", "editor": "editor", "viewer": "viewer"} {
 		b := e.browser()
@@ -116,6 +118,7 @@ func TestRolesPerRequest(t *testing.T) {
 }
 
 func TestNoRoleIsRefusedWith403Page(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t, options{})
 	b := e.browser()
 	r := b.login("nobody", "")
@@ -135,6 +138,7 @@ func TestNoRoleIsRefusedWith403Page(t *testing.T) {
 }
 
 func TestKelvinSignDoesNotFoldOntoASCII(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t, options{roles: "  roles:\n    admin: [kazuha@kazuha.org]\n"})
 	b := e.browser()
 	r := b.login("kelvin", "")
@@ -144,6 +148,7 @@ func TestKelvinSignDoesNotFoldOntoASCII(t *testing.T) {
 }
 
 func TestWrongTenant(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t, options{})
 	b := e.browser()
 	r := b.login("foreign", "")
@@ -164,6 +169,7 @@ func TestWrongTenant(t *testing.T) {
 }
 
 func TestClaimsMustBeStrings(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t, options{})
 	for name, mut := range map[string]func(map[string]any){
 		"identity not a string": func(c map[string]any) { c["preferred_username"] = []string{"kazuha@kazuha.org"} },
@@ -181,6 +187,7 @@ func TestClaimsMustBeStrings(t *testing.T) {
 }
 
 func TestReplayedCallbackFails(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t, options{})
 	b := e.browser()
 	r1 := b.get("/auth/oidc/start")
@@ -202,6 +209,7 @@ func TestReplayedCallbackFails(t *testing.T) {
 }
 
 func TestBrowserBinding(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t, options{})
 	victim := e.browser()
 	r1 := victim.get("/auth/oidc/start")
@@ -234,6 +242,7 @@ func TestBrowserBinding(t *testing.T) {
 }
 
 func TestCallbackParameterChecks(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t, options{})
 	for name, tc := range map[string]struct{ query, want string }{
 		"duplicate state": {"state=a&state=b&code=c", "bad_callback"},
@@ -286,6 +295,7 @@ func TestCallbackParameterChecks(t *testing.T) {
 }
 
 func TestIdPFailures(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t, options{})
 	e.idp.TokenStatus = 500
 	b := e.browser()
@@ -309,6 +319,7 @@ func TestIdPFailures(t *testing.T) {
 }
 
 func TestSafeReturn(t *testing.T) {
+	t.Parallel()
 	good := []string{"/", "/c/devices", "/c/devices/web-1?tab=2#x", "/check", "/c/a%2Fb"}
 	for _, s := range good {
 		if SafeReturn(s) != s {
@@ -332,6 +343,7 @@ func TestSafeReturn(t *testing.T) {
 }
 
 func TestOpenRedirectThroughTheFlow(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t, options{})
 	for _, ret := range []string{"//evil.com", "https://evil.com/x", "/\\evil.com", "/\t/evil.com"} {
 		b := e.browser()
@@ -354,6 +366,7 @@ func TestOpenRedirectThroughTheFlow(t *testing.T) {
 // the login page and, after login, back to the same request: the return value is
 // a plain same-origin path with its query.
 func TestLoginReturnsToAuthorizeRequest(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t, options{})
 	target := "/oauth/authorize?client_id=https%3A%2F%2Fclient.example%2Fc.json&redirect_uri=http%3A%2F%2Flocalhost%3A7777%2Fcb&state=a%2Fb"
 	b := e.browser()
@@ -367,6 +380,7 @@ func TestLoginReturnsToAuthorizeRequest(t *testing.T) {
 }
 
 func TestSessionExpiry(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t, options{})
 	b := e.browser()
 	b.login("admin", "")
@@ -415,6 +429,7 @@ func TestSessionExpiry(t *testing.T) {
 }
 
 func TestTamperedAndRotatedKey(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t, options{})
 	b := e.browser()
 	b.login("viewer", "")
@@ -470,6 +485,7 @@ func reqWithCookie(v string) *http.Request {
 }
 
 func TestLogout(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t, options{})
 	b := e.browser()
 	b.login("admin", "")
@@ -496,6 +512,7 @@ func TestLogout(t *testing.T) {
 }
 
 func TestPendingStoreIsBoundedAndExpires(t *testing.T) {
+	t.Parallel()
 	clk := newClock()
 	p := newPendingStore(clk.Now)
 	first, _ := p.put(testState("first"), "/")
@@ -525,6 +542,7 @@ func TestPendingStoreIsBoundedAndExpires(t *testing.T) {
 }
 
 func TestLoadSessionKey(t *testing.T) {
+	t.Parallel()
 	good := "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=" // 32 bytes
 	if k, err := LoadSessionKey(good, ""); err != nil || len(k) != 32 {
 		t.Fatalf("%v %d", err, len(k))
@@ -550,6 +568,7 @@ func TestLoadSessionKey(t *testing.T) {
 }
 
 func TestEmailIdentityNeedsVerifiedEmail(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t, options{cfgExtras: ""})
 	// Switch the identity claim to email by rebuilding the login options.
 	e.svc.o.Login.OIDC.IdentityClaim = "email"
@@ -578,6 +597,7 @@ func TestEmailIdentityNeedsVerifiedEmail(t *testing.T) {
 }
 
 func TestLimiter(t *testing.T) {
+	t.Parallel()
 	clk := newClock()
 	l := newLimiter(30, 10, clk.Now)
 	for i := 0; i < 10; i++ {
@@ -598,6 +618,7 @@ func TestLimiter(t *testing.T) {
 }
 
 func TestLoginStartIsRateLimited(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t, options{})
 	b := e.browser()
 	var last int
@@ -610,6 +631,7 @@ func TestLoginStartIsRateLimited(t *testing.T) {
 }
 
 func TestSubjectIdentityMatchesOnlySubjectRoleEntries(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t, options{
 		oidc:  "    identity: subject\n",
 		roles: "  roles:\n    admin: [\"oidc:sub-admin\"]\n    editor: [\"*@kazuha.org\"]\n    viewer: [\"*\"]\n",
@@ -630,6 +652,7 @@ func TestSubjectIdentityMatchesOnlySubjectRoleEntries(t *testing.T) {
 }
 
 func TestStartupWarnsWhenTheIdentityClaimIsNotIdPControlled(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t, options{oidc: "    identity_claim: name\n"})
 	if !strings.Contains(e.logs.String(), "must be controlled by the identity provider") {
 		t.Fatalf("no warning:\n%s", e.logs.String())
@@ -641,6 +664,7 @@ func TestStartupWarnsWhenTheIdentityClaimIsNotIdPControlled(t *testing.T) {
 }
 
 func TestClaimIdentityCannotForgeASubjectIdentity(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t, options{roles: "  roles:\n    admin: [\"oidc:sub-admin\"]\n    viewer: [\"*\"]\n"})
 	e.idp.Users["forger"] = map[string]any{"sub": "sub-x", "preferred_username": "oidc:sub-admin", "name": "X", "tid": tenant}
 	b := e.browser()
@@ -650,6 +674,7 @@ func TestClaimIdentityCannotForgeASubjectIdentity(t *testing.T) {
 }
 
 func TestClaimIdentityCannotBeTheAuditAnchorIdentity(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t, options{roles: "  roles:\n    viewer: [\"*\"]\n"})
 	e.idp.Users["anchor"] = map[string]any{"sub": "sub-y", "preferred_username": "Rackbook-Audit-Anchor", "name": "Y", "tid": tenant}
 	b := e.browser()
@@ -659,6 +684,7 @@ func TestClaimIdentityCannotBeTheAuditAnchorIdentity(t *testing.T) {
 }
 
 func TestPublicPathsAreCanonicalOnly(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t, options{})
 	b := e.browser()
 	for _, p := range []string{"/assets/%2e%2e/api/meta", "/auth/%2e%2e/api/meta", "/assets/../api/meta", "/auth%2f..%2fapi/meta"} {
@@ -673,6 +699,7 @@ func TestPublicPathsAreCanonicalOnly(t *testing.T) {
 }
 
 func TestGroupsClaimReachesRolesAndSessionsBindTheIssuer(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t, options{roles: "  roles:\n    admin: [\"group:ops\"]\n    viewer: [\"*@kazuha.org\"]\n"})
 	e.idp.Users["admin"]["groups"] = []string{"dev", "ops"}
 	b := e.browser()
@@ -706,6 +733,7 @@ func TestGroupsClaimReachesRolesAndSessionsBindTheIssuer(t *testing.T) {
 }
 
 func TestBoundGroups(t *testing.T) {
+	t.Parallel()
 	var many []string
 	for i := 0; i < 200; i++ {
 		many = append(many, strings.Repeat("g", 36))
@@ -721,6 +749,7 @@ func TestBoundGroups(t *testing.T) {
 }
 
 func TestLoginConfigCarriesLabelAndBranding(t *testing.T) {
+	t.Parallel()
 	// Nothing set: empty label and name, no logo, and no provider named.
 	e := newEnv(t, options{})
 	var m map[string]any
@@ -747,6 +776,7 @@ func TestLoginConfigCarriesLabelAndBranding(t *testing.T) {
 }
 
 func TestBrandingImagesNeedNoLogin(t *testing.T) {
+	t.Parallel()
 	svg := `<svg xmlns="http://www.w3.org/2000/svg"><rect width="1" height="1"/></svg>`
 	e := newEnv(t, options{
 		cfgExtras: "branding:\n  logo: branding/logo.svg\n",
@@ -779,6 +809,7 @@ func TestBrandingImagesNeedNoLogin(t *testing.T) {
 // signs in as a viewer (the floor) and is told so; removing the group's entry
 // locks them out at once, like removing a role.
 func TestAuditorByGroupSignsInWithTheViewerFloor(t *testing.T) {
+	t.Parallel()
 	const withAuditors = "  roles:\n    admin: [kazuha@kazuha.org]\n  auditors: [\"group:audit\"]\n"
 	e := newEnv(t, options{roles: withAuditors, nogit: true})
 	e.idp.Users["editor"]["groups"] = []string{"audit"}

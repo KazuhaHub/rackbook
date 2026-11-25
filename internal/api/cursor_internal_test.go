@@ -8,6 +8,7 @@ import (
 )
 
 func TestCursorIsSignedBoundToItsOwnerAndChecked(t *testing.T) {
+	t.Parallel()
 	s := &server{cursorKey: []byte(strings.Repeat("k", 32))}
 	c := activityCursor{"ledger": {Tip: strings.Repeat("a", 40), N: 7}, "audit": {Resume: 12}}
 	v := s.encodeCursor("oidc:boss", c)
@@ -38,6 +39,7 @@ func TestCursorIsSignedBoundToItsOwnerAndChecked(t *testing.T) {
 
 // A panic in the walk goroutine is the request's error; the stream does not hang.
 func TestPanickingWalkBecomesARequestError(t *testing.T) {
+	t.Parallel()
 	g := &gitStream{ctx: context.Background(),
 		walk: func(ctx context.Context, tip string, skip int, onStart func(string), each func(gitstore.ActivityCommit) bool) error {
 			onStart(strings.Repeat("a", 40))

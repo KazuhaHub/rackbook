@@ -9,6 +9,7 @@ import (
 )
 
 func TestHumansOnlyRefusesTokensAndOAuth(t *testing.T) {
+	t.Parallel()
 	h := humansOnly(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
 	for method, want := range map[string]int{
 		auth.MethodToken: 403, auth.MethodOAuth: 403, auth.MethodMCPHub: 403,

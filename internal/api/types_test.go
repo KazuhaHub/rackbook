@@ -25,6 +25,7 @@ func typeOf(t *testing.T, f *fixture, name string) map[string]any {
 }
 
 func TestTypesAreForAdministratorsOnly(t *testing.T) {
+	t.Parallel()
 	dir := withRoles(t, testutil.CopyExample(t))
 	for _, who := range []string{"Tom <tom@team.example.com>", "Guest <guest@example.com>"} {
 		f := newFixtureWithConfigSource(t, who, dir)
@@ -46,6 +47,7 @@ func TestTypesAreForAdministratorsOnly(t *testing.T) {
 }
 
 func TestPlanThenSaveATypeChange(t *testing.T) {
+	t.Parallel()
 	f := adminFixture(t)
 	ty := typeOf(t, f, "services")
 	fields := arr(t, ty["fields"])
@@ -96,6 +98,7 @@ func TestPlanThenSaveATypeChange(t *testing.T) {
 }
 
 func TestCreateAndDeleteAType(t *testing.T) {
+	t.Parallel()
 	f := adminFixture(t)
 	ty := map[string]any{"name": "contacts", "title": "联系人", "icon": "users", "key": []string{"name"}, "fields": []any{
 		map[string]any{"name": "name", "type": "text", "required": true},
@@ -157,6 +160,7 @@ func TestCreateAndDeleteAType(t *testing.T) {
 }
 
 func TestRecordDeleteGuardListsReferences(t *testing.T) {
+	t.Parallel()
 	f := adminFixture(t)
 	id := "laptop-me-pc"
 	_, g, _ := f.do(t, "GET", "/api/c/devices/"+url.PathEscape(id), nil, nil)
@@ -173,6 +177,7 @@ func TestRecordDeleteGuardListsReferences(t *testing.T) {
 }
 
 func TestTypeChangesCarryTheBaseVersion(t *testing.T) {
+	t.Parallel()
 	f := adminFixture(t)
 	ty := typeOf(t, f, "todo")
 	v, _ := ty["version"].(string)

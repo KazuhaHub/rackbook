@@ -19,6 +19,7 @@ import (
 )
 
 func TestStateFileCommitsPushesAndRefusesOtherPaths(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	s := open(t, e.server, nil)
 	ctx := context.Background()
@@ -49,6 +50,7 @@ func TestStateFileCommitsPushesAndRefusesOtherPaths(t *testing.T) {
 }
 
 func TestStateFileInPRModeLeavesACleanClone(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	sh(t, e.server, "pull", "--quiet")
 	testutil.Replace(t, e.server, "rackbook.yml", "mode: push", "mode: pr")
@@ -81,6 +83,7 @@ func TestStateFileInPRModeLeavesACleanClone(t *testing.T) {
 }
 
 func TestWriteOptionsFor(t *testing.T) {
+	t.Parallel()
 	cfg := &config.Config{Auth: config.Auth{MCP: config.AuthMCP{DirectPush: []config.DirectPush{
 		{Users: []string{"MCPHub:Alice"}, Collections: []string{"todo"}},
 		{Users: []string{"oauth:entra:carol"}, Collections: []string{"docs"}},
@@ -144,6 +147,7 @@ func appendState(t *testing.T, s *Store, line string) string {
 }
 
 func TestStateFileHistoryAcceptsAppendsAndFindsOtherChanges(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	s := open(t, e.server, nil)
 	ctx := context.Background()
@@ -233,6 +237,7 @@ func mergeEnv(t *testing.T) (e env, s *Store, forged string) {
 }
 
 func TestAMergeThatTakesAForgedAnchorFileIsFoundOnEitherSide(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	t.Run("forged side is the second parent", func(t *testing.T) {
 		e, s, _ := mergeEnv(t)
@@ -328,6 +333,7 @@ func pushFromLaptop(t *testing.T, e env, s *Store, msg string, staged ...bool) s
 }
 
 func TestStateFileHistoryRefusesWhatIsNoRegularFileAndNeverDesyncs(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	abs := func(e env) string { return filepath.Join(e.laptop, anchorsRel) }
 	clear := func(t *testing.T, e env) {
@@ -402,6 +408,7 @@ func TestStateFileHistoryRefusesWhatIsNoRegularFileAndNeverDesyncs(t *testing.T)
 }
 
 func TestStateFileHistoryRefusesAVersionAboveTheLimit(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	s := open(t, e.server, nil)
 	if err := os.MkdirAll(filepath.Join(e.laptop, ".rackbook"), 0o755); err != nil {
@@ -426,6 +433,7 @@ func TestStateFileHistoryRefusesAVersionAboveTheLimit(t *testing.T) {
 }
 
 func TestStateFileHistoryDoesNotAcceptAnAnswerThatIsNotWhatWasAsked(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	s := open(t, e.server, nil)
 	appendState(t, s, "a")

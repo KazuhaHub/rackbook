@@ -46,6 +46,7 @@ func (e *env) last() audit.Event {
 }
 
 func TestAuditLoginAndLogout(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t, options{})
 	b := e.browser()
 	b.login("admin", "")
@@ -70,6 +71,7 @@ func TestAuditLoginAndLogout(t *testing.T) {
 }
 
 func TestAuditLoginRefusals(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t, options{})
 	tests := []struct {
 		name   string
@@ -102,6 +104,7 @@ func TestAuditLoginRefusals(t *testing.T) {
 }
 
 func TestAuditPasskey(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t, options{passkeys: true, nogit: true})
 	stranger := e.newDevice()
 	stranger.auth.Options.UserHandle = []byte("whoever")

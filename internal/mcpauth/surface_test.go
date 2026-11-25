@@ -38,6 +38,7 @@ func toolNames(t *testing.T, cs *mcp.ClientSession) map[string]bool {
 }
 
 func TestRecordsWriteToolsOpenPullRequests(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t, hopts{git: true})
 	cs := h.mcpSession(h.jwt(oauthtest.Options{Subject: "Alice", Scope: "rackbook:write", ClientID: "cursor"}))
 
@@ -136,6 +137,7 @@ func TestRecordsWriteToolsOpenPullRequests(t *testing.T) {
 }
 
 func TestRecordsWriteIdempotencyKey(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t, hopts{git: true})
 	cs := h.mcpSession(h.jwt(oauthtest.Options{Subject: "alice", Scope: "rackbook:write"}))
 	args := func(item, key string) map[string]any {
@@ -182,6 +184,7 @@ func TestRecordsWriteIdempotencyKey(t *testing.T) {
 }
 
 func TestRecordsWriteIsGatedLikeTheOldTools(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t, hopts{git: true, mcpYAML: "    direct_push:\n      - {users: [\"mcphub:alice\"], collections: [todo]}\n"})
 	writes := []struct {
 		tool string
@@ -266,6 +269,7 @@ func TestRecordsWriteIsGatedLikeTheOldTools(t *testing.T) {
 }
 
 func TestOldWriteNamesKeepTheirArgumentsAndResultShape(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t, hopts{git: true})
 	cs := h.mcpSession(h.jwt(oauthtest.Options{Subject: "alice", Scope: "rackbook:write"}))
 	// create_record: {id, hash, data, url, pullRequest, message}, no {change, record}.
@@ -298,6 +302,7 @@ func TestOldWriteNamesKeepTheirArgumentsAndResultShape(t *testing.T) {
 }
 
 func TestHistoryToolsPageAndDiff(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t, hopts{git: true, mcpYAML: "    direct_push:\n      - {users: [\"mcphub:alice\"], collections: [todo]}\n"})
 	cs := h.mcpSession(h.jwt(oauthtest.Options{Subject: "alice", Scope: "rackbook:write"}))
 	// Three direct commits to one record: create, then two updates.
@@ -391,6 +396,7 @@ func TestHistoryToolsPageAndDiff(t *testing.T) {
 }
 
 func TestHistoryDiffOnlyReadsCommitsOfTheTrackedBranch(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t, hopts{git: true})
 	cs := h.mcpSession(h.jwt(oauthtest.Options{Subject: "vic"})) // a viewer
 	editor := h.mcpSession(h.jwt(oauthtest.Options{Subject: "alice", Scope: "rackbook:write"}))
@@ -440,6 +446,7 @@ func TestHistoryDiffOnlyReadsCommitsOfTheTrackedBranch(t *testing.T) {
 }
 
 func TestIdempotencyKeysAreNotSharedBetweenCredentials(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t, hopts{git: true})
 	// Two API tokens, one creator: the same identity ID, different credentials.
 	a, _ := h.createToken(map[string]any{"name": "tok-a", "scope": "write"})
@@ -518,6 +525,7 @@ func encodeOffset(n int) string { return base64.RawURLEncoding.EncodeToString([]
 // A commit left at the server clone's HEAD (a crash or a failed reset during a pull
 // request) is not on the tracked branch: history lists and diffs never show it.
 func TestHistoryIgnoresACommitLeftAtHEAD(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t, hopts{git: true})
 	cs := h.mcpSession(h.jwt(oauthtest.Options{Subject: "vic"}))
 	p := h.dir + "/docs/ledger/todo.yml"
@@ -548,6 +556,7 @@ func TestHistoryIgnoresACommitLeftAtHEAD(t *testing.T) {
 }
 
 func TestDryRunRefusesWhatARealWriteWouldRefuse(t *testing.T) {
+	t.Parallel()
 	// No repository: a pull request cannot be opened.
 	h := newHarness(t, hopts{})
 	cs := h.mcpSession(h.jwt(oauthtest.Options{Subject: "alice", Scope: "rackbook:write"}))
@@ -587,6 +596,7 @@ func TestDryRunRefusesWhatARealWriteWouldRefuse(t *testing.T) {
 }
 
 func TestToolsListHonoursATokensActionsAndCollections(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t, hopts{git: true})
 	tests := []struct {
 		name        string
@@ -623,6 +633,7 @@ func TestToolsListHonoursATokensActionsAndCollections(t *testing.T) {
 }
 
 func TestTheAuditAnchorIdentityCannotSignInWithAnAccessToken(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t, hopts{git: true})
 	for _, sub := range []string{"rackbook-audit-anchor", "Rackbook-Audit-Anchor"} {
 		code, _, _ := h.do("POST", "/mcp", h.jwt(oauthtest.Options{Subject: sub, Scope: "rackbook:write"}), map[string]any{"jsonrpc": "2.0", "id": 1, "method": "ping"},
@@ -638,6 +649,7 @@ func TestTheAuditAnchorIdentityCannotSignInWithAnAccessToken(t *testing.T) {
 }
 
 func TestAnchorCommitsDoNotShowInMCPHistoryForAViewer(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t, hopts{git: true, mcpYAML: "    direct_push:\n      - {users: [\"mcphub:alice\"], collections: [todo]}\n"})
 	alice := h.mcpSession(h.jwt(oauthtest.Options{Subject: "alice", Scope: "rackbook:write"}))
 	if out, isErr := call(t, alice, "records_create", map[string]any{"collection": "todo", "data": todo("hist")}); isErr {

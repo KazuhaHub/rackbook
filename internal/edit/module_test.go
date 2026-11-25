@@ -32,6 +32,7 @@ func wantModuleError(t *testing.T, err error, contains string) {
 }
 
 func TestModuleRules(t *testing.T) {
+	t.Parallel()
 	rule := &edit.ModuleRule{Name: "bot", Fields: []string{"status"}}
 	dir, apply := moduleSetup(t)
 	botID := "rotate"
@@ -108,6 +109,7 @@ func TestModuleRules(t *testing.T) {
 }
 
 func TestModuleUnchangedForeignFieldsMayBeResent(t *testing.T) {
+	t.Parallel()
 	// Normalization: numbers and nulls compare equal to what the file holds.
 	rule := &edit.ModuleRule{Name: "bot", Fields: []string{"status"}}
 	dir, apply := moduleSetup(t)

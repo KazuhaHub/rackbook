@@ -11,6 +11,7 @@ import (
 // time of the sign-in, for /infra, which pins the provider and wants a recent
 // sign-in for writes. A passkey session carries none of them.
 func TestIdentityCarriesTheIssuerClientAndSignInTime(t *testing.T) {
+	t.Parallel()
 	at := time.Date(2026, 11, 20, 9, 0, 0, 0, time.UTC)
 	id := identityOf(session{ID: "me@example.org", Method: auth.MethodOIDC, Iss: "https://idp.example", Cli: "console", Clm: "email", Tid: "t1", OIDCAt: at.Unix()})
 	if id.OIDCClaim != "email" || id.OIDCTenant != "t1" || id.OIDCIssuer != "https://idp.example" || id.OIDCClient != "console" || !id.OIDCAt.Equal(at) {
@@ -41,6 +42,7 @@ func TestIdentityCarriesTheIssuerClientAndSignInTime(t *testing.T) {
 // was established with, so /infra can refuse a session whose provider
 // settings came from an edited rackbook.yml.
 func TestLoginRecordsWhatTheInfraPinChecks(t *testing.T) {
+	t.Parallel()
 	for name, c := range map[string]struct{ oidc, claim string }{
 		"default claim":    {"", "preferred_username"},
 		"another claim":    {"    identity_claim: upn\n", "upn"},

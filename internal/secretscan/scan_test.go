@@ -45,6 +45,7 @@ func has(rs []string, id string) bool {
 }
 
 func TestEveryRuleFiresAndKeepsQuietOnNearMisses(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		rule string
 		pos  []string
@@ -106,6 +107,7 @@ func TestEveryRuleFiresAndKeepsQuietOnNearMisses(t *testing.T) {
 }
 
 func TestBenignOperationsText(t *testing.T) {
+	t.Parallel()
 	for _, s := range []string{
 		"fingerprint: SHA256:" + strings.Repeat("abcDEF012", 5),
 		"nginx reverse proxy for the internal wiki; renew the TLS certificate every 60 days",
@@ -121,6 +123,7 @@ func TestBenignOperationsText(t *testing.T) {
 }
 
 func TestFindingsNeverLeakTheSecret(t *testing.T) {
+	t.Parallel()
 	secrets := []string{pemHead, age, ghp, ghPAT, openai, slack, aws, google, stripe, jwt, hex32, "hunter2pass", "abcdefgh12345"}
 	for _, sec := range secrets {
 		data := map[string]any{"notes": "x password: " + sec + " y", "k": []any{sec, map[string]any{sec: "v"}}}
@@ -144,6 +147,7 @@ func TestFindingsNeverLeakTheSecret(t *testing.T) {
 }
 
 func TestRecordWalkPathsKeysAndSecretIDs(t *testing.T) {
+	t.Parallel()
 	data := map[string]any{
 		"name":   "ok",
 		"notes":  []any{"fine", map[string]any{"text": "pw: " + ghp}},
@@ -173,6 +177,7 @@ func TestRecordWalkPathsKeysAndSecretIDs(t *testing.T) {
 }
 
 func TestFieldNamedPasswordIsCaught(t *testing.T) {
+	t.Parallel()
 	fs := Default().ScanRecord("c", "x", map[string]any{"password": "hunter2hunter2", "ssh_key": hex32, "public_key": hex32, "token": "short", "note": "n"})
 	var paths []string
 	for _, f := range fs {
@@ -184,6 +189,7 @@ func TestFieldNamedPasswordIsCaught(t *testing.T) {
 }
 
 func TestAllowListByHashFieldAndCollection(t *testing.T) {
+	t.Parallel()
 	val := "hunter2hunter2"
 	rec := map[string]any{"notes": "password: " + val, "other": "token: abcdefgh1234"}
 	mk := func(a ...Allow) *Scanner {
@@ -226,6 +232,7 @@ func TestAllowListByHashFieldAndCollection(t *testing.T) {
 }
 
 func TestDisableRulesAndEnabledFlag(t *testing.T) {
+	t.Parallel()
 	s, err := New(Config{DisableRules: []string{RuleSecretAssign, RuleHexKey}})
 	if err != nil {
 		t.Fatal(err)
@@ -248,6 +255,7 @@ func TestDisableRulesAndEnabledFlag(t *testing.T) {
 }
 
 func TestExtraPatternsAndConfigErrors(t *testing.T) {
+	t.Parallel()
 	s, err := New(Config{ExtraPatterns: []ExtraPattern{{ID: "corp-token", Pattern: `corp_(tok_[a-z0-9]{12})`}, {ID: "plain", Pattern: `INTERNAL-[0-9]{6}`}}})
 	if err != nil {
 		t.Fatal(err)
@@ -278,6 +286,7 @@ func TestExtraPatternsAndConfigErrors(t *testing.T) {
 }
 
 func TestSchemaDefaultsAndExamplesAreScanned(t *testing.T) {
+	t.Parallel()
 	schema := `{"type":"object","description":"password: hunter2hunter2 lives elsewhere","properties":{
 	  "a":{"type":"string","title":"token: abcdefgh12345","default":"` + ghp + `"},
 	  "b":{"type":"string","examples":["fine","` + aws + `"]},
@@ -295,6 +304,7 @@ func TestSchemaDefaultsAndExamplesAreScanned(t *testing.T) {
 }
 
 func TestStateFilesScanLabelsOnly(t *testing.T) {
+	t.Parallel()
 	file := "users:\n  - identity: a@example.com\n    name: Ann\n    handle: " + strings.Repeat("A", 43) + "\n    credentials:\n      - id: " + strings.Repeat("B", 90) + "\n        name: " + ghp + "\n        public_key: " + strings.Repeat("C", 120) + "\ntokens:\n  - name: ci\n    prefix: rbk_abcd\n    sha256: " + strings.Repeat("e", 64) + "\n"
 	fs := Default().ScanState(".rackbook/passkeys.yml", []byte(file))
 	if len(fs) != 1 || fs[0].Rule != RuleGitHubToken || fs[0].Path != "/users/0/credentials/0/name" || fs[0].Collection != ".rackbook/passkeys.yml" {
@@ -310,6 +320,7 @@ func TestStateFilesScanLabelsOnly(t *testing.T) {
 }
 
 func TestIntroduced(t *testing.T) {
+	t.Parallel()
 	old := Default().ScanRecord("c", "i", map[string]any{"a": ghp})
 	both := Default().ScanRecord("c", "i", map[string]any{"a": ghp, "b": aws})
 	if got := Introduced(old, both); len(got) != 1 || got[0].Rule != RuleAWSKeyID {
@@ -321,6 +332,7 @@ func TestIntroduced(t *testing.T) {
 }
 
 func TestErrorMessageIsRedacted(t *testing.T) {
+	t.Parallel()
 	err := AsError(Default().ScanRecord("devices", "web", map[string]any{"notes": ghp}))
 	msg := err.Error()
 	if !strings.Contains(msg, "devices/web /notes") || !strings.Contains(msg, "github-token") || strings.Contains(msg, ghp[:8]) || !strings.Contains(msg, "secret_scan.allow") {
@@ -332,6 +344,7 @@ func TestErrorMessageIsRedacted(t *testing.T) {
 }
 
 func TestPropertyNamedPasswordWithADefaultIsCaught(t *testing.T) {
+	t.Parallel()
 	schema := `{"properties":{"password":{"type":"string","default":"Sup3rS3cretPass"},"note":{"type":"string","default":"Sup3rS3cretPass"}}}`
 	fs := Default().ScanSchema("c", []byte(schema))
 	if len(fs) != 1 || fs[0].Path != "/schema/properties/password/default" || fs[0].Rule != RuleSecretAssign {
@@ -340,6 +353,7 @@ func TestPropertyNamedPasswordWithADefaultIsCaught(t *testing.T) {
 }
 
 func TestExtraPatternWithAnOptionalGroupAndShortMatches(t *testing.T) {
+	t.Parallel()
 	s, err := New(Config{ExtraPatterns: []ExtraPattern{{ID: "opt", Pattern: `foo(bar)?baz[0-9]{4}`}, {ID: "short", Pattern: `ZZ-[0-9]{3}`}}})
 	if err != nil {
 		t.Fatal(err)
@@ -354,6 +368,7 @@ func TestExtraPatternWithAnOptionalGroupAndShortMatches(t *testing.T) {
 }
 
 func TestIntroducedIgnoresPositionSoRemovingAnEntryIsNotNewSecrets(t *testing.T) {
+	t.Parallel()
 	b := []byte("users:\n  - name: " + ghp + "\n")
 	d := Default()
 	// the secret moved from index 1 to index 0 when the first entry went away
@@ -371,6 +386,7 @@ func pem(t, b string) string {
 }
 
 func TestPrivateKeyIsMatchedAndHashedAsAWholeBlock(t *testing.T) {
+	t.Parallel()
 	k1, k2 := pem("RSA", body), pem("RSA", "ZZZZ"+body)
 	fs := Default().ScanRecord("c", "i", map[string]any{"a": "x\n" + k1 + "\ntail"})
 	if len(fs) != 1 || fs[0].fp != Hash(k1) {
@@ -401,6 +417,7 @@ func TestPrivateKeyIsMatchedAndHashedAsAWholeBlock(t *testing.T) {
 }
 
 func TestSecretNamedFieldsCountTheWholeValue(t *testing.T) {
+	t.Parallel()
 	d := Default()
 	for _, c := range []struct {
 		name, value string
@@ -452,6 +469,7 @@ func TestSecretNamedFieldsCountTheWholeValue(t *testing.T) {
 }
 
 func TestIDBuiltFromASecretNamedFieldIsRedacted(t *testing.T) {
+	t.Parallel()
 	fs := Default().ScanRecord("accounts", "alice/correct horse battery staple", map[string]any{"user": "alice", "password": "correct horse battery staple"})
 	if len(fs) == 0 {
 		t.Fatal("no finding")
@@ -464,6 +482,7 @@ func TestIDBuiltFromASecretNamedFieldIsRedacted(t *testing.T) {
 }
 
 func TestMoreKeywordsAndRules(t *testing.T) {
+	t.Parallel()
 	d := Default()
 	for rule, vals := range map[string][]string{
 		RuleSecretAssign: {"private key: abcdefgh1234", "passphrase: abcdefgh1234", "wpa_passphrase=abcdefgh1234", "psk: abcdefgh1234", "wifi_psk=abcdefgh1234", "pre-shared-key: abcdefgh1234", "preshared_key = abcdefgh1234", "private_key=abcdefgh1234"},
@@ -500,6 +519,7 @@ func TestMoreKeywordsAndRules(t *testing.T) {
 }
 
 func TestScanYAMLWalksEveryValue(t *testing.T) {
+	t.Parallel()
 	fs := Default().ScanYAML("rackbook.yml", []byte("collections:\n  x:\n    title: ok\n    description: \"login with "+ghp+"\"\nrules:\n  - ref: {from: a.b, to: c.d, message: \"password: hunter2hunter2\"}\n"))
 	if len(fs) != 2 || fs[0].Collection != "rackbook.yml" {
 		t.Fatalf("%+v", fs)
@@ -507,6 +527,7 @@ func TestScanYAMLWalksEveryValue(t *testing.T) {
 }
 
 func TestExactPlaceholdersAreNeverSecrets(t *testing.T) {
+	t.Parallel()
 	for _, v := range []string{"待补", "TBD", "tbd", "-", "***", "n/a", "N/A", "none", "empty", ""} {
 		if fs := Default().ScanRecord("c", "i", map[string]any{"password": v, "notes": v, "token": []any{v}}); len(fs) != 0 {
 			t.Errorf("%q: %+v", v, fs)
@@ -523,6 +544,7 @@ func TestExactPlaceholdersAreNeverSecrets(t *testing.T) {
 const sshPubKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl"
 
 func TestAnnotatedPublicFieldsPassOnlyWithTheStrictFormat(t *testing.T) {
+	t.Parallel()
 	schema := []byte(`{"properties":{
 	 "ssh_key":{"x-rackbook":{"public":"ssh_public_key"}},
 	 "fp":{"x-rackbook":{"public":"fingerprint"}},
@@ -590,6 +612,7 @@ func TestAnnotatedPublicFieldsPassOnlyWithTheStrictFormat(t *testing.T) {
 }
 
 func TestSchemaDefaultsOfAnnotatedFieldsFollowTheSameRule(t *testing.T) {
+	t.Parallel()
 	ok := `{"properties":{"k":{"default":"` + sshPubKey + `","x-rackbook":{"public":"ssh_public_key"}}}}`
 	if fs := Default().ScanSchema("c", []byte(ok)); len(fs) != 0 {
 		t.Fatalf("%+v", fs)
@@ -601,6 +624,7 @@ func TestSchemaDefaultsOfAnnotatedFieldsFollowTheSameRule(t *testing.T) {
 }
 
 func TestMapKeysUnderASecretNamedMapAreValues(t *testing.T) {
+	t.Parallel()
 	fs := Default().ScanRecord("c", "i", map[string]any{"passwords": map[string]any{"correct horse battery staple": "x"}})
 	if len(fs) != 1 || fs[0].In != "key" || fs[0].Path != "/passwords" || strings.Contains(fs[0].Excerpt, "horse") {
 		t.Fatalf("%+v", fs)
@@ -608,6 +632,7 @@ func TestMapKeysUnderASecretNamedMapAreValues(t *testing.T) {
 }
 
 func TestSecretNamesAndCaseInsensitiveBearer(t *testing.T) {
+	t.Parallel()
 	for _, n := range []string{"secret_key", "aws_secret_access_key", "encryption_key", "client_secret", "signing_key", "private_token", "access_token", "refresh_token", "db_secret", "mysql_password", "deploy_token", "accesstoken", "secretKey", "encryptionKey", "signingKey"} {
 		if fs := Default().ScanRecord("c", "i", map[string]any{n: "correct horse"}); len(fs) == 0 {
 			t.Errorf("%s must be a secret name", n)
@@ -626,6 +651,7 @@ func TestSecretNamesAndCaseInsensitiveBearer(t *testing.T) {
 }
 
 func TestRedactedIDIsStableShortAndDistinct(t *testing.T) {
+	t.Parallel()
 	a, b := RedactID("alice/hunter2hunter2"), RedactID("alice/hunter3hunter3")
 	if a == b || !strings.HasPrefix(a, "alic…~") || len(a) > len("alic…~")+8 {
 		t.Fatal(a, b)
@@ -635,6 +661,7 @@ func TestRedactedIDIsStableShortAndDistinct(t *testing.T) {
 // Each secret is wrapped in random punctuation, quotes, brackets, CJK text and
 // prefixes and suffixes; every variant must still be caught.
 func TestWrappedSecretsAreAlwaysCaught(t *testing.T) {
+	t.Parallel()
 	corpus := map[string]string{
 		RulePrivateKey:   pemHead + "\nb3BlbnNzaC1rZXk\n-----END " + "OPENSSH PRIVATE KEY-----",
 		RuleAgeKey:       age,
@@ -677,6 +704,7 @@ func TestWrappedSecretsAreAlwaysCaught(t *testing.T) {
 }
 
 func TestAllowListIsTheOnlyEscapeInFreeText(t *testing.T) {
+	t.Parallel()
 	for _, v := range []string{"stored in 1Password: password: hunter2hunter2", "host_key: " + hex32, "near fingerprint " + "key: " + hex32, "see vault; token: " + ghp} {
 		if fs := Default().ScanRecord("c", "i", map[string]any{"notes": v}); len(fs) == 0 {
 			t.Errorf("free text %q has no exemptions", v)
@@ -699,6 +727,7 @@ func tierOf(t *testing.T, text string) (string, []string) {
 }
 
 func TestMultilingualAssignmentsAreConfirmTier(t *testing.T) {
+	t.Parallel()
 	for _, v := range []string{
 		"root密码：Hunter2Hunter2", "root 密码: Hunter2Hunter2", "password：Hunter2Hunter2", "the root password is Hunter2Hunter2",
 		"password＝Hunter2Hunter2", "root密码为Hunter2Hunter2", "root 密码是 Hunter2Hunter2", "密码為 Hunter2Hunter2", "password → Hunter2Hunter2",
@@ -732,6 +761,7 @@ func TestMultilingualAssignmentsAreConfirmTier(t *testing.T) {
 }
 
 func TestNumbersAndBooleansInSecretNamedFieldsAreScanned(t *testing.T) {
+	t.Parallel()
 	d := Default()
 	for name, v := range map[string]any{"wifi_password": 98765432, "ipmi_password": int64(12345678), "pin_token": float64(12345678), "wifi_密码": uint32(87654321), "secret": json.Number("98765432")} {
 		fs := d.ScanRecord("c", "i", map[string]any{name: v})
@@ -759,6 +789,7 @@ func TestNumbersAndBooleansInSecretNamedFieldsAreScanned(t *testing.T) {
 }
 
 func TestEveryBlockRuleIsBlockAndConfirmRulesAreConfirm(t *testing.T) {
+	t.Parallel()
 	blocks := []string{RulePrivateKey, RuleAgeKey, RuleGitHubToken, RuleGitHubPAT, RuleAIKey, RuleSlackToken, RuleAWSKeyID, RuleGoogleKey, RuleStripeKey, RuleJWT,
 		RuleURLPassword, RuleGitLabToken, RuleNPMToken, RuleHFToken, RuleTailscaleKey, RuleSendGridKey, RuleAzureKey}
 	texts := map[string]string{RulePrivateKey: pemHead + "\nb3Bl", RuleAgeKey: age, RuleGitHubToken: ghp, RuleGitHubPAT: ghPAT, RuleAIKey: openai, RuleSlackToken: slack,
@@ -815,6 +846,7 @@ func TestEveryBlockRuleIsBlockAndConfirmRulesAreConfirm(t *testing.T) {
 }
 
 func TestBase64PEMPrivateKeys(t *testing.T) {
+	t.Parallel()
 	for _, label := range []string{"OPENSSH", "RSA", "EC", "", "ENCRYPTED", "DSA"} {
 		head := "-----BEGIN " + strings.TrimSpace(label+" PRIVATE KEY") + "-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSj\n-----END " + strings.TrimSpace(label+" PRIVATE KEY") + "-----\n"
 		enc := base64.StdEncoding.EncodeToString([]byte(head))
@@ -832,6 +864,7 @@ func TestBase64PEMPrivateKeys(t *testing.T) {
 }
 
 func TestDistinctivePrefixesMatchWithoutALeadingBoundary(t *testing.T) {
+	t.Parallel()
 	for _, c := range []struct{ rule, secret string }{
 		{RuleGitHubToken, ghp}, {RuleGitHubPAT, ghPAT}, {RuleGitLabToken, "glpat" + "-" + strings.Repeat("aB1_", 6)}, {RuleSlackToken, slack},
 		{RuleAWSKeyID, aws}, {RuleGoogleKey, google}, {RuleHFToken, "hf" + "_" + strings.Repeat("aBcD", 9)}, {RuleNPMToken, "npm" + "_" + strings.Repeat("aB1", 12)},
@@ -853,6 +886,7 @@ func TestDistinctivePrefixesMatchWithoutALeadingBoundary(t *testing.T) {
 }
 
 func TestHighEntropyTokensAreConfirmTier(t *testing.T) {
+	t.Parallel()
 	for _, v := range []string{"login with q7Zx!pL2vN9mTk4Rb8Wc3Yd", "A8f$k2Lq9ZxPw3Vn7TbM5cRd", "key is vT4#nK8qLp2ZxW7mR9bY5cDa", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"} {
 		if tier, ids := tierOf(t, v); tier != TierConfirm || !has(ids, RuleEntropy) {
 			t.Errorf("%q: %q %v", v, tier, ids)
@@ -874,6 +908,7 @@ func TestHighEntropyTokensAreConfirmTier(t *testing.T) {
 }
 
 func TestAnnotationNeverOverridesASecretNamedFieldExceptSecretReference(t *testing.T) {
+	t.Parallel()
 	schema := []byte(`{"properties":{"private_key":{"x-rackbook":{"public":"hex_id"}},"api_token":{"x-rackbook":{"public":"fingerprint"}},"db_password":{"x-rackbook":{"public":"secret_reference"}},"host_id":{"x-rackbook":{"public":"hex_id"}}}}`)
 	ann := AnnotationsOf(schema)
 	rec := map[string]any{"private_key": hex32, "api_token": strings.Repeat("ab", 32), "db_password": "op://Infra/db/password", "host_id": hex32}
@@ -894,6 +929,7 @@ func TestAnnotationNeverOverridesASecretNamedFieldExceptSecretReference(t *testi
 }
 
 func TestSecretReferenceRemainderIsScannedAndValueLikePathsAreNotPaths(t *testing.T) {
+	t.Parallel()
 	ann := AnnotationsOf([]byte(`{"properties":{"password":{"x-rackbook":{"public":"secret_reference"}}}}`))
 	for v, ok := range map[string]bool{"op://Infra/db/password": true, "/run/secrets/db": true, "vault:kv/db#pw": true,
 		"op://" + ghp: false, "/" + ghp: false, "vault:" + openai: false, "/hunter2hunter2": false, "~/Hunter2Hunter2": false, "/etc/secrets/db_pw": true} {
@@ -905,6 +941,7 @@ func TestSecretReferenceRemainderIsScannedAndValueLikePathsAreNotPaths(t *testin
 }
 
 func TestJWKPublicScansItsOtherMembers(t *testing.T) {
+	t.Parallel()
 	ann := AnnotationsOf([]byte(`{"properties":{"jwk":{"x-rackbook":{"public":"jwk_public"}}}}`))
 	pub := `{"kty":"EC","crv":"P-256","x":"f83OJ3D2xF1Bg8vub9tLe1gHMzV76e8Tus9uPHvRVEU","y":"x_FEzRu9m36HLN_tue659LNpXW6pCyStikYjKIWI5a0","kid":"k1","use":"sig","alg":"ES256","key_ops":["verify"],"x5t":"abc"}`
 	if fs := Default().ScanRecordWith("c", "i", map[string]any{"jwk": pub}, ann); len(fs) != 0 {
@@ -917,6 +954,7 @@ func TestJWKPublicScansItsOtherMembers(t *testing.T) {
 }
 
 func TestRedactIDIsShortStableAndDistinct(t *testing.T) {
+	t.Parallel()
 	a, b := RedactID("alice/hunter2hunter2"), RedactID("alice/hunter3hunter3")
 	if a == b || !strings.HasPrefix(a, "alic…~") || len(strings.SplitN(a, "~", 2)[1]) != 8 || a != RedactID("alice/hunter2hunter2") {
 		t.Fatal(a, b)
@@ -924,6 +962,7 @@ func TestRedactIDIsShortStableAndDistinct(t *testing.T) {
 }
 
 func TestRoundFiveFixes(t *testing.T) {
+	t.Parallel()
 	d := Default()
 	// hex after a quote
 	for _, v := range []string{`key: "` + hex32 + `"`, `ssh_key = '` + hex32 + `'`, `privkey="` + hex32 + `"`} {
@@ -994,6 +1033,7 @@ func TestRoundFiveFixes(t *testing.T) {
 // The rule: block-tier formats are refused in every string, always; schema
 // annotations, placeholders and confirm_not_secret only silence the confirm tier.
 func TestAnnotationsNeverSilenceTheBlockTier(t *testing.T) {
+	t.Parallel()
 	ann := AnnotationsOf([]byte(`{"properties":{"ref":{"x-rackbook":{"public":"secret_reference"}},"jwk":{"x-rackbook":{"public":"jwk_public"}},
 	 "ssh":{"x-rackbook":{"public":"ssh_public_key"}},"pem":{"x-rackbook":{"public":"pem_public_key"}}}}`))
 	b64 := base64.StdEncoding.EncodeToString
@@ -1026,6 +1066,7 @@ func TestAnnotationsNeverSilenceTheBlockTier(t *testing.T) {
 }
 
 func TestGenuinelyPublicAnnotatedValuesStayClean(t *testing.T) {
+	t.Parallel()
 	ann := AnnotationsOf([]byte(`{"properties":{"node":{"x-rackbook":{"public":"nodekey"}},"fp":{"x-rackbook":{"public":"fingerprint"}},
 	 "ssh":{"x-rackbook":{"public":"ssh_public_key"}},"age":{"x-rackbook":{"public":"age_recipient"}},"hid":{"x-rackbook":{"public":"hex_id"}}}}`))
 	hex64 := strings.Repeat("ab", 32)
@@ -1041,6 +1082,7 @@ func TestGenuinelyPublicAnnotatedValuesStayClean(t *testing.T) {
 }
 
 func TestPrivateJWKHeldAsJSONText(t *testing.T) {
+	t.Parallel()
 	ann := AnnotationsOf([]byte(`{"properties":{"jwk":{"x-rackbook":{"public":"jwk_public"}}}}`))
 	for name, v := range map[string]string{
 		"escaped member names": `{"\u006b\u0074\u0079":"EC","crv":"P-256","\u0064":"jpsQnnGQmLYBIffH1136cspYG60iY7X1fCE9E9LI"}`,
@@ -1061,6 +1103,7 @@ func TestPrivateJWKHeldAsJSONText(t *testing.T) {
 }
 
 func TestSchemaNamesAndOtherStringsGetTheBlockTier(t *testing.T) {
+	t.Parallel()
 	for _, schema := range []string{
 		`{"properties":{"` + ghp + `":{"type":"string"}}}`,
 		`{"$comment":"` + ghp + `"}`,
@@ -1074,6 +1117,7 @@ func TestSchemaNamesAndOtherStringsGetTheBlockTier(t *testing.T) {
 }
 
 func TestJWKPublicKeyNumbersDoNotTripTokenPatterns(t *testing.T) {
+	t.Parallel()
 	ann := AnnotationsOf([]byte(`{"properties":{"jwk":{"x-rackbook":{"public":"jwk_public"}}}}`))
 	scan := func(jwk string, a Annotations) []Finding {
 		return Default().ScanRecordWith("c", "i", map[string]any{"jwk": jwk}, a)
@@ -1107,6 +1151,7 @@ func TestJWKPublicKeyNumbersDoNotTripTokenPatterns(t *testing.T) {
 }
 
 func TestSchemaTranslationsAndEnumFormsAreScanned(t *testing.T) {
+	t.Parallel()
 	schema := `{"type":"object","x-rackbook-i18n":{"en-US":{"title":"Ledger ` + ghp + `"}},"properties":{
 	  "a":{"type":"string","title":"A","x-rackbook-i18n":{"en-US":{"title":"token: abcdefgh12345","description":"` + aws + `","enum":{"x":"` + slack + `"}}},
 	       "oneOf":[{"const":"x","title":"fine"},{"const":"` + openai + `","title":"` + google + `"}],
@@ -1134,6 +1179,7 @@ func TestSchemaTranslationsAndEnumFormsAreScanned(t *testing.T) {
 // as data, as an enum always was: a confirm-tier secret under a made-up code key
 // is reported, and so is a secret used as a code.
 func TestSchemaTranslationKeys(t *testing.T) {
+	t.Parallel()
 	// plain codes and labels, and locale tags that look odd: nothing
 	ok := `{"properties":{"a":{"oneOf":[{"const":"static","title":"静态"}],
 	  "x-rackbook-i18n":{"password":{"title":"Kind"},"api_key":{"enum":{"static":"Static"}},"en-US":{"title":"Kind","enum":{"static":"Static","title":"Title","default":"D"}}},
@@ -1173,6 +1219,7 @@ func TestSchemaTranslationKeys(t *testing.T) {
 }
 
 func TestRackbookYmlTranslationsAreScanned(t *testing.T) {
+	t.Parallel()
 	src := "title: t\ni18n:\n  en-US: {title: \"Ledger " + ghp + "\"}\ncollections:\n  a:\n    title: x\n    i18n:\n      en-US: {title: " + aws + "}\nnotes:\n  - title: n\n    i18n: {zh-TW: {title: \"" + openai + "\"}}\n"
 	var got []string
 	for _, f := range Default().ScanYAML("rackbook.yml", []byte(src)) {
@@ -1190,6 +1237,7 @@ func TestRackbookYmlTranslationsAreScanned(t *testing.T) {
 }
 
 func TestFingerprintChangesWithWhatTheScannerFlags(t *testing.T) {
+	t.Parallel()
 	a, b := mustNew(Config{}), mustNew(Config{})
 	if a.Fingerprint() != b.Fingerprint() || a.Fingerprint() != (*Scanner)(nil).Fingerprint() {
 		t.Fatal("the same rules, the same fingerprint")

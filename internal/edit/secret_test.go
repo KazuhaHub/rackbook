@@ -58,6 +58,7 @@ func asSecretErr(t *testing.T, err error) *secretscan.Error {
 }
 
 func TestSecretInAddAndEditIsRefusedBeforeAnythingIsWritten(t *testing.T) {
+	t.Parallel()
 	dir, apply := setup(t)
 	before := snapshot(t, dir)
 
@@ -82,6 +83,7 @@ func TestSecretInAddAndEditIsRefusedBeforeAnythingIsWritten(t *testing.T) {
 }
 
 func TestSecretScanConfigAllowDisableAndOff(t *testing.T) {
+	t.Parallel()
 	add := func(extra string) error {
 		dir := testutil.CopyExample(t)
 		f, _ := os.OpenFile(filepath.Join(dir, "rackbook.yml"), os.O_APPEND|os.O_WRONLY, 0o644)
@@ -112,6 +114,7 @@ func TestSecretScanConfigAllowDisableAndOff(t *testing.T) {
 }
 
 func TestClearReferencesDoesNotTripOnAnOldSecretButCheckReportsIt(t *testing.T) {
+	t.Parallel()
 	dir := refLedger(t)
 	testutil.Replace(t, dir, "data/tasks.yml", "- {title: t1, owner: ann, reviewer: cy}", "- {title: t1, owner: ann, reviewer: cy, note: \"see token: abcdefgh12345\"}")
 	cfg := testutil.LoadConfig(t, dir)
@@ -136,6 +139,7 @@ func TestClearReferencesDoesNotTripOnAnOldSecretButCheckReportsIt(t *testing.T) 
 }
 
 func TestEditingARecordThatAlreadyHoldsASecretOnlyRefusesNewOnes(t *testing.T) {
+	t.Parallel()
 	dir, apply := setup(t)
 	testutil.Replace(t, dir, "docs/ledger/todo.yml", "scope: gw, status: 待决定", "scope: \"gw token: abcdefgh12345\", status: 待决定")
 	id := "评估关闭路由器 WAN 上的 Web 后台"
@@ -158,6 +162,7 @@ func TestEditingARecordThatAlreadyHoldsASecretOnlyRefusesNewOnes(t *testing.T) {
 }
 
 func TestAnnotatedPublicFieldPassesOnlyWithTheStrictFormat(t *testing.T) {
+	t.Parallel()
 	dir := refLedger(t)
 	testutil.Replace(t, dir, "schemas/people.json", `"name": {"type": "string"}`, `"name": {"type": "string"}, "ssh": {"type": "string", "x-rackbook": {"public": "ssh_public_key"}}, "note": {"type": "string"}`)
 	cfg := testutil.LoadConfig(t, dir)
@@ -174,6 +179,7 @@ func TestAnnotatedPublicFieldPassesOnlyWithTheStrictFormat(t *testing.T) {
 }
 
 func TestIDWithASecretIsRedactedInCommitsErrorsAndEveryIssueKind(t *testing.T) {
+	t.Parallel()
 	dir := refLedger(t)
 	testutil.Replace(t, dir, "data/people.yml", "- {name: cy}", "- {name: cy}\n- {name: \"zed "+ghToken+"\"}")
 	cfg := testutil.LoadConfig(t, dir)
@@ -212,6 +218,7 @@ func TestIDWithASecretIsRedactedInCommitsErrorsAndEveryIssueKind(t *testing.T) {
 }
 
 func TestConfirmTierNeedsConfirmationAndBlockTierIgnoresIt(t *testing.T) {
+	t.Parallel()
 	dir, apply := setup(t)
 	before := snapshot(t, dir)
 	suspect := map[string]any{"item": "the root password is Hunter2Hunter2", "status": "待办"}
@@ -245,6 +252,7 @@ func TestConfirmTierNeedsConfirmationAndBlockTierIgnoresIt(t *testing.T) {
 }
 
 func TestSecretNamedNumberAndAnnotationErrorsInSchemas(t *testing.T) {
+	t.Parallel()
 	dir := refLedger(t)
 	testutil.Replace(t, dir, "schemas/people.json", `"name": {"type": "string"}`, `"name": {"type": "string"}, "wifi_password": {"type": "integer"}`)
 	cfg := testutil.LoadConfig(t, dir)

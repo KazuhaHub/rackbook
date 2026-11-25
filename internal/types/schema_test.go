@@ -43,6 +43,7 @@ func roundTripType() *Type {
 }
 
 func TestSchemaRoundTripEveryFieldType(t *testing.T) {
+	t.Parallel()
 	want := roundTripType()
 	want.Fields[0].Unique = true
 	raw, err := applySchema(nil, nil, want)
@@ -81,6 +82,7 @@ func TestSchemaRoundTripEveryFieldType(t *testing.T) {
 }
 
 func TestParseKeepsUnknownKeywordsAndMarksAdvanced(t *testing.T) {
+	t.Parallel()
 	raw := []byte(`{
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "X",
@@ -133,6 +135,7 @@ func TestParseKeepsUnknownKeywordsAndMarksAdvanced(t *testing.T) {
 }
 
 func TestSchemaTypeChangeDropsOldTypeKeywords(t *testing.T) {
+	t.Parallel()
 	raw := []byte(`{"type": "object", "properties": {"a": {"type": "string", "pattern": "^x", "title": "A", "examples": ["x"]}}}` + "\n")
 	col := &config.Collection{Name: "x", File: "f", Schema: "s"}
 	ty, _ := ParseType(col, raw, nil, 0)
@@ -149,6 +152,7 @@ func TestSchemaTypeChangeDropsOldTypeKeywords(t *testing.T) {
 }
 
 func TestFormatSchemaStyle(t *testing.T) {
+	t.Parallel()
 	raw := []byte("{\n  \"$schema\": \"x\",\n  \"required\": [\"a\", \"b\"],\n  \"properties\": {\n    \"a\": {\"type\": \"string\", \"title\": \"设备\"},\n    \"b\": {\"type\": \"boolean\", \"default\": false}\n  }\n}\n")
 	v, err := parseOrdered(raw)
 	if err != nil {
@@ -164,6 +168,7 @@ func TestFormatSchemaStyle(t *testing.T) {
 // editor has no field type for them: they are advanced fields, kept as they are,
 // and an edit of another field leaves them byte for byte.
 func TestArrayFieldsAndConsoleOptionsSurviveATypeEdit(t *testing.T) {
+	t.Parallel()
 	raw := []byte(`{
   "type": "object",
   "required": ["name"],

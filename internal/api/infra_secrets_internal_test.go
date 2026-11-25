@@ -7,6 +7,7 @@ import (
 )
 
 func TestRevealLimits(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "reveals.json")
 	now := time.Date(2026, 11, 21, 12, 0, 0, 0, time.UTC)
 	l := &revealLimiter{Path: path}

@@ -21,6 +21,7 @@ func decode(t *testing.T, r resp) map[string]any {
 }
 
 func TestPublicConfigLocale(t *testing.T) {
+	t.Parallel()
 	for _, c := range []struct {
 		name, extras, accept, want, def string
 	}{
@@ -32,6 +33,7 @@ func TestPublicConfigLocale(t *testing.T) {
 		{"configured default, no header", "\ni18n: {default: zh-TW}\n", "", "zh-TW", "zh-TW"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
 			e := newEnv(t, options{cfgExtras: c.extras})
 			hdr := map[string]string{}
 			if c.accept != "" {
@@ -53,6 +55,7 @@ func TestPublicConfigLocale(t *testing.T) {
 }
 
 func TestAccountLocale(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t, options{readOnly: true}) // preferences are not ledger writes
 	b := e.browser()
 	b.login("editor", "")

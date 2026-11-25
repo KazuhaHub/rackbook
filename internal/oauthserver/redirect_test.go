@@ -6,6 +6,7 @@ import "testing"
 // signs in with a port the system picked; RFC 8252 section 7.3 says that port
 // must be accepted. Anything else still has to match exactly.
 func TestRedirectAllowedLoopbackPortMayVary(t *testing.T) {
+	t.Parallel()
 	reg := []string{"http://localhost/callback", "http://127.0.0.1/callback", "http://[::1]/cb?x=1", "https://app.example/cb", "cursor://anysphere.cursor-retrieval/oauth/callback"}
 	cases := []struct {
 		uri  string

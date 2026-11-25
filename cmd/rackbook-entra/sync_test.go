@@ -9,6 +9,7 @@ import (
 )
 
 func TestFirstRunCreatesThenIsIdempotent(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	e.graph.throttle = 1
 	res := e.run(false)
@@ -71,6 +72,7 @@ func TestFirstRunCreatesThenIsIdempotent(t *testing.T) {
 }
 
 func TestExpiryChangeUpdatesOnlyOwnedFields(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	e.run(false)
 	n := name("billing-service", k1)
@@ -91,6 +93,7 @@ func TestExpiryChangeUpdatesOnlyOwnedFields(t *testing.T) {
 }
 
 func TestVanishedCredentialIsRevokedNotDeleted(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	e.run(false)
 	e.graph.sps[1].PasswordCredentials = nil
@@ -108,6 +111,7 @@ func TestVanishedCredentialIsRevokedNotDeleted(t *testing.T) {
 }
 
 func TestSupersededCredentialIsRevoked(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	n := name("legacy", k3)
 	e.rb.seed(n, map[string]any{"source": "entra", "kid": k3, "kind": "api_token", "expires": "2026-01-01", "owner": "ops"})
@@ -121,6 +125,7 @@ func TestSupersededCredentialIsRevoked(t *testing.T) {
 }
 
 func TestExpiredWithoutSuccessorStaysLive(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	e.graph.pages[1][1].PasswordCredentials = e.graph.pages[1][1].PasswordCredentials[:1]
 	res := e.run(false)
@@ -133,6 +138,7 @@ func TestExpiredWithoutSuccessorStaysLive(t *testing.T) {
 }
 
 func TestManualRecordsAreNeverTouched(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	e.rb.seed("manual-one", map[string]any{"kind": "api_token", "kid": "unrelated", "expires": "2020-01-01"})
 	e.rb.seed("manual-two", map[string]any{"kind": "api_token", "source": "manual", "expires": "2021-01-01"})
@@ -146,6 +152,7 @@ func TestManualRecordsAreNeverTouched(t *testing.T) {
 }
 
 func TestManualCoverageSkipsCreate(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	e.rb.seed("by-kid", map[string]any{"kind": "api_token", "kid": strings.ToUpper(k6)})
 	e.rb.seed("by-ids", map[string]any{"kind": "api_token", "ids": []any{"entra_app_id=" + appC}, "expires": "2027-09-01"})
@@ -163,6 +170,7 @@ func TestManualCoverageSkipsCreate(t *testing.T) {
 }
 
 func TestDryRunWritesNothing(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	e.rb.seed(name("daemon", k6), map[string]any{"source": "entra", "kid": k6, "kind": "api_token", "expires": "2020-01-01", "ids": []any{}})
 	e.rb.seed(name("gone", "deadbeef-0"), map[string]any{"source": "entra", "kid": "deadbeef-0", "kind": "api_token"})
@@ -180,6 +188,7 @@ func TestDryRunWritesNothing(t *testing.T) {
 }
 
 func TestForeignNextLinkFails(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	e.graph.nextHost = "http://evil.example.test/v1.0"
 	_, err := e.a.syncOnce(context.Background(), false)
@@ -192,6 +201,7 @@ func TestForeignNextLinkFails(t *testing.T) {
 }
 
 func TestThrottleGivesUpAfterFiveAttempts(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	e.graph.always = 503
 	_, err := e.a.syncOnce(context.Background(), false)
@@ -204,6 +214,7 @@ func TestThrottleGivesUpAfterFiveAttempts(t *testing.T) {
 }
 
 func TestWriteRefusedAndConflictDoNotFail(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	e.rb.denyAll = true
 	res := e.run(false)
@@ -219,6 +230,7 @@ func TestWriteRefusedAndConflictDoNotFail(t *testing.T) {
 }
 
 func TestOtherWriteErrorsFail(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	e.rb.srv.Close()
 	if _, err := e.a.syncOnce(context.Background(), false); err == nil {
@@ -227,6 +239,7 @@ func TestOtherWriteErrorsFail(t *testing.T) {
 }
 
 func TestSlugAndFamily(t *testing.T) {
+	t.Parallel()
 	cases := map[string]string{
 		"Billing Service!": "billing-service", "  --A__b  ": "a-b", "日本語": "app", "": "app",
 		strings.Repeat("a", 39) + " bcd": strings.Repeat("a", 39),

@@ -55,6 +55,7 @@ func callStructured(t *testing.T, cs *mcp.ClientSession, args map[string]any) (m
 }
 
 func TestExpiryListTool(t *testing.T) {
+	t.Parallel()
 	cs := expiryClient(t, 40)
 	tools, err := cs.ListTools(context.Background(), nil)
 	if err != nil {

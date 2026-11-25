@@ -21,6 +21,7 @@ func typeWrite(s *Store, req types.Request) (*WriteResult, error) {
 }
 
 func TestTypeChangeIsOneCommitByTheAdmin(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	s := open(t, e.server, nil)
 	nt, err := types.Load(s.Ledger(), "services")
@@ -74,6 +75,7 @@ func mustLoad(t *testing.T, s *Store, name string) *types.Type {
 }
 
 func TestCreateTypeCommitsAllThreeFilesAndSurvivesAFailedPush(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	s := open(t, e.server, nil)
 	ty := &types.Type{Name: "contacts", Title: "联系人", Key: []string{"name"}, Fields: []types.Field{{Name: "name", Type: types.TText, Required: true}}}
@@ -118,6 +120,7 @@ func TestCreateTypeCommitsAllThreeFilesAndSurvivesAFailedPush(t *testing.T) {
 }
 
 func TestTypeChangeReplaysOnAMovedRemote(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	s := open(t, e.server, nil)
 	// somebody else pushes a data change first

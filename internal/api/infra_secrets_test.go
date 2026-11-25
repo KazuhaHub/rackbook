@@ -106,6 +106,7 @@ func keyNames(t *testing.T, body map[string]any) []string {
 }
 
 func TestSecretsListShowsNamesWithoutDecrypting(t *testing.T) {
+	t.Parallel()
 	s := newSEnv(t, nil, nil)
 	body := s.file(t, "alpha")
 	if got := strings.Join(keyNames(t, body), ","); got != "cloudflare_dns_token,feature_demo_token" {
@@ -144,6 +145,7 @@ func TestSecretsListShowsNamesWithoutDecrypting(t *testing.T) {
 }
 
 func TestSecretsRevealIsAuditedNoStoreAndRateLimited(t *testing.T) {
+	t.Parallel()
 	var logBuf bytes.Buffer
 	sink := &jsonSink{}
 	s := newSEnv(t, func(o *api.Options, io *api.InfraOptions) {
@@ -207,6 +209,7 @@ func TestSecretsRevealIsAuditedNoStoreAndRateLimited(t *testing.T) {
 }
 
 func TestSecretsSetAndUnsetAreCommits(t *testing.T) {
+	t.Parallel()
 	s := newSEnv(t, nil, nil)
 	base := s.base(t, "alpha")
 	// replace one, add one
@@ -288,6 +291,7 @@ func TestSecretsSetAndUnsetAreCommits(t *testing.T) {
 }
 
 func TestSecretsCreateTheFileOfAHostWithoutOne(t *testing.T) {
+	t.Parallel()
 	s := newSEnv(t, nil, nil)
 	code, res, _ := s.do(t, "POST", s.secretsPath("beta", "/set"), map[string]any{"base": "", "key": "first_key", "value": sNewValue}, me)
 	if code != 200 {
@@ -307,6 +311,7 @@ func TestSecretsCreateTheFileOfAHostWithoutOne(t *testing.T) {
 }
 
 func TestSecretsNoValueInArgvLogsAuditOrScratchFiles(t *testing.T) {
+	t.Parallel()
 	var logBuf bytes.Buffer
 	s := newSEnv(t, func(o *api.Options, io *api.InfraOptions) {
 		io.Audit = &ansiblerepo.AuditLog{Log: slog.New(slog.NewTextHandler(&logBuf, nil))}
@@ -347,6 +352,7 @@ func TestSecretsNoValueInArgvLogsAuditOrScratchFiles(t *testing.T) {
 }
 
 func TestSecretsRecipientsMustMatchTheCreationRule(t *testing.T) {
+	t.Parallel()
 	// alpha is encrypted for the host and the server, but its rule also wants the admin: it was never updated
 	s := newSEnv(t, nil, func(s *sEnv, seed map[string]string) {
 		old := s.sx.Config(map[string][]string{"secrets/alpha.sops.yaml": {"server", "host"}})
@@ -369,6 +375,7 @@ func TestSecretsRecipientsMustMatchTheCreationRule(t *testing.T) {
 }
 
 func TestSecretsFileWithoutTheServersKey(t *testing.T) {
+	t.Parallel()
 	s := newSEnv(t, nil, func(s *sEnv, seed map[string]string) {
 		seed[".sops.yaml"] = s.sx.Config(map[string][]string{"secrets/alpha.sops.yaml": {"admin", "host"}})
 		seed["secrets/alpha.sops.yaml"] = s.sx.Encrypt(t, seed[".sops.yaml"], "secrets/alpha.sops.yaml", `{"k":"v"}`)
@@ -387,6 +394,7 @@ func TestSecretsFileWithoutTheServersKey(t *testing.T) {
 }
 
 func TestSecretFeatureSettingsGoToSOPS(t *testing.T) {
+	t.Parallel()
 	s := newSEnv(t, nil, nil)
 	path := "/api/infra/hosts/alpha/features/demo"
 	base := s.wEnv.base(t, "/api/infra/hosts/alpha/vars")
@@ -437,6 +445,7 @@ func TestSecretFeatureSettingsGoToSOPS(t *testing.T) {
 }
 
 func TestSecretsAuthorizationMatrix(t *testing.T) {
+	t.Parallel()
 	s := newSEnv(t, nil, nil)
 	base := s.base(t, "alpha")
 	type req struct {
@@ -499,6 +508,7 @@ func TestSecretsAuthorizationMatrix(t *testing.T) {
 }
 
 func TestSecretsOffWithoutAKeyFile(t *testing.T) {
+	t.Parallel()
 	e := newWEnv(t, nil)
 	code, body, _ := e.do(t, "GET", "/api/infra/hosts/alpha/secrets", nil, me)
 	if code != 200 || body["enabled"] != false || body["publicKey"] != "" {
@@ -517,6 +527,7 @@ func TestSecretsOffWithoutAKeyFile(t *testing.T) {
 }
 
 func TestSecretsRevealRefusedOnAReadOnlyServer(t *testing.T) {
+	t.Parallel()
 	s := newSEnv(t, func(o *api.Options, io *api.InfraOptions) { o.ReadOnly = true }, nil)
 	code, body, _ := s.reveal(t, "alpha", "cloudflare_dns_token", me)
 	if code != http.StatusForbidden || body["error"] != "read_only" {
@@ -528,6 +539,7 @@ func TestSecretsRevealRefusedOnAReadOnlyServer(t *testing.T) {
 }
 
 func TestSecretsOnlyManagedHostsWithTheirOwnRule(t *testing.T) {
+	t.Parallel()
 	inv := wInventory + "    extra:\n      hosts:\n        admin:\n        gamma:\n"
 	inv = strings.Replace(inv, "        beta:\n", "        beta:\n        admin:\n        gamma:\n", 1)
 	inv = strings.Replace(inv, "    extra:\n      hosts:\n        admin:\n        gamma:\n", "    solo:\n      hosts:\n        solo:\n", 1)
@@ -572,6 +584,7 @@ func TestSecretsOnlyManagedHostsWithTheirOwnRule(t *testing.T) {
 }
 
 func TestSecretsMultilineValuesAreKeptExactly(t *testing.T) {
+	t.Parallel()
 	s := newSEnv(t, nil, nil)
 	pem := "-----BEGIN PRIVATE KEY-----\nAAAA\nBBBB\n-----END PRIVATE KEY-----\n"
 	for _, v := range []string{pem, "no trailing newline\nsecond", "  leading and trailing space \n\n"} {
@@ -607,6 +620,7 @@ func TestSecretsMultilineValuesAreKeptExactly(t *testing.T) {
 }
 
 func TestSecretsReencryptChangesRecipientsAndDataKey(t *testing.T) {
+	t.Parallel()
 	// the file is encrypted for admin, server and host; the rule now wants admin, server and other
 	s := newSEnv(t, nil, func(s *sEnv, seed map[string]string) {
 		seed[".sops.yaml"] = s.sx.Config(map[string][]string{"secrets/alpha.sops.yaml": {"admin", "server", "other"}, "secrets/beta.sops.yaml": {"admin", "server", "other"}})
@@ -669,6 +683,7 @@ func TestSecretsReencryptChangesRecipientsAndDataKey(t *testing.T) {
 }
 
 func TestSecretsReencryptRefusals(t *testing.T) {
+	t.Parallel()
 	refuse := func(name string, host string, tweak func(s *sEnv, seed map[string]string), want string) {
 		t.Run(name, func(t *testing.T) {
 			s := newSEnv(t, nil, tweak)

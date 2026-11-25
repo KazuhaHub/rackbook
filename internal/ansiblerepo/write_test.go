@@ -186,6 +186,7 @@ func (w *wfix) log(t *testing.T, format string) string {
 const aPath = "inventory/host_vars/a.yml"
 
 func TestApplyCommitsWithAuthorCommitterAndTrailers(t *testing.T) {
+	t.Parallel()
 	w := newWFix(t, true)
 	before := w.log(t, "%H")
 	out, err := w.repo.Apply(context.Background(), w.rawEdit(aPath, wVarsA+"extra: 1\n"), false)
@@ -238,6 +239,7 @@ func TestApplyCommitsWithAuthorCommitterAndTrailers(t *testing.T) {
 }
 
 func TestOneEditIsOneCommit(t *testing.T) {
+	t.Parallel()
 	w := newWFix(t, true)
 	n := func() string { return git(t, w.bare, "rev-list", "--count", "HEAD") }
 	before := n()
@@ -255,6 +257,7 @@ func TestOneEditIsOneCommit(t *testing.T) {
 }
 
 func TestPreviewCommitsNothing(t *testing.T) {
+	t.Parallel()
 	w := newWFix(t, true)
 	head := w.log(t, "%H")
 	out, err := w.repo.Apply(context.Background(), w.rawEdit(aPath, "ip: [\n"), true)
@@ -273,6 +276,7 @@ func TestPreviewCommitsNothing(t *testing.T) {
 }
 
 func TestConflictWhenTheFileChangedUpstream(t *testing.T) {
+	t.Parallel()
 	w := newWFix(t, true)
 	e := w.rawEdit(aPath, wVarsA+"mine: 1\n") // base = what the editor saw
 	w.upstream(t, "someone else", map[string]string{aPath: wVarsA + "theirs: 2\n"})
@@ -298,6 +302,7 @@ func TestConflictWhenTheFileChangedUpstream(t *testing.T) {
 }
 
 func TestReplayWhenTheBranchMovedButOurFilesDidNot(t *testing.T) {
+	t.Parallel()
 	w := newWFix(t, true)
 	moved := false
 	w.hook.before = func(c gitstore.Cmd) {
@@ -326,6 +331,7 @@ func TestReplayWhenTheBranchMovedButOurFilesDidNot(t *testing.T) {
 }
 
 func TestReplayConflictsWhenTheBranchMovedOnOurFile(t *testing.T) {
+	t.Parallel()
 	w := newWFix(t, true)
 	moved := false
 	w.hook.before = func(c gitstore.Cmd) {
@@ -345,6 +351,7 @@ func TestReplayConflictsWhenTheBranchMovedOnOurFile(t *testing.T) {
 }
 
 func TestGivesUpAfterThreeAttemptsAndNeverForces(t *testing.T) {
+	t.Parallel()
 	w := newWFix(t, true)
 	n := 0
 	w.hook.before = func(c gitstore.Cmd) {
@@ -394,6 +401,7 @@ func contains(l []string, s string) bool {
 }
 
 func TestValidationRefusesBeforeAnyCommitAndIsAudited(t *testing.T) {
+	t.Parallel()
 	w := newWFix(t, true)
 	head := w.log(t, "%H")
 	for name, content := range map[string]string{
@@ -428,6 +436,7 @@ func TestValidationRefusesBeforeAnyCommitAndIsAudited(t *testing.T) {
 }
 
 func TestEditingAnotherHostsProblemDoesNotBlock(t *testing.T) {
+	t.Parallel()
 	w := newWFix(t, true)
 	// b loses its secrets file upstream (an old problem)
 	git(t, w.seed, "pull", "--quiet", "origin", "main")
@@ -451,6 +460,7 @@ func TestEditingAnotherHostsProblemDoesNotBlock(t *testing.T) {
 }
 
 func TestConfirmedSecretScanFindingsGetATrailer(t *testing.T) {
+	t.Parallel()
 	w := newWFix(t, true)
 	content := wVarsA + "db_password: hunter2hunter2\n"
 	_, err := w.repo.Apply(context.Background(), w.rawEdit(aPath, content), false)
@@ -472,6 +482,7 @@ func TestConfirmedSecretScanFindingsGetATrailer(t *testing.T) {
 }
 
 func TestNoChangeAndFilesOutsideTheEditorsAreRefused(t *testing.T) {
+	t.Parallel()
 	w := newWFix(t, true)
 	if _, err := w.repo.Apply(context.Background(), w.rawEdit(aPath, wVarsA), false); !errors.Is(err, ErrNoChange) {
 		t.Fatalf("%v", err)
@@ -489,6 +500,7 @@ func TestNoChangeAndFilesOutsideTheEditorsAreRefused(t *testing.T) {
 }
 
 func TestReadOnlyRepoRefusesEdits(t *testing.T) {
+	t.Parallel()
 	w := newWFix(t, false)
 	if _, err := w.repo.Apply(context.Background(), w.rawEdit(aPath, "x: 1\n"), false); !errors.Is(err, ErrReadOnly) {
 		t.Fatalf("%v", err)
@@ -499,6 +511,7 @@ func TestReadOnlyRepoRefusesEdits(t *testing.T) {
 }
 
 func TestFeatureAndGroupEditsThroughTheRepo(t *testing.T) {
+	t.Parallel()
 	w := newWFix(t, true)
 	// features: change one setting, comments elsewhere stay
 	spec, _ := w.repo.Feature("demo")
@@ -546,6 +559,7 @@ func TestFeatureAndGroupEditsThroughTheRepo(t *testing.T) {
 }
 
 func TestRevertRestoresTheParentStateAndRefusesWhenLaterCommitsTouchedIt(t *testing.T) {
+	t.Parallel()
 	w := newWFix(t, true)
 	ctx := context.Background()
 	if _, err := w.repo.Apply(ctx, w.rawEdit(aPath, wVarsA+"one: 1\n"), false); err != nil {
@@ -606,6 +620,7 @@ func TestRevertRestoresTheParentStateAndRefusesWhenLaterCommitsTouchedIt(t *test
 }
 
 func TestRevertOfAnAddedFileRemovesItAndOtherCommitsAreRefused(t *testing.T) {
+	t.Parallel()
 	w := newWFix(t, true)
 	ctx := context.Background()
 	// a new host_vars file for c comes in upstream
@@ -649,6 +664,7 @@ func TestRevertOfAnAddedFileRemovesItAndOtherCommitsAreRefused(t *testing.T) {
 }
 
 func TestEditDoesNotAddAnAuthorFromNowhere(t *testing.T) {
+	t.Parallel()
 	w := newWFix(t, true)
 	if _, err := w.repo.Apply(context.Background(), Edit{Scope: "host_vars/a", Action: "edit", Who: &auth.Identity{Method: auth.MethodOIDC}, Files: w.rawEdit(aPath, "x: 1\n").Files}, false); !errors.Is(err, ErrNoAuthor) {
 		t.Fatalf("%v", err)
@@ -656,6 +672,7 @@ func TestEditDoesNotAddAnAuthorFromNowhere(t *testing.T) {
 }
 
 func TestHostVarsTemplatingAndConnectionVarsAreRefusedOnWrite(t *testing.T) {
+	t.Parallel()
 	w := newWFix(t, true)
 	head := w.log(t, "%H")
 	for name, content := range map[string]string{
@@ -678,6 +695,7 @@ func TestHostVarsTemplatingAndConnectionVarsAreRefusedOnWrite(t *testing.T) {
 }
 
 func TestResultOfAnEditIsCheckedEvenWhenTheFileWasAlreadyBroken(t *testing.T) {
+	t.Parallel()
 	w := newWFix(t, true)
 	// b already has a duplicate key and a template upstream (an old problem)
 	w.upstream(t, "broken", map[string]string{"inventory/host_vars/b.yml": "a: 1\na: 2\nx: '{{ y }}'\n"})
@@ -710,6 +728,7 @@ func TestResultOfAnEditIsCheckedEvenWhenTheFileWasAlreadyBroken(t *testing.T) {
 }
 
 func TestGroupVarsAreNotEditableOrRevertable(t *testing.T) {
+	t.Parallel()
 	w := newWFix(t, true)
 	gv := "inventory/group_vars/all.yml"
 	w.upstream(t, "group vars", map[string]string{gv: "ansible_connection: local\nx: '{{ y }}'\n"})
@@ -732,6 +751,7 @@ func TestGroupVarsAreNotEditableOrRevertable(t *testing.T) {
 }
 
 func TestRevertRefusesFilesWithSecretLookingValues(t *testing.T) {
+	t.Parallel()
 	w := newWFix(t, true)
 	// a commit that changes a file holding a secret-looking value
 	w.upstream(t, "secret-ish", map[string]string{"inventory/host_vars/b.yml": "api_token: abc123secret\nip: 1\n"})
@@ -748,6 +768,7 @@ func TestRevertRefusesFilesWithSecretLookingValues(t *testing.T) {
 }
 
 func TestRevertSubjectIsTruncatedByRunesNotBytes(t *testing.T) {
+	t.Parallel()
 	w := newWFix(t, true)
 	subj := strings.Repeat("改", 150)
 	w.upstream(t, subj, map[string]string{"inventory/host_vars/b.yml": "ip: 7\n"})
@@ -764,6 +785,7 @@ func TestRevertSubjectIsTruncatedByRunesNotBytes(t *testing.T) {
 }
 
 func TestOnCommitReportsPushedCommitsOnly(t *testing.T) {
+	t.Parallel()
 	w := newWFix(t, true)
 	type call struct{ hash, who, scope string }
 	var calls []call

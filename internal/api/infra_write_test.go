@@ -187,6 +187,7 @@ func (e *wEnv) base(t *testing.T, path string) string {
 }
 
 func TestInfraWriteAuthorization(t *testing.T) {
+	t.Parallel()
 	e := newWEnv(t, nil)
 	path := "/api/infra/hosts/alpha/vars"
 	base := e.base(t, path)
@@ -224,6 +225,7 @@ func TestInfraWriteAuthorization(t *testing.T) {
 }
 
 func TestInfraWriteNeedsARecentSignIn(t *testing.T) {
+	t.Parallel()
 	e := newWEnv(t, nil)
 	path := "/api/infra/hosts/alpha/vars"
 	base := e.base(t, path)
@@ -260,6 +262,7 @@ func TestInfraWriteNeedsARecentSignIn(t *testing.T) {
 }
 
 func TestInfraWriteOffByDefaultAndOnAReadOnlyServer(t *testing.T) {
+	t.Parallel()
 	for name, mut := range map[string]func(o *api.Options, io *api.InfraOptions){
 		"editors off":      func(o *api.Options, io *api.InfraOptions) { io.Write = false },
 		"read-only server": func(o *api.Options, io *api.InfraOptions) { o.ReadOnly = true },
@@ -287,6 +290,7 @@ func TestInfraWriteOffByDefaultAndOnAReadOnlyServer(t *testing.T) {
 }
 
 func TestInfraWriteIsNeverOnMCP(t *testing.T) {
+	t.Parallel()
 	e := newWEnv(t, nil)
 	for _, p := range []string{"/mcp/api/infra/hosts/alpha/vars", "/mcp/infra/groups"} {
 		if code, _, _ := e.do(t, "POST", p, map[string]any{}, me); code == 200 {
@@ -296,6 +300,7 @@ func TestInfraWriteIsNeverOnMCP(t *testing.T) {
 }
 
 func TestInfraEditHostVarsCommitsAsThePerson(t *testing.T) {
+	t.Parallel()
 	e := newWEnv(t, nil)
 	path := "/api/infra/hosts/alpha/vars"
 	code, st, _ := e.do(t, "GET", path, nil, me)
@@ -358,6 +363,7 @@ func TestInfraEditHostVarsCommitsAsThePerson(t *testing.T) {
 }
 
 func TestInfraRawEditorRefusesAFileWithSecretLookingValues(t *testing.T) {
+	t.Parallel()
 	e := newWEnv(t, nil)
 	e.upstream(t, "inventory/host_vars/beta.yml", "api_token: abc123secret\nip: 1\n")
 	if err := e.repo.Refresh(context.Background()); err != nil {
@@ -387,6 +393,7 @@ func (e *wEnv) upstream(t *testing.T, rel, body string) {
 }
 
 func TestInfraFeaturesFormEdits(t *testing.T) {
+	t.Parallel()
 	e := newWEnv(t, nil)
 	code, fl, _ := e.do(t, "GET", "/api/infra/features", nil, me)
 	feats := arr(t, fl["features"])
@@ -445,6 +452,7 @@ func TestInfraFeaturesFormEdits(t *testing.T) {
 }
 
 func TestInfraGroupsEditor(t *testing.T) {
+	t.Parallel()
 	e := newWEnv(t, nil)
 	code, inv, _ := e.do(t, "GET", "/api/infra/groups", nil, me)
 	m := inv["membership"].(map[string]any)
@@ -484,6 +492,7 @@ func TestInfraGroupsEditor(t *testing.T) {
 }
 
 func TestInfraHistoryAndRevert(t *testing.T) {
+	t.Parallel()
 	e := newWEnv(t, nil)
 	base := e.base(t, "/api/infra/hosts/alpha/vars")
 	if code, b, _ := e.do(t, "POST", "/api/infra/hosts/alpha/vars", map[string]any{"base": base, "content": wAlpha + "x: 1\n"}, me); code != 200 {
@@ -538,6 +547,7 @@ func TestInfraHistoryAndRevert(t *testing.T) {
 }
 
 func TestInfraWriteRoutesAreAbsentWithoutInfra(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t, nil, "")
 	for _, p := range []string{"/api/infra/groups", "/api/infra/features", "/api/infra/write"} {
 		if code, _, _ := f.do(t, "GET", p, nil, nil); code != 404 {

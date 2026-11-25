@@ -8,6 +8,7 @@ import (
 // The pages shown instead of a redirect speak the person's language: their
 // saved console preference, else the browser's, else the ledger's default.
 func TestErrorPageLanguage(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t, opts{})
 	cid := e.register("c")
 	_, ch := pkce()

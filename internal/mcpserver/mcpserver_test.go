@@ -46,6 +46,7 @@ func call(t *testing.T, cs *mcp.ClientSession, name string, args map[string]any)
 }
 
 func TestToolsList(t *testing.T) {
+	t.Parallel()
 	cs := connect(t)
 	res, err := cs.ListTools(context.Background(), nil)
 	if err != nil {
@@ -66,6 +67,7 @@ func TestToolsList(t *testing.T) {
 }
 
 func TestListRecordsWhere(t *testing.T) {
+	t.Parallel()
 	cs := connect(t)
 	out, isErr := call(t, cs, "list_records", map[string]any{"collection": "services", "where": map[string]any{"device": "web-hostco-ashburn-va-us-dc"}})
 	if isErr {
@@ -86,6 +88,7 @@ func TestListRecordsWhere(t *testing.T) {
 }
 
 func TestGetRecordBackrefsSearchSchemaCheck(t *testing.T) {
+	t.Parallel()
 	cs := connect(t)
 	out, isErr := call(t, cs, "get_record", map[string]any{"collection": "devices", "id": "web-hostco-ashburn-va-us-dc"})
 	if isErr {
@@ -135,6 +138,7 @@ func TestGetRecordBackrefsSearchSchemaCheck(t *testing.T) {
 }
 
 func TestHTTPHandler(t *testing.T) {
+	t.Parallel()
 	l := ledger.Load(testutil.LoadConfig(t, testutil.CopyExample(t)), nil)
 	ts := httptest.NewServer(Handler(New(func() *ledger.Ledger { return l }, "test"), false))
 	defer ts.Close()

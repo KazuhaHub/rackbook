@@ -41,6 +41,7 @@ func exitCode(err error) int {
 }
 
 func TestAuditVerifyExitCodes(t *testing.T) {
+	t.Parallel()
 	state, file := auditState(t, 4)
 	out, err := run(t, "audit", "verify", "--state-dir", state)
 	if exitCode(err) != 0 || !strings.HasPrefix(out, "ok: 4 lines in 1 files") {
@@ -98,6 +99,7 @@ func TestAuditVerifyExitCodes(t *testing.T) {
 }
 
 func TestAuditFlagsAreChecked(t *testing.T) {
+	t.Parallel()
 	cmd := newServe()
 	for _, tc := range []struct {
 		args    []string
@@ -120,6 +122,7 @@ func TestAuditFlagsAreChecked(t *testing.T) {
 }
 
 func TestAuditFlagsWarnWithoutStateDir(t *testing.T) {
+	t.Parallel()
 	var buf strings.Builder
 	lg := slog.New(slog.NewTextHandler(&buf, nil))
 	warnAuditWithoutState(lg, audit.AddrTruncate, 0)
@@ -151,6 +154,7 @@ func anchorRepo(t *testing.T, lines ...audit.Anchor) string {
 }
 
 func TestAuditVerifyChecksTheAnchorsOfAClone(t *testing.T) {
+	t.Parallel()
 	state, _ := auditState(t, 5)
 	l, err := audit.Open(filepath.Join(state, "audit"), audit.Options{})
 	if err != nil {
@@ -223,6 +227,7 @@ func TestAuditVerifyChecksTheAnchorsOfAClone(t *testing.T) {
 }
 
 func TestAuditVerifyRetentionMonthsDecidesWhatMaySkip(t *testing.T) {
+	t.Parallel()
 	// the dates come from the clock: four months back from this month, the oldest one deleted
 	now := time.Now().UTC()
 	first := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
@@ -264,6 +269,7 @@ func TestAuditVerifyRetentionMonthsDecidesWhatMaySkip(t *testing.T) {
 }
 
 func TestAuditVerifyRepoChecksTheHistoryOfTheAnchorFile(t *testing.T) {
+	t.Parallel()
 	state, _ := auditState(t, 5)
 	l, err := audit.Open(filepath.Join(state, "audit"), audit.Options{})
 	if err != nil {
@@ -311,6 +317,7 @@ func TestAuditVerifyRepoChecksTheHistoryOfTheAnchorFile(t *testing.T) {
 }
 
 func TestAuditVerifyRepoFailsWhenTheHistoryCannotBeChecked(t *testing.T) {
+	t.Parallel()
 	state, _ := auditState(t, 5)
 	l, err := audit.Open(filepath.Join(state, "audit"), audit.Options{})
 	if err != nil {

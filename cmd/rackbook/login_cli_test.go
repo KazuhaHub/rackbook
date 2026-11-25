@@ -53,6 +53,7 @@ func TestServeOIDCStartupChecks(t *testing.T) {
 }
 
 func TestServeTLSFlagsGoTogether(t *testing.T) {
+	t.Parallel()
 	cfg := filepath.Join(testutil.CopyExample(t), "rackbook.yml")
 	_, err := run(t, "serve", "--config", cfg, "--no-git", "--listen", "127.0.0.1:0", "--tls-cert", "x.pem")
 	if err == nil || !strings.Contains(err.Error(), "--tls-key") {
