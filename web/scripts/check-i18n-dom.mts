@@ -188,9 +188,17 @@ await new Promise((r, j) => {
 })
 let nextId = 0
 const pending = new Map<number, (v: any) => void>()
+// Requests the page has in flight (lazy chunks, API queries), for settle. Long-lived
+// connections (the dev server's WebSocket, an EventSource) never finish: not counted.
+const inflight = new Set<string>()
 ws.onmessage = (ev) => {
   const msg = JSON.parse(String(ev.data))
   if (msg.id !== undefined) pending.get(msg.id)?.(msg)
+  else if (msg.method === 'Network.requestWillBeSent') {
+    if (msg.params.type !== 'WebSocket' && msg.params.type !== 'EventSource') inflight.add(msg.params.requestId)
+  } else if (msg.method === 'Network.loadingFinished' || msg.method === 'Network.loadingFailed') inflight.delete(msg.params.requestId)
+  // a new document: requests of the old one may never report back
+  else if (msg.method === 'Page.frameNavigated' && !msg.params.frame.parentId) inflight.clear()
 }
 function cdp(method: string, params: Record<string, unknown> = {}): Promise<any> {
   const id = ++nextId
@@ -206,6 +214,7 @@ async function evaluate<T>(expression: string): Promise<T> {
 }
 await cdp('Page.enable')
 await cdp('Runtime.enable')
+await cdp('Network.enable')
 // CPU_THROTTLE=6 slows the page down like a busy CI runner, to shake out timing assumptions
 if (process.env.CPU_THROTTLE) await cdp('Emulation.setCPUThrottlingRate', { rate: Number(process.env.CPU_THROTTLE) })
 
@@ -230,11 +239,22 @@ const SETTLE = `new Promise((resolve) => {
   obs.observe(document, { subtree: true, childList: true, characterData: true, attributes: true, attributeFilter: ['title', 'aria-label', 'placeholder', 'alt', 'lang'] })
   arm()
 })`
+let gaveUp = 0
 async function settle() {
+  const deadline = Date.now() + 10000
   for (let i = 0; ; i++) {
     try {
       await evaluate(SETTLE)
-      return
+      // and nothing is still loading: a lazy chunk or query in flight can change the
+      // page after a quiet spell (a Suspense fallback that waits on the network)
+      if (inflight.size === 0) return
+      while (inflight.size > 0 && Date.now() < deadline) await sleep(25)
+      if (Date.now() >= deadline) {
+        gaveUp++
+        return
+      }
+      i = -1 // the DOM may change once the requests land: wait for quiet again
+      continue
     } catch (e) {
       // a navigation that commits while the observer runs replaces the page
       // under it: wait on the new page instead
@@ -357,6 +377,7 @@ for (const [a, b] of pairs) {
     }
   }
 }
+console.log(`settle gave up after 10 s with requests in flight: ${gaveUp} times`)
 console.log(`${pages.length} pages x ${pairs.length} switches, failures ${failures}`)
 ws.close()
 cleanup()
