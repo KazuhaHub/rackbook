@@ -81,16 +81,17 @@ jobs:
           go version
           git version
           go env GOOS GOARCH
+      # The package list is GOPKGS in the Makefile (Windows runners have no make).
       - name: Vet
-        run: go vet ./cmd/... ./internal/... ./modules/... ./web
+        run: go vet ./cmd/... ./internal/... ./modules/... ./modsettings/... ./web
       - name: Test
         env:
           RACE: ${{ matrix.race }}
         run: |
           if [ "$RACE" = "true" ]; then
-            CGO_ENABLED=1 go test -race -count=1 -v ./cmd/... ./internal/... ./modules/... ./web 2>&1 | tee test.log
+            CGO_ENABLED=1 go test -race -count=1 -v ./cmd/... ./internal/... ./modules/... ./modsettings/... ./web 2>&1 | tee test.log
           else
-            go test -count=1 -v ./cmd/... ./internal/... ./modules/... ./web 2>&1 | tee test.log
+            go test -count=1 -v ./cmd/... ./internal/... ./modules/... ./modsettings/... ./web 2>&1 | tee test.log
           fi
           # Every skipped test must say why; list them in the job summary.
           { echo '### Skipped tests on ${{ matrix.name }}'; echo '```'; grep -hE -A1 -- '--- SKIP|SKIPPED' test.log | grep -v '^--$' | sort -u || true; echo '```'; } >> "$GITHUB_STEP_SUMMARY"

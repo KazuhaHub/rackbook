@@ -21,9 +21,53 @@ env:
   GOWORK: "off"
   GOTOOLCHAIN: local
 
+# Layout. The required checks are go, web, fuzz, cross-compile and docker.
+# go and web are gates: each passes only when every job under it passed, or
+# when the pull request changes nothing those jobs look at and they were all
+# skipped. The jobs under a gate run side by side.
+#
+# Which jobs a pull request needs comes from the files it changes
+# (scripts/ci-changes.sh, job "changes"). A push to main runs every job. If
+# "changes" fails, the gates fail and every other job runs, so a broken filter
+# never turns into a skipped check. Each step runs a Makefile target, the same
+# one used locally (make ci runs them all).
 jobs:
-  go:
-    name: go
+  changes:
+    name: changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      go: ${{ steps.pick.outputs.go }}
+      web: ${{ steps.pick.outputs.web }}
+      fuzz: ${{ steps.pick.outputs.fuzz }}
+      cross: ${{ steps.pick.outputs.cross }}
+      docker: ${{ steps.pick.outputs.docker }}
+    steps:
+      # A pull request is checked out as its merge commit: its first parent is
+      # the base branch, so HEAD^1..HEAD is what the pull request changes.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+      - id: pick
+        shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          if [ "$EVENT" = pull_request ]; then
+            git diff --name-only HEAD^1 HEAD | scripts/ci-changes.sh | tee -a "$GITHUB_OUTPUT"
+          else
+            printf 'go=true\nweb=true\nfuzz=true\ncross=true\ndocker=true\n' | tee -a "$GITHUB_OUTPUT"
+          fi
+
+  # --- go ------------------------------------------------------------------------
+  go-lint:
+    name: go-lint
+    needs: changes
+    # !cancelled(): runs when "changes" failed too (its outputs are then empty)
+    if: ${{ !cancelled() && needs.changes.outputs.go != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -39,23 +83,29 @@ jobs:
       - name: Go version matches go.mod
         shell: bash
         run: test "$(go env GOVERSION)" = "go$(go list -m -f '{{.GoVersion}}')"
-      # The tests need no console build: web/dist holds only a .gitkeep and the
-      # server then shows its "console not built" page.
-      - name: gofmt
-        run: |
-          out="$(gofmt -l .)"
-          if [ -n "$out" ]; then
-            echo "These files are not gofmt-formatted:"
-            echo "$out"
-            exit 1
-          fi
-      - name: go vet
-        run: go vet ./...
-      - name: staticcheck
-        run: go run honnef.co/go/tools/cmd/staticcheck@v0.8.2 ./...
-      # Checks the workflow files themselves: expressions, job wiring, inputs.
-      - name: actionlint
-        run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+      - run: make fmt-check
+      - run: make vet
+      - run: make staticcheck
+      - run: make actionlint
+
+  go-test:
+    name: go-test
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.go != 'false' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version-file: go.mod
+      - name: Go version matches go.mod
+        shell: bash
+        run: test "$(go env GOVERSION)" = "go$(go list -m -f '{{.GoVersion}}')"
       # The infra secrets editor is tested against the real sops and age: the
       # tests skip without them, so CI installs the pinned ones (checksummed) and
       # fails when they are missing.
@@ -63,20 +113,44 @@ jobs:
         run: |
           scripts/install-sops-age.sh "$RUNNER_TEMP/bin"
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      # The tests need no console build: web/dist holds only a .gitkeep and the
+      # server then shows its "console not built" page.
       - name: go test -race
         env:
           RACKBOOK_REQUIRE_SOPS: "1"
-        run: go test -race -count=1 ./...
+        run: make test TESTFLAGS=-count=1
 
-  web:
-    name: web
+  go:
+    name: go
+    needs: [changes, go-lint, go-test]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: go-lint and go-test passed, or were not needed
+        env:
+          CHANGES: ${{ needs.changes.result }}
+          WANT: ${{ needs.changes.outputs.go }}
+          LINT: ${{ needs.go-lint.result }}
+          TEST: ${{ needs.go-test.result }}
+        run: |
+          echo "changes=$CHANGES go=$WANT go-lint=$LINT go-test=$TEST"
+          test "$CHANGES" = success
+          if [ "$WANT" = false ]; then
+            test "$LINT" = skipped && test "$TEST" = skipped
+          else
+            test "$WANT" = true && test "$LINT" = success && test "$TEST" = success
+          fi
+
+  # --- web -----------------------------------------------------------------------
+  web-check:
+    name: web-check
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.web != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
       contents: read
-    defaults:
-      run:
-        working-directory: web
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -88,21 +162,59 @@ jobs:
           cache: npm
           cache-dependency-path: web/package-lock.json
       # npm ci installs exactly what package-lock.json says.
-      - run: npm ci
-      - run: npm run lint
-      - run: npm run typecheck
-      - run: npm run check:formats
-      - run: npm run check:record-urls
-      - run: npm run check:console-logic
-      - run: npm run check:stale-chunk
-      - run: npm run check:modules
-      - run: npm run check:i18n
-      # loads each page in one language, switches, and compares with a fresh load (headless Chrome, mock API)
-      - run: npm run check:i18n-dom
-      - run: npm run build
+      - run: npm --prefix web ci
+      # lint, typecheck, the check: scripts other than i18n-dom, and the build
+      - run: make web-check
 
+  web-i18n-dom:
+    name: web-i18n-dom
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.web != 'false' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm --prefix web ci
+      # loads each page in each language pair, switches, and compares with a
+      # fresh load (headless Chrome, mock API); the pairs run side by side
+      - run: make web-i18n-dom
+
+  web:
+    name: web
+    needs: [changes, web-check, web-i18n-dom]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: web-check and web-i18n-dom passed, or were not needed
+        env:
+          CHANGES: ${{ needs.changes.result }}
+          WANT: ${{ needs.changes.outputs.web }}
+          CHECK: ${{ needs.web-check.result }}
+          DOM: ${{ needs.web-i18n-dom.result }}
+        run: |
+          echo "changes=$CHANGES web=$WANT web-check=$CHECK web-i18n-dom=$DOM"
+          test "$CHANGES" = success
+          if [ "$WANT" = false ]; then
+            test "$CHECK" = skipped && test "$DOM" = skipped
+          else
+            test "$WANT" = true && test "$CHECK" = success && test "$DOM" = success
+          fi
+
+  # --- the rest ------------------------------------------------------------------
   govulncheck:
     name: govulncheck
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.go != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -121,8 +233,11 @@ jobs:
       # Reports known vulnerabilities in the Go standard library and modules that the code actually calls.
       - run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
 
+  # Pull requests run it only when the secret scanner or the modules change.
   fuzz:
     name: fuzz
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.fuzz != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -141,8 +256,13 @@ jobs:
       # A short run: it only catches crashes in the secret scanner, it does not prove there are none.
       - run: go test -run '^$' -fuzz '^FuzzScan$' -fuzztime=20s ./internal/secretscan/
 
+  # Pull requests run it only when platform-dependent Go code or the modules
+  # change (see platform_specific in scripts/ci-changes.sh): other Go code
+  # builds the same on every target, and go-test builds it for linux/amd64.
   cross-compile:
     name: cross-compile
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.cross != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -184,8 +304,13 @@ jobs:
           ./rackbook-entra --version
           ./rackbook-notify --version
 
+  # Pull requests run it only when the Dockerfile, .dockerignore or the
+  # dependencies (go.mod, go.sum, web/package*.json) change; the code itself is
+  # built and tested by go-test and web-check.
   docker:
     name: docker
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.docker != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
