@@ -5,8 +5,8 @@ VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -s -w -X main.version=$(VERSION)
 # Every Go package of the module. Not ./...: that would also pick up a Go
 # package inside web/node_modules once npm has installed the console.
+# make pkgs-check (part of go-lint) fails when a package is missing here.
 GOPKGS  := ./cmd/... ./internal/... ./modules/... ./modsettings/... ./web
-GODIRS  := cmd internal modules modsettings web/embed.go
 
 # The checks CI runs (.github/workflows/ci.yml calls these same targets).
 STATICCHECK := honnef.co/go/tools/cmd/staticcheck@v0.8.2
@@ -14,7 +14,7 @@ ACTIONLINT  := github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
 # CI adds -count=1 so a run never reuses cached results.
 TESTFLAGS ?=
 
-.PHONY: build web go-build test test-shard vet fmt-check staticcheck actionlint go-lint web-check web-i18n-dom ci check smoke run docker clean
+.PHONY: build web go-build test test-shard vet pkgs-check fmt-check staticcheck actionlint go-lint web-check web-i18n-dom ci check smoke run docker clean
 
 # Full build: console first (it is embedded into the binary), then the binary.
 build: web go-build
@@ -31,8 +31,9 @@ go-build:
 vet:
 	go vet $(GOPKGS)
 
+# Every Go file git tracks or would track (node_modules is ignored).
 fmt-check:
-	@out="$$(gofmt -l $(GODIRS))"; if [ -n "$$out" ]; then echo "These files are not gofmt-formatted:"; echo "$$out"; exit 1; fi
+	@out="$$(gofmt -l $$(git ls-files -co --exclude-standard '*.go'))"; if [ -n "$$out" ]; then echo "These files are not gofmt-formatted:"; echo "$$out"; exit 1; fi
 
 staticcheck:
 	go run $(STATICCHECK) $(GOPKGS)
@@ -41,8 +42,15 @@ staticcheck:
 actionlint:
 	go run $(ACTIONLINT)
 
+# Fails when the module has a package that GOPKGS leaves out (and so would go
+# untested and unchecked).
+pkgs-check:
+	@all="$$(go list ./...)" && listed="$$(go list $(GOPKGS))" \
+	  && missing="$$(printf '%s\n' "$$all" | grep -v /node_modules/ | grep -vxF -e "$$listed" || true)" \
+	  && if [ -n "$$missing" ]; then echo "packages missing from GOPKGS in the Makefile:"; echo "$$missing"; exit 1; fi
+
 # The Go checks other than the tests (CI job go-lint).
-go-lint: fmt-check vet staticcheck actionlint
+go-lint: pkgs-check fmt-check vet staticcheck actionlint
 
 # With sops and age on PATH the secrets editor is tested against them; without
 # them those tests skip, unless RACKBOOK_REQUIRE_SOPS=1 (set in CI) makes them fail.
