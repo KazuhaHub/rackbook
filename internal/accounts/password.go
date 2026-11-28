@@ -106,13 +106,15 @@ func NeedsRehash(stored string) bool {
 
 // Hash returns the PHC string of the NFKC-normalised password with a fresh 16-byte salt. It runs
 // outside the slots: sign-in code goes through Hasher.
-func hashPassword(pw string) (string, error) {
+func hashPassword(pw string) (string, error) { return hashWith(current, pw) }
+
+func hashWith(p argonParams, pw string) (string, error) {
 	salt := make([]byte, argonSaltLen)
 	if _, err := rand.Read(salt); err != nil {
 		return "", err
 	}
-	sum := argon2.IDKey([]byte(normalise(pw)), salt, current.t, current.m, current.p, argonKeyLen)
-	return encodePHC(current, salt, sum), nil
+	sum := argon2.IDKey([]byte(normalise(pw)), salt, p.t, p.m, p.p, argonKeyLen)
+	return encodePHC(p, salt, sum), nil
 }
 
 // verifyPassword checks pw against a stored PHC string with a constant-time comparison of the tag.
@@ -130,8 +132,10 @@ var dummySalt = []byte("rackbook-dummy-1")
 
 // burn runs one argon2id at the current parameters on a fixed salt and discards the result: the
 // dummy check of 5.6 step 5.
-func burn(pw string) {
-	sum := argon2.IDKey([]byte(normalise(pw)), dummySalt, current.t, current.m, current.p, argonKeyLen)
+func burn(pw string) { burnWith(current, pw) }
+
+func burnWith(p argonParams, pw string) {
+	sum := argon2.IDKey([]byte(normalise(pw)), dummySalt, p.t, p.m, p.p, argonKeyLen)
 	_ = sum
 }
 
@@ -203,13 +207,45 @@ func (s *Slots) acquire(ctx context.Context, c Class) (func(), error) {
 }
 
 // Hasher runs argon2id in the slots.
-type Hasher struct{ slots *Slots }
+type Hasher struct {
+	slots  *Slots
+	params argonParams
+	custom bool // params were given by NewHasherCost; otherwise the constants of 4.2 are read at each use
+	// onHash, when set, is told how long each argon2id run took inside its slot (the queue is not in it):
+	// the hash-only sample of the dummy-hash budget (8.6).
+	onHash func(time.Duration)
+}
 
-// NewHasher uses the default slots.
+// NewHasher uses the default slots and the parameters of 4.2.
 func NewHasher() *Hasher { return &Hasher{slots: NewSlots(DefaultSlots, DefaultQueue)} }
 
-// NewHasherWith uses the given slots.
+// NewHasherWith uses the given slots and the parameters of 4.2.
 func NewHasherWith(s *Slots) *Hasher { return &Hasher{slots: s} }
+
+// NewHasherCost is a hasher whose new hashes use the given cost instead of the constants of 4.2. The server
+// never calls it: it exists so that tests which sign in many times do not run 64 MiB hashes. Verification
+// always uses the parameters stored in the hash.
+func NewHasherCost(s *Slots, memKiB, passes uint32, lanes uint8) *Hasher {
+	return &Hasher{slots: s, params: argonParams{m: memKiB, t: passes, p: lanes}, custom: true}
+}
+
+// OnHash sets the function told the time of each run. Call it before the hasher is used.
+func (h *Hasher) OnHash(f func(time.Duration)) { h.onHash = f }
+
+func (h *Hasher) p() argonParams {
+	if h.custom {
+		return h.params
+	}
+	return current
+}
+
+func (h *Hasher) timed(f func()) {
+	start := time.Now()
+	f()
+	if h.onHash != nil {
+		h.onHash(time.Since(start))
+	}
+}
 
 // Hash hashes a new password. It does not check the rules (CheckPassword does).
 func (h *Hasher) Hash(ctx context.Context, c Class, pw string) (string, error) {
@@ -218,7 +254,10 @@ func (h *Hasher) Hash(ctx context.Context, c Class, pw string) (string, error) {
 		return "", err
 	}
 	defer rel()
-	return hashPassword(pw)
+	var out string
+	var herr error
+	h.timed(func() { out, herr = hashWith(h.p(), pw) })
+	return out, herr
 }
 
 // Verify checks pw against a stored hash. rehash says the stored hash is under old parameters.
@@ -228,8 +267,13 @@ func (h *Hasher) Verify(ctx context.Context, c Class, pw, stored string) (ok, re
 		return false, false, err
 	}
 	defer rel()
-	ok = verifyPassword(pw, stored)
-	return ok, ok && NeedsRehash(stored), nil
+	h.timed(func() { ok = verifyPassword(pw, stored) })
+	return ok, ok && h.needsRehash(stored), nil
+}
+
+func (h *Hasher) needsRehash(stored string) bool {
+	p, err := parsePHC(stored)
+	return err != nil || p.argonParams != h.p() || len(p.salt) != argonSaltLen || len(p.sum) != argonKeyLen
 }
 
 // Dummy runs one argon2id for an account that cannot sign in, so the answer takes as long (5.6).
@@ -239,7 +283,18 @@ func (h *Hasher) Dummy(ctx context.Context, c Class, pw string) error {
 		return err
 	}
 	defer rel()
-	burn(pw)
+	h.timed(func() { burnWith(h.p(), pw) })
+	return nil
+}
+
+// Wait joins the slot queue as a real check does and releases the slot at once: the wait of this
+// moment, without a hash (the sleeper of the dummy-hash budget, 8.6).
+func (h *Hasher) Wait(ctx context.Context, c Class) error {
+	rel, err := h.slots.acquire(ctx, c)
+	if err != nil {
+		return err
+	}
+	rel()
 	return nil
 }
 
