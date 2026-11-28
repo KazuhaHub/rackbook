@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"crypto/rand"
 	"encoding/base64"
 	"errors"
@@ -20,6 +21,7 @@ import (
 	"github.com/kazuhahub/rackbook/internal/accounts"
 	"github.com/kazuhahub/rackbook/internal/audit"
 	"github.com/kazuhahub/rackbook/internal/fsutil"
+	"github.com/kazuhahub/rackbook/internal/gitstore"
 	"github.com/kazuhahub/rackbook/internal/login"
 	"github.com/kazuhahub/rackbook/internal/statekey"
 	"github.com/kazuhahub/rackbook/internal/tokens"
@@ -119,10 +121,12 @@ that retention deleted (--reset-all-accounts); both put every account into reset
 				ro.Confirm = func() (bool, error) { return confirm(cmd, "Type yes to apply this: ") }
 			}
 			if repo, _ := cmd.Flags().GetString("repo"); repo != "" {
-				if off.TokenNames, err = listTokenNames(repo); err != nil {
+				var commit string
+				if off.TokenNames, commit, err = listTokenNames(cmd.Context(), repo); err != nil {
 					return err
 				}
 				off.TokensListed = true
+				fmt.Fprintf(cmd.OutOrStdout(), "API tokens listed from %s at commit %s (%d). Pull the clone first; tokens created since that commit are not listed.\n", repo, commit, len(off.TokenNames))
 			}
 			_, err = accounts.AcceptRestore(off, ro)
 			return err
@@ -343,31 +347,35 @@ func offlineSession(cmd *cobra.Command) (accounts.Offline, func(), error) {
 	return off, func() { l.Close(); unlock(); key.Zero() }, nil
 }
 
-// listTokenNames reads the names of every API token of a clone of the data repository. Names only. It is an
-// error, never an empty list, when the directory is missing, is not a Git checkout or has no tokens file: an
-// empty list would hide the warning to revoke the tokens by hand.
-func listTokenNames(repo string) ([]string, error) {
-	st, err := os.Stat(repo)
-	if err != nil || !st.IsDir() {
-		return nil, fmt.Errorf("--repo %s is not a directory: pass a clone of the data repository, or leave --repo out and revoke the API tokens by hand", repo)
+// listTokenNames reads the names of every API token of a clone of the data repository, and the commit the clone is at
+// (asked of Git through the repository's own runner). Names only. It is an error, never an empty list, when the
+// directory is missing, is not a Git checkout or has no tokens file: an empty list would hide the warning to revoke the
+// tokens by hand.
+func listTokenNames(ctx context.Context, repo string) (names []string, commit string, err error) {
+	const byHand = "pass a clone of the data repository, or leave --repo out and revoke the API tokens by hand"
+	if st, err := os.Stat(repo); err != nil || !st.IsDir() {
+		return nil, "", fmt.Errorf("--repo %s is not a directory: %s", repo, byHand)
 	}
-	if _, err := os.Lstat(filepath.Join(repo, ".git")); err != nil {
-		return nil, fmt.Errorf("--repo %s is not a Git checkout (no .git): pass a clone of the data repository, or leave --repo out and revoke the API tokens by hand", repo)
+	r := &gitstore.Repo{Dir: repo, IgnoreUserConfig: true}
+	if !r.IsRepo(ctx) {
+		return nil, "", fmt.Errorf("--repo %s is not a Git checkout: %s", repo, byHand)
+	}
+	if commit, err = r.Head(ctx); err != nil || commit == "" {
+		return nil, "", fmt.Errorf("--repo %s has no commit: %s", repo, byHand)
 	}
 	b, err := os.ReadFile(filepath.Join(repo, filepath.FromSlash(tokens.File)))
 	if errors.Is(err, os.ErrNotExist) {
-		return nil, fmt.Errorf("--repo %s has no %s: it is not the data repository, or its checkout is out of date; pull it, or leave --repo out and revoke the API tokens by hand", repo, tokens.File)
+		return nil, "", fmt.Errorf("--repo %s has no %s at commit %s: it is not the data repository, or its checkout is out of date; pull it, or leave --repo out and revoke the API tokens by hand", repo, tokens.File, commit)
 	}
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	ts, err := tokens.Parse(b)
 	if err != nil {
-		return nil, fmt.Errorf("%s does not parse: %w", tokens.File, err)
+		return nil, "", fmt.Errorf("%s does not parse: %w", tokens.File, err)
 	}
-	var out []string
 	for _, t := range ts {
-		out = append(out, t.Name)
+		names = append(names, t.Name)
 	}
-	return out, nil
+	return names, commit, nil
 }

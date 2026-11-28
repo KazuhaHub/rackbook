@@ -400,8 +400,12 @@ func TestAcceptRestoreOfSecretsClearsEverythingAfterAGlobalReset(t *testing.T) {
 			if _, err := AcceptRestore(off, RestoreOptions{}); err != nil {
 				t.Fatal(err)
 			}
-			if !strings.Contains(out.String(), "every secret is cleared") {
-				t.Fatalf("output:\n%s", out)
+			want := "every secret is cleared because of the " + g.event + " event"
+			if g.code != "" {
+				want += " (code " + g.code + ")"
+			}
+			if !strings.Contains(out.String(), want) || !strings.Contains(out.String(), " at seq ") || !strings.Contains(out.String(), "written for the secrets store") {
+				t.Fatalf("the plan does not name the event that cleared the secrets (%q):\n%s", want, out)
 			}
 			none(t, e)
 		})
@@ -415,9 +419,12 @@ func TestAcceptRestoreOfSecretsClearsEverythingAfterAGlobalReset(t *testing.T) {
 		s.Change(audit.Event{Event: "account_store_problem", Code: "audit_truncated"}, func(*State) error { return nil })
 		os.WriteFile(SecretsPath(e.dir), backup, 0o600)
 		e.restart()
-		off, _ := e.offline()
+		off, out := e.offline()
 		if _, err := AcceptRestore(off, RestoreOptions{}); err != nil {
 			t.Fatal(err)
+		}
+		if !strings.Contains(out.String(), "the account_store_problem event (code audit_truncated) at seq") || !strings.Contains(out.String(), "written for the account store") {
+			t.Fatalf("output:\n%s", out)
 		}
 		none(t, e)
 	})
@@ -427,9 +434,12 @@ func TestAcceptRestoreOfSecretsClearsEverythingAfterAGlobalReset(t *testing.T) {
 		e.log.Close()
 		os.RemoveAll(e.auditDir()) // the log is gone
 		e.startLog()
-		off, _ := e.offline()
+		off, out := e.offline()
 		if _, err := AcceptRestore(off, RestoreOptions{AcceptAuditTruncation: true}); err != nil {
 			t.Fatal(err)
+		}
+		if !strings.Contains(out.String(), "every secret is cleared because the audit log cannot be trusted (audit_truncated)") {
+			t.Fatalf("output:\n%s", out)
 		}
 		none(t, e) // everything cleared
 		os.WriteFile(SecretsPath(e.dir), backup, 0o600)
@@ -454,6 +464,7 @@ func TestCounterCannotLoosenWithoutASuccess(t *testing.T) {
 		a.State = StateRestricted
 		a.Locks = []Lock{{Scope: "account", Until: t0.Add(time.Hour)}}
 		a.TOTP.LastStep = 100
+		a.LastLogin = &Seen{Time: t0} // an earlier sign-in, which a loosening must move past
 		return nil
 	}
 	if err := s.Counter(nil, tighten); err != nil {
@@ -484,30 +495,55 @@ func TestCounterCannotLoosenWithoutASuccess(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("moving forward: %v", err)
 	}
-	// with a recorded success everything may be undone
+	// loosening needs proof of a sign-in: a login event for this account, appended in the same write, and a
+	// last_login that advanced and is not in the future
 	e.clk.Set(t0.Add(time.Minute))
-	if err := s.Counter(nil, func(st *State) error {
-		a := st.Accounts["alice"]
-		a.State, a.ConsecutiveFailures, a.Locks = StateActive, 0, nil
-		a.LastLogin = &Seen{Time: e.clk.Now(), Addr: "203.0.113.0"}
-		return nil
-	}); err != nil {
-		t.Fatalf("after a success: %v", err)
+	loosen := func(login time.Time) func(*State) error {
+		return func(st *State) error {
+			a := st.Accounts["alice"]
+			a.State, a.ConsecutiveFailures, a.Locks = StateActive, 0, nil
+			a.LastLogin = &Seen{Time: login, Addr: "203.0.113.0"}
+			return nil
+		}
 	}
-	// a last_login that does not advance is no success
+	good := audit.Event{Event: "login", Identity: "local:alice"}
+	other := audit.Event{Event: "login", Identity: "local:bob"}
+	refusedLogin := audit.Event{Event: "login_refused", Identity: "local:alice"}
+	n := len(e.events())
+	for name, c := range map[string]struct {
+		ev    *audit.Event
+		login time.Time
+	}{
+		"no event":                       {nil, e.clk.Now()},
+		"a login for another account":    {&other, e.clk.Now()},
+		"an event that is not a login":   {&refusedLogin, e.clk.Now()},
+		"a last_login in the future":     {&good, e.clk.Now().Add(time.Hour)},
+		"a last_login that did not move": {&good, t0},
+	} {
+		if err := s.Counter(c.ev, loosen(c.login)); !errors.Is(err, ErrNotCounterOnly) {
+			t.Errorf("%s: err = %v", name, err)
+		}
+	}
+	if len(e.events()) != n {
+		t.Fatal("a refused counter write appended an audit line")
+	}
+	if got := s.Snapshot().Accounts["alice"]; got.State != StatePasskeyOnly || got.ConsecutiveFailures != 6 {
+		t.Fatal("a refused loosening changed the state")
+	}
+	if err := s.Counter(&good, loosen(e.clk.Now())); err != nil {
+		t.Fatalf("with the proof: %v", err)
+	}
+	if got := len(e.events()); got != n+1 {
+		t.Fatalf("the login line must be appended in the same write: %d events, was %d", got, n)
+	}
+	if got := s.Snapshot().Accounts["alice"]; got.State != StateActive || got.ConsecutiveFailures != 0 {
+		t.Fatal("the loosening with proof did not land")
+	}
 	s.Counter(nil, func(st *State) error {
 		st.Accounts["alice"].State = StateRestricted
 		st.Accounts["alice"].ConsecutiveFailures = 3
 		return nil
 	})
-	if err := s.Counter(nil, func(st *State) error {
-		a := st.Accounts["alice"]
-		a.State, a.ConsecutiveFailures = StateActive, 0
-		a.LastLogin = &Seen{Time: e.clk.Now()} // the same time as before
-		return nil
-	}); !errors.Is(err, ErrNotCounterOnly) {
-		t.Fatalf("a last_login that did not advance: %v", err)
-	}
 	// a lock that has run out may be dropped
 	e.clk.Set(t0.Add(3 * time.Hour))
 	s.Counter(nil, func(st *State) error {
@@ -516,5 +552,68 @@ func TestCounterCannotLoosenWithoutASuccess(t *testing.T) {
 	})
 	if err := s.Counter(nil, func(st *State) error { st.Accounts["alice"].Locks = nil; return nil }); err != nil {
 		t.Fatalf("an expired lock: %v", err)
+	}
+}
+
+func TestOtherFailureCountersAndTheirWindowsNeedTheSameProof(t *testing.T) {
+	e := newEnv(t)
+	s := e.mustOpen()
+	e.mustInvite(s, "alice")
+	e.activate(s, "alice")
+	t0 := e.clk.Now()
+	if err := s.Counter(nil, func(st *State) error {
+		a := st.Accounts["alice"]
+		a.TOTPFailures, a.TOTPWindowStart = 4, t0
+		a.PasskeyPathFailures, a.PasskeyWindowStart = 3, t0
+		a.ReauthFailures = 2
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	set := func(f func(a *Account)) func(*State) error {
+		return func(st *State) error { f(st.Accounts["alice"]); return nil }
+	}
+	refused := map[string]func(a *Account){
+		"totp_failures lowered":         func(a *Account) { a.TOTPFailures = 0 },
+		"totp window moved":             func(a *Account) { a.TOTPWindowStart = t0.Add(time.Minute) },
+		"passkey_path_failures lowered": func(a *Account) { a.PasskeyPathFailures = 1 },
+		"passkey window moved":          func(a *Account) { a.PasskeyWindowStart = time.Time{} },
+		"reauth_failures lowered":       func(a *Account) { a.ReauthFailures = 0 },
+	}
+	for name, f := range refused {
+		if err := s.Counter(nil, set(f)); !errors.Is(err, ErrNotCounterOnly) {
+			t.Errorf("%s: err = %v", name, err)
+		}
+	}
+	// they may grow inside the window
+	if err := s.Counter(nil, set(func(a *Account) { a.TOTPFailures, a.PasskeyPathFailures, a.ReauthFailures = 5, 4, 3 })); err != nil {
+		t.Fatalf("growing: %v", err)
+	}
+	// the proof undoes them all
+	e.clk.Set(t0.Add(5 * time.Minute))
+	ev := audit.Event{Event: "login", Identity: "local:alice"}
+	if err := s.Counter(&ev, set(func(a *Account) {
+		a.TOTPFailures, a.PasskeyPathFailures, a.ReauthFailures = 0, 0, 0
+		a.TOTPWindowStart, a.PasskeyWindowStart = time.Time{}, time.Time{}
+		a.LastLogin = &Seen{Time: e.clk.Now()}
+	})); err != nil {
+		t.Fatalf("with the proof: %v", err)
+	}
+	// an expired window may start again without one: passkey after an hour, TOTP after a day
+	e.clk.Set(t0.Add(10 * time.Minute))
+	s.Counter(nil, set(func(a *Account) {
+		a.TOTPFailures, a.TOTPWindowStart = 7, e.clk.Now()
+		a.PasskeyPathFailures, a.PasskeyWindowStart = 6, e.clk.Now()
+	}))
+	e.clk.Set(t0.Add(10*time.Minute + 61*time.Minute))
+	if err := s.Counter(nil, set(func(a *Account) { a.PasskeyPathFailures, a.PasskeyWindowStart = 1, e.clk.Now() })); err != nil {
+		t.Fatalf("an expired passkey window: %v", err)
+	}
+	if err := s.Counter(nil, set(func(a *Account) { a.TOTPFailures = 1; a.TOTPWindowStart = e.clk.Now() })); !errors.Is(err, ErrNotCounterOnly) {
+		t.Fatalf("a TOTP window is a day: %v", err)
+	}
+	e.clk.Set(t0.Add(10*time.Minute + 25*time.Hour))
+	if err := s.Counter(nil, set(func(a *Account) { a.TOTPFailures = 1; a.TOTPWindowStart = e.clk.Now() })); err != nil {
+		t.Fatalf("an expired TOTP window: %v", err)
 	}
 }

@@ -656,7 +656,7 @@ func (e *engine[D]) commit(ev audit.Event, fn func(D) error, prep func(cur, next
 
 // counter writes the state again without a change: the change id and audit seq stay. ev, when
 // not nil, is appended first with RecordSync (8.6).
-func (e *engine[D]) counter(ev *audit.Event, fn func(D) error, check func(cur, next D) error) error {
+func (e *engine[D]) counter(ev *audit.Event, fn func(D) error, check func(cur, next D, ev *audit.Event) error) error {
 	if e.failed != nil {
 		return e.failed
 	}
@@ -669,7 +669,7 @@ func (e *engine[D]) counter(ev *audit.Event, fn func(D) error, check func(cur, n
 	}
 	*next.meta() = *cur.meta() // a counter never moves the change or the audit position
 	if check != nil {
-		if err := check(cur, next); err != nil {
+		if err := check(cur, next, ev); err != nil {
 			return err
 		}
 	}

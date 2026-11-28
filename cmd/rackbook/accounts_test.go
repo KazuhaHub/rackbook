@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"errors"
 	"os"
@@ -425,17 +426,53 @@ func TestAccountsDiscardStoreNeedsForceForAKnownKey(t *testing.T) {
 	}
 }
 
+// gitClone makes a real Git repository with one commit, holding files (path -> content), and returns its commit.
+func gitClone(t *testing.T, dir string, files map[string]string) string {
+	t.Helper()
+	git := func(args ...string) string {
+		cmd := exec.Command("git", append([]string{"-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false"}, args...)...)
+		cmd.Dir = dir
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	git("init", "-q")
+	for p, c := range files {
+		full := filepath.Join(dir, filepath.FromSlash(p))
+		os.MkdirAll(filepath.Dir(full), 0o755)
+		os.WriteFile(full, []byte(c), 0o644)
+	}
+	git("add", "-A")
+	git("commit", "-q", "--allow-empty", "-m", "tokens")
+	return git("rev-parse", "HEAD")
+}
+
+const oneToken = "tokens:\n  - name: ci\n    prefix: rbk_\n    sha256: " + "abababababababababababababababababababababababababababababababab" + "\n    scope: read\n    created_by: local:root\n    created: 2026-11-01T00:00:00Z\n"
+
 func TestAccountsAcceptRestoreListsTokensFromARepo(t *testing.T) {
+	repo := t.TempDir()
+	want := gitClone(t, repo, map[string]string{".rackbook/tokens.yml": oneToken})
+	names, commit, err := listTokenNames(context.Background(), repo)
+	if err != nil || len(names) != 1 || names[0] != "ci" || commit != want {
+		t.Fatalf("%v %q (want %q) %v", names, commit, want, err)
+	}
+}
+
+func TestAcceptRestorePrintsTheCommitOfTheClone(t *testing.T) {
 	f := newAccountsFixture(t)
 	repo := t.TempDir()
-	os.MkdirAll(filepath.Join(repo, ".rackbook"), 0o755)
-	os.MkdirAll(filepath.Join(repo, ".git"), 0o755)
-	os.WriteFile(filepath.Join(repo, ".rackbook", "tokens.yml"), []byte("tokens:\n  - name: ci\n    prefix: rbk_\n    sha256: "+strings.Repeat("ab", 32)+"\n    scope: read\n    created_by: local:root\n    created: 2026-11-01T00:00:00Z\n"), 0o644)
-	names, err := listTokenNames(repo)
-	if err != nil || len(names) != 1 || names[0] != "ci" {
-		t.Fatalf("%v %v", names, err)
+	commit := gitClone(t, repo, map[string]string{".rackbook/tokens.yml": oneToken})
+	out, err := run(t, f.args("accounts", "accept-restore", "--yes", "--repo", repo)...)
+	if err != nil {
+		t.Fatalf("%v\n%s", err, out)
 	}
-	_ = f
+	for _, want := range []string{"at commit " + commit, "Pull the clone first; tokens created since that commit are not listed."} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output lacks %q:\n%s", want, out)
+		}
+	}
 }
 
 func TestAcceptRestoreRefusesARepoThatCannotListTheTokens(t *testing.T) {
@@ -444,14 +481,14 @@ func TestAcceptRestoreRefusesARepoThatCannotListTheTokens(t *testing.T) {
 	os.MkdirAll(filepath.Join(notGit, ".rackbook"), 0o755)
 	os.WriteFile(filepath.Join(notGit, ".rackbook", "tokens.yml"), []byte("tokens: []\n"), 0o644)
 	noTokens := t.TempDir()
-	os.MkdirAll(filepath.Join(noTokens, ".git"), 0o755)
+	gitClone(t, noTokens, map[string]string{"README": "x"})
 	for name, c := range map[string]struct{ repo, want string }{
 		"missing":       {filepath.Join(t.TempDir(), "nope"), "is not a directory"},
 		"not a clone":   {notGit, "not a Git checkout"},
 		"no tokens.yml": {noTokens, "has no .rackbook/tokens.yml"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			if _, err := listTokenNames(c.repo); err == nil || !strings.Contains(err.Error(), c.want) || !strings.Contains(err.Error(), "revoke the API tokens by hand") {
+			if _, _, err := listTokenNames(context.Background(), c.repo); err == nil || !strings.Contains(err.Error(), c.want) || !strings.Contains(err.Error(), "revoke the API tokens by hand") {
 				t.Fatalf("err = %v", err)
 			}
 			out, err := run(t, f.args("accounts", "accept-restore", "--yes", "--repo", c.repo)...)
@@ -462,10 +499,8 @@ func TestAcceptRestoreRefusesARepoThatCannotListTheTokens(t *testing.T) {
 	}
 	// a clone whose tokens file exists but is empty is fine: the list is empty on purpose
 	ok := t.TempDir()
-	os.MkdirAll(filepath.Join(ok, ".git"), 0o755)
-	os.MkdirAll(filepath.Join(ok, ".rackbook"), 0o755)
-	os.WriteFile(filepath.Join(ok, ".rackbook", "tokens.yml"), []byte("tokens: []\n"), 0o644)
-	if names, err := listTokenNames(ok); err != nil || len(names) != 0 {
-		t.Fatalf("%v %v", names, err)
+	gitClone(t, ok, map[string]string{".rackbook/tokens.yml": "tokens: []\n"})
+	if names, commit, err := listTokenNames(context.Background(), ok); err != nil || len(names) != 0 || commit == "" {
+		t.Fatalf("%v %q %v", names, commit, err)
 	}
 }

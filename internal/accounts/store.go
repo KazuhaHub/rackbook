@@ -276,9 +276,9 @@ var ErrNotCounterOnly = errors.New("a counter write may change only counter fiel
 // counters of 4.2 (failure counts and their windows, locks, good buckets, last sign-in and last
 // second-factor failure, TOTP last_step) and in the restriction states that the failure count drives
 // (active, restricted, passkey_only). Everything else (credentials, accounts, pending links, usernames) needs a
-// Change, which is audited first.
-func counterFieldsOnly(e *engine[*State]) func(cur, next *State) error {
-	return func(cur, next *State) error {
+// Change, which is audited first. Undoing a failure needs proof of a sign-in (counterMovesForward).
+func counterFieldsOnly(e *engine[*State]) func(cur, next *State, ev *audit.Event) error {
+	return func(cur, next *State, ev *audit.Event) error {
 		a, b := maskCounters(e.clone(cur)), maskCounters(e.clone(next))
 		ja, err1 := json.Marshal(a)
 		jb, err2 := json.Marshal(b)
@@ -287,7 +287,7 @@ func counterFieldsOnly(e *engine[*State]) func(cur, next *State) error {
 		}
 		now := e.c.Now()
 		for n, old := range cur.Accounts {
-			if !counterMovesForward(old, next.Accounts[n], now) {
+			if !counterMovesForward(n, old, next.Accounts[n], now, ev) {
 				return ErrNotCounterOnly
 			}
 		}
@@ -295,17 +295,32 @@ func counterFieldsOnly(e *engine[*State]) func(cur, next *State) error {
 	}
 }
 
+// The windows of the failure counters (8.4): totp_failures count per 24 hours, passkey_path_failures per hour.
+const (
+	totpFailureWindow    = 24 * time.Hour
+	passkeyFailureWindow = time.Hour
+)
+
+// signInProof says the counter write carries proof of a sign-in of this account: its event is a login
+// event for local:<name> (counter() appends it with RecordSync in the same write), and the new
+// last_login moved forward and is not after the store's clock.
+func signInProof(name string, old, nw *Account, now time.Time, ev *audit.Event) bool {
+	return ev != nil && ev.Event == "login" && ev.Identity == "local:"+name &&
+		nw.LastLogin != nil && !nw.LastLogin.Time.After(now) &&
+		(old.LastLogin == nil || nw.LastLogin.Time.After(old.LastLogin.Time))
+}
+
 // counterMovesForward is the second half of the counter check. What a failed attempt does (a count that grows, a
-// lock that is set, an account that becomes restricted) is a counter write. Undoing it is not, unless it comes
-// with a recorded success (last_login advanced) or the lock has run out on its own: leaving restricted or
-// passkey_only, lowering consecutive_failures and removing a live lock all need the audited path (unlock, a
-// reset) otherwise. TOTP last_step only grows, so a replayed code cannot be made fresh again.
-func counterMovesForward(old, nw *Account, now time.Time) bool {
+// lock that is set, an account that becomes restricted) is a counter write. Undoing it is not, unless the write
+// proves a sign-in (signInProof) or the thing ran out on its own: leaving restricted or passkey_only, lowering
+// consecutive_failures, totp_failures, passkey_path_failures or reauth_failures (or moving their windows) and
+// removing a running lock all need the audited path (unlock, a reset) otherwise. An expired lock may be dropped
+// and an expired window may start again. TOTP last_step only grows, so a replayed code cannot be made fresh again.
+func counterMovesForward(name string, old, nw *Account, now time.Time, ev *audit.Event) bool {
 	if old.TOTP != nil && nw.TOTP != nil && nw.TOTP.LastStep < old.TOTP.LastStep {
 		return false
 	}
-	succeeded := nw.LastLogin != nil && (old.LastLogin == nil || nw.LastLogin.Time.After(old.LastLogin.Time))
-	if succeeded {
+	if signInProof(name, old, nw, now, ev) {
 		return true
 	}
 	if (old.State == StateRestricted || old.State == StatePasskeyOnly) && nw.State == StateActive {
@@ -314,8 +329,21 @@ func counterMovesForward(old, nw *Account, now time.Time) bool {
 	if old.State == StatePasskeyOnly && nw.State == StateRestricted {
 		return false
 	}
-	if nw.ConsecutiveFailures < old.ConsecutiveFailures {
+	if nw.ConsecutiveFailures < old.ConsecutiveFailures || nw.ReauthFailures < old.ReauthFailures {
 		return false
+	}
+	for _, w := range []struct {
+		oldN, newN         int
+		oldStart, newStart time.Time
+		length             time.Duration
+	}{
+		{old.TOTPFailures, nw.TOTPFailures, old.TOTPWindowStart, nw.TOTPWindowStart, totpFailureWindow},
+		{old.PasskeyPathFailures, nw.PasskeyPathFailures, old.PasskeyWindowStart, nw.PasskeyWindowStart, passkeyFailureWindow},
+	} {
+		expired := w.oldStart.IsZero() || !now.Before(w.oldStart.Add(w.length))
+		if !expired && (w.newN < w.oldN || !w.newStart.Equal(w.oldStart)) {
+			return false // a running window is not lowered or moved
+		}
 	}
 	for _, l := range old.Locks {
 		if l.Until.After(now) && !slices.ContainsFunc(nw.Locks, func(k Lock) bool { return k.Scope == l.Scope && k.Until.Equal(l.Until) }) {

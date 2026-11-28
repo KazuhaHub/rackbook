@@ -171,13 +171,16 @@ func AcceptRestore(o Offline, ro RestoreOptions) (*RestoreReport, error) {
 	}
 	var secNames []string
 	if secErr != nil {
-		globalSince, gerr := globalResetAfter(o.Log, secErr.Doc.(*SecretsState).AuditSeq)
+		cause, globalSince, gerr := globalResetAfter(o.Log, secErr.Doc.(*SecretsState).AuditSeq)
 		if gerr != nil {
 			return nil, fmt.Errorf("audit log: %w", gerr)
 		}
 		secNames = secretNames(secErr, rep.Secrets, globalSince)
-		if globalSince && rep.Secrets == "gap" {
-			o.printf("  a global reset lies between the backup and now: every secret is cleared\n")
+		switch {
+		case rep.Secrets != "gap":
+			o.printf("  every secret is cleared because the audit log cannot be trusted (%s)\n", rep.Secrets)
+		case globalSince:
+			o.printf("  every secret is cleared because of %s\n", cause)
 		}
 		o.printf("%s: %s\n", secretsFile, secErr.Msg)
 		for _, ev := range gapEvents(secErr) {
@@ -505,13 +508,30 @@ func (s *Store) applyRestore(o Offline, se *StartError, p *accountsPlan, rep *Re
 // account_store_restored, or an account_store_problem with audit_truncated, month_pruned or discarded. Whatever its
 // change marker, it means the log or the stores were not trusted then, and a restored older secrets.enc must not
 // bring back what that reset cleared.
-func globalResetAfter(l *audit.Log, seq int64) (bool, error) {
-	found := false
-	err := l.EachEvent("", func(ev audit.Event, _ string) bool {
+//
+// The first such event is returned, described for the plan: its kind, code, seq and the document its marker names.
+func globalResetAfter(l *audit.Log, seq int64) (cause string, found bool, err error) {
+	err = l.EachEvent("", func(ev audit.Event, _ string) bool {
 		found = ev.Seq > seq && isGlobalReset(ev)
+		if found {
+			doc := "no document marker"
+			for _, d := range ev.Detail {
+				switch {
+				case strings.HasPrefix(d, secretsMarker):
+					doc = "the secrets store"
+				case strings.HasPrefix(d, accountsMarker):
+					doc = "the account store"
+				}
+			}
+			cause = fmt.Sprintf("the %s event", ev.Event)
+			if ev.Code != "" {
+				cause += " (code " + ev.Code + ")"
+			}
+			cause += fmt.Sprintf(" at seq %d, written for %s", ev.Seq, doc)
+		}
 		return !found
 	})
-	return found, err
+	return cause, found, err
 }
 
 // secretNames are the secrets accept-restore clears for the secrets store: those named by the events after it

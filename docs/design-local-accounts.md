@@ -1096,7 +1096,11 @@ and the online admin channel with `recover`, `invite`, `reset`, `unlock`, `disab
     marker, so an older `secrets.enc` put back later never brings back what an earlier reset cleared. `--repo` is an error, not a silent
     omission, when it is missing, is not a Git checkout or has no `.rackbook/tokens.yml`. A counter write may not lower `last_step`, and may
     not leave `restricted` or `passkey_only`, lower `consecutive_failures` or remove a running lock unless `last_login` advanced in the same write
-    (an expired lock may be dropped); otherwise it needs the audited path. If the audit line is written but `ErrNotDurable` comes back, the change may still complete at the next start.
+    (an expired lock may be dropped); otherwise it needs the audited path. "Advanced" means the write carries a `login` event for that account
+    (appended with `RecordSync` in the same write) and a `last_login` that moved forward and is not after the store's clock; the same
+    proof is needed to lower `totp_failures`, `passkey_path_failures` (24 hours and 1 hour windows) and `reauth_failures`, or to move their windows,
+    while a window is running. The plan names the event that made accept-restore clear every secret, and `--repo` prints the commit the clone is at
+    with the reminder to pull first. If the audit line is written but `ErrNotDurable` comes back, the change may still complete at the next start.
 - **New dependency:** none. `golang.org/x/crypto` (argon2) moved from indirect to direct in `go.mod`; `crypto/hkdf` is the standard
   library, and `golang.org/x/text` (`norm`, `cases`) was already a direct dependency.
 
