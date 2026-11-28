@@ -331,6 +331,30 @@ func (s *server) internal(w http.ResponseWriter, err error) {
 	writeError(w, http.StatusInternalServerError, "internal", "internal error (request id "+id+")", "requestId", id)
 }
 
+// The Content-Security-Policy of the console, and of the pages under /auth/ (design-local-accounts.md, 6): the sign-in,
+// setup and re-authentication pages are documents of their own with a policy of their own. They hold passwords and one-time
+// links, so they get no 'unsafe-eval' (they validate no JSON Schema), may not post a form anywhere else, and, when the
+// CAPTCHA of piece 5 is on, allow the one provider origin it names and nothing else beyond the console's.
+const (
+	consoleCSP = "default-src 'self'; script-src 'self' 'unsafe-eval'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'"
+	authCSP    = "default-src 'self'; script-src 'self'%s; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; connect-src 'self'; frame-src %s; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
+)
+
+// AuthPageCSP is the policy of the pages under /auth/. captchaOrigins are the origins of the configured CAPTCHA provider
+// (empty while the CAPTCHA is off, which is always, until piece 5): they are allowed for scripts and frames only.
+func AuthPageCSP(captchaOrigins []string) string {
+	scripts, frames := "", "'none'"
+	if len(captchaOrigins) > 0 {
+		scripts = " " + strings.Join(captchaOrigins, " ")
+		frames = strings.Join(captchaOrigins, " ")
+	}
+	return fmt.Sprintf(authCSP, scripts, frames)
+}
+
+// isAuthPage says the path is one of the pages (or endpoints) under /auth/. The OIDC callback and its redirects carry
+// no body that scripts run in, so the stricter policy costs them nothing.
+func isAuthPage(p string) bool { return p == "/auth" || strings.HasPrefix(p, "/auth/") }
+
 func securityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
@@ -340,7 +364,11 @@ func securityHeaders(next http.Handler) http.Handler {
 		// 'unsafe-eval': the console validates forms with ajv, which compiles each JSON Schema
 		// to a function at runtime. The console loads no third-party scripts and renders no
 		// ledger value as HTML.
-		h.Set("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-eval'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'")
+		if isAuthPage(r.URL.Path) {
+			h.Set("Content-Security-Policy", AuthPageCSP(nil))
+		} else {
+			h.Set("Content-Security-Policy", consoleCSP)
+		}
 		next.ServeHTTP(w, r)
 	})
 }

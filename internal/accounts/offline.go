@@ -677,3 +677,12 @@ func revokeAllGrantsOffline(stateDir string) (int, error) {
 	}
 	return n, writeFile(path, out)
 }
+
+// OpenStore runs the start sequence (4.3) of the account store for an offline command that changes accounts: invite,
+// reset, disable, enable, remove, end-sessions, unlock and recover. A refusal is a *StartError.
+func (o *Offline) OpenStore() (*Store, error) {
+	if err := o.check(); err != nil {
+		return nil, err
+	}
+	return Open(o.options())
+}

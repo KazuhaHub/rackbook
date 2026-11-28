@@ -210,3 +210,39 @@ func TestLastAdminInALocalOnlyDeployment(t *testing.T) {
 		t.Fatalf("%v", n)
 	}
 }
+
+func TestLastLocalAdminIsKeptWhileSSOOnlyIsOn(t *testing.T) {
+	t.Parallel()
+	cfg := load(t, localBlock)
+	cur, _ := Current(cfg)
+	try := func(admins []string, l Local) *Refusal {
+		t.Helper()
+		next := cur
+		next.Admin = admins
+		p, err := Build(cfg, Request{Version: Version(cur), Lists: next, Local: l})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return p.Refusal
+	}
+	on := localState()
+	on.SSOOnly = true
+	// an SSO administrator is added and the last local one removed: allowed without sso_only, refused with it
+	if r := try([]string{"boss@example.com"}, localState()); r != nil {
+		t.Fatalf("without sso_only: %+v", r)
+	}
+	if r := try([]string{"boss@example.com"}, on); r == nil || r.Code != CodeLastLocalAdmin {
+		t.Fatalf("with sso_only: %+v", r)
+	}
+	// keeping a local admin, or adding another one, is fine
+	if r := try([]string{"local:alice", "boss@example.com"}, on); r != nil {
+		t.Fatalf("%+v", r)
+	}
+	if r := try([]string{"boss@example.com", "local:bob"}, on); r != nil { // bob is restricted: usable
+		t.Fatalf("%+v", r)
+	}
+	// an entry of an account that cannot sign in is not a local admin
+	if r := try([]string{"boss@example.com", "local:erin"}, on); r == nil || r.Code != CodeLastLocalAdmin {
+		t.Fatalf("a disabled account: %+v", r)
+	}
+}

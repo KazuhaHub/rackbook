@@ -187,15 +187,22 @@ type AdminServer struct {
 // ServeAdmin listens on the admin endpoint of the state directory (a Unix socket, or a named pipe on Windows) and
 // serves commands until Close. It refuses to start when another process holds the endpoint.
 func (s *Service) ServeAdmin() (*AdminServer, error) {
-	if s.o.StateDir == "" {
+	return ServeAdminWith(s.o.StateDir, s.o.Key, s.AdminEnv, func(msg string, args ...any) { s.log.Warn(msg, args...) })
+}
+
+// ServeAdminWith is ServeAdmin for any source of commands' environment (the tests of the command line use it).
+func ServeAdminWith(stateDir string, key *statekey.Key, env func() AdminEnv, logf func(string, ...any)) (*AdminServer, error) {
+	if stateDir == "" {
 		return nil, errors.New("the admin channel needs --state-dir")
 	}
-	ln, stop, err := listenAdmin(s.o.StateDir)
+	ln, stop, err := listenAdmin(stateDir)
 	if err != nil {
 		return nil, err
 	}
-	a := &AdminServer{ln: ln, kc: channelKey(s.o.Key), env: s.AdminEnv, sem: make(chan struct{}, adminMaxConns), done: make(chan struct{}), stop: stop,
-		log: func(msg string, args ...any) { s.log.Warn(msg, args...) }}
+	if logf == nil {
+		logf = func(string, ...any) {}
+	}
+	a := &AdminServer{ln: ln, kc: channelKey(key), env: env, sem: make(chan struct{}, adminMaxConns), done: make(chan struct{}), stop: stop, log: logf}
 	go a.loop()
 	return a, nil
 }

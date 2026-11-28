@@ -29,12 +29,14 @@ import (
 	"github.com/kazuhahub/rackbook/internal/config"
 	"github.com/kazuhahub/rackbook/internal/githubapp"
 	"github.com/kazuhahub/rackbook/internal/gitstore"
+	"github.com/kazuhahub/rackbook/internal/localauth"
 	"github.com/kazuhahub/rackbook/internal/login"
 	"github.com/kazuhahub/rackbook/internal/mcpauth"
 	"github.com/kazuhahub/rackbook/internal/mcpserver"
 	"github.com/kazuhahub/rackbook/internal/modules"
 	"github.com/kazuhahub/rackbook/internal/oauthserver"
 	"github.com/kazuhahub/rackbook/internal/prefs"
+	"github.com/kazuhahub/rackbook/internal/roles"
 	"github.com/kazuhahub/rackbook/internal/routes"
 	"github.com/kazuhahub/rackbook/internal/sops"
 	"github.com/kazuhahub/rackbook/internal/statekey"
@@ -280,17 +282,37 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
-	var loginMount interface {
-		Mount(mux routes.Mux, static http.Handler)
-	}
-	if loginSvc != nil {
-		loginMount = loginSvc
-	}
 	// Bearer credentials on /mcp (OAuth access tokens of the trusted issuers) and
 	// Rackbook API tokens (see docs/api.md); /mcp is an OAuth protected resource.
 	proxies, perr := clientip.ParseCIDRs(trustedProxies(f))
 	if perr != nil {
 		return fmt.Errorf("--trusted-proxy: %w", perr)
+	}
+	// The sign-in of local accounts (pages, endpoints, the admin channel), beside the built-in login.
+	var loginMount interface {
+		Mount(mux routes.Mux, static http.Handler)
+	}
+	var localSvc *localauth.Service
+	if loginSvc != nil {
+		loginMount = loginSvc
+		if localStore != nil {
+			if localSvc, err = localauth.New(localauth.Options{
+				Store: localStore, Key: stateKey, Audit: auditLog, Login: loginSvc, Config: store.Config, BaseURL: baseURL, Trusted: proxies,
+				SSO: ssoConfigured(cfg), StateDir: stateDir, Logger: logger, GrantAdmin: grantAdmin(store, localStore),
+				IsAdmin: func(username string) bool {
+					return authn.Evaluate(&auth.Identity{ID: roles.LocalPrefix + username, Method: auth.MethodLocal}).EffectiveRole() == roles.Admin
+				},
+			}); err != nil {
+				return err
+			}
+			defer localSvc.Close()
+			loginMount = mounts{loginSvc, localSvc}
+			adminSrv, err := localSvc.ServeAdmin()
+			if err != nil {
+				return fmt.Errorf("the admin channel of the account commands: %w", err)
+			}
+			defer adminSrv.Close()
+		}
 	}
 	registry := &tokens.Registry{Store: store}
 	modState := &modules.State{}
@@ -318,7 +340,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	mcpSrv := mcpserver.NewWithOptions(mcpserver.Options{Source: store.Ledger, Version: version, Backend: store, ReadOnly: readOnly, Logger: logger})
 	var roster api.LocalRoster
 	if localStore != nil {
-		roster = rosterOf{localStore}
+		roster = ssoOnlyRoster{rosterOf{localStore}, localSvc}
 	}
 	handler := api.New(api.Options{
 		Local: roster, Store: store, Auth: authn, ReadOnly: readOnly, BaseURL: baseURL, Web: dist, Logger: logger, RestrictHost: mode == auth.ModeNone, Login: loginMount,

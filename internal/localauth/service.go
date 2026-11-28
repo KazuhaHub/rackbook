@@ -330,3 +330,7 @@ func withGoodBucket(a *accounts.Account, bucket string, now time.Time) {
 }
 
 func contextBackground() context.Context { return context.Background() }
+
+// SSOOnlyInForce says sso_only is on, offered, and backed by a local administrator (see ssoOnly): the role editor refuses
+// to remove the last local administrator while it is.
+func (s *Service) SSOOnlyInForce() bool { return s.ssoOnly(s.settings()) }

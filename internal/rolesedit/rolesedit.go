@@ -264,6 +264,9 @@ type Local struct {
 	// LocalOnly says the built-in login has no single sign-on: only local accounts can sign in, so no
 	// entry of another kind names somebody who can.
 	LocalOnly bool
+	// SSOOnly says sso_only is in force (design 2.1): the local administrators are the way in when the identity
+	// provider breaks, so an edit that takes the last one away is refused (design 7).
+	SSOOnly bool
 }
 
 // usable says an account can hold a session and so has a role: active, restricted or passkey_only (the last two
@@ -464,6 +467,7 @@ const (
 	CodeLastAdmin         = "last_admin"
 	CodeSelfLockout       = "self_lockout"
 	CodeSelfLockoutClaims = "self_lockout_claims"
+	CodeLastLocalAdmin    = "last_local_admin"
 	CodeSecret            = "secret_detected"
 )
 
@@ -589,6 +593,8 @@ func Build(cfg *config.Config, req Request) (*Plan, error) {
 			p.Refusal = &Refusal{Code: CodeLastAdmin, Message: "at least one admin entry must remain: without one nobody could edit the roles again"}
 		case signable(next.Admin, req.Local) == 0 && signable(cur.Admin, req.Local) > 0:
 			p.Refusal = &Refusal{Code: CodeLastAdmin, Message: "no admin entry would be left that anyone can sign in through (a local: entry needs an account that is not disabled or removed): without one nobody could edit the roles again"}
+		case req.Local.SSOOnly && localAdmins(next.Admin, req.Local) == 0 && localAdmins(cur.Admin, req.Local) > 0:
+			p.Refusal = &Refusal{Code: CodeLastLocalAdmin, Message: "sso_only is on, and this would take away the last local administrator: without one nobody could sign in when the identity provider breaks. Turn sso_only off first, or keep a local: admin entry"}
 		}
 	}
 	// 4. the person who saves
@@ -652,6 +658,17 @@ func signable(list []string, local Local) int {
 	n := 0
 	for _, s := range list {
 		if info, err := roles.Describe(s); err == nil && local.canSignIn(info) {
+			n++
+		}
+	}
+	return n
+}
+
+// localAdmins counts the local: entries of an admin list through which somebody can sign in.
+func localAdmins(list []string, local Local) int {
+	n := 0
+	for _, s := range list {
+		if info, err := roles.Describe(s); err == nil && info.Kind == roles.KindLocal && local.canSignIn(info) {
 			n++
 		}
 	}

@@ -34,10 +34,17 @@ import (
 func newAccounts() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "accounts",
-		Short: "Offline commands for the local account store in --state-dir (sign-in is not built yet)",
-		Long: `Local accounts cannot sign in yet: serve --auth login with the state key opens the account store and
-evaluates local: role entries, but the sign-in pages and the online commands come later. These commands prepare
-and repair the encrypted files under --state-dir:
+		Short: "Commands for local accounts: invite, reset, unlock, disable, enable, remove, end-sessions, recover; and the offline repairs of the store",
+		Long: `Local accounts sign in at /auth/login beside single sign-on. These commands manage them from the server's own
+machine, with the state key.
+
+invite, reset, unlock, disable, enable, remove, end-sessions and recover talk to the running server over its admin
+channel (a Unix socket <state-dir>/admin.sock, or a named pipe on Windows), authenticated and sealed under the state
+key; with the server stopped they work on the files directly. A command prints a one-time link to this terminal; it
+never takes a password. recover is the lockout fallback: it invites the account if there is none, otherwise it issues a
+full reset.
+
+list, rekey, accept-restore and discard-store work on the encrypted files under --state-dir:
 
   accounts/accounts.enc   the account store (encrypted under the state key)
   secrets.enc             provider secrets set in the console (encrypted under the state key)
@@ -167,6 +174,7 @@ everyone again under new usernames and enter the provider secrets again in the c
 	discard.Flags().Bool("key-is-lost", false, "confirm that the key the store was encrypted under (its id is shown) is lost, and that the loaded key is a new one")
 
 	cmd.AddCommand(list, rekey, restore, discard)
+	cmd.AddCommand(newAdminCommands()...)
 	return cmd
 }
 
