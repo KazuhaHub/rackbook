@@ -40,22 +40,22 @@ func TestSignInDefaultsAndValues(t *testing.T) {
 
 func TestSignInBoundsAreEnforced(t *testing.T) {
 	for name, tc := range map[string]struct{ auth, msg string }{
-		"mode":                 {"  login: {mode: both}\n", "auth.login.mode"},
-		"passwordless":         {"  local: {passwordless: synced}\n", "not built yet"},
-		"min length":           {"  local: {password_min_length: 8}\n", "auth.local.password_min_length"},
-		"min length max":       {"  local: {password_min_length: 65}\n", "auth.local.password_min_length"},
-		"invite ttl":           {"  local: {invite_ttl: 15d}\n", "auth.local.invite_ttl"},
-		"reset ttl":            {"  local: {reset_ttl: 30m}\n", "auth.local.reset_ttl"},
-		"reauth window":        {"  local: {reauth_window: 2h}\n", "auth.local.reauth_window"},
-		"throttle max":         {"  throttle: {max: 1001}\n", "auth.throttle.max"},
-		"throttle window":      {"  throttle: {window: 30s}\n", "auth.throttle.window"},
-		"lock duration":        {"  lock: {duration: 8d}\n", "auth.lock.duration"},
-		"lock scope":           {"  lock: {scope: everyone}\n", "auth.lock.scope"},
-		"nist cap above 100":   {"  nist_cap: 101\n", "auth.nist_cap"},
-		"nist cap below 10":    {"  nist_cap: 5\n", "auth.nist_cap"},
-		"totp limit":           {"  twofa_limits: {totp_per_day: 2}\n", "auth.twofa_limits.totp_per_day"},
-		"passkey path limit":   {"  twofa_limits: {passkey_path_per_hour: 21}\n", "auth.twofa_limits.passkey_path_per_hour"},
-		"lock over a week": {"  lock: {duration: 169h}\n", "auth.lock.duration"},
+		"mode":               {"  login: {mode: both}\n", "auth.login.mode"},
+		"passwordless":       {"  local: {passwordless: synced}\n", "not built yet"},
+		"min length":         {"  local: {password_min_length: 8}\n", "auth.local.password_min_length"},
+		"min length max":     {"  local: {password_min_length: 65}\n", "auth.local.password_min_length"},
+		"invite ttl":         {"  local: {invite_ttl: 15d}\n", "auth.local.invite_ttl"},
+		"reset ttl":          {"  local: {reset_ttl: 30m}\n", "auth.local.reset_ttl"},
+		"reauth window":      {"  local: {reauth_window: 2h}\n", "auth.local.reauth_window"},
+		"throttle max":       {"  throttle: {max: 1001}\n", "auth.throttle.max"},
+		"throttle window":    {"  throttle: {window: 30s}\n", "auth.throttle.window"},
+		"lock duration":      {"  lock: {duration: 8d}\n", "auth.lock.duration"},
+		"lock scope":         {"  lock: {scope: everyone}\n", "auth.lock.scope"},
+		"nist cap above 100": {"  nist_cap: 101\n", "auth.nist_cap"},
+		"nist cap below 10":  {"  nist_cap: 5\n", "auth.nist_cap"},
+		"totp limit":         {"  twofa_limits: {totp_per_day: 2}\n", "auth.twofa_limits.totp_per_day"},
+		"passkey path limit": {"  twofa_limits: {passkey_path_per_hour: 21}\n", "auth.twofa_limits.passkey_path_per_hour"},
+		"lock over a week":   {"  lock: {duration: 169h}\n", "auth.lock.duration"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := parse(t, tc.auth)
