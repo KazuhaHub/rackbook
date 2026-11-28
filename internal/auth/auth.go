@@ -28,8 +28,29 @@ import (
 const (
 	ModeNone             = "none"
 	ModeCloudflareAccess = "cloudflare-access"
-	ModeOIDC             = "oidc"
+	// ModeOIDC is the built-in login. --auth login is the name the deployment flag gives it
+	// (docs/design-local-accounts.md, 2.3) and --auth oidc stays as an alias; both are this mode.
+	ModeOIDC = "oidc"
+	// ModeLogin is the flag spelling of ModeOIDC; ParseMode turns it into ModeOIDC.
+	ModeLogin = "login"
 )
+
+// ParseMode turns the value of --auth into a mode: login is the built-in login and oidc is its
+// alias. Other values are returned as they are, for New to refuse.
+func ParseMode(v string) string {
+	if v == ModeLogin {
+		return ModeOIDC
+	}
+	return v
+}
+
+// LocalAccounts is what the authenticator asks of the store of local accounts: whether the
+// account can hold a session, a token or a grant now. Without one no local identity has a role.
+type LocalAccounts interface {
+	// LocalActive says whether username is an account that is active, restricted or passkey_only.
+	// Disabled, removed, invited and reset_pending accounts are not (design 6).
+	LocalActive(username string) bool
+}
 
 // SessionAuth supplies identities from login sessions (oidc mode); the
 // internal/login package implements it.
@@ -88,6 +109,10 @@ type Config struct {
 
 	// Sessions is required in oidc mode.
 	Sessions SessionAuth
+
+	// Local is the store of local accounts, nil when there are none (no state key). A local identity
+	// has a role only while it says the account is active.
+	Local LocalAccounts
 
 	// JWKSURL and Issuer override the values derived from Team. They exist
 	// for tests and self-hosted setups.
@@ -152,6 +177,7 @@ func New(ctx context.Context, cfg Config) (*Authenticator, error) {
 	if cfg.Mode == "" {
 		cfg.Mode = ModeNone
 	}
+	cfg.Mode = ParseMode(cfg.Mode)
 	a := &Authenticator{cfg: cfg}
 	if _, err := roles.Compile(nil, roles.Options{}, cfg.Editors...); err != nil {
 		return nil, err
@@ -188,7 +214,7 @@ func New(ctx context.Context, cfg Config) (*Authenticator, error) {
 			return nil, errors.New("--auth oidc needs a session provider")
 		}
 	default:
-		return nil, fmt.Errorf("unknown auth mode %q (want none, cloudflare-access or oidc)", cfg.Mode)
+		return nil, fmt.Errorf("unknown auth mode %q (want none, cloudflare-access or login)", cfg.Mode)
 	}
 	return a, nil
 }
@@ -255,7 +281,7 @@ func (a *Authenticator) CapabilitiesUnder(cur *config.Config, spec *roles.Spec, 
 	}
 	eval := func(s roles.Subject) (roles.Role, bool) {
 		s.ID = roles.FoldASCII(s.ID)
-		r, aud := p.Evaluate(s), p.IsAuditor(s)
+		r, aud := a.policyRole(p, s)
 		if aud && r < roles.Viewer {
 			r = roles.Viewer
 		}
@@ -311,8 +337,7 @@ func emailOf(id string) string {
 // who has a role keeps it. A degraded config (the latest one failed to load)
 // limits the role to viewer, so nothing here can write.
 func (a *Authenticator) evaluate(s roles.Subject) (roles.Role, bool) {
-	p := a.Policy()
-	r, auditor := p.Evaluate(s), p.IsAuditor(s)
+	r, auditor := a.policyRole(a.Policy(), s)
 	if auditor && r < roles.Viewer {
 		r = roles.Viewer
 	}
@@ -320,6 +345,25 @@ func (a *Authenticator) evaluate(s roles.Subject) (roles.Role, bool) {
 		r = roles.Lower(r, roles.Viewer)
 	}
 	return r, auditor
+}
+
+// policyRole is the one check of every path (sessions, API tokens, OAuth grants and access
+// tokens, the role editor): p.Evaluate and p.IsAuditor of s, except that a local identity has
+// nothing unless it is one. For any subject whose ID starts with local: the role is none and the
+// auditor capability is absent, unless the method is local and the store says the account is
+// active, restricted or passkey_only. A look-alike from another method (an OIDC user called
+// local:alice, an OAuth subject, a token whose creator was recorded under another method)
+// matches no local: entry anyway and is stopped here for the entries that match everyone.
+// A subject of method local whose ID is not local:<username> is stopped too.
+func (a *Authenticator) policyRole(p *roles.Policy, s roles.Subject) (roles.Role, bool) {
+	s.ID = roles.FoldASCII(s.ID)
+	if strings.HasPrefix(s.ID, roles.LocalPrefix) || s.Method == MethodLocal {
+		name, ok := roles.LocalUsername(s.ID)
+		if !ok || s.Method != MethodLocal || a.cfg.Local == nil || !a.cfg.Local.LocalActive(name) {
+			return roles.None, false
+		}
+	}
+	return p.Evaluate(s), p.IsAuditor(s)
 }
 
 // fromClaims says the role or the auditor capability of s, as evaluated, depends

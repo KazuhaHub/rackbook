@@ -21,6 +21,8 @@
 //	oauth:<alias>:*    any user of that issuer
 //	group:<id>         a group the identity carries (Subject.Groups)
 //	app-role:<value>   an app role the identity carries (Subject.AppRoles)
+//	local:<username>   a local account (only for Method "local")
+//	local:*            any local account
 //	*                  anyone authenticated
 //
 // Which entries can match depends on how the identity was authenticated.
@@ -28,7 +30,12 @@
 // identity oidc:<sub> and matches only oidc:<sub> entries.
 //
 // Identities from oidc, passkey, cloudflare-access, none and cli match every
-// kind except mcphub:. MCPHub identities match only mcphub: entries, and the
+// kind except mcphub: and local:. A local identity (Method "local", ID
+// local:<username>) matches local: entries only: not *, not *@domain, not an
+// exact entry; and no other method matches a local: entry, so an OIDC identity
+// that happens to be called local:x matches none (docs/design-local-accounts.md,
+// section 7). Whether the account exists and may sign in is the authenticator's
+// question (auth.policyRole), not the matcher's. MCPHub identities match only mcphub: entries, and the
 // exact and *@domain entries as well when the token carries a verified e-mail
 // address (email_verified, or an issuer with emails_verified) and
 // Options.MCPMatchEmail (auth.mcp.match_email) is on. Identities
@@ -49,6 +56,7 @@ package roles
 
 import (
 	"fmt"
+	"regexp"
 	"slices"
 	"strings"
 )
@@ -182,7 +190,29 @@ const (
 	kAny
 	kOIDC
 	kAppRole
+	kLocal
 )
+
+// LocalPrefix starts the identity of a local account and the role entries that name one.
+const LocalPrefix = "local:"
+
+// MethodLocal is the authentication method of local accounts, as Subject.Method says it.
+const MethodLocal = "local"
+
+var localNameRe = regexp.MustCompile(`^[a-z][a-z0-9._-]{0,31}$`)
+
+// ValidLocalUsername says whether name is a possible username of a local account. It is the same
+// rule as accounts.ValidUsername (a test holds the two together): the name is lower case, so a
+// local: entry and a local identity are compared after FoldASCII.
+func ValidLocalUsername(name string) bool { return localNameRe.MatchString(name) }
+
+// LocalUsername returns the username of a local identity ("local:alice" is "alice"), and whether
+// id is one.
+func LocalUsername(id string) (string, bool) {
+	id = FoldASCII(id)
+	n, ok := strings.CutPrefix(id, LocalPrefix)
+	return n, ok && ValidLocalUsername(n)
+}
 
 // appRolePrefix starts an app-role entry. The value after it is kept as
 // written.
@@ -224,6 +254,12 @@ func parseEntry(s string) (entry, error) {
 			return entry{kind: kOIDC, value: v}, nil
 		}
 		return entry{}, fmt.Errorf("%q: want oidc:<sub>", s)
+	case strings.HasPrefix(s, LocalPrefix):
+		v := strings.TrimSpace(s[len(LocalPrefix):])
+		if v == "*" || ValidLocalUsername(v) {
+			return entry{kind: kLocal, value: v}, nil
+		}
+		return entry{}, fmt.Errorf("%q: want local:<username> (a lower-case name of 1 to 32 characters: letters, digits, . _ -, starting with a letter) or local:*", s)
 	case s == "mcphub:*":
 		return entry{kind: kMCPHub, value: "*"}, nil
 	case strings.HasPrefix(s, "mcphub:"):
@@ -266,10 +302,9 @@ const (
 	KindOAuth    = "oauth"    // oauth:<alias>:<user>
 	KindMCPHub   = "mcphub"   // mcphub:<username>
 	KindOIDC     = "oidc"     // oidc:<sub>
-	// KindLocal is local:<username>, reserved for local accounts
-	// (docs/design-local-accounts.md, section 7). The parser still reads it as an
-	// exact identity; the editor labels it so it can say it matches nobody yet.
-	KindLocal = "local"
+	// KindLocal is local:<username> or local:*, an entry for local accounts
+	// (docs/design-local-accounts.md, section 7).
+	KindLocal = "local" // local:<username> and local:*
 )
 
 // EntryInfo is what Describe says about one entry.
@@ -306,11 +341,10 @@ func Describe(s string) (EntryInfo, error) {
 		return EntryInfo{Kind: KindMCPHub, Key: "mcphub:" + e.value, Value: e.value}, nil
 	case kOIDC:
 		return EntryInfo{Kind: KindOIDC, Key: "oidc:" + e.value, Value: e.value}, nil
+	case kLocal:
+		return EntryInfo{Kind: KindLocal, Key: LocalPrefix + e.value, Value: e.value}, nil
 	}
 	key := FoldASCII(s)
-	if strings.HasPrefix(key, "local:") {
-		return EntryInfo{Kind: KindLocal, Key: key, Value: key[len("local:"):]}, nil
-	}
 	return EntryInfo{Kind: KindIdentity, Key: key, Value: key}, nil
 }
 
@@ -339,6 +373,13 @@ func (e entry) matches(s Subject, opt Options) bool {
 		case kDomain:
 			return opt.MCPMatchEmail && verifiedEmail(s) != "" && strings.HasSuffix(verifiedEmail(s), e.value)
 		}
+		return false
+	}
+	if s.Method == MethodLocal {
+		// a local identity is matched by local: entries alone, so * and *@domain never reach it
+		return e.kind == kLocal && s.ID != "" && (e.value == "*" && strings.HasPrefix(s.ID, LocalPrefix) || s.ID == LocalPrefix+e.value)
+	}
+	if e.kind == kLocal { // no other method has a local: entry
 		return false
 	}
 	if !plainMethods[s.Method] { // tokens, unknown methods: no direct role
@@ -442,6 +483,10 @@ func (p *Policy) Evaluate(s Subject) Role {
 	switch {
 	case p.explicit:
 		return None
+	case s.Method == MethodLocal:
+		// the defaults of a file without a roles block are for people the file does not know; a local
+		// account has a role only through a local: entry
+		return None
 	case p.editorsOnly:
 		return Viewer
 	}
@@ -508,7 +553,7 @@ func (p *Policy) Sources(s Subject) (role, auditor []string) {
 		switch {
 		case len(auditor) > 0:
 			role = auditor // the viewer floor of an auditor
-		case !p.explicit:
+		case !p.explicit && s.Method != MethodLocal:
 			role = []string{SourceIdentity} // everyone is an editor, or the editors list's viewers
 		}
 	}

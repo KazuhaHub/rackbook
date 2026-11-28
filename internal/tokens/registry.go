@@ -255,7 +255,7 @@ func (r *Registry) Revoke(ctx context.Context, name string, who *auth.Identity) 
 // identities match role entries directly.
 func creatorMethod(m string) string {
 	switch m {
-	case auth.MethodOIDC, auth.MethodPasskey, auth.MethodCloudflareAccess, auth.MethodNone:
+	case auth.MethodOIDC, auth.MethodPasskey, auth.MethodCloudflareAccess, auth.MethodNone, auth.MethodLocal:
 		return m
 	}
 	return ""

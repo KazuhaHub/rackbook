@@ -51,6 +51,9 @@ func (stub userStub) Identify(_ http.ResponseWriter, r *http.Request) (*auth.Ide
 		return nil, auth.ErrUnauthenticated
 	}
 	id := &auth.Identity{ID: u, Name: strings.SplitN(u, "@", 2)[0], Email: u, Method: auth.MethodOIDC}
+	if m := r.Header.Get("X-Test-Method"); m != "" {
+		id.Method = m // a local account's session, for example
+	}
 	if g := r.Header.Get("X-Test-Groups"); g != "" {
 		id.Groups = strings.Split(g, ",")
 	}
@@ -99,6 +102,8 @@ type opts struct {
 	mcpYAML     string // extra lines under auth.mcp (indented 4)
 	trusted     bool   // trust CF-Connecting-IP from the loopback proxy
 	git         bool   // make the ledger a Git repository (writes become commits)
+	// local is the store of local accounts the authenticator asks (nil = none)
+	local auth.LocalAccounts
 }
 
 type env struct {
@@ -121,6 +126,7 @@ type env struct {
 	// the groups and app roles (comma-separated) the stub console login carries
 	claimGroups, claimRoles string
 	signedIn                string // X-Test-Signin: when the stub session signed in (RFC 3339)
+	method                  string // X-Test-Method: the method of the stub session ("" = oidc)
 }
 
 func (e *env) config() *config.Config {
@@ -206,7 +212,11 @@ func (e *env) start(ln net.Listener) {
 	if e.o.cimdSafe {
 		cimd = nil
 	}
-	authn, err := auth.New(context.Background(), auth.Config{Mode: auth.ModeOIDC, Sessions: userStub{now: e.clock.now}, Config: e.config})
+	acfg := auth.Config{Mode: auth.ModeOIDC, Sessions: userStub{now: e.clock.now}, Config: e.config}
+	if e.o.local != nil {
+		acfg.Local = e.o.local
+	}
+	authn, err := auth.New(context.Background(), acfg)
 	if err != nil {
 		e.t.Fatal(err)
 	}
@@ -278,6 +288,9 @@ func (e *env) do(user, method, path string, body io.Reader, hdr ...string) resp 
 		}
 		if e.claimRoles != "" {
 			req.Header.Set("X-Test-Roles", e.claimRoles)
+		}
+		if e.method != "" {
+			req.Header.Set("X-Test-Method", e.method)
 		}
 	}
 	for i := 0; i+1 < len(hdr); i += 2 {
