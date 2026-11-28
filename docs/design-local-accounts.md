@@ -2,7 +2,7 @@
 
 Status: design. Decided by the owner on 2026-11-22, reviewed six times, then restructured the same day to follow
 the owner's own products, Passwall-Sub-Panel (PSP) and StockAnalysisPrediction-Report-Portal (RP). Nothing here is
-built yet. Builds on [design-audit.md](design-audit.md) (the audit log, phase 2a) and
+built yet, except piece 2 of section 13 (the audit and state foundations, built 2026-11-28). Builds on [design-audit.md](design-audit.md) (the audit log, phase 2a) and
 [design-v0.2.md](design-v0.2.md) (the built-in login). Section 14 records the owner's last answers; nothing is
 open.
 
@@ -993,6 +993,69 @@ Each ships with a demo in three languages before merge.
 7. **My account, re-authentication and Users administration**, with revocation and `pending_revocations`.
 
 Piece 1 can ship on its own. The others are in order; piece 6 needs phase 2a's `yamledit` commit path.
+
+### As built, piece 2 (2026-11-28): audit and state foundations
+
+**Built.** `audit.Log.RecordSync` (and `RecordSyncMonth`, which also returns the month of the file the line went into),
+`EachEvent`, the `target` field of `Event`, and `Options.Pin`, the retention pin (`audit.RetentionPin`); `internal/statekey`
+(`LoadKey`, the five subkeys, the encrypted file format with its header as AAD, the key id); `internal/accounts`: the account
+store (one writer, audit first, the start sequence of 4.3, the gap rules of 4.4), `secrets.enc` with write-only secrets and
+the OIDC binding, the three username records, argon2id with three slots (one reserved), the password rules, TOTP,
+the checkpoint (4.6) and the offline commands `rackbook accounts list | rekey | accept-restore | discard-store`. Nothing is
+reachable from HTTP: `rackbook serve` neither takes `--state-key-file` nor reads `RACKBOOK_STATE_KEY`. Not built here: sign-in,
+sessions, the `local` method, pages, the CAPTCHA, the throttle, the counter tables, the dummy-hash budget and its sample (8.6),
+and the online admin channel with `recover`, `invite`, `reset`, `unlock`, `disable`, `enable` and `end-sessions` (piece 4).
+
+**Where it differs from, or fills in, the text above:**
+
+- **`target`** (listed under piece 3) is added to `audit.Event` now: the start reads the `target` of every `account_invited` event
+  (4.5) and accept-restore names accounts by it. It is the account as `local:<username>`; a bare username is accepted too.
+- **Secrets have their own change ids.** `secrets.enc` runs the same sequence with its own marker, `detail: ["secrets_change:<id>"]`,
+  so each document finds its own last change event. Its events are `settings_secret_set`, `settings_secret_cleared` (with
+  `cause: binding` when a changed issuer or client id cleared the OIDC secret) and the shared `account_store_*` ones. Both documents
+  pin the retention; the older month wins.
+- **The pin exists before the log is open.** Retention runs when the audit log opens, so `accounts.NewPin` reads the audit month
+  of both files first (it decrypts them) and is passed to `audit.Open`. A file that exists but cannot be read (a wrong or missing
+  key) pins `0000-00`, which holds every month, so a start with the wrong key deletes nothing. A prune that the pin held back calls
+  the checkpoint; before the stores are open it is remembered and written when they open. `Store.Counter` writes a checkpoint first
+  at the first write in a month later than the store's.
+- **Extra refusals in the writer** (4.5): a change may not delete an account, replace an account by another under the same name (each
+  account has an immutable random `id`), or bring a `removed` tombstone back, and a new name that is in any username record is
+  refused with `ErrUsernameUsed`. After a write fails once its audit event is recorded the writer refuses all further writes until a
+  restart (`ErrStoreFailed`): continuing would build on a state that lacks the audited change.
+- **Start, beyond the text.** The event at the store's `audit_seq` must be the store's own change event, otherwise the log was rolled
+  back or edited (`audit_truncated`). `accounts.enc.next` that decrypts under the loaded key and names `E` is accepted even when
+  `accounts.enc` itself does not (an interrupted `rekey`); `usernames.next` is promoted the same way. A missing store with no change
+  event in the log is created empty, as written; with change events it stops (`missing`).
+- **`rekey`** re-encrypts both documents and `usernames` in one audit event (`account_store_rekeyed`, with the key ids, never key
+  material). The `.pending` files stay under the old key, the `.next` files are under the new one, so a crash is undone by the old key
+  until the new files are complete and finished by the new key after that. `--generate` makes the new key file (mode 0600, never printed).
+- **`accept-restore`** prints the plan and asks for confirmation (`--yes` skips it). Disabled and removed accounts keep their state (they
+  cannot sign in), but lose their credentials like the others; an account that is reset has `pending: {kind: reset, scope: all}`
+  with **no link issued yet**, which the online `recover` of piece 4 issues. OAuth grants listed by a gap event are revoked directly
+  in `oauth-grants.json`; API token names cannot be (that is a commit to the data repository, piece 7), so they are written as
+  `pending_revocations` and printed. For `secrets.enc`, the secrets named by `settings_secret_*` events after the backup are cleared
+  (so a clear is never undone), and when the log cannot be trusted every secret is cleared; the operator enters them again. The
+  evidence files are moved to `accounts/evidence-<time>/`, kept and out of the Users view. `--accept-audit-truncation` and
+  `--reset-all-accounts` are flags of this command, and each only accepts its own case.
+- **`discard-store`** acts only on a store that no key opens or that is missing; a store that opens, or a gap, is refused. The old files
+  go to `accounts/discarded-<time>/` (kept), and the list of usernames is shown and confirmed before it is MACed again.
+- **`list`** reads without recovering anything and without the lock, so it works while the server runs; it has no role column (roles
+  come with piece 3) and prints no hash, secret or token. The offline commands refuse a key file inside `--state-dir`, and check
+  the state key against the session key when `--session-key-file` or `RACKBOOK_SESSION_KEY` is given.
+- **The common-password list is short.** The design asks for the 100 000 most common passwords; that list is not in the repository and
+  was not downloaded. `internal/accounts/commonpasswords.txt` holds about 270 entries of 12 characters or more (shorter ones are
+  refused for their length first), and a password that is one to four characters repeated is refused as well. The file is read
+  with `go:embed`: replacing it with the full list changes nothing else. **This is open until the list is added.**
+- **"Contains the username or the host name"** applies to names of three characters or more: a one- or two-letter username
+  would otherwise be found in nearly every password.
+- **TOTP**: `Store.UseTOTP` verifies and records `last_step` in one counter write under the writer, so one code passes once, also across
+  restarts. A wrong, malformed, replayed or unknown-account code all give `ErrBadCode`.
+- **argon2id** runs in `Hasher` with three slots (two general, one reserved for `ClassPriority`) and a 5-second queue; the parameters
+  are the constants of 4.2 and `NeedsRehash` compares a stored hash with them. The verifier refuses stored parameters beyond sane
+  bounds. Nothing calls it yet.
+- **New dependency:** none. `golang.org/x/crypto` (argon2) moved from indirect to direct in `go.mod`; `crypto/hkdf` is the standard
+  library, and `golang.org/x/text` (`norm`, `cases`) was already a direct dependency.
 
 ---
 

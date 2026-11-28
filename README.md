@@ -1171,6 +1171,31 @@ Logins, refusals and logouts go to the server log (stdout) and, with `--state-di
 passkey ceremony is rate limited per client (the first `CF-Connecting-IP` /
 `X-Forwarded-For` address when the request comes from a loopback or private proxy).
 
+## Local accounts (coming)
+
+Local accounts beside SSO are being built in pieces ([docs/design-local-accounts.md](docs/design-local-accounts.md)).
+**They are not usable yet:** there is no local sign-in, no page and no setting, and `rackbook serve` does not read
+anything described here. What exists is the foundation under `--state-dir`:
+
+- **The state key**: 32 or more random bytes (`openssl rand -base64 32`), different from the session key. It encrypts
+  `<state-dir>/accounts/accounts.enc` and `<state-dir>/secrets.enc` (AES-256-GCM, a subkey for each file by HKDF) and
+  MACs `<state-dir>/accounts/usernames`. It lives **outside** the state directory: in `RACKBOOK_STATE_KEY` (base64) or a
+  read-only file given with `--state-key-file`. Back the state directory up and, separately, the key. Without the key
+  nothing can be read; a lost key means starting over with `rackbook accounts discard-store`.
+- **The offline commands** `rackbook accounts list | rekey | accept-restore | discard-store` work on those files with
+  the server stopped (`list` only reads). `rekey` moves everything to a new key, `accept-restore` takes a store that was
+  restored from a backup, or an audit log that was rolled back, and puts the affected accounts into a reset instead of
+  trusting them, and `discard-store` starts over after a lost key while keeping every username used (a username is never
+  reused). The commands print no secret and take no password; each writes an audit event with `method: cli` and the
+  `--operator` name.
+- **The audit log** gets `RecordSync` (an event that is on disk before the caller goes on) and a retention pin: `--audit-retention-months`
+  never deletes the month of the account store's last change, and a checkpoint moves that pin on.
+
+```sh
+openssl rand -base64 32 > /etc/rackbook/state.key && chmod 0400 /etc/rackbook/state.key   # outside --state-dir
+rackbook accounts list --state-dir /var/lib/rackbook --state-key-file /etc/rackbook/state.key
+```
+
 ## Audit log
 
 With `--state-dir`, Rackbook keeps an append-only audit log in `<state-dir>/audit/`: one file per month
