@@ -30,6 +30,7 @@ func anchorGit(t *testing.T, dir string, args ...string) string {
 // store's AfterPull hook, Start is called once the store is open, and the store's own pull loop
 // calls the hook. A bad anchor that arrives by pull ends up recorded in the audit log.
 func TestServeWiringChecksAnchorsAfterAPull(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	bare, server, laptop := filepath.Join(root, "origin.git"), filepath.Join(root, "server"), filepath.Join(root, "laptop")
 	anchorGit(t, root, "init", "--bare", "-b", "main", bare)

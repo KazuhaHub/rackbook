@@ -47,6 +47,7 @@ func (p *panel) version(t *testing.T, name string) string {
 }
 
 func TestModuleTokensReadOnlyTheirOwnSettings(t *testing.T) {
+	t.Parallel()
 	p := newPanel(t)
 	h := p.h
 	code, r, _ := h.do("GET", "/api/modules/notify/settings", p.notify, nil)
@@ -80,6 +81,7 @@ func TestModuleTokensReadOnlyTheirOwnSettings(t *testing.T) {
 }
 
 func TestUnauthorizedCallersCannotProbeModuleNames(t *testing.T) {
+	t.Parallel()
 	p := newPanel(t)
 	h := p.h
 	for _, tok := range []string{p.bot, p.other} {
@@ -97,6 +99,7 @@ func TestUnauthorizedCallersCannotProbeModuleNames(t *testing.T) {
 }
 
 func TestRunFromAFastClockIsAccepted(t *testing.T) {
+	t.Parallel()
 	p := newPanel(t)
 	body := runBody("ok")
 	body["started"], body["finished"] = "2099-01-01T00:00:00Z", "2099-01-01T00:00:01Z"
@@ -116,6 +119,7 @@ func TestRunFromAFastClockIsAccepted(t *testing.T) {
 }
 
 func TestModuleReportsOnlyItsOwnRuns(t *testing.T) {
+	t.Parallel()
 	p := newPanel(t)
 	h := p.h
 	if code, r, _ := h.do("POST", "/api/modules/bot/runs", p.bot, runBody("ok")); code != 201 || r["ok"] != true {
@@ -175,6 +179,7 @@ func TestModuleReportsOnlyItsOwnRuns(t *testing.T) {
 }
 
 func TestSettingsAreSavedAsAGitCommitWithAVersionCheck(t *testing.T) {
+	t.Parallel()
 	p := newPanel(t)
 	h := p.h
 	ver := p.version(t, "notify")
@@ -233,6 +238,7 @@ func TestSettingsAreSavedAsAGitCommitWithAVersionCheck(t *testing.T) {
 }
 
 func TestRunNowAndPause(t *testing.T) {
+	t.Parallel()
 	p := newPanel(t)
 	h := p.h
 	code, r, _ := h.do("POST", "/api/modules/bot/run-request", "", map[string]any{})
@@ -281,6 +287,7 @@ func TestRunNowAndPause(t *testing.T) {
 }
 
 func TestPreviewAndConfirmationOverTheAPI(t *testing.T) {
+	t.Parallel()
 	p := newPanel(t)
 	h := p.h
 	ver := p.version(t, "bot")
@@ -299,6 +306,7 @@ func TestPreviewAndConfirmationOverTheAPI(t *testing.T) {
 }
 
 func TestTokenPageAndMetaNameTheModule(t *testing.T) {
+	t.Parallel()
 	p := newPanel(t)
 	_, r, _ := p.h.do("GET", "/api/admin/tokens", "", nil)
 	byName := map[string]string{}

@@ -7,6 +7,7 @@ import (
 )
 
 func TestPersonal(t *testing.T) {
+	t.Parallel()
 	for _, c := range []struct {
 		name string
 		id   *auth.Identity

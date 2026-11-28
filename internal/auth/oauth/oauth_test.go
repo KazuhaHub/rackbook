@@ -56,6 +56,7 @@ func wantInvalid(t *testing.T, err error, contains string) {
 }
 
 func TestGoodToken(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	c, err := f.verify(f.mint(oauthtest.Options{Scope: "rackbook:write other", Subject: "Alice", ClientID: "cursor"}))
 	if err != nil {
@@ -80,6 +81,7 @@ func TestGoodToken(t *testing.T) {
 }
 
 func TestForgedAndWrongTokens(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	f.cfg.TrustedIssuers[0].Algorithms = []string{"ES256"}
 	cases := []struct {
@@ -116,6 +118,7 @@ func TestForgedAndWrongTokens(t *testing.T) {
 }
 
 func TestHS256CannotBeConfigured(t *testing.T) {
+	t.Parallel()
 	for _, alg := range []string{"HS256", "none", "hs256", "RS1"} {
 		cfg := `title: t
 collections:
@@ -133,6 +136,7 @@ auth:
 }
 
 func TestOtherSigningAlgorithms(t *testing.T) {
+	t.Parallel()
 	for _, alg := range []string{"ES256", "RS256", "PS256", "EdDSA"} {
 		f := newFixtureWith(t, oauthtest.Config{Alg: alg}, nil)
 		if _, err := f.verify(f.mint(oauthtest.Options{Scope: "a"})); err != nil {
@@ -150,6 +154,7 @@ func TestOtherSigningAlgorithms(t *testing.T) {
 }
 
 func TestEntraStyle(t *testing.T) {
+	t.Parallel()
 	// RS256, no typ at+jwt (typ JWT), scp scopes, an issuer with a /v2.0 path, and
 	// OIDC metadata only.
 	f := newFixtureWith(t, oauthtest.Config{Alg: "RS256", Path: "/v2.0", Discovery: "oidc"}, func(ti *config.TrustedIssuer) {
@@ -192,6 +197,7 @@ func TestEntraStyle(t *testing.T) {
 }
 
 func TestKeycloakStyleRealmPath(t *testing.T) {
+	t.Parallel()
 	for _, d := range []string{"rfc8414", "oidc", "both"} {
 		f := newFixtureWith(t, oauthtest.Config{Alg: "RS256", Path: "/realms/ledger", Discovery: d}, func(ti *config.TrustedIssuer) {
 			ti.Kind, ti.Alias = "", "kc"
@@ -204,6 +210,7 @@ func TestKeycloakStyleRealmPath(t *testing.T) {
 }
 
 func TestIDTokenIsNotAnAccessToken(t *testing.T) {
+	t.Parallel()
 	f := newFixtureWith(t, oauthtest.Config{Alg: "RS256"}, func(ti *config.TrustedIssuer) {
 		ti.Kind, ti.Alias = "", "idp"
 		off := false
@@ -224,6 +231,7 @@ func TestIDTokenIsNotAnAccessToken(t *testing.T) {
 }
 
 func TestIntrospection(t *testing.T) {
+	t.Parallel()
 	f := newFixtureWith(t, oauthtest.Config{Path: "/realms/x", Discovery: "oidc"}, func(ti *config.TrustedIssuer) {
 		ti.Kind, ti.Alias = "", "kc"
 		ti.Introspection = &config.Introspection{ClientID: "rackbook", ClientSecretEnv: "RB_SECRET"}
@@ -286,6 +294,7 @@ func TestIntrospection(t *testing.T) {
 }
 
 func TestClockSkewIsSixtySeconds(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	if _, err := f.verify(f.mint(oauthtest.Options{Exp: f.now.Add(-30 * time.Second)})); err != nil {
 		t.Fatalf("30 s past exp is within the skew: %v", err)
@@ -299,6 +308,7 @@ func TestClockSkewIsSixtySeconds(t *testing.T) {
 }
 
 func TestUnknownKidRefetchIsRateLimitedAndRotationWorks(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	if _, err := f.verify(f.mint(oauthtest.Options{})); err != nil {
 		t.Fatal(err)
@@ -342,6 +352,7 @@ func TestUnknownKidRefetchIsRateLimitedAndRotationWorks(t *testing.T) {
 }
 
 func TestMetadataIssuerMismatchAndTransport(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	f.iss.MetadataIssuer = "https://someone-else.example.com"
 	_, err := f.verify(f.mint(oauthtest.Options{}))
@@ -384,6 +395,7 @@ auth:
 }
 
 func TestMetadataURLs(t *testing.T) {
+	t.Parallel()
 	for in, want := range map[string][]string{
 		"https://mcp.example.com": {"https://mcp.example.com/.well-known/oauth-authorization-server", "https://mcp.example.com/.well-known/openid-configuration", "https://mcp.example.com/.well-known/openid-configuration"},
 		"https://login.microsoftonline.com/t/v2.0": {
@@ -401,6 +413,7 @@ func TestMetadataURLs(t *testing.T) {
 }
 
 func TestIDTokenLookalikesNeedAScope(t *testing.T) {
+	t.Parallel()
 	f := newFixtureWith(t, oauthtest.Config{Alg: "RS256"}, func(ti *config.TrustedIssuer) {
 		ti.Kind, ti.Alias = "", "idp"
 		off := false
@@ -422,6 +435,7 @@ func TestIDTokenLookalikesNeedAScope(t *testing.T) {
 }
 
 func TestVerifiedEmail(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	mint := func(extra map[string]any) *Claims {
 		c, err := f.verify(f.mint(oauthtest.Options{Extra: extra}))
@@ -461,6 +475,7 @@ func introspectingFixture(t *testing.T, mut func(*config.TrustedIssuer)) *fixtur
 }
 
 func TestOpaqueTokensGoToOneIssuerOnly(t *testing.T) {
+	t.Parallel()
 	f := introspectingFixture(t, func(ti *config.TrustedIssuer) { ti.Introspection.TokenPrefix = "kc_" })
 	other := oauthtest.New(t)
 	f.cfg.TrustedIssuers = append(f.cfg.TrustedIssuers, config.TrustedIssuer{
@@ -490,6 +505,7 @@ func TestOpaqueTokensGoToOneIssuerOnly(t *testing.T) {
 }
 
 func TestRefusedOpaqueTokensAreCachedBriefly(t *testing.T) {
+	t.Parallel()
 	f := introspectingFixture(t, nil)
 	f.verify("bad")
 	n := f.iss.IntrospectCalls.Load()
@@ -569,6 +585,7 @@ func (g *failIntro) RoundTrip(r *http.Request) (*http.Response, error) {
 }
 
 func TestIntrospectionOutagesAreNotVerdicts(t *testing.T) {
+	t.Parallel()
 	f := introspectingFixture(t, nil)
 	g := &failIntro{next: http.DefaultTransport}
 	f.v.HTTP = &http.Client{Transport: g, Timeout: 5 * time.Second}

@@ -52,11 +52,8 @@ type mini struct {
 
 func newMini(t *testing.T) *mini {
 	t.Helper()
-	// a slow machine (the race detector) must not cut a page short: the tests that
-	// look at the time budget set their own
-	oldV, oldD := VersionTimeBudget, DeletedTimeBudget
-	VersionTimeBudget, DeletedTimeBudget = time.Hour, time.Hour
-	t.Cleanup(func() { VersionTimeBudget, DeletedTimeBudget = oldV, oldD })
+	// the time budgets are set to an hour once, in TestMain (the tests that look at
+	// them set their own, serially)
 	m := &mini{t: t, dir: t.TempDir(), file: "data/hosts.yml"}
 	sh(t, m.dir, "init", "-b", "main")
 	m.put("schemas/host.json", miniSchema)
@@ -145,6 +142,7 @@ func jsonOf(v any) string {
 }
 
 func TestRecordVersionsHaveFieldLevelDiffs(t *testing.T) {
+	t.Parallel()
 	m := newMini(t)
 	s := m.store()
 	m.rackbook(s, add("alpha", map[string]any{"os": "debian", "note": "first", "ports": []any{map[string]any{"port": 22, "proto": "tcp"}, map[string]any{"port": 80, "proto": "tcp"}}}))
@@ -197,6 +195,7 @@ func TestRecordVersionsHaveFieldLevelDiffs(t *testing.T) {
 }
 
 func TestRecordVersionsPageByWalkPosition(t *testing.T) {
+	t.Parallel()
 	m := newMini(t)
 	s := m.store()
 	m.rackbook(s, add("alpha", map[string]any{"os": "a"}))
@@ -237,6 +236,7 @@ func TestRecordVersionsPageByWalkPosition(t *testing.T) {
 // The record is read from the collection file, the config and the type as they
 // were at the commit: here the file moved in the very commit that changed it.
 func TestRecordVersionReadsThatCommitsFileAndConfig(t *testing.T) {
+	t.Parallel()
 	m := newMini(t)
 	s := m.store()
 	m.rackbook(s, add("alpha", map[string]any{"os": "debian"}))
@@ -263,6 +263,7 @@ func TestRecordVersionReadsThatCommitsFileAndConfig(t *testing.T) {
 }
 
 func TestRecordVersionsFileFallbackDropsCommitsThatDidNotChangeTheRecord(t *testing.T) {
+	t.Parallel()
 	m := newMini(t)
 	m.put(m.file, "- {name: alpha, os: a}\n- {name: beta, os: a}\n")
 	c1 := m.commit("add both")
@@ -287,6 +288,7 @@ func TestRecordVersionsFileFallbackDropsCommitsThatDidNotChangeTheRecord(t *test
 }
 
 func TestRecordVersionsMarkCreatedDeletedAndRenamed(t *testing.T) {
+	t.Parallel()
 	m := newMini(t)
 	s := m.store()
 	m.rackbook(s, add("alpha", map[string]any{"os": "a"}))
@@ -312,6 +314,7 @@ func TestRecordVersionsMarkCreatedDeletedAndRenamed(t *testing.T) {
 }
 
 func TestRecordVersionsHideWhatTheSecretScanFlags(t *testing.T) {
+	t.Parallel()
 	m := newMini(t)
 	const key = "ghp_0123456789abcdefghijklmnopqrstuvwxyz"
 	m.put(m.file, "- {name: alpha, os: a, note: \"token "+key+"\"}\n- {name: \"tok "+key+"\", os: a}\n")
@@ -360,6 +363,7 @@ func TestRecordVersionsHideWhatTheSecretScanFlags(t *testing.T) {
 }
 
 func TestVersionAtAndRestoreSourceRefuseWhatIsNotTheRecordsHistory(t *testing.T) {
+	t.Parallel()
 	m := newMini(t)
 	s := m.store()
 	m.rackbook(s, add("alpha", map[string]any{"os": "a"}))
@@ -390,6 +394,7 @@ func TestVersionAtAndRestoreSourceRefuseWhatIsNotTheRecordsHistory(t *testing.T)
 }
 
 func TestFilesAtACommitAreReadByBlobIDAndRefusedOtherwise(t *testing.T) {
+	t.Parallel()
 	m := newMini(t)
 	s := m.store()
 	head := sh(t, m.dir, "rev-parse", "HEAD")
@@ -443,6 +448,7 @@ func deleteOf(s *Store, name string) edit.Op {
 }
 
 func TestDeletedRecordsAreThoseWhoseLastChangeRemovedThem(t *testing.T) {
+	t.Parallel()
 	m := newMini(t)
 	s := m.store()
 	for _, n := range []string{"alpha", "beta", "gamma", "delta"} {
@@ -493,6 +499,7 @@ func (c countRunner) Run(ctx context.Context, cmd Cmd) (string, string, error) {
 }
 
 func TestDeletedCacheIsKeptCanBeDeletedAndIsExtendedFromTheLastTip(t *testing.T) {
+	t.Parallel()
 	m := newMini(t)
 	state := filepath.Join(t.TempDir(), "state")
 	blobs := 0
@@ -555,6 +562,7 @@ func TestDeletedCacheIsKeptCanBeDeletedAndIsExtendedFromTheLastTip(t *testing.T)
 }
 
 func TestDeletedCacheIsRebuiltWhenTheHistoryWasRewritten(t *testing.T) {
+	t.Parallel()
 	m := newMini(t)
 	state := filepath.Join(t.TempDir(), "state")
 	openState := func() *Store { return open(t, m.dir, func(o *Options) { o.StateDir = state }) }
@@ -619,6 +627,7 @@ func TestDeletedBuildIsBudgetedAndResumes(t *testing.T) {
 }
 
 func TestDeletedRecordsOfAnUnknownCollectionOrWithoutGit(t *testing.T) {
+	t.Parallel()
 	m := newMini(t)
 	if _, err := m.store().DeletedRecords(context.Background(), "nope"); err == nil {
 		t.Fatal("unknown collection")
@@ -779,6 +788,7 @@ func TestVersionPagesEndOnTheTimeBudgetAndResume(t *testing.T) {
 // What a commit that is not named for the record did to it shows too: a hand edit
 // without the trailer, next to the commits that carry it.
 func TestRecordVersionsIncludeHandEditsNextToTrailerCommits(t *testing.T) {
+	t.Parallel()
 	m := newMini(t)
 	s := m.store()
 	m.rackbook(s, add("alpha", map[string]any{"os": "a"}))
@@ -839,6 +849,7 @@ func TestAnUnreadableBlobIsMarkedAndDoesNotFailTheRequest(t *testing.T) {
 // files that are not there, hold fields no version knows, and still gives the file
 // and the key. One that cannot be read at all makes the versions approximate.
 func TestAnOldConfigIsReadWithoutTodaysParserAndFlagsWhenItCannotBe(t *testing.T) {
+	t.Parallel()
 	m := newMini(t)
 	s := m.store()
 	m.rackbook(s, add("alpha", map[string]any{"os": "a"}))
@@ -885,6 +896,7 @@ func TestAnOldConfigIsReadWithoutTodaysParserAndFlagsWhenItCannotBe(t *testing.T
 // A value that the type of its commit and today's type both declare public is shown (it is
 // a public key or a fingerprint); one that either type flags is hidden.
 func TestPublicValuesStayVisibleUnlessEitherTypeFlagsThem(t *testing.T) {
+	t.Parallel()
 	const fp1, fp2 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
 	annotated := strings.Replace(miniSchema, `"os": {"type": "string"},`, `"os": {"type": "string"}, "fp": {"type": "string", "x-rackbook": {"public": "hex_id"}},`, 1)
 	plain := strings.Replace(miniSchema, `"os": {"type": "string"},`, `"os": {"type": "string"}, "fp": {"type": "string"},`, 1)
@@ -935,6 +947,7 @@ func TestPublicValuesStayVisibleUnlessEitherTypeFlagsThem(t *testing.T) {
 }
 
 func TestRestoreSourceNamesWhereTheHiddenValuesWere(t *testing.T) {
+	t.Parallel()
 	m := newMini(t)
 	const key = "ghp_0123456789abcdefghijklmnopqrstuvwxyz"
 	m.put(m.file, "- name: alpha\n  os: a\n  note: \"token "+key+"\"\n  ports:\n    - {port: 22, proto: tcp}\n    - {port: 80, proto: \""+key+"\"}\n")
@@ -955,6 +968,7 @@ func TestRestoreSourceNamesWhereTheHiddenValuesWere(t *testing.T) {
 // Deleted records: the summary is kept with the event, so serving the list reads
 // nothing; what a cache was made with is part of it; and what it names must be on the branch.
 func TestDeletedListIsServedFromTheCacheWithoutGitReads(t *testing.T) {
+	t.Parallel()
 	m := newMini(t)
 	gc := newGitCounter()
 	state := filepath.Join(t.TempDir(), "state")
@@ -986,6 +1000,7 @@ func TestDeletedListIsServedFromTheCacheWithoutGitReads(t *testing.T) {
 }
 
 func TestDeletedCacheIsRebuiltWhenTheScanOrTheSummaryChanges(t *testing.T) {
+	t.Parallel()
 	m := newMini(t)
 	const key = "ghp_0123456789abcdefghijklmnopqrstuvwxyz"
 	state := filepath.Join(t.TempDir(), "state")
@@ -1017,6 +1032,7 @@ func TestDeletedCacheIsRebuiltWhenTheScanOrTheSummaryChanges(t *testing.T) {
 }
 
 func TestDeletedCacheNamingACommitOffTheBranchIsDroppedAndRebuilt(t *testing.T) {
+	t.Parallel()
 	m := newMini(t)
 	state := filepath.Join(t.TempDir(), "state")
 	openState := func() *Store { return open(t, m.dir, func(o *Options) { o.StateDir = state }) }
@@ -1048,6 +1064,7 @@ func TestDeletedCacheNamingACommitOffTheBranchIsDroppedAndRebuilt(t *testing.T) 
 // A commit that names the record and changed only the key in rackbook.yml leaves the file
 // as it was and still renames the record; one that changed nothing is skipped.
 func TestANamedCommitThatOnlyChangedTheKeyIsARename(t *testing.T) {
+	t.Parallel()
 	m := newMini(t)
 	m.put(m.file, "- {name: alpha, os: a}\n")
 	m.commit("add\n\nRecord: hosts/alpha")
@@ -1067,6 +1084,7 @@ func TestANamedCommitThatOnlyChangedTheKeyIsARename(t *testing.T) {
 
 // What CommitChanges returns has no trailing newline, as before the reads went by blob.
 func TestCommitChangesKeepsTheFilesWithoutTheirTrailingNewline(t *testing.T) {
+	t.Parallel()
 	m := newMini(t)
 	s := m.store()
 	m.rackbook(s, add("alpha", map[string]any{"os": "a"}))

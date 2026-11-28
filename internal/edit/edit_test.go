@@ -37,6 +37,7 @@ func hashOf(t *testing.T, dir, coll, id string) string {
 }
 
 func TestEditAddDelete(t *testing.T) {
+	t.Parallel()
 	dir, apply := setup(t)
 	id := "web-hostco-ashburn-va-us-dc/SSH"
 	res, err := apply(edit.Op{Kind: edit.Edit, Collection: "services", ID: id, Hash: hashOf(t, dir, "services", id),
@@ -71,6 +72,7 @@ func TestEditAddDelete(t *testing.T) {
 }
 
 func TestRenameAndConflicts(t *testing.T) {
+	t.Parallel()
 	dir, apply := setup(t)
 	id := "laptop-me-pc"
 	h := hashOf(t, dir, "devices", id)
@@ -107,6 +109,7 @@ func TestRenameAndConflicts(t *testing.T) {
 }
 
 func TestInvalidWritesAreRejectedAndNothingIsWritten(t *testing.T) {
+	t.Parallel()
 	dir, apply := setup(t)
 	before := read(t, dir, "docs/ledger/services.yml")
 	var ie *edit.InvalidError
@@ -130,6 +133,7 @@ func TestInvalidWritesAreRejectedAndNothingIsWritten(t *testing.T) {
 }
 
 func TestPreexistingErrorsDoNotBlockUnrelatedWrites(t *testing.T) {
+	t.Parallel()
 	dir, apply := setup(t)
 	testutil.Replace(t, dir, "docs/ledger/addresses.yml", "{device: laptop-me-pc, network", "{device: ghost, network")
 	if _, err := apply(edit.Op{Kind: edit.Add, Collection: "todo", Data: map[string]any{"item": "new", "status": "待办"}}); err != nil {
@@ -138,6 +142,7 @@ func TestPreexistingErrorsDoNotBlockUnrelatedWrites(t *testing.T) {
 }
 
 func TestNestedAndKeylessAndNoop(t *testing.T) {
+	t.Parallel()
 	dir, apply := setup(t)
 	if _, err := apply(edit.Op{Kind: edit.Add, Collection: "docker_ranges", Data: map[string]any{"range": "172.20.0.0/16", "purpose": "new"}}); err != nil {
 		t.Fatal(err)
@@ -160,6 +165,7 @@ func TestNestedAndKeylessAndNoop(t *testing.T) {
 }
 
 func TestDeleteNotBlockedByPreexistingErrorInKeylessCollection(t *testing.T) {
+	t.Parallel()
 	dir, apply := setup(t)
 	testutil.Replace(t, dir, "rackbook.yml", "  todo:\n    title: 待办\n    file: docs/ledger/todo.yml\n    schema: schemas/todo.json\n    key: [item]\n", "  todo:\n    title: 待办\n    file: docs/ledger/todo.yml\n    schema: schemas/todo.json\n")
 	// Break the last record; ids are positions, so deleting an earlier one shifts it.
@@ -174,6 +180,7 @@ func TestDeleteNotBlockedByPreexistingErrorInKeylessCollection(t *testing.T) {
 }
 
 func TestSubjectIsSanitizedAndMultilineKeysRejected(t *testing.T) {
+	t.Parallel()
 	r := &edit.Result{Kind: edit.Add, Collection: "todo", ID: "a\nEdited-by: x@y.z\r\n" + strings.Repeat("x", 300)}
 	subj := r.Subject()
 	if strings.ContainsAny(subj, "\r\n") || len([]rune(subj)) > 160 || !strings.HasPrefix(subj, "ledger(todo): add a Edited-by: x@y.z") {
@@ -188,6 +195,7 @@ func TestSubjectIsSanitizedAndMultilineKeysRejected(t *testing.T) {
 }
 
 func TestApplyDryRunChecksEverythingAndWritesNothing(t *testing.T) {
+	t.Parallel()
 	dir, apply := setup(t)
 	before := read(t, dir, "docs/ledger/services.yml")
 	id := "web-hostco-ashburn-va-us-dc/SSH"

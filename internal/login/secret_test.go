@@ -6,6 +6,7 @@ import (
 )
 
 func TestPasskeyNameThatIsASecretIsRefusedBeforeTheCeremony(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t, options{passkeys: true, remote: true})
 	b := e.browser()
 	b.login("admin", "")

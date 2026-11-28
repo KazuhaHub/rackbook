@@ -6,6 +6,7 @@ import (
 )
 
 func TestIsSecretFile(t *testing.T) {
+	t.Parallel()
 	for p, want := range map[string]bool{
 		"secrets/alpha.sops.yaml":        true,
 		"secrets/anything.txt":           true,
@@ -26,6 +27,7 @@ func TestIsSecretFile(t *testing.T) {
 }
 
 func TestRedactPatchHidesSecretLookingValuesAndKeepsTheHeaders(t *testing.T) {
+	t.Parallel()
 	secret := "gh" + "p_" + strings.Repeat("a1B2", 9)
 	patch := "diff --git a/x.yml b/x.yml\nindex 1..2 100644\n--- a/x.yml\n+++ b/x.yml\n@@ -1,3 +1,3 @@\n host: a\n-password: hunter22hunter\n+api_token: " + secret + "\n--- not a header\n"
 	got := redactPatch(patch)
@@ -43,6 +45,7 @@ func TestRedactPatchHidesSecretLookingValuesAndKeepsTheHeaders(t *testing.T) {
 }
 
 func TestRedactPatchDropsTheFunctionContextOfHunkHeaders(t *testing.T) {
+	t.Parallel()
 	patch := "diff --git a/x.yml b/x.yml\n--- a/x.yml\n+++ b/x.yml\n@@ -7,5 +7,5 @@ ansible_become_password: hunter2hunter2\n a: 1\n-b: 2\n+b: 3\n"
 	got := redactPatch(patch)
 	if strings.Contains(got, "hunter2") || !strings.Contains(got, "@@ -7,5 +7,5 @@\n") {

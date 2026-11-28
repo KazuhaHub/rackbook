@@ -33,6 +33,7 @@ func withRoles(t *testing.T, dir string) string {
 }
 
 func TestRolesDecideWhatTheAPIAllows(t *testing.T) {
+	t.Parallel()
 	dir := withRoles(t, testutil.CopyExample(t))
 	cases := []struct {
 		who                  string
@@ -86,6 +87,7 @@ func newFixtureWithConfigSource(t *testing.T, who, dir string) *fixture {
 }
 
 func TestIdentityWithoutARoleIsRefusedAndRolesFollowTheFile(t *testing.T) {
+	t.Parallel()
 	dir := withRoles(t, testutil.CopyExample(t))
 	f := newFixtureWithConfigSource(t, "Eve <eve@elsewhere.org>", dir)
 	for _, p := range []string{"/api/meta", "/api/c/todo", "/export.json", "/"} {
@@ -109,6 +111,7 @@ func TestIdentityWithoutARoleIsRefusedAndRolesFollowTheFile(t *testing.T) {
 }
 
 func TestDefaultAuthStillAppliesRoles(t *testing.T) {
+	t.Parallel()
 	// No Auth option at all (library use): auth none, but roles and editors apply; anonymous reads.
 	f := newFixture(t, nil, withRoles(t, testutil.CopyExample(t)))
 	_, m, _ := f.do(t, "GET", "/api/meta", nil, nil)

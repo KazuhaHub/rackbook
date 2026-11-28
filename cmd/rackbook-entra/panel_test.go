@@ -32,6 +32,7 @@ func (e *env) reported() []modsettings.Run {
 }
 
 func TestCycleRunsWhenASlotHasPassedAndReports(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	e.panel(map[string]any{"sync_at": []any{"03:00"}}, testNow.Add(-30*time.Hour), "")
 	failed, panel, _ := e.cycle(options{})
@@ -48,6 +49,7 @@ func TestCycleRunsWhenASlotHasPassedAndReports(t *testing.T) {
 }
 
 func TestCycleDoesNothingBetweenSlots(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	e.panel(map[string]any{"sync_at": []any{"03:00"}}, testNow.Add(-time.Hour), "") // ran after today's 03:00 slot
 	failed, panel, logs := e.cycle(options{})
@@ -63,6 +65,7 @@ func TestCycleDoesNothingBetweenSlots(t *testing.T) {
 }
 
 func TestCyclePausedReportsSkippedAndForceRunsAnyway(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	e.panel(map[string]any{"paused": true}, time.Time{}, "req-9")
 	if failed, panel, _ := e.cycle(options{}); failed || !panel {
@@ -78,6 +81,7 @@ func TestCyclePausedReportsSkippedAndForceRunsAnyway(t *testing.T) {
 }
 
 func TestCycleDryRunPlansWithoutReporting(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	e.panel(map[string]any{"paused": true}, testNow.Add(-time.Minute), "")
 	e.cycle(options{dry: true})
@@ -87,6 +91,7 @@ func TestCycleDryRunPlansWithoutReporting(t *testing.T) {
 }
 
 func TestConsoleSettingsWinOverTheLocalConfigAndSayWhy(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t) // the local config excludes appB
 	e.panel(map[string]any{"exclude_app_ids": []any{appB, appA}, "name_prefix": "ent-", "defaults": map[string]any{"owner": "sec"}}, time.Time{}, "")
 	_, _, logs := e.cycle(options{})
@@ -116,6 +121,7 @@ func TestConsoleSettingsWinOverTheLocalConfigAndSayWhy(t *testing.T) {
 }
 
 func TestConsoleExcludeListAddsToTheLocalOne(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t) // the local config excludes appB
 	e.panel(map[string]any{"exclude_app_ids": []any{appA}}, time.Time{}, "")
 	_, _, logs := e.cycle(options{})
@@ -131,6 +137,7 @@ func TestConsoleExcludeListAddsToTheLocalOne(t *testing.T) {
 }
 
 func TestFallsBackToTheLocalConfigWithoutAPanel(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t) // fakeRB answers 404 for /api/modules
 	failed, panel, logs := e.cycle(options{})
 	if failed || panel || len(e.rb.records) != 4 || !strings.Contains(logs, "using the local config") {
@@ -142,6 +149,7 @@ func TestFallsBackToTheLocalConfigWithoutAPanel(t *testing.T) {
 }
 
 func TestFailedAndConflictedRunsAreReportedFailed(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	e.panel(map[string]any{}, time.Time{}, "")
 	e.rb.denyAll = true

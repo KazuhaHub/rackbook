@@ -16,6 +16,7 @@ import (
 // The built-in authorization server keeps its grants and its signing key in the
 // state directory and names itself by --base-url: it refuses to start without both.
 func TestServeBuiltinIssuerNeedsStateDirAndBaseURL(t *testing.T) {
+	t.Parallel()
 	dir := testutil.CopyExample(t)
 	cfg := filepath.Join(dir, "rackbook.yml")
 	b, _ := os.ReadFile(cfg)
@@ -37,6 +38,7 @@ func TestServeBuiltinIssuerNeedsStateDirAndBaseURL(t *testing.T) {
 
 // A second server on the same state directory stops with a clear message.
 func TestServeStateDirIsLocked(t *testing.T) {
+	t.Parallel()
 	cfg := filepath.Join(testutil.CopyExample(t), "rackbook.yml")
 	state := filepath.Join(t.TempDir(), "state")
 	if err := os.MkdirAll(state, 0o700); err != nil {
@@ -61,6 +63,7 @@ func TestServeStateDirIsLocked(t *testing.T) {
 // An existing state directory with loose permissions is made private; if that
 // is not possible the built-in server refuses to use it.
 func TestSecureStateDir(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("Unix modes")
 	}

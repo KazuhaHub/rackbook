@@ -31,6 +31,7 @@ func issueJSON(t *testing.T, issues []ledger.Issue, path string) (string, string
 }
 
 func TestIssueParams(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name, old, new, path, keyword, params string
 	}{
@@ -61,6 +62,7 @@ func TestIssueParams(t *testing.T) {
 }
 
 func TestRuleIssueParams(t *testing.T) {
+	t.Parallel()
 	dir := testutil.CopyFixture(t, "labels")
 	testutil.Replace(t, dir, labelDevices, "country: tbd, owner: ann", "country: tbd, owner: bob")
 	var refs []ledger.Issue
@@ -92,6 +94,7 @@ func TestRuleIssueParams(t *testing.T) {
 // dependentRequired reports the keyword itself, not the property the library
 // appends to its keyword path.
 func TestDependentRequiredKeyword(t *testing.T) {
+	t.Parallel()
 	dir := testutil.CopyFixture(t, "labels")
 	testutil.Replace(t, dir, "schemas/device.json", `"required": ["name"],`, `"required": ["name"], "dependentRequired": {"owner": ["country"]},`)
 	testutil.Replace(t, dir, labelDevices, "country: US, owner: ann", "owner: ann")
@@ -109,6 +112,7 @@ func TestDependentRequiredKeyword(t *testing.T) {
 
 // draft-07 dependencies reports the schema keyword too.
 func TestDependenciesKeyword(t *testing.T) {
+	t.Parallel()
 	dir := testutil.CopyFixture(t, "labels")
 	testutil.Replace(t, dir, "schemas/device.json", `"https://json-schema.org/draft/2020-12/schema"`, `"http://json-schema.org/draft-07/schema#"`)
 	testutil.Replace(t, dir, "schemas/device.json", `"required": ["name"],`, `"required": ["name"], "dependencies": {"owner": ["country"]},`)

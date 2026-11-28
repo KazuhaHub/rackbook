@@ -12,6 +12,7 @@ import (
 )
 
 func TestDescribeCollectionListsCodesWithLabels(t *testing.T) {
+	t.Parallel()
 	l := ledger.Load(testutil.LoadConfig(t, testutil.CopyFixture(t, "labels")), nil)
 	srv := New(func() *ledger.Ledger { return l }, "test")
 	ct, st := mcp.NewInMemoryTransports()

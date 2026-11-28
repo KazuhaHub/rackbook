@@ -24,6 +24,7 @@ func run(t *testing.T, args ...string) (string, error) {
 }
 
 func TestCheckExitCodes(t *testing.T) {
+	t.Parallel()
 	dir := testutil.CopyExample(t)
 	cfg := filepath.Join(dir, "rackbook.yml")
 	out, err := run(t, "check", "--config", cfg)
@@ -46,6 +47,7 @@ func TestCheckExitCodes(t *testing.T) {
 }
 
 func TestListGetSchemaExport(t *testing.T) {
+	t.Parallel()
 	cfg := filepath.Join(testutil.CopyExample(t), "rackbook.yml")
 	out, err := run(t, "list", "services", "--config", cfg, "--where", "device=web-hostco-ashburn-va-us-dc")
 	if err != nil || strings.Count(out, "\n") != 4 || !strings.HasPrefix(out, "device") {
@@ -91,6 +93,7 @@ func TestListGetSchemaExport(t *testing.T) {
 }
 
 func TestAddSetRm(t *testing.T) {
+	t.Parallel()
 	dir := testutil.CopyExample(t)
 	cfg := filepath.Join(dir, "rackbook.yml")
 	read := func() string { b, _ := os.ReadFile(filepath.Join(dir, "docs/ledger/services.yml")); return string(b) }
@@ -169,6 +172,7 @@ func TestEnvFlags(t *testing.T) {
 }
 
 func TestCoerce(t *testing.T) {
+	t.Parallel()
 	dir := testutil.CopyExample(t)
 	testutil.Replace(t, dir, "schemas/port.json", `"scope": {"type": "string"`, `"count": {"type": "integer"}, "ratio": {"type": "number"}, "tags": {"type": "array"}, "scope": {"type": "string"`)
 	out, err := run(t, "add", "ports", "service=x", "port=TCP 1", "count=3", "ratio=1.5", "tags=a, b", "--config", filepath.Join(dir, "rackbook.yml"))
@@ -182,6 +186,7 @@ func TestCoerce(t *testing.T) {
 }
 
 func TestServeRefusesNonLoopbackWithoutAuth(t *testing.T) {
+	t.Parallel()
 	cfg := filepath.Join(testutil.CopyExample(t), "rackbook.yml")
 	for _, listen := range []string{"0.0.0.0:0", ":0"} {
 		_, err := run(t, "serve", "--listen", listen, "--config", cfg, "--no-git")
@@ -195,6 +200,7 @@ func TestServeRefusesNonLoopbackWithoutAuth(t *testing.T) {
 }
 
 func TestCommitRefusedWhenRemoteHistoryWasRewritten(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	g := func(dir string, args ...string) {
 		t.Helper()
@@ -260,6 +266,7 @@ func TestCommitRefusedWhenRemoteHistoryWasRewritten(t *testing.T) {
 }
 
 func TestServeAcceptRemoteCannotBeReadOnly(t *testing.T) {
+	t.Parallel()
 	cfg := filepath.Join(testutil.CopyExample(t), "rackbook.yml")
 	if out, err := run(t, "serve", "--config", cfg, "--listen", "127.0.0.1:0", "--read-only", "--accept-remote", "0123456"); err == nil || !strings.Contains(err.Error(), "--read-only") {
 		t.Fatalf("%v %s", err, out)
@@ -267,6 +274,7 @@ func TestServeAcceptRemoteCannotBeReadOnly(t *testing.T) {
 }
 
 func TestServeRefusesStateDirInsideRepo(t *testing.T) {
+	t.Parallel()
 	dir := testutil.CopyExample(t)
 	_, err := run(t, "serve", "--listen", "127.0.0.1:0", "--config", filepath.Join(dir, "rackbook.yml"), "--no-git", "--state-dir", filepath.Join(dir, "state"))
 	if err == nil || !strings.Contains(err.Error(), "inside the data repository") {
@@ -275,6 +283,7 @@ func TestServeRefusesStateDirInsideRepo(t *testing.T) {
 }
 
 func TestServeInfraFlagsAreChecked(t *testing.T) {
+	t.Parallel()
 	dir := testutil.CopyExample(t)
 	cfg := filepath.Join(dir, "rackbook.yml")
 	other := t.TempDir()
@@ -312,6 +321,7 @@ func TestServeInfraFlagsAreChecked(t *testing.T) {
 }
 
 func TestCheckValidatesAuthAuditors(t *testing.T) {
+	t.Parallel()
 	dir := testutil.CopyExample(t)
 	cfg := filepath.Join(dir, "rackbook.yml")
 	b, _ := os.ReadFile(cfg)
@@ -333,6 +343,7 @@ func TestCheckValidatesAuthAuditors(t *testing.T) {
 }
 
 func TestCheckRefusesTheDailyAnchorInPullRequestMode(t *testing.T) {
+	t.Parallel()
 	for _, c := range []struct {
 		extra string
 		pr    bool

@@ -28,6 +28,7 @@ import (
 )
 
 func TestAccessTokenWorksOnMCP(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t, opts{})
 	_, tok := e.login(boss, "Test Client")
 	if err := e.mcpTools(tok.access); err != nil {
@@ -60,6 +61,7 @@ func TestAccessTokenWorksOnMCP(t *testing.T) {
 }
 
 func TestScopeNarrowsTheRole(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t, opts{mcpYAML: "    scopes: {read: \"rackbook:read\"}\n"})
 	cid := e.register("c")
 	v, ch := pkce()
@@ -78,6 +80,7 @@ func TestScopeNarrowsTheRole(t *testing.T) {
 }
 
 func TestRefreshRotation(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t, opts{})
 	cid, tok := e.login(boss, "c")
 
@@ -119,6 +122,7 @@ func TestRefreshRotation(t *testing.T) {
 }
 
 func TestRefreshReuseAfterGraceRevokes(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t, opts{})
 	cid, tok := e.login(boss, "c")
 	rotated := e.refresh(cid, tok.refresh)
@@ -143,6 +147,7 @@ func TestRefreshReuseAfterGraceRevokes(t *testing.T) {
 }
 
 func TestIdleExpiry(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t, opts{builtinYAML: "      idle_expiry: 30d\n"})
 	cid, tok := e.login(boss, "c")
 	e.clock.advance(29 * 24 * time.Hour)
@@ -163,6 +168,7 @@ func TestIdleExpiry(t *testing.T) {
 }
 
 func TestRoleRemoved(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t, opts{})
 	cid, tok := e.login("ed@example.com", "c")
 	if e.mcpStatus(tok.access).StatusCode != 200 {
@@ -182,6 +188,7 @@ func TestRoleRemoved(t *testing.T) {
 }
 
 func TestRevokeIsImmediate(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t, opts{})
 	_, tok := e.login("ed@example.com", "Editor Client")
 	if e.mcpStatus(tok.access).StatusCode != 200 {
@@ -250,6 +257,7 @@ func signingKey(t *testing.T, dir string) *ecdsa.PrivateKey {
 }
 
 func TestTokenConfusion(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t, opts{})
 	_, tok := e.login(boss, "c")
 	key := signingKey(t, e.dir)
@@ -388,6 +396,7 @@ func TestKeyReplacementRecoversByRefresh(t *testing.T) {
 }
 
 func TestSigningKeySources(t *testing.T) {
+	t.Parallel()
 	// A key file named in the config wins; a missing file is an error, not a new key.
 	e := newEnv(t, opts{})
 	_ = e
@@ -414,6 +423,7 @@ func TestSigningKeySources(t *testing.T) {
 }
 
 func TestSessionlessAuthorizeAfterLoginReturn(t *testing.T) {
+	t.Parallel()
 	// The "return" the login page receives is a path-only URL; see login.SafeReturn for the strict checks.
 	e := newEnv(t, opts{})
 	cid := e.register("c")
@@ -442,6 +452,7 @@ func TestStartupDropsGrantsThatWentIdle(t *testing.T) {
 // An auditor with no role at all gets the viewer floor, so a grant they approve
 // works; removing them from auth.auditors ends it like removing a role.
 func TestGrantOfAnAuditorLastsWhileTheyAreOnTheList(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t, opts{})
 	const aud = "aud@example.com"
 	e.setAuditors([]string{aud})
@@ -477,6 +488,7 @@ var grantRouteClass = map[string]string{
 }
 
 func TestAuditorCannotRevokeAnotherPersonsGrantOnAnyRoute(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t, opts{})
 	const aud = "aud@example.com"
 	e.setAuditors([]string{aud})

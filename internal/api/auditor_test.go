@@ -22,6 +22,7 @@ import (
 // auditor (no role), auditor with the editor role.
 
 func TestAuditorMetaShowsTheCapabilityApartFromTheRole(t *testing.T) {
+	t.Parallel()
 	e := newActEnv(t, actOpts{})
 	for _, c := range []struct {
 		who               string
@@ -64,6 +65,7 @@ func TestAuditorMetaShowsTheCapabilityApartFromTheRole(t *testing.T) {
 
 // Every visibility class of canSee for every kind of caller.
 func TestAuditorEveryVisibilityClass(t *testing.T) {
+	t.Parallel()
 	e := newActEnv(t, actOpts{})
 	e.laptopCommit(t, "2026-03-01T10:00:00Z", "state only", map[string]string{".rackbook/x.yml": "a: 1\n"})
 	e.laptopCommit(t, "2026-03-02T10:00:00Z", "ledger edit", map[string]string{"notes.txt": "hi\n"})
@@ -150,6 +152,7 @@ func TestAuditorEveryVisibilityClass(t *testing.T) {
 // write anywhere. The routes come from the mux itself, so a route added later is
 // walked too.
 func TestAuditorNeverGets2xxOnAWriteRoute(t *testing.T) {
+	t.Parallel()
 	e := newActEnv(t, actOpts{})
 	pats := api.RoutePatterns(e.opts)
 	if len(pats) < 30 {
@@ -261,6 +264,7 @@ var infraRouteClass = map[string]string{
 }
 
 func TestInfraRouteClasses(t *testing.T) {
+	t.Parallel()
 	const auditorU, neitherU = "aud@kazuha.org", "editor@kazuha.org"
 	var opts api.Options
 	s := newSEnv(t, func(o *api.Options, io *api.InfraOptions) {
@@ -374,6 +378,7 @@ func TestInfraRouteClasses(t *testing.T) {
 // The infra auditor reads, and the rest of the page's data is the same for
 // them; the editor state says so (the console hides every edit control).
 func TestInfraAuditorSeesReadOnlyState(t *testing.T) {
+	t.Parallel()
 	s := newSEnv(t, func(o *api.Options, io *api.InfraOptions) {
 		ia, _ := auth.NewInfraAuditors([]string{"aud@kazuha.org"})
 		if err := ia.Pin(testIssuer, testClient, "", testTenant, 12*time.Hour); err != nil {
@@ -413,6 +418,7 @@ func TestInfraAuditorSeesReadOnlyState(t *testing.T) {
 // Reloading rackbook.yml changes who is an auditor at once, in the same way it
 // changes roles ("reload on pull").
 func TestAuditorListReloads(t *testing.T) {
+	t.Parallel()
 	dir := withRoles(t, testutil.CopyExample(t))
 	var st *gitstore.Store
 	f := newFixtureOpts(t, func(o *api.Options) {

@@ -89,6 +89,7 @@ func jsonStr(s string) string { b, _ := json.Marshal(s); return b2s(b) }
 func b2s(b []byte) string     { return string(b) }
 
 func TestPasskeyEnrolAndLogin(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t, options{passkeys: true, remote: true})
 	b := e.browser()
 	if r := b.get("/auth/config"); !strings.Contains(r.Body, `"passkeys":true`) {
@@ -154,6 +155,7 @@ func TestPasskeyEnrolAndLogin(t *testing.T) {
 }
 
 func TestPasskeyEnrolNeedsARecentOIDCLogin(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t, options{passkeys: true, nogit: true})
 	b := e.browser()
 	b.login("admin", "")
@@ -178,6 +180,7 @@ func TestPasskeyEnrolNeedsARecentOIDCLogin(t *testing.T) {
 }
 
 func TestPasskeyLoginFollowsRoles(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t, options{passkeys: true, nogit: true})
 	b := e.browser()
 	b.login("editor", "")
@@ -204,6 +207,7 @@ func TestPasskeyLoginFollowsRoles(t *testing.T) {
 }
 
 func TestPasskeyFailures(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t, options{passkeys: true, nogit: true})
 	// An authenticator nobody enrolled.
 	stranger := e.newDevice()
@@ -250,6 +254,7 @@ func TestPasskeyFailures(t *testing.T) {
 func (d *device) login2(b *browser) resp { return d.login(b, "") }
 
 func TestPasskeyDeleteOwnAndOthers(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t, options{passkeys: true, remote: true})
 	admin, ed := e.browser(), e.browser()
 	admin.login("admin", "")
@@ -334,6 +339,7 @@ func TestPasskeyDeleteOwnAndOthers(t *testing.T) {
 }
 
 func TestPasskeysReadOnlyAndCorruptFile(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t, options{passkeys: true, nogit: true, readOnly: true})
 	b := e.browser()
 	b.login("admin", "")
@@ -360,6 +366,7 @@ func TestPasskeysReadOnlyAndCorruptFile(t *testing.T) {
 }
 
 func TestParsePasskeysSchema(t *testing.T) {
+	t.Parallel()
 	h := strings.Repeat("A", 43)
 	h2 := strings.Repeat("B", 43)
 	ok := "users:\n  - identity: a@b.c\n    handle: " + h + "\n    credentials:\n      - {id: abc, name: k, created: '2026-11-18T10:00:00Z', public_key: AAAA, flags: 5}\n"
@@ -392,6 +399,7 @@ func TestParsePasskeysSchema(t *testing.T) {
 }
 
 func TestDeletingAPasskeyEndsItsSessions(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t, options{passkeys: true, nogit: true})
 	owner := e.browser()
 	owner.login("admin", "")
@@ -423,6 +431,7 @@ func TestDeletingAPasskeyEndsItsSessions(t *testing.T) {
 }
 
 func TestPasskeyFileNeverGetsWrittenInvalid(t *testing.T) {
+	t.Parallel()
 	// Non-ASCII capitals are not folded at login, so they must be valid in the file.
 	f := &pkFile{Users: []pkUser{{Identity: "\u00c4rzte@x.de", Handle: strings.Repeat("A", 43), Credentials: []pkCred{{
 		ID: "abc", Name: "k", Created: "2026-11-18T10:00:00Z", PublicKey: "AAAA", Flags: 1}}}}}
@@ -447,6 +456,7 @@ func TestPasskeyFileNeverGetsWrittenInvalid(t *testing.T) {
 }
 
 func TestUnreadablePasskeyFileIsTransientNotRevocation(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t, options{passkeys: true, nogit: true})
 	owner := e.browser()
 	owner.login("admin", "")
@@ -477,6 +487,7 @@ func TestUnreadablePasskeyFileIsTransientNotRevocation(t *testing.T) {
 }
 
 func TestMissingPasskeyFileAtASettledCommitRevokes(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t, options{passkeys: true, nogit: true})
 	owner := e.browser()
 	owner.login("admin", "")
@@ -512,6 +523,7 @@ var loginRouteClass = map[string]string{
 // the admin ones are 403, the ones on a passkey are 404 for somebody else's,
 // and nothing the auditor does changes another person's credentials.
 func TestAuditorCannotTouchAnotherPersonsPasskeyOnAnyLoginRoute(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t, options{passkeys: true, remote: true, nogit: false,
 		roles: "  roles:\n    admin: [kazuha@kazuha.org]\n  auditors: [\"group:audit\"]\n"})
 	e.idp.Users["editor"]["groups"] = []string{"audit"}

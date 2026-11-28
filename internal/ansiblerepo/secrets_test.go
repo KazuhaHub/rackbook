@@ -24,6 +24,7 @@ func joinCodes(is []Issue) string {
 }
 
 func TestSecretsFileIssues(t *testing.T) {
+	t.Parallel()
 	conf := "creation_rules:\n  - path_regex: ^secrets/a\\.sops\\.yaml$\n    age: \"age1b, age1a\"\n  - path_regex: ^secrets/g\\.sops\\.yaml$\n    key_groups:\n      - age: [age1a, age1b]\n"
 	tree := memTree{".sops.yaml": conf}
 	for name, c := range map[string]struct {
@@ -56,6 +57,7 @@ func TestSecretsFileIssues(t *testing.T) {
 }
 
 func TestSecretKeyAndValueRules(t *testing.T) {
+	t.Parallel()
 	for k, ok := range map[string]bool{
 		"cloudflare_dns_token": true, "feature_beszel-agent_token": true, "a": true, "9": true,
 		"": false, "Upper": false, "has space": false, "dot.ted": false, "sops": false, "a_unencrypted": false,
@@ -76,6 +78,7 @@ func TestSecretKeyAndValueRules(t *testing.T) {
 }
 
 func TestSecretsDiffShowsNamesOnly(t *testing.T) {
+	t.Parallel()
 	before := sopsFile("a: "+encVal+"\nb: "+encVal+"\n", "age1a")
 	after := sopsFile("a: "+encVal+"\nc: "+encVal+"\n", "age1a")
 	d := secretsDiff("secrets/x.sops.yaml", []byte(before), []byte(after)).Diff
@@ -85,6 +88,7 @@ func TestSecretsDiffShowsNamesOnly(t *testing.T) {
 }
 
 func TestRekeyPlan(t *testing.T) {
+	t.Parallel()
 	for name, c := range map[string]struct{ want, have, add, remove string }{
 		"same":           {"a,b", "a,b", "", ""},
 		"add one":        {"a,b,c", "a,b", "c", ""},

@@ -16,6 +16,7 @@ import (
 // The infra clone refreshes over https with a GitHub App token that can only
 // read, and never needs an SSH key.
 func TestRefreshOverHTTPSWithAReadOnlyAppToken(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	api := githubapptest.NewAPI(t, "77", nil)
 	srv := gitServer(t, api)

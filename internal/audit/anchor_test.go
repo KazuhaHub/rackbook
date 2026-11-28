@@ -55,6 +55,7 @@ func countEvents(t *testing.T, dir, event string) int {
 }
 
 func TestParseAnchorsKeepsGoodLinesAndCountsTheOthers(t *testing.T) {
+	t.Parallel()
 	good := Anchor{Day: "2026-11-20", Seq: 5, Hash: hashOf([]byte("x")), At: "2026-11-20T03:00:00Z"}
 	file := string(good.Line()) +
 		"\n" + // an empty line is not a problem
@@ -81,6 +82,7 @@ func TestParseAnchorsKeepsGoodLinesAndCountsTheOthers(t *testing.T) {
 }
 
 func TestAnchorsOfAnIntactLogPassAndWriteNothing(t *testing.T) {
+	t.Parallel()
 	l, dir := newLog(t, Options{})
 	recordN(l, 6, "login")
 	a1 := anchorOf(t, l, "2026-11-20")
@@ -124,6 +126,7 @@ func rewritten(t *testing.T, n int, changeAt int) (*Log, string) {
 }
 
 func TestAnchorMismatchIsRecordedOnceAndAcknowledged(t *testing.T) {
+	t.Parallel()
 	orig, _ := rewritten(t, 8, 0)
 	anchors := anchorFile(anchorOf(t, orig, "2026-11-19"))
 	// an anchor taken at seq 5 of the original; the rebuilt log differs at seq 3
@@ -199,6 +202,7 @@ func TestAnchorMismatchIsRecordedOnceAndAcknowledged(t *testing.T) {
 }
 
 func TestAnchorAheadWhenTheLogWasCutOrReset(t *testing.T) {
+	t.Parallel()
 	orig, _ := rewritten(t, 9, 0)
 	a := anchorOf(t, orig, "2026-11-21")
 	cut, dir := rewritten(t, 6, 0) // the same lines, but the last three are gone and head.json was rewritten
@@ -230,6 +234,7 @@ func TestAnchorAheadWhenTheLogWasCutOrReset(t *testing.T) {
 }
 
 func TestAnchorsBeforeTheFirstKeptLineAreSkipped(t *testing.T) {
+	t.Parallel()
 	clk := &fakeClock{at(2026, 11, 22)}
 	l, dir := newLog(t, Options{Now: clk.Now})
 	var anchors []Anchor
@@ -313,6 +318,7 @@ func forgedHead(t *testing.T, retention int) (*Log, string, []Anchor) {
 }
 
 func TestAForgedHeadFileCannotHideAnchorsWhenTheServerKeepsEverything(t *testing.T) {
+	t.Parallel()
 	// --audit-retention-months 0: nothing is ever skipped, whatever head.json says
 	l, dir, anchors := forgedHead(t, 0)
 	rev, err := l.ReviewAnchors(anchorFile(anchors...), nil, full)
@@ -329,6 +335,7 @@ func TestAForgedHeadFileCannotHideAnchorsWhenTheServerKeepsEverything(t *testing
 }
 
 func TestAForgedHeadFileCannotHideAnchorsOfTheKeptMonths(t *testing.T) {
+	t.Parallel()
 	// With a retention of 2 in November the cutoff month is September: only anchors dated on or
 	// before 2026-09-01 may be skipped, and never the newest that matched.
 	l, dir, anchors := forgedHead(t, 2)
@@ -361,6 +368,7 @@ func pad(n int) string {
 }
 
 func TestAnchorsAcrossManyLinesUseTheOffsetIndex(t *testing.T) {
+	t.Parallel()
 	l, dir := newLog(t, Options{})
 	var as []Anchor
 	for i := 1; i <= 1300; i++ {
@@ -382,6 +390,7 @@ func TestAnchorsAcrossManyLinesUseTheOffsetIndex(t *testing.T) {
 }
 
 func TestAnAcknowledgedAnchorProblemDoesNotHideALaterOne(t *testing.T) {
+	t.Parallel()
 	// the log as it really is, 20 lines
 	l, dir := newLog(t, Options{})
 	recordN(l, 20, "login")
@@ -428,6 +437,7 @@ func TestAnAcknowledgedAnchorProblemDoesNotHideALaterOne(t *testing.T) {
 }
 
 func TestManyWrongAnchorsAreCappedPerPassWithASummary(t *testing.T) {
+	t.Parallel()
 	l, dir := newLog(t, Options{})
 	recordN(l, 40, "login")
 	var as []Anchor
@@ -466,6 +476,7 @@ func logWithHashes(t *testing.T, n int) (*Log, []Anchor) {
 }
 
 func TestAnchorsThatCannotBeAnchorsAreInvalid(t *testing.T) {
+	t.Parallel()
 	l, real := logWithHashes(t, 10)
 	a := func(day string, seq int64) Anchor { x := real[seq-1]; x.Day, x.At = day, day+"T03:00:00Z"; return x }
 	now := time.Date(2026, 11, 25, 9, 0, 0, 0, time.UTC)
@@ -499,6 +510,7 @@ func TestAnchorsThatCannotBeAnchorsAreInvalid(t *testing.T) {
 }
 
 func TestAForgedAnchorThatIsAcknowledgedDoesNotBecomeTheBaseline(t *testing.T) {
+	t.Parallel()
 	l, real := logWithHashes(t, 12)
 	now := time.Date(2026, 11, 25, 9, 0, 0, 0, time.UTC)
 	opt := AnchorOptions{Full: true, Now: now}
@@ -543,6 +555,7 @@ func TestAForgedAnchorThatIsAcknowledgedDoesNotBecomeTheBaseline(t *testing.T) {
 }
 
 func TestAnInvalidAnchorIsNotTrusted(t *testing.T) {
+	t.Parallel()
 	l, _ := newLog(t, Options{})
 	recordN(l, 10, "login")
 	future := Anchor{Day: "2099-01-01", Seq: 3, Hash: hashOf([]byte("x")), At: "2099-01-01T03:00:00Z"}
@@ -556,6 +569,7 @@ func TestAnInvalidAnchorIsNotTrusted(t *testing.T) {
 }
 
 func TestARewrittenAnchorFileIsAProblemThatNamesTheCommit(t *testing.T) {
+	t.Parallel()
 	a1 := Anchor{Day: "2026-11-01", Seq: 3, Hash: hashOf([]byte("a")), At: "2026-11-01T03:00:00Z"}
 	a2 := Anchor{Day: "2026-11-02", Seq: 7, Hash: hashOf([]byte("b")), At: "2026-11-02T03:00:00Z"}
 	forged := a2
@@ -581,6 +595,7 @@ func TestARewrittenAnchorFileIsAProblemThatNamesTheCommit(t *testing.T) {
 }
 
 func TestAnchorCacheSkipsWhatMatchedBeforeButNotTheNewest(t *testing.T) {
+	t.Parallel()
 	l, _ := newLog(t, Options{})
 	var as []Anchor
 	for i := 1; i <= 3; i++ {
@@ -633,6 +648,7 @@ func lineAnchor(t *testing.T, dir string, seq int64, day string) Anchor {
 }
 
 func TestAnAnchorOfTheMonthBeforeWrittenOnThe1stMayBeSkippedByRetention(t *testing.T) {
+	t.Parallel()
 	// retention 1 in December keeps November and December: October goes. The anchor of an October
 	// line, written just after midnight on 2026-11-01, is dated on the 1st of the oldest kept month.
 	clk := &fakeClock{at(2026, 12, 2)}
@@ -666,6 +682,7 @@ func TestAnAnchorOfTheMonthBeforeWrittenOnThe1stMayBeSkippedByRetention(t *testi
 }
 
 func TestACutIntoTheCurrentMonthIsNotRetention(t *testing.T) {
+	t.Parallel()
 	now := at(2026, 11, 22)
 	l, dir := retentionLog(t, now, 1, at(2026, 10, 30), at(2026, 11, 3), at(2026, 11, 4), at(2026, 11, 5), at(2026, 11, 6))
 	// the anchors as the server wrote them, taken before somebody removed the first lines of November
@@ -689,6 +706,7 @@ func TestACutIntoTheCurrentMonthIsNotRetention(t *testing.T) {
 }
 
 func TestMonthsYoungerThanTheRetentionCutoffAreNotRetentions(t *testing.T) {
+	t.Parallel()
 	// retention 3 in November keeps August onward. A log that lost September and October has not
 	// been through retention, whatever head.json says.
 	now := at(2026, 11, 22)
@@ -730,6 +748,7 @@ func TestMonthsYoungerThanTheRetentionCutoffAreNotRetentions(t *testing.T) {
 }
 
 func TestNothingIsSkippedWhenNoAnchorMatchedTheLog(t *testing.T) {
+	t.Parallel()
 	now := at(2026, 11, 22)
 	_, dir := retentionLog(t, now, 2, at(2026, 8, 3), at(2026, 9, 3), at(2026, 10, 3), at(2026, 11, 3))
 	if files, _ := listFiles(dir); len(files) != 3 {
@@ -745,6 +764,7 @@ func TestNothingIsSkippedWhenNoAnchorMatchedTheLog(t *testing.T) {
 }
 
 func TestTheNewestAnchorForRetentionIsTheNewestThatMatched(t *testing.T) {
+	t.Parallel()
 	now := at(2026, 11, 22)
 	_, dir := retentionLog(t, now, 2, at(2026, 8, 3), at(2026, 9, 3), at(2026, 10, 3), at(2026, 11, 3))
 	seqSep := lineAnchor(t, dir, 2, "2026-08-31") // an anchor of the first kept month's line, dated before it

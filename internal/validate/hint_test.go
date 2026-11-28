@@ -22,12 +22,14 @@ func schemaMessages(issues []ledger.Issue) []string {
 }
 
 func TestLabelFixtureIsValid(t *testing.T) {
+	t.Parallel()
 	if issues := run(t, testutil.CopyFixture(t, "labels")); len(issues) != 0 {
 		t.Fatalf("%v", issues)
 	}
 }
 
 func TestEnumHints(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name, old, new string
 		want           []string
@@ -61,6 +63,7 @@ func TestEnumHints(t *testing.T) {
 
 // Other failures keep their message.
 func TestOtherSchemaFailuresKeepTheirMessage(t *testing.T) {
+	t.Parallel()
 	dir := testutil.CopyFixture(t, "labels")
 	testutil.Replace(t, dir, labelDevices, "port: 22", "port: abc")
 	got := schemaMessages(run(t, dir))
@@ -79,6 +82,7 @@ func TestOtherSchemaFailuresKeepTheirMessage(t *testing.T) {
 // if/then or allOf is another list: it keeps the library's message, and the
 // code list and hint of the property's own enum are not applied to it.
 func TestEnumMessageOnlyForThePropertysOwnKeyword(t *testing.T) {
+	t.Parallel()
 	mk := func() string {
 		dir := testutil.CopyFixture(t, "labels")
 		testutil.Replace(t, dir, "schemas/device.json", `"required": ["name"],`, `"required": ["name"],
@@ -115,6 +119,7 @@ func TestEnumMessageOnlyForThePropertysOwnKeyword(t *testing.T) {
 // Property names with a space, non-ASCII letters or a percent sign still get
 // the hint: the validator's schema location is percent-encoded.
 func TestEnumHintForUnusualPropertyNames(t *testing.T) {
+	t.Parallel()
 	dir := testutil.CopyFixture(t, "labels")
 	testutil.Replace(t, dir, "schemas/device.json", `"owner": {"type": "string"}`, `"owner": {"type": "string"},
     "类型": {"type": "string", "oneOf": [{"const": "a", "title": "甲"}]},

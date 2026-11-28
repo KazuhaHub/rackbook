@@ -20,6 +20,7 @@ func (e *actEnv) raw(t *testing.T, who, path string) (int, string) {
 }
 
 func TestAnchorCommitsAreForAdministratorsAndAuditorsOnly(t *testing.T) {
+	t.Parallel()
 	e := newActEnv(t, actOpts{})
 	// an ordinary write, so there are records, versions and an audit log to compare with
 	code, created, _ := e.do(t, "POST", "/api/c/todo", map[string]any{"data": map[string]any{"item": "first", "status": "待办"}}, map[string]string{"X-User": editorU})
@@ -94,6 +95,7 @@ func TestAnchorCommitsAreForAdministratorsAndAuditorsOnly(t *testing.T) {
 }
 
 func TestAnchorProblemsShowInTheStatusAndTheBanner(t *testing.T) {
+	t.Parallel()
 	e := newActEnv(t, actOpts{})
 	e.log.Record(audit.Event{Event: "login", Identity: "x"})
 	e.log.Record(audit.Event{Event: "login", Identity: "x"})

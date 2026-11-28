@@ -85,6 +85,7 @@ func fill(t *testing.T, l *Log, n int) {
 }
 
 func TestChainAcrossAMonthBoundary(t *testing.T) {
+	t.Parallel()
 	l, dir := newLog(t, Options{})
 	fill(t, l, 6)
 	rep := mustVerify(t, dir)
@@ -133,6 +134,7 @@ func TestChainAcrossAMonthBoundary(t *testing.T) {
 }
 
 func TestEventTimeIsUTCAndLateEventsDoNotGoBack(t *testing.T) {
+	t.Parallel()
 	l, dir := newLog(t, Options{})
 	e := ev("login")
 	e.Time = time.Date(2026, 12, 1, 1, 0, 0, 0, time.FixedZone("x", 3*3600)) // still November in UTC
@@ -152,6 +154,7 @@ func TestEventTimeIsUTCAndLateEventsDoNotGoBack(t *testing.T) {
 }
 
 func TestTamperIsDetected(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name   string
 		tamper func(t *testing.T, dir string)
@@ -223,6 +226,7 @@ func TestTamperIsDetected(t *testing.T) {
 }
 
 func TestTamperedLogStillOpensAndIsReported(t *testing.T) {
+	t.Parallel()
 	l, dir := newLog(t, Options{})
 	fill(t, l, 6)
 	p := filepath.Join(dir, "audit-2026-11.jsonl")
@@ -253,6 +257,7 @@ func TestTamperedLogStillOpensAndIsReported(t *testing.T) {
 }
 
 func TestCrashRepairTornLine(t *testing.T) {
+	t.Parallel()
 	l, dir := newLog(t, Options{})
 	fill(t, l, 4)
 	p := filepath.Join(dir, "audit-2026-11.jsonl")
@@ -288,6 +293,7 @@ func TestCrashRepairTornLine(t *testing.T) {
 }
 
 func TestCrashRepairHeadOneBehind(t *testing.T) {
+	t.Parallel()
 	l, dir := newLog(t, Options{})
 	fill(t, l, 4)
 	headPath := filepath.Join(dir, "head.json")
@@ -321,6 +327,7 @@ func TestCrashRepairHeadOneBehind(t *testing.T) {
 }
 
 func TestHeadBehindIsNotRepairedWhenTheLastLineDoesNotChain(t *testing.T) {
+	t.Parallel()
 	l, dir := newLog(t, Options{})
 	fill(t, l, 4)
 	headPath := filepath.Join(dir, "head.json")
@@ -366,6 +373,7 @@ func chainProblems(t *testing.T, dir string) []Event {
 }
 
 func TestCutLinesAreRecordedInTheChain(t *testing.T) {
+	t.Parallel()
 	l, dir := newLog(t, Options{})
 	fill(t, l, 6)
 	l.Close()
@@ -417,6 +425,7 @@ func TestCutLinesAreRecordedInTheChain(t *testing.T) {
 }
 
 func TestEveryKindOfBreakIsRecordedOnce(t *testing.T) {
+	t.Parallel()
 	for name, tamper := range map[string]func(ls [][]byte) [][]byte{
 		"edited": func(ls [][]byte) [][]byte {
 			ls[1] = bytes.Replace(ls[1], []byte("a@example.com"), []byte("b@example.com"), 1)
@@ -456,6 +465,7 @@ func TestEveryKindOfBreakIsRecordedOnce(t *testing.T) {
 }
 
 func TestRetention(t *testing.T) {
+	t.Parallel()
 	clk := &fakeClock{at(2026, 11, 22)}
 	l, dir := newLog(t, Options{Now: clk.Now})
 	for _, m := range []time.Month{1, 2, 3, 9, 10, 11} {
@@ -510,6 +520,7 @@ func TestRetention(t *testing.T) {
 }
 
 func TestRetentionKeepsTheCurrentMonthAndEverythingWhenZero(t *testing.T) {
+	t.Parallel()
 	clk := &fakeClock{at(2026, 11, 22)}
 	l, dir := newLog(t, Options{Now: clk.Now})
 	fill(t, l, 4)
@@ -531,6 +542,7 @@ func TestRetentionKeepsTheCurrentMonthAndEverythingWhenZero(t *testing.T) {
 }
 
 func TestRetentionWaitsForAProblemThatIsNotRecordedYet(t *testing.T) {
+	t.Parallel()
 	clk := &fakeClock{at(2026, 11, 22)}
 	var logs bytes.Buffer
 	l, dir := newLog(t, Options{Now: clk.Now, RetentionMonths: 1, Logger: slogTo(&logs)})
@@ -550,6 +562,7 @@ func TestRetentionWaitsForAProblemThatIsNotRecordedYet(t *testing.T) {
 }
 
 func TestRetentionRunsAfterAProblemIsRecordedAndKeepsTheFileHoldingIt(t *testing.T) {
+	t.Parallel()
 	clk := &fakeClock{at(2026, 1, 20)}
 	l, dir := newLog(t, Options{Now: clk.Now})
 	for _, m := range []time.Month{1, 2} {
@@ -595,6 +608,7 @@ func TestRetentionRunsAfterAProblemIsRecordedAndKeepsTheFileHoldingIt(t *testing
 }
 
 func TestFirstFileCannotHideAnEditInAnOldMonth(t *testing.T) {
+	t.Parallel()
 	l, dir := newLog(t, Options{})
 	for _, m := range []time.Month{9, 10, 11} {
 		for d := 1; d <= 2; d++ {
@@ -675,6 +689,7 @@ func tornDir(t *testing.T, headSeq int) string {
 }
 
 func TestUnexplainedTornTailIsSetAsideRecordedAndAuditingContinues(t *testing.T) {
+	t.Parallel()
 	dir := tornDir(t, 4) // head behind AND a partial line: not what a crash leaves
 	rep := mustVerify(t, dir)
 	if rep.Repairable() || !strings.Contains(kinds(rep), "edited@6") {
@@ -713,6 +728,7 @@ func TestUnexplainedTornTailIsSetAsideRecordedAndAuditingContinues(t *testing.T)
 }
 
 func TestFailingToSetTheTailAsideFailsTheLog(t *testing.T) {
+	t.Parallel()
 	if os.Geteuid() == 0 {
 		t.Skip("root writes anywhere")
 	}
@@ -743,6 +759,7 @@ func TestFailingToSetTheTailAsideFailsTheLog(t *testing.T) {
 }
 
 func TestNoWriteWhenTheFileSizeIsUnknown(t *testing.T) {
+	t.Parallel()
 	l, dir := newLog(t, Options{})
 	l.Record(ev("login"))
 	p := filepath.Join(dir, "audit-2026-11.jsonl")
@@ -760,6 +777,7 @@ func TestNoWriteWhenTheFileSizeIsUnknown(t *testing.T) {
 }
 
 func TestMigrationStopsOnTheFirstAppendError(t *testing.T) {
+	t.Parallel()
 	l0, dir := newLog(t, Options{})
 	l0.Close()
 	l, err := Open(dir, Options{})
@@ -788,6 +806,7 @@ func TestMigrationStopsOnTheFirstAppendError(t *testing.T) {
 }
 
 func TestAddrModes(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		mode AddrMode
 		in   string
@@ -825,6 +844,7 @@ func TestAddrModes(t *testing.T) {
 }
 
 func TestMigrateInfra(t *testing.T) {
+	t.Parallel()
 	l, dir := newLog(t, Options{})
 	old := filepath.Join(t.TempDir(), "infra-audit.jsonl")
 	entries := []string{
@@ -901,6 +921,7 @@ func TestMigrateInfra(t *testing.T) {
 }
 
 func TestInfraAuditorKeepsTheServerLogLines(t *testing.T) {
+	t.Parallel()
 	l, dir := newLog(t, Options{})
 	var logs bytes.Buffer
 	next := &ansiblerepo.AuditLog{Log: slogTo(&logs)}
@@ -920,6 +941,7 @@ func TestInfraAuditorKeepsTheServerLogLines(t *testing.T) {
 }
 
 func TestConcurrentRecord(t *testing.T) {
+	t.Parallel()
 	l, dir := newLog(t, Options{})
 	var wg sync.WaitGroup
 	for g := 0; g < 20; g++ {
@@ -938,6 +960,7 @@ func TestConcurrentRecord(t *testing.T) {
 }
 
 func TestNilLogIsANoop(t *testing.T) {
+	t.Parallel()
 	var l *Log
 	l.Record(ev("login"))
 	l.Close()
@@ -960,6 +983,7 @@ func TestNilLogIsANoop(t *testing.T) {
 }
 
 func TestAWriteErrorIsLoggedNotReturned(t *testing.T) {
+	t.Parallel()
 	var logs bytes.Buffer
 	l, dir := newLog(t, Options{Logger: slogTo(&logs)})
 	l.Record(ev("login"))
@@ -984,6 +1008,7 @@ func TestAWriteErrorIsLoggedNotReturned(t *testing.T) {
 }
 
 func TestVerifyEmptyAndMissingDirectory(t *testing.T) {
+	t.Parallel()
 	_, dir := newLog(t, Options{})
 	if rep := mustVerify(t, dir); !rep.OK || rep.Lines != 0 {
 		t.Fatalf("%+v", rep)
@@ -1002,6 +1027,7 @@ func TestVerifyEmptyAndMissingDirectory(t *testing.T) {
 }
 
 func TestMigrationResumesAfterACrash(t *testing.T) {
+	t.Parallel()
 	entries := []string{
 		`{"time":"2026-09-03T08:00:00Z","who":"ann@example.com","action":"a1","outcome":"revealed"}`,
 		`{"time":"2026-09-03T08:01:00Z","who":"ann@example.com","action":"a2","outcome":"conflict"}`,
@@ -1065,6 +1091,7 @@ func TestMigrationResumesAfterACrash(t *testing.T) {
 }
 
 func TestUnfinishedRetentionDeleteIsNotAProblemAndIsFinished(t *testing.T) {
+	t.Parallel()
 	clk := &fakeClock{at(2026, 11, 22)}
 	l, dir := newLog(t, Options{Now: clk.Now})
 	for _, m := range []time.Month{9, 10, 11} {
@@ -1106,6 +1133,7 @@ func TestUnfinishedRetentionDeleteIsNotAProblemAndIsFinished(t *testing.T) {
 }
 
 func TestEditedOlderFileIsNotAPendingDelete(t *testing.T) {
+	t.Parallel()
 	l, dir := newLog(t, Options{})
 	for _, m := range []time.Month{9, 10} {
 		for d := 1; d <= 2; d++ {

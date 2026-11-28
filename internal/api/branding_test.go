@@ -48,6 +48,7 @@ func get(t *testing.T, f *fixture, method, path string, hdr map[string]string) (
 }
 
 func TestBrandingImageHeaders(t *testing.T) {
+	t.Parallel()
 	f := brandedFixture(t)
 	for _, tc := range []struct{ path, ct, body string }{
 		{"/branding/logo", "image/svg+xml", logoSVG},
@@ -79,6 +80,7 @@ func TestBrandingImageHeaders(t *testing.T) {
 }
 
 func TestBrandingImagesAreGetOnly(t *testing.T) {
+	t.Parallel()
 	f := brandedFixture(t)
 	for _, p := range []string{"/branding/logo", "/branding/favicon"} {
 		for _, m := range []string{"POST", "PUT", "DELETE"} {
@@ -90,6 +92,7 @@ func TestBrandingImagesAreGetOnly(t *testing.T) {
 }
 
 func TestBrandingDefaults(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t, func(o *api.Options) {
 		o.Web = fstest.MapFS{"index.html": {Data: []byte("<html/>")}, "favicon.svg": {Data: []byte("<svg default/>")}}
 	}, "")
@@ -110,6 +113,7 @@ func TestBrandingDefaults(t *testing.T) {
 }
 
 func TestMetaCarriesBranding(t *testing.T) {
+	t.Parallel()
 	f := brandedFixture(t)
 	_, m, _ := f.do(t, "GET", "/api/meta", nil, nil)
 	if b, _ := m["branding"].(map[string]any); b["name"] != "Kazuha Hub" || b["logo"] != true {
@@ -118,6 +122,7 @@ func TestMetaCarriesBranding(t *testing.T) {
 }
 
 func TestBrandingFollowsConfigReload(t *testing.T) {
+	t.Parallel()
 	f := brandedFixture(t) // not a Git repository: files are re-read on every request
 	resp, _ := get(t, f, "GET", "/branding/logo", nil)
 	old := resp.Header.Get("ETag")

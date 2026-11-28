@@ -131,6 +131,7 @@ func (e *env) tick(t *testing.T) {
 }
 
 func TestOneAnchorPerDayAndOnlyWhenTheLogMovedOn(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t, "audit:\n  anchor: daily\n")
 	e.activity(3)
 	seq1, hash1 := e.log.Head()
@@ -210,6 +211,7 @@ func TestOneAnchorPerDayAndOnlyWhenTheLogMovedOn(t *testing.T) {
 func itoa(n int64) string { return strconv.FormatInt(n, 10) }
 
 func TestNothingIsWrittenWhenTheSettingIsOffOrThereIsNoLog(t *testing.T) {
+	t.Parallel()
 	for _, yml := range []string{"", "audit:\n  anchor: off\n"} {
 		e := newEnv(t, yml)
 		e.activity(2)
@@ -231,6 +233,7 @@ func TestNothingIsWrittenWhenTheSettingIsOffOrThereIsNoLog(t *testing.T) {
 }
 
 func TestAFailedPushLeavesNothingAndTheNextTickRetries(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t, "audit:\n  anchor: daily\n")
 	var logs strings.Builder
 	e.a.Logger = slog.New(slog.NewTextHandler(&logs, nil))
@@ -267,6 +270,7 @@ func TestAFailedPushLeavesNothingAndTheNextTickRetries(t *testing.T) {
 func fileExists(p string) bool { _, err := os.Stat(p); return err == nil }
 
 func TestUnknownLinesAreKeptAndOnlyAppendedTo(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t, "audit:\n  anchor: daily\n")
 	// somebody put a malformed line, and an unknown one without a final newline, in the file
 	laptop := filepath.Join(filepath.Dir(e.server), "laptop")
@@ -302,6 +306,7 @@ func TestUnknownLinesAreKeptAndOnlyAppendedTo(t *testing.T) {
 }
 
 func TestVerifyAfterPullsRecordsATamperedAnchorOnceAndAcknowledgementClearsIt(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t, "audit:\n  anchor: daily\n")
 	e.activity(3)
 	e.tick(t)
@@ -380,6 +385,7 @@ func countEvents(t *testing.T, dir, event string) int {
 }
 
 func TestALineDatedFarAheadDoesNotKeepTodaysAnchorAway(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t, "audit:\n  anchor: daily\n")
 	e.activity(3)
 	var logs strings.Builder
@@ -428,6 +434,7 @@ func problemList(st audit.Status) string {
 }
 
 func TestAForwardCommitThatRewritesAnAnchorIsRecordedWithItsCommit(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t, "audit:\n  anchor: daily\n")
 	e.activity(2)
 	e.tick(t)
@@ -483,6 +490,7 @@ func TestAForwardCommitThatRewritesAnAnchorIsRecordedWithItsCommit(t *testing.T)
 }
 
 func TestOnlyTheAnchorIdentityWithMethodSystemIsItsOwnCommit(t *testing.T) {
+	t.Parallel()
 	own := audit.Event{Event: "commit", Identity: Identity.ID, Method: auth.MethodSystem}
 	if !isOwnCommit(own) {
 		t.Fatal("the anchor's own commit event")
@@ -500,6 +508,7 @@ func TestOnlyTheAnchorIdentityWithMethodSystemIsItsOwnCommit(t *testing.T) {
 }
 
 func TestAnAcknowledgedForgedLineDoesNotStopTheWriterOrInvalidateLaterAnchors(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t, "audit:\n  anchor: daily\n")
 	e.activity(3)
 	e.tick(t)
@@ -544,6 +553,7 @@ func TestAnAcknowledgedForgedLineDoesNotStopTheWriterOrInvalidateLaterAnchors(t 
 }
 
 func TestAMergeTakingAForgedAnchorFileIsRecordedThroughTheServerCheck(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t, "audit:\n  anchor: daily\n")
 	laptop := filepath.Join(filepath.Dir(e.server), "laptop")
 	sh(t, filepath.Dir(e.server), "clone", e.bare, laptop)
@@ -616,6 +626,7 @@ func pushOdd(t *testing.T, e *env, mk func(path string)) {
 }
 
 func TestAnAnchorFileThatIsNoRegularFileAtTheTipIsRecordedNotSkipped(t *testing.T) {
+	t.Parallel()
 	for name, mk := range map[string]func(string){
 		"a symbolic link": func(p string) {
 			if err := os.Symlink("elsewhere", p); err != nil {
@@ -675,6 +686,7 @@ func (f *failingHistory) CheckStateFileHistory(context.Context, string, string) 
 }
 
 func TestAHistoryCheckThatFailsIsRecordedWhenItRepeatsForTheSameTip(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t, "audit:\n  anchor: daily\n")
 	e.activity(2)
 	e.tick(t)
@@ -722,6 +734,7 @@ func TestAHistoryCheckThatFailsIsRecordedWhenItRepeatsForTheSameTip(t *testing.T
 }
 
 func TestTheTipChangingBetweenTwoFailuresDoesNotRestartTheCount(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t, "audit:\n  anchor: daily\n")
 	e.activity(2)
 	e.tick(t)
@@ -756,6 +769,7 @@ type failingRead struct {
 func (f *failingRead) StateFile(string) ([]byte, bool, error) { return nil, false, f.err }
 
 func TestADesyncedGitAnswerIsRecordedAtOnce(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t, "audit:\n  anchor: daily\n")
 	e.activity(2)
 	e.tick(t)

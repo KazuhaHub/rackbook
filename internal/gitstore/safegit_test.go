@@ -26,6 +26,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/kazuhahub/rackbook/internal/testutil"
 )
@@ -67,6 +68,10 @@ var rec *recorder
 func TestMain(m *testing.M) {
 	rec = &recorder{next: execRunner{}}
 	defaultRunner = rec
+	// A slow machine (the race detector, parallel tests) must not cut a history
+	// page short: set once for the whole run, so tests can run in parallel. The
+	// tests that look at the time budget set their own, serially.
+	VersionTimeBudget, DeletedTimeBudget = time.Hour, time.Hour
 	code := m.Run()
 	if bad := destructive(rec.all()); len(bad) > 0 {
 		fmt.Fprintln(os.Stderr, "FAIL: destructive git commands were run:")
@@ -144,6 +149,7 @@ func problems(c recorded) []string {
 }
 
 func TestCheckerCatchesDestructiveCommands(t *testing.T) {
+	t.Parallel()
 	wt := func(a ...string) recorded { return recorded{Cmd: Cmd{Args: a}, workTree: true} }
 	bad := []recorded{
 		wt("push", "--force", "origin", "HEAD:refs/heads/main"),
@@ -189,6 +195,7 @@ func TestCheckerCatchesDestructiveCommands(t *testing.T) {
 }
 
 func TestRuntimeGuardRefusesDestructiveCommands(t *testing.T) {
+	t.Parallel()
 	for _, args := range [][]string{
 		{"push", "--force", "origin", "HEAD:refs/heads/main"},
 		{"push", "-f", "origin", "HEAD:refs/heads/main"},
@@ -326,6 +333,7 @@ func TestRuntimeGuardRefusesDestructiveCommands(t *testing.T) {
 }
 
 func TestPushArgsIsTheOnlyPushShape(t *testing.T) {
+	t.Parallel()
 	args, err := pushArgs("main")
 	if err != nil || strings.Join(args, " ") != "push --quiet origin HEAD:refs/heads/main" {
 		t.Fatalf("%v %v", args, err)
@@ -386,6 +394,7 @@ func nonTestSources(t *testing.T) []string {
 }
 
 func TestStaticNoForcePushAnywhereButSafegit(t *testing.T) {
+	t.Parallel()
 	words := []string{"--force", "force-with-lease", "--mirror", "--delete", "--prune", "update-ref",
 		`"-f"`, `"-d"`, `"-D"`, `"+refs`, `"+HEAD`, `"+"+`, "HEAD:refs/"}
 	for _, f := range nonTestSources(t) {
@@ -404,6 +413,7 @@ func TestStaticNoForcePushAnywhereButSafegit(t *testing.T) {
 }
 
 func TestStaticOnlyOneGitRunnerAndOnePushBuilder(t *testing.T) {
+	t.Parallel()
 	// A string literal "push" is a git subcommand unless the line is about the
 	// write mode or a CLI flag.
 	benign := func(line string) bool { return strings.Contains(line, "Mode") || strings.Contains(line, "Flags()") }

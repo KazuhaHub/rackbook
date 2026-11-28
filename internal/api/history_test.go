@@ -103,6 +103,7 @@ func changeAt(v map[string]any, path string) map[string]any {
 }
 
 func TestRecordHistoryShowsVersionsWithWhoAndFieldDiffs(t *testing.T) {
+	t.Parallel()
 	e := newActEnv(t, actOpts{})
 	e.addTodo(t, editorU, todo("History item", "", "待办"))
 	e.putTodo(t, editorU, "History item", todo("History item", "gw", "待办"))
@@ -177,6 +178,7 @@ func TestRecordHistoryShowsVersionsWithWhoAndFieldDiffs(t *testing.T) {
 }
 
 func TestRestoreWritesOneOrdinaryEditWithTheRestoredFromTrailer(t *testing.T) {
+	t.Parallel()
 	e := newActEnv(t, actOpts{})
 	e.addTodo(t, editorU, todo("R1", "gw", "待办"))
 	e.putTodo(t, editorU, "R1", todo("R1", "web", "完成"))
@@ -222,6 +224,7 @@ func TestRestoreWritesOneOrdinaryEditWithTheRestoredFromTrailer(t *testing.T) {
 }
 
 func TestRestoreRefusals(t *testing.T) {
+	t.Parallel()
 	e := newActEnv(t, actOpts{})
 	e.addTodo(t, editorU, todo("R2", "gw", "待办"))
 	_, h := e.getAs(t, viewerU, "/api/c/todo/R2/history")
@@ -270,6 +273,7 @@ func TestRestoreRefusals(t *testing.T) {
 }
 
 func TestRestoreIsRefusedOnAReadOnlyServer(t *testing.T) {
+	t.Parallel()
 	e := newActEnv(t, actOpts{readOnly: true})
 	_, h := e.getAs(t, adminU, "/api/c/todo/"+url.PathEscape("评估关闭路由器 WAN 上的 Web 后台")+"/history")
 	// reading the history works; restoring does not
@@ -279,6 +283,7 @@ func TestRestoreIsRefusedOnAReadOnlyServer(t *testing.T) {
 }
 
 func TestRestoreThatNoLongerFitsTheSchemaOpensInTheEditor(t *testing.T) {
+	t.Parallel()
 	e := newActEnv(t, actOpts{})
 	e.addTodo(t, editorU, todo("R3", "", "待办")) // no scope
 	_, h := e.getAs(t, viewerU, "/api/c/todo/R3/history")
@@ -307,6 +312,7 @@ func TestRestoreThatNoLongerFitsTheSchemaOpensInTheEditor(t *testing.T) {
 }
 
 func TestRestoreOfADifferentKeyIsAnEdit(t *testing.T) {
+	t.Parallel()
 	e := newActEnv(t, actOpts{})
 	e.addTodo(t, editorU, todo("R4", "gw", "待办"))
 	_, h := e.getAs(t, viewerU, "/api/c/todo/R4/history")
@@ -344,6 +350,7 @@ func TestRestoreOfADifferentKeyIsAnEdit(t *testing.T) {
 }
 
 func TestDeletedRecordsListAndRestore(t *testing.T) {
+	t.Parallel()
 	e := newActEnv(t, actOpts{})
 	e.addTodo(t, editorU, todo("D1", "gw", "待办"))
 	e.addTodo(t, editorU, todo("D2", "web", "完成"))
@@ -412,6 +419,7 @@ func TestDeletedRecordsListAndRestore(t *testing.T) {
 }
 
 func TestRestoreAsksForTheSecretScanConfirmationAgain(t *testing.T) {
+	t.Parallel()
 	e := newActEnv(t, actOpts{})
 	e.addTodo(t, editorU, todo("S1", "clean", "待办"))
 	// by hand, somebody puts something in that the scan would ask about
@@ -456,6 +464,7 @@ func toJSON(v any) string {
 
 // The validation issues of a restore name where and which rule, never a value quoted from the old content.
 func TestRestoreNeedsEditNeverQuotesTheOldContent(t *testing.T) {
+	t.Parallel()
 	e := newActEnv(t, actOpts{})
 	e.addTodo(t, editorU, todo("Q1", "clean", "待办"))
 	hand := e.laptopEdit(t, "2026-03-01T10:00:00Z", "hand edit", "docs/ledger/todo.yml", func(s string) string {
@@ -502,6 +511,7 @@ func TestRestoreNeedsEditNeverQuotesTheOldContent(t *testing.T) {
 
 // A hand edit without the trailer is a version too, and nothing vouches for it.
 func TestRecordHistoryHasHandEditsWithoutTheTrailer(t *testing.T) {
+	t.Parallel()
 	e := newActEnv(t, actOpts{})
 	e.addTodo(t, editorU, todo("H2", "gw", "待办"))
 	e.laptopEdit(t, "2026-03-01T10:00:00Z", "by hand, no trailer", "docs/ledger/todo.yml", func(s string) string {

@@ -22,6 +22,7 @@ after: keep   # trailing
 `
 
 func TestSetFeatureKeepsCommentsAndBlankLines(t *testing.T) {
+	t.Parallel()
 	out, err := SetFeature([]byte(hv), "beszel-agent", true, []Setting{{"mode", "websocket"}, {"key", "ssh-ed25519 AAAA"}, {"hub_url", "https://m.example"}}, []string{"mode", "key", "hub_url", "run_as_root", "listen"})
 	if err != nil {
 		t.Fatal(err)
@@ -45,6 +46,7 @@ func TestSetFeatureKeepsCommentsAndBlankLines(t *testing.T) {
 }
 
 func TestSetFeatureUnchangedValueKeepsItsComment(t *testing.T) {
+	t.Parallel()
 	out, err := SetFeature([]byte(hv), "beszel-agent", true, []Setting{{"mode", "listen"}, {"key", "ssh-ed25519 AAAA"}, {"run_as_root", true}}, []string{"mode", "key", "run_as_root"})
 	if err != nil {
 		t.Fatal(err)
@@ -55,6 +57,7 @@ func TestSetFeatureUnchangedValueKeepsItsComment(t *testing.T) {
 }
 
 func TestSetFeatureAddAndRemove(t *testing.T) {
+	t.Parallel()
 	out, err := SetFeature([]byte(hv), "new-one", true, []Setting{{"x", 3}}, []string{"x"})
 	if err != nil {
 		t.Fatal(err)
@@ -88,6 +91,7 @@ func TestSetFeatureAddAndRemove(t *testing.T) {
 }
 
 func TestSetFeatureStringsThatLookLikeOtherTypes(t *testing.T) {
+	t.Parallel()
 	out, err := SetFeature([]byte("a: 1\n"), "f", true, []Setting{{"s", "true"}, {"n", "123"}, {"w", "yes"}}, []string{"s", "n", "w"})
 	if err != nil {
 		t.Fatal(err)
@@ -103,6 +107,7 @@ func TestSetFeatureStringsThatLookLikeOtherTypes(t *testing.T) {
 }
 
 func TestSetFeatureFallsBackWhenTheSpliceWouldBeWrong(t *testing.T) {
+	t.Parallel()
 	// flow style features cannot be spliced; the node edit still keeps the comment
 	in := "# top\nfeatures: {a: {x: 1}}\n"
 	out, err := SetFeature([]byte(in), "a", true, []Setting{{"x", 2}}, []string{"x"})
@@ -131,6 +136,7 @@ all:
 `
 
 func TestSetMembership(t *testing.T) {
+	t.Parallel()
 	out, err := SetMembership([]byte(inv), []MembershipChange{{"b", "derp", true}, {"a", "managed", false}, {"a", "empty", true}})
 	if err != nil {
 		t.Fatal(err)

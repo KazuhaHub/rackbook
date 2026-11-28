@@ -50,6 +50,7 @@ func lastGoodOnDisk(t *testing.T, dir string) string {
 }
 
 func TestFastForwardsAdvanceLastGood(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	s := open(t, e.server, nil)
 	seed := sh(t, e.bare, "rev-parse", "main")
@@ -74,6 +75,7 @@ func TestFastForwardsAdvanceLastGood(t *testing.T) {
 }
 
 func TestRewrittenHistoryPausesWritesAndKeepsServing(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	e := newEnv(t)
 	pushLaptop(t, e, "kept-until-rewrite")
@@ -157,6 +159,7 @@ func TestRewrittenHistoryPausesWritesAndKeepsServing(t *testing.T) {
 }
 
 func TestRewriteDetectedAtStartupAndSurvivesRestart(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	e := newEnv(t)
 	pushLaptop(t, e, "one")
@@ -188,6 +191,7 @@ func TestRewriteDetectedAtStartupAndSurvivesRestart(t *testing.T) {
 }
 
 func TestRewriteDuringPushRaceIsNotReplayedOntoNewHistory(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	e := newEnv(t)
 	pushLaptop(t, e, "one")
@@ -208,6 +212,7 @@ func TestRewriteDuringPushRaceIsNotReplayedOntoNewHistory(t *testing.T) {
 }
 
 func TestUnrelatedNewRootIsRewrittenTooAndNoRemoteIsFine(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	e := newEnv(t)
 	s := open(t, e.server, nil)
@@ -234,6 +239,7 @@ func acceptErr(s *Store) error {
 }
 
 func TestOwnPushAdvancesLastGoodSoALaterRewriteIsNotMistakenForDivergence(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	e := newEnv(t)
 	s := open(t, e.server, nil)
@@ -269,6 +275,7 @@ func TestOwnPushAdvancesLastGoodSoALaterRewriteIsNotMistakenForDivergence(t *tes
 }
 
 func TestAcceptRemoteRefusalsChangeNothing(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	e := newEnv(t)
 	pushLaptop(t, e, "one")
@@ -320,6 +327,7 @@ func TestAcceptRemoteRefusalsChangeNothing(t *testing.T) {
 }
 
 func TestAcceptRemoteInCloneFollowsTheSameRules(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	e := newEnv(t)
 	pushLaptop(t, e, "one")
@@ -353,6 +361,7 @@ func TestAcceptRemoteInCloneFollowsTheSameRules(t *testing.T) {
 }
 
 func TestCLIPushAdvancesLastGoodSoRemovingOnlyOurCommitIsARewrite(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	e := newEnv(t)
 	sh(t, e.server, "config", "user.name", "Me")
@@ -387,6 +396,7 @@ func TestCLIPushAdvancesLastGoodSoRemovingOnlyOurCommitIsARewrite(t *testing.T) 
 }
 
 func TestServerCloneMustContainOnlyTrackedFiles(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	e := newEnv(t)
 	pushLaptop(t, e, "one")
@@ -449,6 +459,7 @@ func TestServerCloneMustContainOnlyTrackedFiles(t *testing.T) {
 }
 
 func TestAcceptRemoteRefusesATipWhoseConfigDoesNotLoad(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	e := newEnv(t)
 	pushLaptop(t, e, "one")
@@ -475,6 +486,7 @@ func TestAcceptRemoteRefusesATipWhoseConfigDoesNotLoad(t *testing.T) {
 }
 
 func TestLastGoodIsStoredPerBranchAndTheOldFileIsMigrated(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	e := newEnv(t)
 	good := sh(t, e.bare, "rev-parse", "main")
@@ -510,6 +522,7 @@ func TestLastGoodIsStoredPerBranchAndTheOldFileIsMigrated(t *testing.T) {
 }
 
 func TestAcceptedTipWithAnEscapingSymlinkIsRolledBack(t *testing.T) {
+	t.Parallel()
 	testutil.SkipOnWindows(t, "committing a symbolic link needs core.symlinks, which Git for Windows does not enable by default; the escaping-symlink check itself is covered by TestResolveRefusesSymlinksOutOfTheRoot")
 	ctx := context.Background()
 	e := newEnv(t)
@@ -550,6 +563,7 @@ func TestAcceptedTipWithAnEscapingSymlinkIsRolledBack(t *testing.T) {
 }
 
 func TestOfflineCheckOnlyForCommitNeverForPush(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	e := newEnv(t)
 	sh(t, e.server, "config", "user.name", "Me")
@@ -571,6 +585,7 @@ func TestOfflineCheckOnlyForCommitNeverForPush(t *testing.T) {
 }
 
 func TestMigrationOnlyForTheCheckedOutBranchAndNeverLosesTheOldFile(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	e := newEnv(t)
 	good := sh(t, e.bare, "rev-parse", "main")
@@ -627,6 +642,7 @@ func TestMigrationOnlyForTheCheckedOutBranchAndNeverLosesTheOldFile(t *testing.T
 }
 
 func TestRunCallsAfterPullAfterAPull(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	pulled := make(chan struct{}, 8)
 	s := open(t, e.server, func(o *Options) {

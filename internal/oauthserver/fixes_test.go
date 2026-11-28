@@ -19,6 +19,7 @@ func (e *env) registerFrom(ip, name string, redirects ...string) resp {
 }
 
 func TestDCRRateIsPerAddress(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t, opts{trusted: true})
 	for i := 0; i < 30; i++ {
 		if r := e.registerFrom("203.0.113.1", fmt.Sprint("c", i), "https://a.example/cb"); r.StatusCode != 201 {
@@ -44,6 +45,7 @@ func TestDCRRateIsPerAddress(t *testing.T) {
 }
 
 func TestDCRCapEvictsOldestUnused(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t, opts{trusted: true})
 	var first string
 	for i := 0; i < 100; i++ {
@@ -74,6 +76,7 @@ func TestDCRCapEvictsOldestUnused(t *testing.T) {
 }
 
 func TestDCRCapRefusesWhenAllInUse(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t, opts{trusted: true})
 	for i := 0; i < 100; i++ {
 		e.clock.advance(time.Minute)
@@ -90,6 +93,7 @@ func TestDCRCapRefusesWhenAllInUse(t *testing.T) {
 }
 
 func TestDCRRefusesLookalikeRedirects(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t, opts{})
 	for _, u := range []string{"https://аpp.example/cb", "https://app.example/cb\u202e", "https://app\u200b.example/cb", "cursor://аnysphere.cursor/cb"} {
 		if r := e.postJSON("", "/oauth/register", map[string]any{"redirect_uris": []string{u}}); r.StatusCode != 400 || r.str("error") != "invalid_redirect_uri" {
@@ -112,6 +116,7 @@ func TestDCRRefusesLookalikeRedirects(t *testing.T) {
 }
 
 func TestCIMDLookalikeClientIDsAndFetchErrors(t *testing.T) {
+	t.Parallel()
 	doc := newCIMD(t, goodDoc(testRedirect))
 	e := newEnv(t, opts{cimdClient: doc.Client()})
 	_, ch := pkce()
@@ -141,6 +146,7 @@ func TestCIMDLookalikeClientIDsAndFetchErrors(t *testing.T) {
 }
 
 func TestAllowedClientsTurnsRegistrationOff(t *testing.T) {
+	t.Parallel()
 	c := newCIMD(t, goodDoc(testRedirect))
 	allowed := c.URL + "/client.json"
 	e := newEnv(t, opts{cimdClient: c.Client(), builtinYAML: "      allowed_clients: [\"" + allowed + "\"]\n"})
@@ -162,6 +168,7 @@ func TestAllowedClientsTurnsRegistrationOff(t *testing.T) {
 
 // The consent page shows what the grant can do: the role, limited by the scopes.
 func TestConsentShowsRoleLimitedPermission(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t, opts{})
 	cid := e.register("c")
 	_, ch := pkce()
@@ -184,6 +191,7 @@ func TestConsentShowsRoleLimitedPermission(t *testing.T) {
 
 // A burst of concurrent registrations cannot exceed the per-address allowance.
 func TestDCRBurstStaysWithinTheLimit(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t, opts{trusted: true})
 	var wg sync.WaitGroup
 	codes := make([]int, 60)
