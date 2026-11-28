@@ -369,3 +369,58 @@ func maskCounters(s *State) *State {
 	}
 	return s
 }
+
+// ---- what sessions, tokens and grants ask of the store (6, 7)
+
+// Live says the account can hold sessions, tokens and grants: it is active, restricted or
+// passkey_only. restricted and passkey_only limit new sign-ins only; disabled, removed,
+// reset_pending and invited end everything that exists (6).
+func (a *Account) Live() bool {
+	switch a.State {
+	case StateActive, StateRestricted, StatePasskeyOnly:
+		return true
+	}
+	return false
+}
+
+// LocalActive says whether username is a live account (see Account.Live). It reads the committed
+// state without copying it, so it is cheap enough for every request.
+func (s *Store) LocalActive(username string) bool {
+	s.eng.mu.RLock()
+	defer s.eng.mu.RUnlock()
+	a := s.eng.cur.Accounts[username]
+	return a != nil && a.Live()
+}
+
+// LiveSession returns the session id and the session secret of a live account, for the MAC key of
+// its sessions (6). ok is false for an unknown account and for one that is not live. The secret is a
+// copy; callers must not keep it beyond the derivation.
+func (s *Store) LiveSession(username string) (sid string, secret []byte, ok bool) {
+	s.eng.mu.RLock()
+	defer s.eng.mu.RUnlock()
+	a := s.eng.cur.Accounts[username]
+	if a == nil || !a.Live() || a.SID == "" || len(a.SessionSecret) == 0 {
+		return "", nil, false
+	}
+	return a.SID, append([]byte(nil), a.SessionSecret...), true
+}
+
+// RosterEntry is one account as the role editor offers it: the username, the display name and the state.
+// Nothing of its credentials.
+type RosterEntry struct {
+	Username string
+	Name     string
+	State    string
+}
+
+// Roster lists the accounts, sorted by username (removed ones too: their names stay used).
+func (s *Store) Roster() []RosterEntry {
+	s.eng.mu.RLock()
+	defer s.eng.mu.RUnlock()
+	out := make([]RosterEntry, 0, len(s.eng.cur.Accounts))
+	for _, n := range s.eng.cur.Names() {
+		a := s.eng.cur.Accounts[n]
+		out = append(out, RosterEntry{Username: n, Name: a.Name, State: a.State})
+	}
+	return out
+}

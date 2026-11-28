@@ -13,7 +13,7 @@ export type Draft = Record<ListName, string[]>
 export type EntryKind = 'identity' | 'domain' | 'any' | 'group' | 'app-role' | 'oidc' | 'mcphub' | 'oauth' | 'local'
 
 /** The kinds the add form offers, in the order it lists them. */
-export const ADD_KINDS: EntryKind[] = ['identity', 'domain', 'group', 'app-role', 'oidc', 'mcphub', 'oauth', 'any']
+export const ADD_KINDS: EntryKind[] = ['identity', 'domain', 'group', 'app-role', 'oidc', 'mcphub', 'oauth', 'local', 'any']
 
 const foldASCII = (s: string) => s.replace(/[A-Z]/g, (c) => c.toLowerCase())
 // eslint-disable-next-line no-control-regex
@@ -34,6 +34,8 @@ export function kindOf(entry: string): EntryKind | '' {
   const s = foldASCII(trimmed)
   if (s === '') return ''
   if (s === '*') return 'any'
+  // local:<username> or local:*; the username is the server's rule (internal/roles ValidLocalUsername)
+  if (s.startsWith('local:')) return /^local:(\*|[a-z][a-z0-9._-]{0,31})$/.test(s) ? 'local' : ''
   if (s.startsWith('group:')) return s.slice(6).trim() ? 'group' : ''
   if (s.startsWith('oauth:')) {
     const rest = s.slice(6)
@@ -48,7 +50,6 @@ export function kindOf(entry: string): EntryKind | '' {
     return d !== '' && !/[*@ ]/.test(d) ? 'domain' : ''
   }
   if (s.includes('*')) return ''
-  if (s.startsWith('local:')) return 'local'
   return 'identity'
 }
 
@@ -100,7 +101,7 @@ export function buildEntry(kind: EntryKind, input: string): { value: string } | 
       if (v === '') return { error: 'empty' }
       if (/\s/.test(v)) return { error: 'spaces' }
       if (control.test(v)) return { error: 'control' }
-      if (kind !== 'mcphub' && v.includes('*')) return { error: 'wildcard' }
+      if (kind !== 'mcphub' && kind !== 'local' && v.includes('*')) return { error: 'wildcard' }
       value = `${kind}:${v}`
   }
   return kindOf(value) === '' ? { error: 'invalid' } : { value }

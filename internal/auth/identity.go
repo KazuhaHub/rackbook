@@ -14,9 +14,11 @@ const (
 	MethodCloudflareAccess = "cloudflare-access"
 	MethodOIDC             = "oidc"
 	MethodPasskey          = "passkey"
-	MethodMCPHub           = "mcphub"
-	MethodOAuth            = "oauth" // access token of another trusted OAuth issuer
-	MethodToken            = "token"
+	// MethodLocal is a local account (docs/design-local-accounts.md). Its identity is local:<username>.
+	MethodLocal  = roles.MethodLocal
+	MethodMCPHub = "mcphub"
+	MethodOAuth  = "oauth" // access token of another trusted OAuth issuer
+	MethodToken  = "token"
 	// MethodCLI marks commits made by the rackbook command line.
 	MethodCLI = "cli"
 	// MethodSystem marks what Rackbook does by itself, with no person behind it: the daily

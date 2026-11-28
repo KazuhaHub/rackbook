@@ -20,8 +20,13 @@ function withInfra(s: string, it: ActivityItem): string {
   return via ? `${s}${t.common.colon}${via}` : s
 }
 
-/** An audit event as a sentence without its subject (the row shows who). */
+/** An audit event as a sentence without its subject (the row shows who); an event about another account says which. */
 export function eventSentence(it: ActivityItem): string {
+  const s = baseSentence(it)
+  return it.target ? `${s}${t.common.clauseSep}${t.activity.events.onAccount(it.target)}` : s
+}
+
+function baseSentence(it: ActivityItem): string {
   const e = t.activity.events
   const role = (it.role && t.auth.role[it.role]) || it.role || ''
   const method = (it.method && t.auth.method[it.method]) || it.method || ''

@@ -474,10 +474,15 @@ export function mockApi(root: string): Plugin {
   const rolesDegraded = process.env.MOCK_ROLES_DEGRADED === '1'
   let roleLists: RoleLists = {
     admin: [...(roleFrom.includes('identity') ? [user.id] : []), 'owner@example.com', `group:${mockGroup}`],
-    editor: ['*@example.com', 'app-role:Rackbook.Editor'],
-    viewer: ['guest@example.com', 'oauth:partner:*', 'oidc:00000000-1111-2222-3333-444444444444'],
-    auditors: ['audie@example.com', 'app-role:Rackbook.Auditor'],
+    editor: ['*@example.com', 'app-role:Rackbook.Editor', 'local:bob'],
+    viewer: ['guest@example.com', 'oauth:partner:*', 'oidc:00000000-1111-2222-3333-444444444444', 'local:ghost'],
+    auditors: ['audie@example.com', 'app-role:Rackbook.Auditor', 'local:erin'],
   }
+  // the local accounts of the mock: bob can sign in, erin is disabled, and nobody is called ghost
+  const localAccounts = [
+    { username: 'bob', name: 'Bob', state: 'active' },
+    { username: 'erin', name: 'Erin', state: 'disabled' },
+  ]
   const rolesVersion = (l: RoleLists) => createHash('sha256').update(JSON.stringify(l)).digest('hex').slice(0, 16)
   const fold = (x: string) => x.replace(/[A-Z]/g, (c) => c.toLowerCase())
   const rolesMatch = (e: string, identityOnly: boolean) => {
@@ -526,7 +531,12 @@ export function mockApi(root: string): Plugin {
     else {
       if (list === 'admin' && (k === 'any' || k === 'domain')) notes.push({ level: 'warning', code: 'wildcard_admin', message: 'everyone this entry matches is an administrator' })
       if (k === 'oauth' && !fold(e).startsWith('oauth:corp:')) notes.push({ level: 'warning', code: 'unknown_issuer', message: 'no trusted OAuth issuer has this alias' })
-      if (k === 'local') notes.push({ level: 'warning', code: 'local_unavailable', message: 'local accounts are not available' })
+      if (k === 'local') {
+        const name = fold(e.trim()).slice('local:'.length)
+        const acct = localAccounts.find((a) => a.username === name)
+        if (name !== '*' && !acct) notes.push({ level: 'warning', code: 'local_no_account', message: 'no local account has this name, so this entry matches nobody yet' })
+        else if (acct && acct.state !== 'active') notes.push({ level: 'warning', code: 'local_inactive', message: 'this account is disabled, so this entry matches nobody until it is enabled' })
+      }
       if (list !== 'auditors') {
         const other = (['admin', 'editor', 'viewer'] as const).find((n) => n !== list && l[n].some((x) => entryKey(x) === entryKey(e)))
         if (other) notes.push({ level: 'warning', code: 'also_in', message: `also in ${other}`, also: other })
@@ -543,7 +553,7 @@ export function mockApi(root: string): Plugin {
       explicit: true, roles: { admin: a.admin, editor: a.editor, viewer: a.viewer }, auditors: a.auditors, file: 'rackbook.yml',
       writeMode: writeModePR ? 'pr' : 'push', readOnly, sso: true, infra: true,
       ...(infraClaims ? { infraClaims: { admins: 'app-role:Rackbook.InfraAdmin', auditors: `group:${mockGroup}`, claimsAbsolute: 86400 } } : {}),
-      authMode: process.env.MOCK_AUTH_MODE ?? 'oidc', editors: (process.env.MOCK_LEGACY_EDITORS ?? '').split(',').map((x) => x.trim()).filter(Boolean), you: rolesCap(roleLists),
+      local: { available: true, accounts: localAccounts }, authMode: process.env.MOCK_AUTH_MODE ?? 'oidc', editors: (process.env.MOCK_LEGACY_EDITORS ?? '').split(',').map((x) => x.trim()).filter(Boolean), you: rolesCap(roleLists),
     }
   }
   const yamlItem = (s: string) => (/^[*&!|>%@`'",[\]{}#]/.test(s) || /[:#]\s|^\s|\s$/.test(s) ? JSON.stringify(s) : s)
@@ -936,6 +946,7 @@ export function mockApi(root: string): Plugin {
         { time: ago(8), area: 'audit', kind: 'role_changed', seq: 53, identity: 'ed@kazuha.org', name: 'Ed', method: 'oidc', from: 'editor', to: 'viewer', auditor_from: false, auditor_to: false, cause: 'config' },
         { time: ago(12), area: 'audit', kind: 'role_changed', seq: 52, identity: 'audie@example.com', name: 'Audie', method: 'oidc', from: 'viewer', to: 'viewer', auditor_from: false, auditor_to: true, cause: 'sign_in', addr: '203.0.113.0' },
         { time: ago(20), area: 'audit', kind: 'login', seq: 49, identity: 'big@example.com', name: 'Big Groups', method: 'oidc', role: 'viewer', groups: 'overage', addr: '203.0.113.0' },
+        { time: ago(25), area: 'audit', kind: 'account_disabled', seq: 48, identity: 'cli', method: 'cli', target: 'local:erin' },
         { time: ago(26 * 60), area: 'audit', kind: 'chain_problem', seq: 44, code: 'cut_from_end', detail: ['seq=41'] },
         { time: ago(26 * 60 - 5), area: 'infra', kind: 'secret_revealed', seq: 45, identity: user.id, name: user.name, host: 'alpha-host' },
         { time: ago(30 * 60), area: 'infra', kind: 'commit', hash: 'e5f6a7b8'.padEnd(40, '1'), short: 'e5f6a7b', subject: 'infra(host_vars/alpha-host): enable beszel-agent', identity: user.id, name: user.name, verified: true },

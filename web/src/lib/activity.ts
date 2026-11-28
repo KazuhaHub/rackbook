@@ -13,6 +13,8 @@ export type ActivityItem = {
   hash?: string
   short?: string
   identity?: string
+  /** the account an administrator or the command line acted on, when that is not the actor ("local:<username>") */
+  target?: string
   name?: string
   method?: string
   via?: string

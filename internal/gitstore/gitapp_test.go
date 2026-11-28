@@ -335,7 +335,8 @@ func TestGitHubRepoMustMatchOrigin(t *testing.T) {
 func TestInheritedEnvIsScrubbed(t *testing.T) {
 	t.Parallel()
 	in := []string{"PATH=/bin", "GIT_TRACE=1", "GIT_TRACE_CURL=/x", "GIT_CURL_VERBOSE=1", "GIT_SSL_NO_VERIFY=1", "GIT_CONFIG_PARAMETERS='a'",
-		"GIT_ASKPASS=/x", "SSH_ASKPASS=/x", "GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=a", "GIT_TRACE_REDACT=0", "HOME=/h"}
+		"GIT_ASKPASS=/x", "SSH_ASKPASS=/x", "GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=a", "GIT_TRACE_REDACT=0", "HOME=/h",
+		"RACKBOOK_STATE_KEY=k", "RACKBOOK_SESSION_KEY=k", "RACKBOOK_OIDC_CLIENT_SECRET=s"}
 	got := inheritedEnv(in)
 	if len(got) != 2 || got[0] != "PATH=/bin" || got[1] != "HOME=/h" {
 		t.Fatalf("%v", got)

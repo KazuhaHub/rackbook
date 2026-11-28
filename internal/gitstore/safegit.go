@@ -197,7 +197,7 @@ func refuseEnv(env []string) error {
 
 // scrubbedEnv lists the inherited variables that are dropped from every git
 // command: they could print the Authorization header (GIT_TRACE*, curl
-// verbose), weaken TLS, add configuration behind the allow-list
+// verbose), hold one of Rackbook's own keys (RACKBOOK_STATE_KEY and the like), weaken TLS, add configuration behind the allow-list
 // (GIT_CONFIG_PARAMETERS, GIT_CONFIG_COUNT and its keys are re-set by us when
 // needed) or run a program to ask for credentials.
 func scrubbedEnv(name string) bool {
@@ -206,6 +206,8 @@ func scrubbedEnv(name string) bool {
 		return true
 	}
 	switch name {
+	case "RACKBOOK_STATE_KEY", "RACKBOOK_SESSION_KEY", "RACKBOOK_OIDC_CLIENT_SECRET":
+		return true // Rackbook's own secrets are no business of git or of anything it runs
 	case "GIT_CURL_VERBOSE", "GIT_SSL_NO_VERIFY", "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT",
 		"GIT_ASKPASS", "SSH_ASKPASS":
 		return true

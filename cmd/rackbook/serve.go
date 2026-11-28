@@ -37,6 +37,7 @@ import (
 	"github.com/kazuhahub/rackbook/internal/prefs"
 	"github.com/kazuhahub/rackbook/internal/routes"
 	"github.com/kazuhahub/rackbook/internal/sops"
+	"github.com/kazuhahub/rackbook/internal/statekey"
 	"github.com/kazuhahub/rackbook/internal/tokens"
 	"github.com/kazuhahub/rackbook/web"
 )
@@ -50,10 +51,13 @@ func newServe() *cobra.Command {
 Run it on a clone it owns (--repo): the server fetches and resets that clone to
 origin and commits every write. It listens on 127.0.0.1 by default and is meant to
 sit behind Cloudflare Tunnel or a reverse proxy; use --auth cloudflare-access to
-verify Cloudflare Access tokens, or --auth oidc for the built-in login (see the
-README): it needs --base-url (https), RACKBOOK_OIDC_CLIENT_SECRET and a session
-key (RACKBOOK_SESSION_KEY or --session-key-file). --tls-cert and --tls-key serve
-HTTPS directly, for local testing or a host without a reverse proxy.
+verify Cloudflare Access tokens, or --auth login (alias: oidc) for the built-in
+login (see the README): it needs --base-url (https) and a session key
+(RACKBOOK_SESSION_KEY or --session-key-file), and either single sign-on
+(auth.oidc in rackbook.yml with RACKBOOK_OIDC_CLIENT_SECRET) or local accounts
+(--state-dir with the state key, RACKBOOK_STATE_KEY or --state-key-file), or both.
+--tls-cert and --tls-key serve HTTPS directly, for local testing or a host
+without a reverse proxy.
 
 Pull request mode (write.mode: pr in rackbook.yml) reads a GitHub token from
 RACKBOOK_GITHUB_TOKEN.`,
@@ -63,8 +67,9 @@ RACKBOOK_GITHUB_TOKEN.`,
 	f := cmd.Flags()
 	f.String("listen", "127.0.0.1:8080", "address to listen on")
 	f.String("repo", "", "data repository directory (default: the directory of the config)")
-	f.String("auth", "", "authentication: none, cloudflare-access or oidc (default: auth.mode in rackbook.yml, else none)")
-	f.String("session-key-file", "", "file with the base64 session signing key (--auth oidc; alternative to RACKBOOK_SESSION_KEY)")
+	f.String("auth", "", "authentication: none, cloudflare-access or login, the built-in login (oidc is an alias); default: auth.mode in rackbook.yml, else none")
+	f.String("session-key-file", "", "file with the base64 session signing key (--auth login; alternative to RACKBOOK_SESSION_KEY)")
+	f.String("state-key-file", "", "file with the base64 state key that encrypts the local accounts (--auth login; alternative to RACKBOOK_STATE_KEY); without a key there are no local accounts and sign-in is single sign-on only; needs --state-dir; keep it outside --state-dir")
 	f.String("oidc-ca-file", "", "extra CA certificates (PEM) to trust for the OIDC issuer, for a private CA (--auth oidc)")
 	f.String("tls-cert", "", "TLS certificate file: serve HTTPS (needs --tls-key)")
 	f.String("tls-key", "", "TLS private key file")
@@ -149,10 +154,28 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		appSource = app
 		logger.Info("GitHub App credentials on", "api", app.API())
 	}
+	mode, _ := f.GetString("auth")
+	if mode == "" {
+		mode = cfg.Auth.Mode
+	}
+	if mode == "" {
+		mode = auth.ModeNone
+	}
+	mode = auth.ParseMode(mode) // login and oidc are one mode
 	// The state directory is prepared first: the audit log lives in it, and the
 	// store and the login record into the log from their first request on.
 	stateDir, _ := f.GetString("state-dir")
 	baseURL, _ := f.GetString("base-url")
+	// The built-in login: when a state key is given there are local accounts (design-local-accounts.md, 2.3
+	// and 11.1). The key is read before anything is opened, because the retention pin needs it.
+	var stateKey *statekey.Key
+	if mode == auth.ModeOIDC {
+		if stateKey, err = loadStateKey(f, stateDir); err != nil {
+			return err
+		}
+	} else if f.Changed("state-key-file") || strings.TrimSpace(os.Getenv("RACKBOOK_STATE_KEY")) != "" {
+		return errors.New("--state-key-file and RACKBOOK_STATE_KEY are for local accounts, which need --auth login")
+	}
 	if cfg.Auth.MCP.BuiltinIssuer.Enabled && (stateDir == "" || baseURL == "") {
 		return errors.New("auth.mcp.builtin_issuer needs --state-dir (it keeps the grants and the signing key there) and --base-url (the public URL, which is the issuer of its tokens)")
 	}
@@ -161,6 +184,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 	var auditLog *audit.Log
+	var pin *accounts.Pin
 	if stateDir == "" {
 		warnAuditWithoutState(logger, addrMode, retention)
 	}
@@ -170,10 +194,10 @@ func runServe(cmd *cobra.Command, _ []string) error {
 			return err
 		}
 		defer unlock()
-		// Retention runs while the log opens. Account state may exist under --state-dir (the offline
-		// commands made it); serve has no state key yet and cannot read it, so the pin is conservative:
-		// no month from the oldest account or secrets change event on is deleted (design-local-accounts.md, 4.6).
-		pin := accounts.NewPin(stateDir, nil)
+		// Retention runs while the log opens. The pin holds back the months the account files need: it
+		// reads their audit month with the state key, and where there is no key (single sign-on only) it is
+		// conservative: no month from the oldest account or secrets change event on is deleted (design-local-accounts.md, 4.6).
+		pin = accounts.NewPin(stateDir, stateKey)
 		if m := pin.Month(); m != "" && retention > 0 {
 			logger.Info("audit retention keeps the months from the oldest account-store change on", "from", m)
 		}
@@ -181,6 +205,14 @@ func runServe(cmd *cobra.Command, _ []string) error {
 			return err
 		}
 		defer auditLog.Close()
+	}
+	// The account store: its start sequence (4.3) runs now, before anything is served. A refusal stops
+	// the server: a wrong key, a log that was rolled back, an account store older than the log.
+	var localStore *accounts.Store
+	if stateKey != nil {
+		if localStore, err = openAccounts(stateDir, stateKey, auditLog, pin, logger); err != nil {
+			return err
+		}
 	}
 
 	// The audit anchors are checked at start and after each pull; audit.anchor: daily also writes
@@ -206,13 +238,6 @@ func runServe(cmd *cobra.Command, _ []string) error {
 
 	// auth.roles and auth.editors are read from the store's current config on every
 	// request, so a config reload on pull changes roles without a restart.
-	mode, _ := f.GetString("auth")
-	if mode == "" {
-		mode = cfg.Auth.Mode
-	}
-	if mode == "" {
-		mode = auth.ModeNone
-	}
 	infra, err := newInfra(ctx, f, cfg, mode, interval, appSource, committer, readOnlyFlag(f), auditLog, logger)
 	if err != nil {
 		return err
@@ -227,9 +252,14 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	// (the store reads it on first use).
 	prefStore := &prefs.Store{}
 	acfg := auth.Config{Mode: mode, Team: team, Audience: aud, Editor: editor, Editors: editors, Config: store.Config, Degraded: func() bool { return store.ConfigProblem() != "" }}
+	var local login.LocalSessions // an interface that holds a nil pointer is not nil
+	if localStore != nil {
+		local = localStore
+		acfg.Local = localStore
+	}
 	if mode == auth.ModeOIDC {
 		caFile, _ := f.GetString("oidc-ca-file")
-		if loginSvc, err = newLogin(cfg, store, prefStore, baseURL, caFile, f, readOnly, auditLog, infra, logger); err != nil {
+		if loginSvc, err = newLogin(cfg, store, prefStore, baseURL, caFile, stateKey, local, f, readOnly, auditLog, infra, logger); err != nil {
 			return err
 		}
 		acfg.Sessions = loginSvc
@@ -286,8 +316,12 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	authn.SetBearer(resource)
 	meta := resource.MetadataHandler()
 	mcpSrv := mcpserver.NewWithOptions(mcpserver.Options{Source: store.Ledger, Version: version, Backend: store, ReadOnly: readOnly, Logger: logger})
+	var roster api.LocalRoster
+	if localStore != nil {
+		roster = rosterOf{localStore}
+	}
 	handler := api.New(api.Options{
-		Store: store, Auth: authn, ReadOnly: readOnly, BaseURL: baseURL, Web: dist, Logger: logger, RestrictHost: mode == auth.ModeNone, Login: loginMount,
+		Local: roster, Store: store, Auth: authn, ReadOnly: readOnly, BaseURL: baseURL, Web: dist, Logger: logger, RestrictHost: mode == auth.ModeNone, Login: loginMount,
 		MCP:    mcpauth.Handler(mcpserver.Handler(mcpSrv, mode != auth.ModeNone || baseURL != "" || cfg.Auth.MCP.Enabled())),
 		Public: map[string]http.Handler{mcpauth.MetadataPath: meta, mcpauth.MetadataPathMCP: meta},
 		Tokens: registry, Modules: modState, Prefs: prefStore, OAuth: oauthSrv, Infra: infra, Audit: auditLog,
@@ -313,7 +347,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	}
 	srv := &http.Server{Handler: handler, ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 2 * time.Minute, IdleTimeout: 2 * time.Minute}
 	logger.Info("rackbook serving", "version", version, "title", cfg.Title, "listen", ln.Addr().String(),
-		"git", store.GitEnabled(), "remote", store.HasRemote(), "auth", mode, "tls", certFile != "", "readOnly", readOnly, "writeMode", cfg.Write.Mode,
+		"git", store.GitEnabled(), "remote", store.HasRemote(), "auth", mode, "localAccounts", localStore != nil, "tls", certFile != "", "readOnly", readOnly, "writeMode", cfg.Write.Mode,
 		"console", consoleBuilt(dist))
 
 	errc := make(chan error, 1)
@@ -382,21 +416,107 @@ func consoleBuilt(dist fs.FS) bool {
 	return err == nil
 }
 
-// newLogin builds the built-in login for --auth oidc: the OIDC client secret
-// comes only from RACKBOOK_OIDC_CLIENT_SECRET, the session key from
-// RACKBOOK_SESSION_KEY or --session-key-file.
-func newLogin(cfg *config.Config, store *gitstore.Store, prefStore *prefs.Store, baseURL, caFile string, f *pflag.FlagSet, readOnly bool, auditLog *audit.Log, infra *api.InfraOptions, logger *slog.Logger) (*login.Service, error) {
+// ssoConfigured says auth.oidc names a provider: single sign-on is part of the built-in login.
+func ssoConfigured(cfg *config.Config) bool {
+	o := cfg.Auth.Login.OIDC
+	return o.Issuer != "" || o.ClientID != ""
+}
+
+// loadStateKey reads the state key of --auth login (RACKBOOK_STATE_KEY or --state-key-file) before anything is
+// opened. nil means none was given: no local accounts, and single sign-on alone. A key needs --state-dir and
+// must not be kept inside it; one that equals the session key is refused (when the session key is given by
+// then; newLogin checks it again). A state directory that holds account files while no key is given is
+// refused: starting without the key would leave the accounts unreadable and their roles silent.
+func loadStateKey(f *pflag.FlagSet, stateDir string) (*statekey.Key, error) {
+	file, _ := f.GetString("state-key-file")
+	env := os.Getenv("RACKBOOK_STATE_KEY")
+	if strings.TrimSpace(file) == "" && strings.TrimSpace(env) == "" {
+		if stateDir != "" {
+			for _, rel := range []string{filepath.Join("accounts", "accounts.enc"), "secrets.enc"} {
+				if fileExists(filepath.Join(stateDir, rel)) {
+					return nil, fmt.Errorf("--state-dir %s holds %s, which is encrypted under the state key: set RACKBOOK_STATE_KEY or --state-key-file, or the local accounts cannot be read and the server will not start without them", stateDir, rel)
+				}
+			}
+		}
+		return nil, nil
+	}
+	if stateDir == "" {
+		return nil, errors.New("local accounts need --state-dir (the account files and the audit log live there)")
+	}
+	if strings.TrimSpace(file) != "" {
+		if err := outsideStateDir(stateDir, file); err != nil {
+			return nil, err
+		}
+	}
+	key, err := statekey.LoadKey("RACKBOOK_STATE_KEY", env, file)
+	os.Unsetenv("RACKBOOK_STATE_KEY") // read once; it is not passed on to git or anything else the server starts
+	if err != nil {
+		return nil, err
+	}
+	skFile, _ := f.GetString("session-key-file")
+	if skEnv := os.Getenv("RACKBOOK_SESSION_KEY"); strings.TrimSpace(skFile) != "" || strings.TrimSpace(skEnv) != "" {
+		if sk, err := login.LoadSessionKey(skEnv, skFile); err == nil {
+			if err := key.DistinctFrom(sk); err != nil {
+				return nil, err
+			}
+		} // a session key that does not load is newLogin's error to give
+	}
+	return key, nil
+}
+
+// openAccounts runs the start sequence of the account store (design-local-accounts.md, 4.3). A refusal
+// stops the server, with what the operator can do about it.
+func openAccounts(stateDir string, key *statekey.Key, log *audit.Log, pin *accounts.Pin, logger *slog.Logger) (*accounts.Store, error) {
+	if log == nil {
+		return nil, errors.New("local accounts need --state-dir: their changes are audited before they are made")
+	}
+	st, err := accounts.Open(accounts.Options{StateDir: stateDir, Key: key, Log: log, Pin: pin, Logger: logger})
+	if err == nil {
+		return st, nil
+	}
+	var se *accounts.StartError
+	if !errors.As(err, &se) {
+		return nil, fmt.Errorf("the account store did not open: %w", err)
+	}
+	hint := "see docs/design-local-accounts.md, section 4.3 and 4.4"
+	switch se.Code {
+	case accounts.CodeWrongKey:
+		hint = "start with the state key the files were encrypted under (RACKBOOK_STATE_KEY or --state-key-file); an interrupted `rackbook accounts rekey` is finished by running it again"
+	case accounts.CodeGap, accounts.CodeAuditTruncated, accounts.CodeMonthPruned:
+		hint = "the store and the audit log disagree: stop the server and run `rackbook accounts accept-restore` (see docs/design-local-accounts.md, section 4.4)"
+	case accounts.CodeMissing, accounts.CodeCorrupt:
+		hint = "restore accounts/accounts.enc from a backup, then `rackbook accounts accept-restore`; `rackbook accounts discard-store` is for a store that no key opens (see docs/design-local-accounts.md, section 4.7)"
+	}
+	return nil, fmt.Errorf("the account store refused to start (%s): %s\n%s", se.Code, se.Msg, hint)
+}
+
+// newLogin builds the built-in login for --auth login: the OIDC client secret
+// comes only from RACKBOOK_OIDC_CLIENT_SECRET (and is needed only when single sign-on is configured),
+// the session key from RACKBOOK_SESSION_KEY or --session-key-file.
+func newLogin(cfg *config.Config, store *gitstore.Store, prefStore *prefs.Store, baseURL, caFile string, stateKey *statekey.Key, local login.LocalSessions, f *pflag.FlagSet, readOnly bool, auditLog *audit.Log, infra *api.InfraOptions, logger *slog.Logger) (*login.Service, error) {
 	keyFile, _ := f.GetString("session-key-file")
 	key, err := login.LoadSessionKey(os.Getenv("RACKBOOK_SESSION_KEY"), keyFile)
 	if err != nil {
 		return nil, err
 	}
+	// the session key is read here for good: the state key must differ from it (loadStateKey checked it early
+	// when the session key was given then; this is the check that cannot be missed)
+	if stateKey != nil {
+		if err := stateKey.DistinctFrom(key); err != nil {
+			return nil, err
+		}
+	}
+	os.Unsetenv("RACKBOOK_SESSION_KEY") // read; child processes (git) and /proc/<pid>/environ readers need not see it
+	if stateKey == nil && !ssoConfigured(cfg) {
+		return nil, errors.New("--auth login needs single sign-on (auth.oidc in rackbook.yml) or local accounts (--state-dir with the state key in RACKBOOK_STATE_KEY or --state-key-file): neither is available")
+	}
 	secret := os.Getenv("RACKBOOK_OIDC_CLIENT_SECRET")
-	if secret == "" {
-		return nil, errors.New("--auth oidc needs the client secret in RACKBOOK_OIDC_CLIENT_SECRET (it is never read from rackbook.yml)")
+	os.Unsetenv("RACKBOOK_OIDC_CLIENT_SECRET")
+	if ssoConfigured(cfg) && secret == "" {
+		return nil, errors.New("--auth login needs the client secret in RACKBOOK_OIDC_CLIENT_SECRET when auth.oidc is configured (it is never read from rackbook.yml)")
 	}
 	if baseURL == "" {
-		return nil, errors.New("--auth oidc needs --base-url (the public https URL of the console; the IdP redirects to <base-url>/auth/oidc/callback)")
+		return nil, errors.New("--auth login needs --base-url (the public https URL of the console; the IdP redirects to <base-url>/auth/oidc/callback)")
 	}
 	proxies, err := clientip.ParseCIDRs(trustedProxies(f))
 	if err != nil {
@@ -404,7 +524,7 @@ func newLogin(cfg *config.Config, store *gitstore.Store, prefStore *prefs.Store,
 	}
 	o := login.Options{
 		TrustedProxies: proxies, Login: cfg.Auth.Login, Config: store.Config, BaseURL: baseURL, Key: key, ClientSecret: secret, CAFile: caFile,
-		ReadOnly: readOnly, Logger: logger, Prefs: prefStore, Audit: auditLog,
+		ReadOnly: readOnly, Logger: logger, Prefs: prefStore, Audit: auditLog, Local: local,
 	}
 	if infra != nil {
 		o.Infra = &auth.InfraAccess{Admins: infra.Admins, Auditors: infra.Auditors}
@@ -430,7 +550,7 @@ func newInfra(ctx context.Context, f *pflag.FlagSet, cfg *config.Config, mode st
 		return nil, nil
 	}
 	if mode != auth.ModeOIDC {
-		return nil, errors.New("--infra-repo needs --auth oidc: /infra is open only to people who signed in with the console login")
+		return nil, errors.New("--infra-repo needs --auth oidc (or its name login): /infra is open only to people who signed in with the console login")
 	}
 	ia, err := auth.NewInfraAdmins(admins)
 	if err != nil {
@@ -567,4 +687,16 @@ func fileExists(p string) bool {
 func readOnlyFlag(f *pflag.FlagSet) bool {
 	v, _ := f.GetBool("read-only")
 	return v
+}
+
+// rosterOf adapts the account store to what the API's role editor asks of it.
+type rosterOf struct{ s *accounts.Store }
+
+func (r rosterOf) Roster() []api.LocalAccount {
+	es := r.s.Roster()
+	out := make([]api.LocalAccount, len(es))
+	for i, e := range es {
+		out[i] = api.LocalAccount{Username: e.Username, Name: e.Name, State: e.State}
+	}
+	return out
 }

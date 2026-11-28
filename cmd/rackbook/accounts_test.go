@@ -306,30 +306,9 @@ func TestAccountsDiscardStore(t *testing.T) {
 	}
 }
 
-func TestServeDoesNotReadTheStateKeyYet(t *testing.T) {
-	// Nothing is reachable from HTTP in this piece. serve has no state-key flag and reads no key; it only builds the
-	// conservative retention pin, which peeks at no encrypted content.
-	for _, name := range []string{"state-key-file", "state-key"} {
-		if newServe().Flags().Lookup(name) != nil {
-			t.Fatalf("serve has --%s", name)
-		}
-	}
-	src, err := os.ReadFile("serve.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, banned := range []string{"STATE_KEY", "statekey", "accounts.Open", "accounts.OpenSecrets", "LoadKey"} {
-		if strings.Contains(string(src), banned) {
-			t.Fatalf("serve.go mentions %q", banned)
-		}
-	}
-	if !strings.Contains(string(src), "accounts.NewPin(stateDir, nil)") {
-		t.Fatal("serve must build the retention pin without a key")
-	}
-}
-
 // The HTTP surface (the API, the login, the MCP and OAuth servers and the auth package) must not depend on the
-// account store or the state key: nothing of local accounts is reachable from HTTP in this piece.
+// account store or the state key: it sees the accounts through narrow interfaces (session id and secret, "is the
+// account active", the roster), which cmd/rackbook satisfies with the store.
 func TestNoHTTPPackageDependsOnTheAccountStore(t *testing.T) {
 	gobin, err := exec.LookPath("go")
 	if err != nil {

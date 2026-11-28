@@ -76,11 +76,27 @@ type Options struct {
 	Prefs *prefs.Store
 	// Infra turns on the read-only /infra pages (nil = off, and /api/infra is a 404).
 	Infra *InfraOptions
+	// Local is the store of local accounts (nil = local accounts are not available). The role editor
+	// offers the accounts by name and counts the administrators who can sign in.
+	Local LocalRoster
 	// Audit is the audit log (nil = none: the activity view then shows every
 	// commit as unverified, and /api/audit/status says the log is off).
 	Audit *audit.Log
 	// Now is the clock; nil = time.Now.
 	Now func() time.Time
+}
+
+// LocalAccount is one local account as the role editor offers it: nothing of its credentials.
+type LocalAccount struct {
+	Username string `json:"username"`
+	Name     string `json:"name,omitempty"`
+	State    string `json:"state"`
+}
+
+// LocalRoster lists the local accounts. It is an interface so that this package does not depend on
+// the account store or the state key; cmd/rackbook adapts the store.
+type LocalRoster interface {
+	Roster() []LocalAccount
 }
 
 // OAuthServer is the built-in authorization server (internal/oauthserver).
