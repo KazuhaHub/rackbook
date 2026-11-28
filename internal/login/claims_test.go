@@ -859,3 +859,73 @@ func TestTokenAndTheAuditorCapabilityFromClaims(t *testing.T) {
 		t.Fatalf("%d %s", r.StatusCode, r.Body)
 	}
 }
+
+// The role editor (POST /api/admin/roles) is an ordinary commit to rackbook.yml: the
+// role_changed events that follow are the lazy ones of part 1, written at each affected
+// person's next request, and only for the people who come back.
+func TestRoleEditorSaveIsFollowedByLazyRoleChanged(t *testing.T) {
+	eachStore(t, func(t *testing.T, o options) {
+		e := newEnv(t, o)
+		admin, ed, guest := e.browser(), e.browser(), e.browser()
+		admin.login("admin", "")
+		ed.login("editor", "")
+		guest.login("viewer", "")
+		ed.meta()
+		guest.meta()
+
+		r := admin.get("/api/admin/roles")
+		if r.StatusCode != 200 {
+			t.Fatalf("%d %s", r.StatusCode, r.Body)
+		}
+		var cur struct {
+			Version string `json:"version"`
+			Roles   struct {
+				Admin, Editor, Viewer []struct{ Value string } `json:"-"`
+			} `json:"-"`
+		}
+		if err := json.Unmarshal([]byte(r.Body), &cur); err != nil || cur.Version == "" {
+			t.Fatalf("%v %s", err, r.Body)
+		}
+		// ed's domain entry moves from editor to viewer; guest is promoted to editor
+		save := fmt.Sprintf(`{"version":%q,"roles":{"admin":["kazuha@kazuha.org"],"editor":["guest@example.com"],"viewer":["*@kazuha.org"]},"auditors":[]}`, cur.Version)
+		if r = admin.postJSON("/api/admin/roles", save); r.StatusCode != 200 {
+			t.Fatalf("%d %s", r.StatusCode, r.Body)
+		}
+		if n := len(e.kinds("role_changed")); n != 0 {
+			t.Fatalf("it is lazy: %d events before anybody comes back", n)
+		}
+		// the administrator is still one, and nothing was written for them
+		if got := roleOfMeta(t, admin); got != "admin" {
+			t.Fatal(got)
+		}
+		if got := roleOfMeta(t, ed); got != "viewer" {
+			t.Fatal(got)
+		}
+		evs := e.kinds("role_changed")
+		if len(evs) != 1 {
+			t.Fatalf("written once, for the person who came back: %+v", evs)
+		}
+		if ev := evs[0]; ev.Identity != "ed@kazuha.org" || ev.From != "editor" || ev.To != "viewer" || ev.Cause != audit.CauseConfig {
+			t.Fatalf("%+v", ev)
+		}
+		// the person who never came back is compared when they do
+		if got := roleOfMeta(t, guest); got != "editor" {
+			t.Fatal(got)
+		}
+		evs = e.kinds("role_changed")
+		if len(evs) != 2 || evs[1].Identity != "guest@example.com" || evs[1].From != "viewer" || evs[1].To != "editor" || evs[1].Cause != audit.CauseConfig {
+			t.Fatalf("%+v", evs)
+		}
+		// the session's claims count: signed in with the group, an administrator who would be one only
+		// through it is refused (a token of theirs would have no role)
+		e.idp.Users["admin"]["groups"] = []string{"ops"}
+		grp := e.browser()
+		grp.login("admin", "")
+		r = grp.get("/api/admin/roles")
+		_ = json.Unmarshal([]byte(r.Body), &cur)
+		bad := fmt.Sprintf(`{"version":%q,"roles":{"admin":["group:ops"],"editor":[],"viewer":[]},"auditors":[]}`, cur.Version)
+		if r = grp.postJSON("/api/admin/roles", bad); r.StatusCode != 422 || !strings.Contains(r.Body, "self_lockout_claims") {
+			t.Fatalf("%d %s", r.StatusCode, r.Body)
+		}
+	})
+}

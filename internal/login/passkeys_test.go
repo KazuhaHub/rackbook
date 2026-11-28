@@ -559,8 +559,8 @@ func TestAuditorCannotTouchAnotherPersonsPasskeyOnAnyLoginRoute(t *testing.T) {
 		}
 		class := loginRouteClass[pat]
 		if class == "" {
-			// /api/admin/tokens and friends belong to the API: only the login service's own routes are classed here
-			if strings.HasPrefix(path, "/api/admin/tokens") || path == "/api/admin/accept-remote" || path == "/api/account/preferences" || strings.HasPrefix(path, "/api/account/grants") {
+			// /api/admin/tokens, /api/admin/roles (the role editor: internal/api/roles_admin_test.go walks who may use it) and friends belong to the API: only the login service's own routes are classed here
+			if strings.HasPrefix(path, "/api/admin/tokens") || strings.HasPrefix(path, "/api/admin/roles") || path == "/api/admin/accept-remote" || path == "/api/account/preferences" || strings.HasPrefix(path, "/api/account/grants") {
 				continue
 			}
 			t.Errorf("%s is mounted by the login service and is not classified", pat)
