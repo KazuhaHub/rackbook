@@ -44,6 +44,8 @@ type StartError struct {
 	Detail []string
 	Gap    *Gap
 	Doc    any
+	// FileKID and LoadedKID are the key ids of the file and of the loaded key, when the file's header could be read.
+	FileKID, LoadedKID string
 }
 
 func (e *StartError) Error() string { return e.Msg }
@@ -77,10 +79,12 @@ type engineConfig[D doc] struct {
 	Base    string // "accounts.enc" or "secrets.enc"
 	Purpose statekey.Purpose
 	Marker  string // "change:" or "secrets_change:"
-	Key     *statekey.Key
-	Log     *audit.Log
-	Now     func() time.Time
-	Logger  *slog.Logger
+	// Events are the event names this document's writer emits as changes.
+	Events map[string]bool
+	Key    *statekey.Key
+	Log    *audit.Log
+	Now    func() time.Time
+	Logger *slog.Logger
 	// Hook is called after each step of a change (see commit); an error stops the writer
 	// as a crash would. Tests only.
 	Hook func(step string) error
@@ -174,7 +178,12 @@ func (e *engine[D]) seal(d D) ([]byte, error) {
 // so a named file is always complete.
 func writeFile(path string, data []byte) error {
 	tmp := path + ".tmp"
-	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	// a leftover or planted .tmp, a symlink included, is removed (the link itself, never its target) and the
+	// new one is created exclusively with mode 0600, so a write can never follow a link
+	if err := os.Remove(tmp); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return err
 	}
@@ -243,7 +252,8 @@ func (e *engine[D]) removeTmp() error {
 	}
 	for _, ent := range ents {
 		n := ent.Name()
-		if ent.Type().IsRegular() && strings.HasSuffix(n, ".tmp") && strings.HasPrefix(n, e.c.Base) {
+		// any entry that is not a directory, a symlink included; in the accounts directory every .tmp is ours
+		if !ent.IsDir() && strings.HasSuffix(n, ".tmp") && (strings.HasPrefix(n, e.c.Base) || e.c.Base == accountsFile) {
 			if err := os.Remove(filepath.Join(e.c.Dir, n)); err != nil && !errors.Is(err, fs.ErrNotExist) {
 				return err
 			}
@@ -292,6 +302,9 @@ type changeEvent struct {
 }
 
 func (e *engine[D]) changeID(ev audit.Event) string {
+	if !e.c.Events[ev.Event] {
+		return ""
+	}
 	for _, d := range ev.Detail {
 		if id, ok := strings.CutPrefix(d, e.c.Marker); ok {
 			return id
@@ -315,6 +328,17 @@ func (e *engine[D]) changesFrom(fromMonth string, fromSeq int64) ([]changeEvent,
 	return out, err
 }
 
+// auditedAnywhere says whether any retained change event carries id: an older audited .pending is
+// evidence (4.3 step 5), not a file to delete.
+func (e *engine[D]) auditedAnywhere(id string) bool {
+	found := false
+	_ = e.c.Log.EachEvent("", func(ev audit.Event, _ string) bool {
+		found = e.changeID(ev) == id
+		return !found
+	})
+	return found
+}
+
 func (e *engine[D]) anyChange() (bool, error) {
 	found := false
 	err := e.c.Log.EachEvent("", func(ev audit.Event, _ string) bool {
@@ -333,7 +357,12 @@ func (e *engine[D]) fail(code Code, doc any, format string, a ...any) *StartErro
 func keyErr(err error, what string) *StartError {
 	switch {
 	case errors.Is(err, statekey.ErrWrongKey):
-		return &StartError{Code: CodeWrongKey, Msg: fmt.Sprintf("%s does not decrypt: %v (if a rekey was interrupted, start with the old key and run rekey again)", what, err)}
+		var kid *statekey.KeyIDError
+		if errors.As(err, &kid) {
+			return &StartError{Code: CodeWrongKey, FileKID: kid.File, LoadedKID: kid.Loaded,
+				Msg: fmt.Sprintf("%s needs state key %s, but the loaded key is %s (after an interrupted rekey the files may need different keys: load the key each file names, then run rekey again)", what, kid.File, kid.Loaded)}
+		}
+		return &StartError{Code: CodeWrongKey, Msg: fmt.Sprintf("%s does not decrypt with the loaded key although it names it: the file was altered or damaged", what)}
 	case errors.Is(err, statekey.ErrNotEncrypted), errors.Is(err, statekey.ErrUnsupported):
 		return &StartError{Code: CodeCorrupt, Msg: fmt.Sprintf("%s is not readable: %v", what, err)}
 	}
@@ -446,7 +475,7 @@ func (e *engine[D]) start() *StartError {
 			if err := os.Remove(e.path(".pending")); err != nil {
 				return e.fail(CodeFailed, nil, "%s: %v", what, err)
 			}
-		case !ids[pend.meta().Change]:
+		case !ids[pend.meta().Change] && !e.auditedAnywhere(pend.meta().Change):
 			// never audited, never answered
 			if err := os.Remove(e.path(".pending")); err != nil {
 				return e.fail(CodeFailed, nil, "%s: %v", what, err)
@@ -536,6 +565,9 @@ func (e *engine[D]) commit(ev audit.Event, fn func(D) error, prep func(cur, next
 	if e.failed != nil {
 		return 0, e.failed
 	}
+	if !e.c.Events[ev.Event] {
+		return 0, fmt.Errorf("%q is not a change event of %s", ev.Event, e.c.Base)
+	}
 	e.mu.RLock()
 	cur := e.cur
 	e.mu.RUnlock()
@@ -568,6 +600,11 @@ func (e *engine[D]) commit(ev audit.Event, fn func(D) error, prep func(cur, next
 	// 2. the audit event, with RecordSync; a failure changes nothing
 	ev.Detail = append(slices.Clone(ev.Detail), e.c.Marker+nm.Change)
 	seq, month, err := e.c.Log.RecordSyncMonth(ev)
+	if errors.Is(err, audit.ErrNotDurable) {
+		// the line is in the log and has its seq, so .pending stays: the next start finishes the change
+		e.failed = fmt.Errorf("%w: %v", ErrStoreFailed, err)
+		return seq, &auditError{err}
+	}
 	if err != nil {
 		os.Remove(e.path(".pending"))
 		return 0, &auditError{err}
@@ -613,7 +650,7 @@ func (e *engine[D]) commit(ev audit.Event, fn func(D) error, prep func(cur, next
 
 // counter writes the state again without a change: the change id and audit seq stay. ev, when
 // not nil, is appended first with RecordSync (8.6).
-func (e *engine[D]) counter(ev *audit.Event, fn func(D) error) error {
+func (e *engine[D]) counter(ev *audit.Event, fn func(D) error, check func(cur, next D) error) error {
 	if e.failed != nil {
 		return e.failed
 	}
@@ -625,6 +662,11 @@ func (e *engine[D]) counter(ev *audit.Event, fn func(D) error) error {
 		return err
 	}
 	*next.meta() = *cur.meta() // a counter never moves the change or the audit position
+	if check != nil {
+		if err := check(cur, next); err != nil {
+			return err
+		}
+	}
 	if ev != nil {
 		if _, _, err := e.c.Log.RecordSyncMonth(*ev); err != nil {
 			return &auditError{err}

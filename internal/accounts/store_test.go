@@ -94,7 +94,7 @@ func TestKeyHandling(t *testing.T) {
 		if startCode(t, err) != CodeWrongKey {
 			t.Fatalf("err = %v", err)
 		}
-		if !strings.Contains(err.Error(), "encrypted under key "+e.key.KID()) {
+		if !strings.Contains(err.Error(), "needs state key "+e.key.KID()) || !strings.Contains(err.Error(), "loaded key is "+other.KID()) {
 			t.Fatalf("the message should name the key ids: %v", err)
 		}
 	})

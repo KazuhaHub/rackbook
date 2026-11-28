@@ -598,7 +598,7 @@ func TestDiscardStoreAfterALostKey(t *testing.T) {
 
 	off, out := e.offline()
 	var asked []string
-	rep, err := DiscardStore(off, func(names []string) (bool, error) { asked = names; return true, nil })
+	rep, err := DiscardStore(off, func(names []string) (bool, error) { asked = names; return true, nil }, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -652,7 +652,7 @@ func TestDiscardStoreRefusals(t *testing.T) {
 		e.restart()
 		off, _ := e.offline()
 		before := readFile(t, e.accountsPath("accounts.enc"))
-		if _, err := DiscardStore(off, nil); err == nil || !strings.Contains(err.Error(), "nothing to discard") {
+		if _, err := DiscardStore(off, nil, true); err == nil || !strings.Contains(err.Error(), "nothing to discard") {
 			t.Fatalf("err = %v", err)
 		}
 		if !bytes.Equal(before, readFile(t, e.accountsPath("accounts.enc"))) {
@@ -668,7 +668,7 @@ func TestDiscardStoreRefusals(t *testing.T) {
 		os.WriteFile(e.accountsPath("accounts.enc"), backup, 0o600)
 		e.restart()
 		off, _ := e.offline()
-		if _, err := DiscardStore(off, nil); err == nil || !strings.Contains(err.Error(), "another problem") {
+		if _, err := DiscardStore(off, nil, true); err == nil || !strings.Contains(err.Error(), "another problem") {
 			t.Fatalf("err = %v", err)
 		}
 	})
@@ -678,7 +678,7 @@ func TestDiscardStoreRefusals(t *testing.T) {
 		e.restart()
 		before := readFile(t, e.accountsPath("accounts.enc"))
 		off, _ := e.offline()
-		if _, err := DiscardStore(off, func([]string) (bool, error) { return false, nil }); err == nil {
+		if _, err := DiscardStore(off, func([]string) (bool, error) { return false, nil }, true); err == nil {
 			t.Fatal("not confirmed must be an error")
 		}
 		if !bytes.Equal(before, readFile(t, e.accountsPath("accounts.enc"))) || len(e.eventsNamed("account_store_problem")) != 0 {
@@ -701,7 +701,7 @@ func TestDiscardStoreCrashCanBeRerun(t *testing.T) {
 				}
 				return nil
 			}
-			if _, err := DiscardStore(off, nil); !errors.Is(err, errCrash) {
+			if _, err := DiscardStore(off, nil, true); !errors.Is(err, errCrash) {
 				t.Fatalf("err = %v", err)
 			}
 			e.restart()
@@ -712,7 +712,7 @@ func TestDiscardStoreCrashCanBeRerun(t *testing.T) {
 				}
 			}
 			off, _ = e.offline()
-			if _, err := DiscardStore(off, nil); err != nil {
+			if _, err := DiscardStore(off, nil, true); err != nil {
 				t.Fatalf("rerun: %v", err)
 			}
 			e.restart()
@@ -743,7 +743,10 @@ func TestListShowsStateAndNeverSecrets(t *testing.T) {
 		a := st.Accounts["alice"]
 		a.ConsecutiveFailures = 4
 		a.Locks = []Lock{{Scope: "account", Until: e.clk.Now().Add(time.Hour)}}
-		a.PendingRevocations = Revocations{Tokens: []string{"ci"}, Grants: []string{"g9"}}
+		return nil
+	})
+	s.Change(audit.Event{Event: "sessions_ended", Identity: "local:alice"}, func(st *State) error {
+		st.Accounts["alice"].PendingRevocations = Revocations{Tokens: []string{"ci"}, Grants: []string{"g9"}}
 		return nil
 	})
 	sec, _ := e.openSecrets()

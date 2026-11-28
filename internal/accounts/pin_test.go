@@ -114,11 +114,12 @@ func TestPinWhenTheStoresCannotBeRead(t *testing.T) {
 	if p := NewPin(e.dir, e.key); p.Month() != "2026-09" {
 		t.Fatalf("pin = %q", p.Month())
 	}
-	if p := NewPin(e.dir, mustNewKey(t)); p.Month() != unknownMonth {
-		t.Fatalf("wrong key: pin = %q, want everything held", p.Month())
+	// unreadable: the oldest month that holds a change event of the document, never later than the real one
+	if p := NewPin(e.dir, mustNewKey(t)); p.Month() != "2026-09" {
+		t.Fatalf("wrong key: pin = %q, want the oldest change event's month", p.Month())
 	}
-	if p := NewPin(e.dir, nil); p.Month() != unknownMonth {
-		t.Fatalf("no key: pin = %q, want everything held", p.Month())
+	if p := NewPin(e.dir, nil); p.Month() != "2026-09" {
+		t.Fatalf("no key (as in serve): pin = %q, want the oldest change event's month", p.Month())
 	}
 	if p := NewPin(t.TempDir(), nil); p.Month() != "" {
 		t.Fatalf("no stores: pin = %q", p.Month())
@@ -146,5 +147,53 @@ func TestPinIsTheOlderOfBothStores(t *testing.T) {
 	e.mustInvite(e.mustOpen(), "alice")
 	if p := NewPin(e.dir, e.key); p.Month() != "2026-09" {
 		t.Fatalf("pin = %q, want the secrets store's older month", p.Month())
+	}
+}
+
+func TestPinForAMissingStoreFileIsTheOldestChangeEvent(t *testing.T) {
+	e := newEnv(t)
+	e.clk.Set(time.Date(2026, 9, 5, 10, 0, 0, 0, time.UTC))
+	e.mustInvite(e.mustOpen(), "alice")
+	e.clk.Set(time.Date(2026, 10, 5, 10, 0, 0, 0, time.UTC))
+	e.mustInvite(e.mustOpen(), "bob")
+	e.log.Close()
+	os.Remove(e.accountsPath("accounts.enc"))
+	if p := NewPin(e.dir, e.key); p.Month() != "2026-09" {
+		t.Fatalf("missing store file: pin = %q", p.Month())
+	}
+	// an event that merely has a change: detail is no change event
+	e.log.Close()
+	dir := t.TempDir()
+	l, _ := audit.Open(filepath.Join(dir, "audit"), audit.Options{Now: e.clk.Now})
+	l.Record(audit.Event{Event: "login", Detail: []string{"change:abc"}, Time: time.Date(2026, 1, 5, 0, 0, 0, 0, time.UTC)})
+	l.Close()
+	os.MkdirAll(filepath.Join(dir, "accounts"), 0o700)
+	os.WriteFile(filepath.Join(dir, "accounts", "accounts.enc"), []byte("{}"), 0o600)
+	if p := NewPin(dir, nil); p.Month() != "" {
+		t.Fatalf("a login with a change: detail pinned %q", p.Month())
+	}
+}
+
+func TestAHeldRetentionMakesBothStoresWriteTheirOwnCheckpoint(t *testing.T) {
+	e := newEnv(t)
+	e.clk.Set(time.Date(2026, 9, 5, 10, 0, 0, 0, time.UTC))
+	e.mustInvite(e.mustOpen(), "alice")
+	sec, _ := e.openSecrets()
+	mustApply(t, sec, Update{Set: map[string]string{SecretCaptcha: "x"}})
+	e.clk.Set(time.Date(2026, 11, 22, 10, 0, 0, 0, time.UTC))
+	e.log.Record(audit.Event{Event: "login", Identity: "x"})
+	e.retMo = 1
+	e.restart() // retention is held back by the pin before either store is open
+	s := e.mustOpen()
+	sec, err := e.openSecrets()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cps := e.eventsNamed("account_store_checkpoint")
+	if len(cps) != 2 {
+		t.Fatalf("%d checkpoints, want one for each store: %+v", len(cps), cps)
+	}
+	if s.Snapshot().AuditMonth != "2026-11" || sec.eng.snapshot().AuditMonth != "2026-11" {
+		t.Fatal("a store did not move its pin")
 	}
 }

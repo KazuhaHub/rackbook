@@ -77,12 +77,12 @@ func OpenSecrets(o Options) (*Secrets, error) {
 		return nil, se
 	}
 	if o.Pin != nil {
-		o.Pin.register(func() {
+		o.Pin.register(whoSecrets, func() {
 			if err := s.Checkpoint(); err != nil {
 				s.eng.c.Logger.Error("secrets store: the checkpoint failed; retention stays held back", "err", err)
 			}
 		})
-		if o.Pin.takeHeld() {
+		if o.Pin.takeHeld(whoSecrets) {
 			if err := s.Checkpoint(); err != nil {
 				return nil, fmt.Errorf("secrets store: checkpoint: %w", err)
 			}
@@ -100,7 +100,7 @@ func newSecrets(o Options) (*Secrets, error) {
 	}
 	s := &Secrets{o: o}
 	s.eng = newEngine(engineConfig[*SecretsState]{
-		Dir: o.StateDir, Base: secretsFile, Purpose: statekey.PurposeSecrets, Marker: "secrets_change:",
+		Dir: o.StateDir, Base: secretsFile, Purpose: statekey.PurposeSecrets, Marker: secretsMarker, Events: secretsChangeEvents,
 		Key: o.Key, Log: o.Log, Now: o.Now, Logger: o.Logger, Hook: o.hook,
 		New: newSecretsState,
 		OnSet: func(m Meta) {

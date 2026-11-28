@@ -3,6 +3,7 @@ package accounts
 import (
 	"errors"
 	"fmt"
+	"github.com/kazuhahub/rackbook/internal/audit"
 	"os"
 	"path/filepath"
 	"slices"
@@ -68,6 +69,10 @@ func Rekey(o Offline, newKey *statekey.Key) (*RekeyReport, error) {
 	}
 	ev := o.event("account_store_rekeyed", "", "change:"+nextA.Change, "secrets_change:"+nextS.Change, "from_kid:"+o.Key.KID(), "to_kid:"+newKey.KID())
 	seq, month, err := o.Log.RecordSyncMonth(ev)
+	if errors.Is(err, audit.ErrNotDurable) {
+		// the event has its seq: the .pending files stay, and a start with the old key finishes them
+		return nil, fmt.Errorf("the rekey event was written but not confirmed on disk; run rekey again with the old key (its start recovers the pending change): %w", err)
+	}
 	if err != nil {
 		os.Remove(s.eng.path(".pending"))
 		os.Remove(sec.eng.path(".pending"))
@@ -154,7 +159,10 @@ type DiscardReport struct {
 // (never deleted), usernames is MACed again under the loaded key after the operator confirmed the list, and
 // new empty stores are written, recorded as account_store_problem with code discarded. Everyone is invited
 // again under new usernames, and the provider secrets are entered again in the console.
-func DiscardStore(o Offline, confirm func(names []string) (bool, error)) (*DiscardReport, error) {
+//
+// The loaded key is by definition not the store's key here, so the command shows both key ids and, when
+// the store's id is known, refuses unless forceWrongKey says the store's key is really lost.
+func DiscardStore(o Offline, confirm func(names []string) (bool, error), forceWrongKey bool) (*DiscardReport, error) {
 	if err := o.check(); err != nil {
 		return nil, err
 	}
@@ -176,16 +184,35 @@ func DiscardStore(o Offline, confirm func(names []string) (bool, error)) (*Disca
 		}
 		return false, fmt.Errorf("discard-store is for a lost key; this is another problem: %w", e)
 	}
-	discAcc, err := lost(s.eng.start())
+	accSE, secSE := s.eng.start(), sec.eng.start()
+	discAcc, err := lost(accSE)
 	if err != nil {
 		return nil, err
 	}
-	discSec, err := lost(sec.eng.start())
+	discSec, err := lost(secSE)
 	if err != nil {
 		return nil, err
 	}
 	if !discAcc && !discSec {
 		return nil, errors.New("the stores open with this key: there is nothing to discard (use accept-restore for a gap, rekey to change the key)")
+	}
+	o.printf("Key tried (from RACKBOOK_STATE_KEY or --state-key-file): %s\n", o.Key.KID())
+	var known []string
+	for _, f := range []struct {
+		name string
+		se   *StartError
+	}{{accountsFile, accSE}, {secretsFile, secSE}} {
+		switch {
+		case f.se == nil:
+		case f.se.FileKID != "":
+			o.printf("  %s was encrypted under key %s\n", f.name, f.se.FileKID)
+			known = append(known, f.name+" needs "+f.se.FileKID)
+		default:
+			o.printf("  %s: %s\n", f.name, f.se.Msg)
+		}
+	}
+	if len(known) > 0 && !forceWrongKey {
+		return nil, fmt.Errorf("the loaded key is not the one the store was encrypted under (%s). If that key is really lost, run again with --key-is-lost; if you only loaded the wrong key, load the right one and use the store as it is", strings.Join(known, ", "))
 	}
 
 	// the usernames file is MACed under the lost key: its list is shown and confirmed, not verified

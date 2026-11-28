@@ -1,6 +1,7 @@
 package accounts
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -57,9 +58,13 @@ func newStore(o Options) (*Store, error) {
 	if err := EnsureDir(dir); err != nil {
 		return nil, err
 	}
+	// a half-written grant file of accept-restore (a .tmp, a symlink included) goes at start
+	if err := os.Remove(filepath.Join(o.StateDir, "oauth-grants.json.tmp")); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return nil, err
+	}
 	s := &Store{o: o, dir: dir}
 	s.eng = newEngine(engineConfig[*State]{
-		Dir: dir, Base: accountsFile, Purpose: statekey.PurposeAccounts, Marker: "change:",
+		Dir: dir, Base: accountsFile, Purpose: statekey.PurposeAccounts, Marker: accountsMarker, Events: accountChangeEvents,
 		Key: o.Key, Log: o.Log, Now: o.Now, Logger: o.Logger, Hook: o.hook,
 		New: func() *State { return newState() },
 		OnSet: func(m Meta) {
@@ -85,12 +90,12 @@ func Open(o Options) (*Store, error) {
 		return nil, err
 	}
 	if o.Pin != nil {
-		o.Pin.register(func() {
+		o.Pin.register(whoAccounts, func() {
 			if err := s.Checkpoint(); err != nil {
 				s.eng.c.Logger.Error("account store: the checkpoint failed; retention stays held back", "err", err)
 			}
 		})
-		if o.Pin.takeHeld() {
+		if o.Pin.takeHeld(whoAccounts) {
 			if err := s.Checkpoint(); err != nil {
 				return nil, fmt.Errorf("account store: checkpoint: %w", err)
 			}
@@ -196,7 +201,7 @@ func (s *Store) Counter(ev *audit.Event, fn func(*State) error) error {
 	if err := s.checkpointIfNewMonth(); err != nil {
 		return err
 	}
-	return s.eng.counter(ev, fn)
+	return s.eng.counter(ev, fn, counterFieldsOnly(s.eng))
 }
 
 func (s *Store) checkpointIfNewMonth() error {
@@ -261,5 +266,42 @@ func (s *Store) UseTOTP(username, code string, now time.Time, ev *audit.Event) e
 	return s.eng.counter(ev, func(st *State) error {
 		st.Accounts[username].TOTP.LastStep = step
 		return nil
-	})
+	}, nil)
+}
+
+// ErrNotCounterOnly is returned by Counter when its callback changed anything but counters.
+var ErrNotCounterOnly = errors.New("a counter write may change only counter fields; use Change, which is audited")
+
+// counterFieldsOnly is the check of Counter: the new state may differ from the committed one only in the
+// counters of 4.2 (failure counts and their windows, locks, good buckets, last sign-in and last
+// second-factor failure, TOTP last_step) and in the restriction states that the failure count drives
+// (active, restricted, passkey_only). Everything else (credentials, accounts, pending links, usernames) needs a
+// Change, which is audited first.
+func counterFieldsOnly(e *engine[*State]) func(cur, next *State) error {
+	return func(cur, next *State) error {
+		a, b := maskCounters(e.clone(cur)), maskCounters(e.clone(next))
+		ja, err1 := json.Marshal(a)
+		jb, err2 := json.Marshal(b)
+		if err1 != nil || err2 != nil || string(ja) != string(jb) {
+			return ErrNotCounterOnly
+		}
+		return nil
+	}
+}
+
+func maskCounters(s *State) *State {
+	s.Meta = Meta{}
+	for _, a := range s.Accounts {
+		a.ConsecutiveFailures, a.TOTPFailures, a.PasskeyPathFailures, a.ReauthFailures = 0, 0, 0, 0
+		a.TOTPWindowStart, a.PasskeyWindowStart = time.Time{}, time.Time{}
+		a.Locks, a.GoodBuckets, a.LastLogin, a.LastSecondFactorFailure = nil, nil, nil, nil
+		if a.TOTP != nil {
+			a.TOTP.LastStep = 0
+		}
+		switch a.State {
+		case StateActive, StateRestricted, StatePasskeyOnly:
+			a.State = StateActive
+		}
+	}
+	return s
 }

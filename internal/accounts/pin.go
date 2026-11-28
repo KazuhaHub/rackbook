@@ -3,51 +3,78 @@ package accounts
 import (
 	"encoding/json"
 	"path/filepath"
+	"strings"
 	"sync"
+
+	"github.com/kazuhahub/rackbook/internal/audit"
 
 	"github.com/kazuhahub/rackbook/internal/statekey"
 )
-
-// unknownMonth holds every month: a pin that could not be read must delete nothing.
-const unknownMonth = "0000-00"
 
 // Pin is the retention pin of 4.6. It implements audit.RetentionPin: the audit log never deletes
 // the month of the last change of the account store or of secrets.enc, nor a later one. It is
 // created before the audit log is opened (retention runs at Open) from the files themselves, and
 // the stores keep it current.
+//
+// Where the month cannot be read, the pin is conservative instead of unknown: a store file that is
+// missing while the log has change events for it, or that exists but cannot be decrypted (no key yet,
+// as in `rackbook serve` for now; a wrong key), pins the oldest month that holds a change event of
+// that document. The real audit month is never older than that, so nothing the store needs is deleted.
+// A document with no change event in the log pins nothing.
 type Pin struct {
 	mu       sync.Mutex
 	accounts string
 	secrets  string
-	unkAcc   bool // a store file that could not be read: everything is held until it is open
-	unkSec   bool
-	held     bool
-	onHeld   []func()
+	held     [2]bool // retention held a month back before that store was open: it writes its checkpoint when it opens
+	onHeld   [2]func()
 }
 
-// NewPin reads the audit month of the stores under stateDir. Without a key a store that exists
-// cannot be read, so everything is held.
+const (
+	whoAccounts = 0
+	whoSecrets  = 1
+)
+
+// NewPin reads the audit month of the stores under stateDir (and, where it cannot, the oldest change
+// event of the audit log under stateDir/audit). key may be nil.
 func NewPin(stateDir string, key *statekey.Key) *Pin {
 	p := &Pin{}
+	auditDir := filepath.Join(stateDir, "audit")
 	for _, f := range []struct {
 		path    string
 		purpose statekey.Purpose
 		set     *string
-		unk     *bool
+		events  map[string]bool
+		marker  string
 	}{
-		{filepath.Join(stateDir, "accounts", "accounts.enc"), statekey.PurposeAccounts, &p.accounts, &p.unkAcc},
-		{filepath.Join(stateDir, "secrets.enc"), statekey.PurposeSecrets, &p.secrets, &p.unkSec},
+		{filepath.Join(stateDir, "accounts", "accounts.enc"), statekey.PurposeAccounts, &p.accounts, accountChangeEvents, accountsMarker},
+		{filepath.Join(stateDir, "secrets.enc"), statekey.PurposeSecrets, &p.secrets, secretsChangeEvents, secretsMarker},
 	} {
 		m, exists, ok := peekMonth(f.path, key, f.purpose)
-		switch {
-		case !exists:
-		case !ok:
-			*f.unk = true
-		default:
+		if exists && ok {
 			*f.set = m
+			continue
 		}
+		// missing or unreadable: the log says how far back the document's changes go
+		*f.set = oldestChangeMonth(auditDir, f.events, f.marker)
 	}
 	return p
+}
+
+// oldestChangeMonth is the month of the first retained change event of a document, "" for none.
+func oldestChangeMonth(auditDir string, events map[string]bool, marker string) string {
+	first := ""
+	_ = audit.EachEventInDir(auditDir, "", func(ev audit.Event, month string) bool {
+		if events[ev.Event] {
+			for _, d := range ev.Detail {
+				if strings.HasPrefix(d, marker) {
+					first = month
+					return false
+				}
+			}
+		}
+		return true
+	})
+	return first
 }
 
 func peekMonth(path string, key *statekey.Key, purpose statekey.Purpose) (month string, exists, ok bool) {
@@ -76,9 +103,6 @@ func peekMonth(path string, key *statekey.Key, purpose statekey.Purpose) (month 
 func (p *Pin) Month() string {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.unkAcc || p.unkSec {
-		return unknownMonth
-	}
 	switch {
 	case p.accounts == "":
 		return p.secrets
@@ -88,13 +112,17 @@ func (p *Pin) Month() string {
 	return min(p.accounts, p.secrets)
 }
 
-// Held implements audit.RetentionPin: the stores write a checkpoint, which moves the pin on.
-// Before the stores exist (retention also runs when the log opens) it is remembered for them.
+// Held implements audit.RetentionPin: each store writes its own checkpoint, which moves its pin on. A
+// store that is not open yet remembers that retention held a month back, and writes its checkpoint when it opens.
 func (p *Pin) Held() {
 	p.mu.Lock()
-	fns := append([]func(){}, p.onHeld...)
-	if len(fns) == 0 {
-		p.held = true
+	var fns []func()
+	for i := range p.onHeld {
+		if p.onHeld[i] != nil {
+			fns = append(fns, p.onHeld[i])
+		} else {
+			p.held[i] = true
+		}
 	}
 	p.mu.Unlock()
 	for _, f := range fns {
@@ -102,30 +130,20 @@ func (p *Pin) Held() {
 	}
 }
 
-// takeHeld says whether retention held a month back before the stores were open.
-func (p *Pin) takeHeld() bool {
+// takeHeld says whether retention held a month back before store who was open.
+func (p *Pin) takeHeld(who int) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	h := p.held
-	p.held = false
+	h := p.held[who]
+	p.held[who] = false
 	return h
 }
 
-func (p *Pin) register(f func()) {
+func (p *Pin) register(who int, f func()) {
 	p.mu.Lock()
-	p.onHeld = append(p.onHeld, f)
+	p.onHeld[who] = f
 	p.mu.Unlock()
 }
 
-// set updates the month of one store once it is open (and after every commit); the pin is
-// known from then on.
-func (p *Pin) setAccounts(m Meta) {
-	p.mu.Lock()
-	p.accounts, p.unkAcc = m.AuditMonth, false
-	p.mu.Unlock()
-}
-func (p *Pin) setSecrets(m Meta) {
-	p.mu.Lock()
-	p.secrets, p.unkSec = m.AuditMonth, false
-	p.mu.Unlock()
-}
+func (p *Pin) setAccounts(m Meta) { p.mu.Lock(); p.accounts = m.AuditMonth; p.mu.Unlock() }
+func (p *Pin) setSecrets(m Meta)  { p.mu.Lock(); p.secrets = m.AuditMonth; p.mu.Unlock() }

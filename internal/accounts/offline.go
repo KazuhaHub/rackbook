@@ -26,9 +26,13 @@ type Offline struct {
 	Log      *audit.Log
 	// Operator is the text of operator:<text> in the events these commands write (method cli).
 	Operator string
-	Out      io.Writer
-	Now      func() time.Time
-	Logger   *slog.Logger
+	// TokenNames are the names of every API token of the data repository (.rackbook/tokens.yml), when the caller could
+	// list them; accept-restore writes them as pending revocations when the audit log cannot be trusted. Names only.
+	TokenNames   []string
+	TokensListed bool
+	Out          io.Writer
+	Now          func() time.Time
+	Logger       *slog.Logger
 
 	hook func(step string) error // tests: crash points of rekey and discard
 }
@@ -94,6 +98,8 @@ type RestoreReport struct {
 	Secrets     string
 	ResetNames  []string
 	ClearedKeys []string
+	// GrantsRevoked is how many OAuth grants were removed from oauth-grants.json when the log could not be trusted.
+	GrantsRevoked int
 }
 
 // AcceptRestore resolves what the start sequence refuses with a gap, a rolled-back or truncated audit
@@ -149,8 +155,19 @@ func AcceptRestore(o Offline, ro RestoreOptions) (*RestoreReport, error) {
 
 	var accPlan *accountsPlan
 	if accErr != nil {
-		accPlan = planAccounts(accErr, rep.Accounts)
-		o.printf("%s\n", accPlan.describe(accErr))
+		events := gapEvents(accErr)
+		if rep.Accounts != "gap" {
+			// the log is not trusted, but what is still readable after the store's seq is not ignored either
+			chs, err := s.eng.changesFrom("", accErr.Doc.(*State).AuditSeq+1)
+			if err != nil {
+				return nil, fmt.Errorf("audit log: %w", err)
+			}
+			for _, c := range chs {
+				events = append(events, c.ev)
+			}
+		}
+		accPlan = planAccounts(accErr, rep.Accounts, events)
+		o.printf("%s\n", accPlan.describe(accErr, &o))
 	}
 	var secNames []string
 	if secErr != nil {
@@ -204,29 +221,50 @@ type accountsPlan struct {
 	events []audit.Event
 	seqs   [2]int64
 	named  map[string]bool
+	// global: an earlier global reset or restore lies between the backup and now, so every account is reset.
+	global bool
+	// untrusted: the audit log cannot be relied on (it was rolled back, truncated or pruned, or a global
+	// reset is among the events): every account is reset, every OAuth grant revoked, every API token listed.
+	untrusted bool
 }
 
-func planAccounts(se *StartError, kind string) *accountsPlan {
-	p := &accountsPlan{kind: kind, events: gapEvents(se), named: map[string]bool{}}
+// isGlobalReset says an event reset every account: a restore, or a problem that did.
+func isGlobalReset(ev audit.Event) bool {
+	switch ev.Event {
+	case "account_store_restored":
+		return true
+	case "account_store_problem":
+		return ev.Code == "audit_truncated" || ev.Code == "month_pruned" || ev.Code == "discarded"
+	}
+	return false
+}
+
+// planAccounts reads the plan. events are the change events after the store's own seq: for a gap those the
+// start found, otherwise those still readable in the log, which is not trusted but is not ignored.
+func planAccounts(se *StartError, kind string, events []audit.Event) *accountsPlan {
+	p := &accountsPlan{kind: kind, events: events, named: map[string]bool{}}
 	st := se.Doc.(*State)
-	p.seqs[0] = st.AuditSeq
+	p.seqs = [2]int64{st.AuditSeq, st.AuditSeq}
 	for _, ev := range p.events {
 		p.seqs[1] = ev.Seq
+		if isGlobalReset(ev) {
+			p.global = true
+		}
 		if n := accountOf(ev); n != "" {
 			p.named[n] = true
 		}
 	}
+	p.untrusted = kind != "gap" || p.global
 	return p
 }
 
-func (p *accountsPlan) describe(se *StartError) string {
+func (p *accountsPlan) describe(se *StartError, o *Offline) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s: %s\n", accountsFile, se.Msg)
-	if p.kind != "gap" {
-		b.WriteString("  every account will be put into reset_pending (scope all), every session secret renewed.\n")
-		return b.String()
+	fmt.Fprintf(&b, "  change events still readable after the store's last change (seq %d), re-applied in this order:\n", p.seqs[0])
+	if len(p.events) == 0 {
+		b.WriteString("    none\n")
 	}
-	fmt.Fprintf(&b, "  change events after the store's last change (seq %d):\n", p.seqs[0])
 	for _, ev := range p.events {
 		fmt.Fprintf(&b, "    seq %d  %s  %s", ev.Seq, ev.Time.Format(time.RFC3339), ev.Event)
 		if ev.Target != "" {
@@ -236,6 +274,21 @@ func (p *accountsPlan) describe(se *StartError) string {
 			fmt.Fprintf(&b, "  code=%s", ev.Code)
 		}
 		b.WriteString("\n")
+	}
+	if p.untrusted {
+		switch {
+		case p.kind != "gap":
+			b.WriteString("  the audit log cannot be trusted: ")
+		default:
+			b.WriteString("  an earlier change reset every account: ")
+		}
+		b.WriteString("every account will be put into reset_pending (scope all) and every session secret renewed;\n")
+		b.WriteString("  every OAuth grant in oauth-grants.json will be revoked;\n")
+		if o.TokensListed {
+			fmt.Fprintf(&b, "  every API token (%d: %s) will be written as a pending revocation of every account.\n", len(o.TokenNames), strings.Join(o.TokenNames, ", "))
+		} else {
+			b.WriteString("  API tokens could not be listed (pass --repo, a clone of the data repository): revoke every API token by hand.\n")
+		}
 	}
 	return b.String()
 }
@@ -283,6 +336,7 @@ func resetAccount(a *Account, by string) {
 		return
 	case StateDisabled:
 		// it cannot sign in; its credentials go, and enabling it later needs a reset anyway
+		a.Pending = nil
 	default:
 		a.State = StateResetPending
 		a.Pending = &Pending{Kind: "reset", Scope: ScopeAll, IssuedBy: by}
@@ -343,33 +397,36 @@ func (s *Store) applyRestore(o Offline, se *StartError, p *accountsPlan, rep *Re
 	doc := se.Doc.(*State)
 	grantsDone := map[string]bool{}
 	var unknown []string
+	if p.untrusted {
+		n, err := revokeAllGrantsOffline(o.StateDir)
+		if err != nil {
+			o.printf("COULD NOT revoke the OAuth grants (%v): remove oauth-grants.json by hand before the server starts\n", err)
+		}
+		rep.GrantsRevoked = n
+	}
 	fn := func(st *State) error {
-		switch p.kind {
-		case "gap":
-			for _, ev := range p.events {
-				if name := accountOf(ev); name != "" && st.Accounts[name] == nil {
-					unknown = addUnique(unknown, name)
-				}
-				reapply(st, ev)
-				if a := st.Accounts[accountOf(ev)]; a != nil {
-					a.PendingRevocations.Tokens = addUnique(a.PendingRevocations.Tokens, detailValues(ev, "tokens:")...)
-					for _, g := range detailValues(ev, "grants:") {
-						if done, _ := revokeGrantOffline(o.StateDir, g); done {
-							grantsDone[g] = true
-						} else {
-							a.PendingRevocations.Grants = addUnique(a.PendingRevocations.Grants, g)
-						}
+		for _, ev := range p.events {
+			if name := accountOf(ev); name != "" && st.Accounts[name] == nil {
+				unknown = addUnique(unknown, name)
+			}
+			reapply(st, ev)
+			if a := st.Accounts[accountOf(ev)]; a != nil {
+				a.PendingRevocations.Tokens = addUnique(a.PendingRevocations.Tokens, detailValues(ev, "tokens:")...)
+				for _, g := range detailValues(ev, "grants:") {
+					if done, _ := revokeGrantOffline(o.StateDir, g); done {
+						grantsDone[g] = true
+					} else {
+						a.PendingRevocations.Grants = addUnique(a.PendingRevocations.Grants, g)
 					}
 				}
 			}
-			for name := range p.named {
-				if a := st.Accounts[name]; a != nil {
-					resetAccount(a, "cli")
-				}
-			}
-		default:
-			for _, a := range st.Accounts {
+		}
+		for name, a := range st.Accounts {
+			if p.untrusted || p.named[name] {
 				resetAccount(a, "cli")
+			}
+			if p.untrusted && a.State != StateRemoved {
+				a.PendingRevocations.Tokens = addUnique(a.PendingRevocations.Tokens, o.TokenNames...)
 			}
 		}
 		// every session secret is renewed and every good bucket cleared, named or not
@@ -425,8 +482,14 @@ func (s *Store) applyRestore(o Offline, se *StartError, p *accountsPlan, rep *Re
 	for _, t := range pendingTokens {
 		o.printf("  revocations still to apply: %s\n", t)
 	}
-	if len(grantsDone) > 0 {
-		o.printf("  OAuth grants revoked in oauth-grants.json: %d\n", len(grantsDone))
+	if n := len(grantsDone); n > 0 {
+		o.printf("  OAuth grants revoked in oauth-grants.json: %d\n", n)
+	}
+	if p.untrusted {
+		o.printf("  every OAuth grant was revoked (%d removed)\n", rep.GrantsRevoked)
+		if !o.TokensListed {
+			o.printf("  API tokens were NOT listed: revoke every API token of the data repository by hand\n")
+		}
 	}
 	return nil
 }
@@ -537,4 +600,39 @@ func revokeGrantOffline(stateDir, id string) (bool, error) {
 		return false, err
 	}
 	return true, writeFile(path, out)
+}
+
+// revokeAllGrantsOffline removes every grant from oauth-grants.json (the clients stay), for a log that cannot be
+// trusted. It returns how many were removed. A file it does not understand is an error: it is left alone.
+func revokeAllGrantsOffline(stateDir string) (int, error) {
+	path := filepath.Join(stateDir, "oauth-grants.json")
+	b, err := os.ReadFile(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(b, &top); err != nil {
+		return 0, err
+	}
+	var version int
+	if json.Unmarshal(top["version"], &version) != nil || version != 1 {
+		return 0, errors.New("oauth-grants.json has a version this build does not edit")
+	}
+	var grants map[string]json.RawMessage
+	if err := json.Unmarshal(top["grants"], &grants); err != nil {
+		return 0, err
+	}
+	n := len(grants)
+	if n == 0 {
+		return 0, nil
+	}
+	top["grants"] = json.RawMessage("{}")
+	out, err := json.MarshalIndent(top, "", "  ")
+	if err != nil {
+		return 0, err
+	}
+	return n, writeFile(path, out)
 }

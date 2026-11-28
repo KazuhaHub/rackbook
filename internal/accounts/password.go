@@ -29,11 +29,13 @@ const (
 	argonKeyLen    = 32
 )
 
-// Hard bounds on what a stored hash may ask of the server when it is verified.
+// Hard bounds on what a stored hash may ask of the server when it is verified: the memory of one slot
+// (a hash that asks for more is corrupt, and would let three slots use more than their 192 MiB), and a
+// small number of passes and lanes. A hash beyond them is refused as corrupt, never run.
 const (
-	maxArgonMemoryKiB = 1 << 20
-	maxArgonTime      = 16
-	maxArgonThreads   = 32
+	maxArgonMemoryKiB = argonMemoryKiB
+	maxArgonTime      = 6
+	maxArgonThreads   = 8
 )
 
 type argonParams struct {
@@ -337,10 +339,13 @@ func CheckPassword(pw string, r PasswordRules) error {
 		return fmt.Errorf("password_min_length must be %d to %d", MinPasswordLenDefault, MinPasswordLenBound)
 	}
 	n := norm.NFKC.String(pw)
-	switch l := utf8.RuneCountInString(n); {
-	case l < min:
+	// NFKC can make a short input long (U+FDFA is one character and 18 after folding): the minimum counts
+	// the smaller of the two lengths, the maximum the larger
+	raw, folded := utf8.RuneCountInString(pw), utf8.RuneCountInString(n)
+	switch {
+	case min > raw || min > folded:
 		return &PasswordError{Code: PwTooShort, Min: min}
-	case l > MaxPasswordLen:
+	case raw > MaxPasswordLen || folded > MaxPasswordLen:
 		return &PasswordError{Code: PwTooLong}
 	}
 	f := folder.String(n)

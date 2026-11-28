@@ -72,6 +72,9 @@ func TestMalformedAndHostileHashesNeverVerify(t *testing.T) {
 		"$argon2id$v=19$m=64,t=1,p=0$AAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAA",
 		"$argon2id$v=19$m=999999999,t=1,p=1$AAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAA", // would exhaust memory
 		"$argon2id$v=19$m=64,t=4000000000,p=1$AAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAA",
+		"$argon2id$v=19$m=65537,t=1,p=1$AAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAA", // more than one slot's memory
+		"$argon2id$v=19$m=64,t=7,p=1$AAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAA",    // too many passes
+		"$argon2id$v=19$m=1024,t=1,p=9$AAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAA",  // too many lanes
 		"$argon2id$v=19$m=64,t=1,p=1$A$AAAAAAAAAAAAAAAAAAAAAA",
 		"$argon2id$v=19$m=64,t=1,p=1$AAAAAAAAAAAAAAAA$A",
 		"$argon2id$v=19$m=64,t=1,p=1$!!$!!",
@@ -237,11 +240,14 @@ func TestPasswordRules(t *testing.T) {
 		{"no composition rules: no digit, no capital, no symbol", "just some plain words", rules, ""},
 		{"characters, not bytes", strings.Repeat("é", 12), PasswordRules{}, PwCommon}, // 12 characters, but one unit repeated
 		{"characters, not bytes (varied)", "éàüöçñßøåæœž", PasswordRules{}, ""},
+		{"U+FDFA is one character, not eighteen", "\ufdfa", PasswordRules{}, PwTooShort},
+		{"U+FDFA twelve times is 216 characters once folded", strings.Repeat("\ufdfa", 12), PasswordRules{}, PwTooLong},
+		{"U+FDFA among varied characters counts as one", "\ufdfa" + "abcdefghij", PasswordRules{}, PwTooShort},
 		{"128 characters", strings.Repeat("xk2q", 32), PasswordRules{}, PwCommon}, // long enough, but a repeated unit
 		{"128 varied characters", long(128), PasswordRules{}, ""},
 		{"129 characters", long(129), PasswordRules{}, PwTooLong},
 		{"NFKC: eleven full-width characters are eleven", "ｐａｓｓｗｏｒｄ１２３", PasswordRules{}, PwTooShort},
-		{"NFKC: a ligature unfolds to two characters", "ﬁﬁﬁﬁﬁﬁ", PasswordRules{}, PwCommon}, // 12 characters after folding, one unit repeated
+		{"NFKC: a ligature is one character, not two", "ﬁﬁﬁﬁﬁﬁ", PasswordRules{}, PwTooShort}, // 6 typed, 12 once folded: the smaller counts
 		{"common, any case", "PassWord123456", PasswordRules{}, PwCommon},
 		{"common: a keyboard walk", "1q2w3e4r5t6y", PasswordRules{}, PwCommon},
 		{"common: full-width form folds first", "ｐａｓｓｗｏｒｄ１２３４５６", PasswordRules{}, PwCommon},
@@ -291,5 +297,29 @@ func TestPasswordsAreNotRecordedByTheTestHelpers(t *testing.T) {
 	h, _ := hashPassword("a long unusual passphrase")
 	if strings.Contains(h, "passphrase") || strings.Contains(h, base64.RawStdEncoding.EncodeToString([]byte("passphrase"))) {
 		t.Fatal("the hash shows the password")
+	}
+}
+
+func TestStoredParametersAtTheCapAreAccepted(t *testing.T) {
+	for _, h := range []string{
+		"$argon2id$v=19$m=65536,t=6,p=8$AAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAA",
+		"$argon2id$v=19$m=65536,t=3,p=4$AAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAA",
+	} {
+		if _, err := parsePHC(h); err != nil {
+			t.Errorf("%s: %v", h, err)
+		}
+	}
+}
+
+// piece4SignInBuilt is flipped by the piece that turns local sign-in on (piece 4, design 13). Until then the embedded
+// list is the short stand-in that the design doc and README call out; sign-in must not open with it.
+const piece4SignInBuilt = false
+
+func TestFullCommonPasswordListIsInPlaceBeforeSignIn(t *testing.T) {
+	if !piece4SignInBuilt {
+		t.Skip("TODO piece 4: the embedded list is a short stand-in (design-local-accounts.md, \"As built, piece 2\"); set piece4SignInBuilt when sign-in is enabled, and this test then needs the 100 000 most common passwords (at least 10 000 entries)")
+	}
+	if n := len(common()); n < 10_000 {
+		t.Fatalf("the embedded list of common passwords has %d entries, sign-in needs at least 10 000", n)
 	}
 }
