@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	mrand "math/rand/v2"
 	"net/http"
 	"strconv"
 	"time"
@@ -68,7 +69,6 @@ type facts struct {
 	passwordWrong      bool // a real password check ran and failed
 	codeWrong          bool // the password was right and the code was not
 	viaPasskey         bool // a verified passkey went past the throttle (passkey_path_failures)
-	audited            bool // the refusal was already written, before the answer (sso_only): the aggregate must not write it again
 	proof              bool // a proof for a reset link: the account is reset_pending, its second-factor counter still counts
 	reauth             bool // a failed re-authentication (5.7): reauth_failures count, three end every session
 }
@@ -154,7 +154,7 @@ func (s *Service) signIn(w http.ResponseWriter, r *http.Request) {
 		if in.Code != "" {
 			s.store.ProbeTOTP(name, in.Code, now)
 		}
-		if ssoOnly && !s.ssoEqualize(w, &f) {
+		if ssoOnly && !s.ssoDelay(w, &f) {
 			return
 		}
 		s.answerFailed(w, ssoOnly)
@@ -196,7 +196,7 @@ func (s *Service) signIn(w http.ResponseWriter, r *http.Request) {
 		f.reason = "bad_credentials"
 	}
 	if factor == "" {
-		if ssoOnly && !s.ssoEqualize(w, &f) {
+		if ssoOnly && !s.ssoDelay(w, &f) {
 			return
 		}
 		s.answerFailed(w, ssoOnly)
@@ -209,12 +209,13 @@ func (s *Service) signIn(w http.ResponseWriter, r *http.Request) {
 	if ssoOnly && !s.isAdmin(name) {
 		// the same writes an administrator's success makes, so that how long this takes does not say who is one
 		f.reason = "sso_required"
-		if !s.ssoEqualize(w, &f) {
+		if !s.ssoDelay(w, &f) {
 			return
 		}
 		res.release()
 		finished = true
 		reply(w, http.StatusForbidden, map[string]string{"error": "sso_required", "message": msgSSORequired})
+		s.afterFailure(f, set, tk, nil) // it counts as a guess in the memory tables and in the aggregate, like any other
 		return
 	}
 	// 6. success: the audit line is written before the session exists (fail closed)
@@ -226,6 +227,7 @@ func (s *Service) signIn(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ev := audit.Event{Event: "login", Identity: "local:" + name, Name: acct.Name, Method: "local", Role: role.String(), Addr: addr, Detail: []string{"factor:" + factor}}
+	wstart := time.Now()
 	if err := s.store.Counter(&ev, func(st *accounts.State) error {
 		a := st.Accounts[name]
 		// what was decided at the reservation is decided again here, on the committed state of this very write: an account that
@@ -247,6 +249,7 @@ func (s *Service) signIn(w http.ResponseWriter, r *http.Request) {
 		s.counterError(w, f, err)
 		return
 	}
+	s.noteWrite(time.Since(wstart))
 	s.tables.Refund(tk)
 	res.release()
 	finished = true
@@ -339,21 +342,36 @@ func (s *Service) deadEnd(ctx context.Context, bucket string, class accounts.Cla
 	return nil
 }
 
-// ssoEqualize is the write every sso_only outcome makes before its answer (5.6): one synced audit line and one write of the
-// store, which is what an administrator's success does too. Without it the work before the answer would tell an administrator,
-// whose success writes, from a name that is not one or a password that is wrong, which does not. It returns false when the write
-// failed (the answer is then the uniform 503).
-func (s *Service) ssoEqualize(w http.ResponseWriter, f *facts) bool {
-	ev := audit.Event{Event: "login_refused", Method: "local", Reason: f.reason, Addr: f.addr}
-	if f.acct != nil {
-		ev.Identity = "local:" + f.name
-	}
-	if err := s.store.Counter(&ev, func(*accounts.State) error { return nil }); err != nil {
-		s.counterError(w, *f, err)
+// ssoDelay is what makes an sso_only refusal take as long as an administrator's success (5.6): a success writes the store and an audit
+// line before its answer, a refusal does not, and the difference would tell an administrator from a name that is not one. The
+// refusal waits instead, for a time drawn around the running estimate of that write. Nothing is written for it (the refusals are
+// aggregated per network and minute, as every other refusal is), and no lock is held while it sleeps. The sleepers are bounded for the
+// whole server: past the bound the answer is the 503 busy of the hashing slots, which every refusal can give. It returns false when it
+// has answered.
+func (s *Service) ssoDelay(w http.ResponseWriter, f *facts) bool {
+	select {
+	case s.sleepers <- struct{}{}:
+	default:
+		s.busy(w, *f, accounts.ErrBusy)
 		return false
 	}
-	f.audited = true
+	defer func() { <-s.sleepers }()
+	s.sleep(time.Duration(float64(s.writeEstimate()) * (0.75 + 0.5*mrand.Float64())))
 	return true
+}
+
+// writeEstimate is the running estimate of the time an administrator's sign-in spends writing before its answer.
+func (s *Service) writeEstimate() time.Duration {
+	s.estMu.Lock()
+	defer s.estMu.Unlock()
+	return s.writeEst
+}
+
+// noteWrite folds the time of a real success's write into the estimate (an exponential average: a slow disk is followed, one outlier is not).
+func (s *Service) noteWrite(d time.Duration) {
+	s.estMu.Lock()
+	s.writeEst = (4*s.writeEst + d) / 5
+	s.estMu.Unlock()
 }
 
 // answerFailed is the one answer of a failed sign-in; under sso_only it is the sso_required answer instead.
@@ -442,7 +460,7 @@ func (s *Service) settleFailure(f facts, set config.SignInSettings, tk ticket, r
 	if f.acct != nil {
 		ident = "local:" + f.name
 	}
-	full := s.refused.Note(now, f.bucket, f.addr, ident, f.reason) && !f.audited
+	full := s.refused.Note(now, f.bucket, f.addr, ident, f.reason)
 	if f.acct == nil {
 		if full {
 			s.o.Audit.Record(s.refusalEvent(f))

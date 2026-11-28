@@ -152,6 +152,31 @@ func (s *Store) IsRevoked(kind, id string) bool {
 	return ok
 }
 
+// CredentialsValidAfter is the time before which the API tokens and OAuth grants of the local account are refused (zero: none).
+// It is a map lookup under the read lock, cheap enough for every request.
+func (s *Store) CredentialsValidAfter(username string) time.Time {
+	s.eng.mu.RLock()
+	defer s.eng.mu.RUnlock()
+	if a := s.eng.cur.Accounts[username]; a != nil {
+		return a.CredentialsValidAfter
+	}
+	return time.Time{}
+}
+
+// Refuses says whether a credential (an API token, an OAuth grant) made by or for the local account at created is refused by its
+// CredentialsValidAfter. Times in tokens.yml have a granularity of a second, so the rule is read at the next whole second: a token made
+// in the same second as the disable, before it, is caught; the account cannot make one after it, being disabled.
+func (s *Store) Refuses(username string, created time.Time) bool {
+	va := s.CredentialsValidAfter(username)
+	if va.IsZero() {
+		return false
+	}
+	if va.Nanosecond() != 0 {
+		va = va.Truncate(time.Second).Add(time.Second)
+	}
+	return created.Before(va)
+}
+
 // RevokedIDs lists the ids of one kind on the revocation list.
 func (s *Store) RevokedIDs(kind string) []string {
 	var out []string

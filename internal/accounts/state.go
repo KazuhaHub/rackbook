@@ -103,6 +103,11 @@ type Account struct {
 
 	Pending            *Pending    `json:"pending,omitempty"`
 	PendingRevocations Revocations `json:"pending_revocations,omitzero"`
+	// CredentialsValidAfter is the standing rule of the revocation (5.11): an API token whose creator is this account, and an OAuth
+	// grant approved by it, made before this time are refused, whatever the revocation list holds. Every disable, remove, reset and
+	// recover sets it in its own change, so a token that was not in the checkout yet when the list was made (a pull request, a
+	// commit waiting on the Git lock) is caught when it appears.
+	CredentialsValidAfter time.Time `json:"credentials_valid_after,omitzero"`
 
 	LastLogin               *Seen    `json:"last_login,omitempty"`
 	LastSecondFactorFailure *Seen    `json:"last_second_factor_failure,omitempty"`

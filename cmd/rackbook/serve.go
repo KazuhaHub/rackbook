@@ -316,10 +316,12 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	}
 	registry := &tokens.Registry{Store: store}
 	// what was revoked for a local account is refused at once, from the store's own list, whatever tokens.yml says yet
-	var revokedGrant func(id string) bool
+	var revokedGrant func(id, subject string, approved time.Time) bool
 	if localStore != nil {
-		registry.Blocked = func(hash string) bool { return localStore.IsRevoked(accounts.KindToken, hash) }
-		revokedGrant = func(id string) bool { return localStore.IsRevoked(accounts.KindGrant, id) }
+		registry.Blocked = func(t tokens.Token) bool { return tokenRevoked(localStore, t) }
+		revokedGrant = func(id, subject string, approved time.Time) bool {
+			return grantRevoked(localStore, id, subject, approved)
+		}
 	}
 	modState := &modules.State{}
 	builtin := cfg.Auth.MCP.BuiltinIssuer.Enabled

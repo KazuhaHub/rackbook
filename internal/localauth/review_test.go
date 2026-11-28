@@ -387,20 +387,6 @@ func TestReauthFailuresAreClearedWhenSessionsEndAndOnFullSignIn(t *testing.T) {
 	}
 }
 
-func TestUnderSSOOnlyANonAdminsRightCredentialsDoTheSameWritesAsAnAdminsSuccess(t *testing.T) {
-	e := newEnv(t, envOpts{sso: true, auth: "  login: {sso_only: true}\n"})
-	e.addAccount("alice")
-	bob := e.addAccount("bob")
-	before := len(e.events("login_refused"))
-	if r := e.login1(e.browser(addrA), bob, goodPassword, e.code(bob)); r.Status != 403 {
-		t.Fatalf("%d", r.Status)
-	}
-	ev := e.events("login_refused")
-	if len(ev) != before+1 || ev[len(ev)-1].Reason != "sso_required" || ev[len(ev)-1].Identity != "local:bob" {
-		t.Fatalf("a refused non-admin leaves a synced audit line like an administrator's sign-in does: %+v", ev)
-	}
-}
-
 func TestProbeTOTPTakesTheWriterAndWritesNothing(t *testing.T) {
 	e := newEnv(t, envOpts{})
 	alice := e.addAccount("alice")
@@ -649,52 +635,136 @@ var _ = http.StatusOK
 
 // ---- round 2
 
-// Under sso_only every outcome of a real attempt, whichever way it fails, makes the same writes before its answer: one synced audit
-// line and one write of the store, which is what an administrator's success makes as well. So the time before the answer does not say who
-// is an administrator, which names exist or whether a password was right.
-func TestUnderSSOOnlyEveryOutcomeMakesTheSameWritesBeforeItsAnswer(t *testing.T) {
+// Under sso_only every refusal waits for about the time an administrator's success spends writing before its answer, and writes
+// nothing itself: the timing class is the same, and no refusal makes a store write or an audit line of its own.
+func TestUnderSSOOnlyEveryRefusalWaitsForTheTimeOfASuccessWrite(t *testing.T) {
 	e := newEnv(t, envOpts{sso: true, auth: "  login: {sso_only: true}\n  throttle: {max: 1000}\n"})
 	alice, bob := e.addAccount("alice"), e.addAccount("bob")
+	est := 40 * time.Millisecond
+	e.svc.estMu.Lock()
+	e.svc.writeEst = est
+	e.svc.estMu.Unlock()
 	stateFile := e.dir + "/accounts/accounts.enc"
 	type seen struct {
 		lines int64
 		wrote bool
+		slept []time.Duration
 	}
-	probe := func(do func(b *browser) resp) seen {
+	probe := func(i int, do func(b *browser) resp) seen {
+		e.resetSleeps()
 		seq0, _ := e.log.Head()
 		st0, _ := os.Stat(stateFile)
-		b := e.browser(fmt.Sprintf("203.0.113.%d", 30+int(seq0%100)))
+		b := e.browser(fmt.Sprintf("203.0.113.%d", 30+i))
 		var s seen
 		b.onAnswer = func() {
 			seq1, _ := e.log.Head()
 			st1, _ := os.Stat(stateFile)
-			s = seen{lines: seq1 - seq0, wrote: !st1.ModTime().Equal(st0.ModTime()) || st1.Size() != st0.Size()}
+			s.lines, s.wrote = seq1-seq0, !st1.ModTime().Equal(st0.ModTime()) || st1.Size() != st0.Size()
 		}
 		do(b)
+		s.slept = e.slept()
 		e.clk.Advance(time.Second)
 		return s
 	}
-	cases := map[string]func(b *browser) resp{
+	refusals := map[string]func(b *browser) resp{
 		"unknown name":          func(b *browser) resp { return e.login1(b, &person{name: "ghost"}, goodPassword, "123456") },
 		"wrong password":        func(b *browser) resp { return e.login1(b, bob, "wrong wrong wrong", e.code(bob)) },
 		"wrong code":            func(b *browser) resp { return e.login1(b, bob, goodPassword, "000000") },
 		"non-admin, right":      func(b *browser) resp { return e.login1(b, bob, goodPassword, e.code(bob)) },
 		"admin, wrong password": func(b *browser) resp { return e.login1(b, alice, "wrong wrong wrong", e.code(alice)) },
-		"admin, right":          func(b *browser) resp { return e.login1(b, alice, goodPassword, e.code(alice)) },
 	}
-	var want seen
-	first := true
-	for _, name := range []string{"admin, right", "unknown name", "wrong password", "wrong code", "non-admin, right", "admin, wrong password"} {
-		got := probe(cases[name])
-		if first {
-			want, first = got, false
-			if want.lines != 1 || !want.wrote {
-				t.Fatalf("an administrator's success writes one audit line and the store: %+v", want)
-			}
-			continue
+	i := 0
+	for name, do := range refusals {
+		i++
+		got := probe(i, do)
+		if len(got.slept) != 1 || got.slept[0] < est*3/4 || got.slept[0] > est*5/4 {
+			t.Errorf("%s: slept %v, want one wait around %v", name, got.slept, est)
 		}
-		if got != want {
-			t.Errorf("%s: %+v before the answer, an administrator's success makes %+v", name, got, want)
+		if got.lines != 0 || got.wrote {
+			t.Errorf("%s: a refusal wrote %d audit lines and the store (%v) before its answer", name, got.lines, got.wrote)
+		}
+	}
+	// an administrator's success is the write itself, and waits for nothing
+	got := probe(99, func(b *browser) resp { return e.login1(b, alice, goodPassword, e.code(alice)) })
+	if got.lines != 1 || !got.wrote || len(got.slept) != 0 {
+		t.Errorf("an administrator's success: %+v", got)
+	}
+	// the estimate follows the real writes
+	e.svc.noteWrite(5 * time.Second)
+	if e.svc.writeEstimate() <= est {
+		t.Error("the estimate must follow what a success's write really takes")
+	}
+}
+
+// A burst of refusals from many networks does not grow the store or the audit log per attempt: the audit log gets the aggregated
+// events (the first of each account per network and minute, a summary after, at most 100 networks a minute), and the store is rewritten
+// at its own size.
+func TestABurstOfRefusalsDoesNotGrowTheStoreOrTheAuditLogPerAttempt(t *testing.T) {
+	e := newEnv(t, envOpts{sso: true, auth: "  login: {sso_only: true}\n  throttle: {max: 1000}\n"})
+	e.addAccount("alice")
+	bob := e.addAccount("bob")
+	stateFile := e.dir + "/accounts/accounts.enc"
+	size0 := func() int64 { st, _ := os.Stat(stateFile); return st.Size() }()
+	seq0, _ := e.log.Head()
+	const attempts = 400
+	parallel(attempts, func(i int) resp {
+		return e.login1(e.browser(fmt.Sprintf("198.51.%d.%d", i/200+1, i%200+1)), bob, "wrong wrong wrong", "")
+	})
+	e.clk.Advance(2 * time.Minute)
+	e.svc.refused.Flush(e.clk.Now(), false)
+	seq1, _ := e.log.Head()
+	if lines := seq1 - seq0; lines > 2*maxAggBuckets+2 {
+		t.Fatalf("%d audit lines for %d refusals", lines, attempts)
+	}
+	if size := func() int64 { st, _ := os.Stat(stateFile); return st.Size() }(); size > size0+size0/4 {
+		t.Fatalf("the store grew from %d to %d bytes", size0, size)
+	}
+	// one network, many attempts: the first in full, the rest in one summary
+	seq0, _ = e.log.Head()
+	for i := 0; i < 150; i++ {
+		e.login1(e.browser("203.0.113.9"), bob, "wrong wrong wrong", "")
+	}
+	e.clk.Advance(2 * time.Minute)
+	e.svc.refused.Flush(e.clk.Now(), false)
+	seq1, _ = e.log.Head()
+	if seq1-seq0 > 3 {
+		t.Fatalf("%d audit lines for 150 refusals from one network", seq1-seq0)
+	}
+}
+
+// Past the bound on the refusals that wait at once, the answer is the 503 busy of the hashing slots.
+func TestSSOOnlyWaitersAreBoundedAndPastTheBoundTheAnswerIsBusy(t *testing.T) {
+	gate := make(chan struct{})
+	var started sync.WaitGroup
+	e := newEnv(t, envOpts{sso: true, auth: "  login: {sso_only: true}\n  throttle: {max: 1000}\n", mutate: func(o *Options) {
+		o.Sleep = func(time.Duration) { started.Done(); <-gate }
+	}})
+	e.addAccount("alice")
+	e.svc.sleepers = make(chan struct{}, 2)
+	started.Add(2)
+	var rs []resp
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			r := e.login1(e.browser(fmt.Sprintf("203.0.113.%d", 50+i)), &person{name: "ghost"}, "x", "")
+			mu.Lock()
+			rs = append(rs, r)
+			mu.Unlock()
+		}()
+	}
+	started.Wait() // both waiters are sleeping
+	over := e.login1(e.browser("203.0.113.99"), &person{name: "ghost"}, "x", "")
+	if over.Status != 503 || over.code() != "busy" {
+		t.Fatalf("past the bound: %d %s", over.Status, over.Body)
+	}
+	close(gate)
+	wg.Wait()
+	for _, r := range rs {
+		if r.Status != 403 || r.code() != "sso_required" {
+			t.Fatalf("a waiter: %d %s", r.Status, r.Body)
 		}
 	}
 }

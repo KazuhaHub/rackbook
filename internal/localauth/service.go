@@ -94,8 +94,12 @@ type Service struct {
 	probeMu   sync.Mutex
 	nextProbe time.Time
 	guard     *acctGuard
-	revMu     sync.Mutex
-	revoker   Revoker
+	// sso_only refusals wait for the time of a success's write (ssoDelay): the running estimate of it, and the bound on the waiters
+	estMu    sync.Mutex
+	writeEst time.Duration
+	sleepers chan struct{}
+	revMu    sync.Mutex
+	revoker  Revoker
 
 	problemMu   sync.Mutex
 	problemSeen bool
@@ -132,6 +136,7 @@ func New(o Options) (*Service, error) {
 	s.sealer = newSealer(o.Key)
 	s.replay = newReplaySet(s.now)
 	s.guard = newAcctGuard()
+	s.writeEst, s.sleepers = 2*time.Millisecond, make(chan struct{}, maxSSOSleepers)
 	if s.pk, err = newPasskeyKit(s.base, o.Store, o.Key, s.sealer, s.now, s.replay); err != nil {
 		return nil, err
 	}
@@ -296,6 +301,9 @@ func decode(w http.ResponseWriter, r *http.Request, v any) bool {
 func (s *Service) where(r *http.Request) (bucket, addr string) {
 	return clientip.Bucket(r, s.o.Trusted, 48), clientip.Addr(r, s.o.Trusted)
 }
+
+// maxSSOSleepers bounds the sso_only refusals that wait at once, for the whole server.
+const maxSSOSleepers = 64
 
 // probeBackoff is how long a degraded service waits between two probe writes.
 const probeBackoff = 5 * time.Second

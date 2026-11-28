@@ -344,3 +344,50 @@ func TestReauthEventMayResetOnlyReauthFailures(t *testing.T) {
 		t.Fatalf("%+v", a)
 	}
 }
+
+// Every disable, remove, reset (every scope) and recover sets credentials_valid_after in its own change, and nothing else does.
+func TestCredentialsValidAfterIsSetByDisableRemoveResetAndRecoverOnly(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		do   func(s *Store, e *env) error
+		sets bool
+	}{
+		{"disable", func(s *Store, e *env) error { return s.Disable(CLI("t"), "alice", nil, Revocations{}, e.clk.Now()) }, true},
+		{"remove", func(s *Store, e *env) error { return s.Remove(CLI("t"), "alice", nil, Revocations{}, e.clk.Now()) }, true},
+		{"reset password", func(s *Store, e *env) error {
+			_, err := s.Reset(CLI("t"), "alice", ResetOptions{Scope: ScopePassword, TTL: time.Hour * 24}, e.clk.Now())
+			return err
+		}, true},
+		{"reset second_factor", func(s *Store, e *env) error {
+			_, err := s.Reset(CLI("t"), "alice", ResetOptions{Scope: ScopeSecondFactor, TTL: time.Hour * 24}, e.clk.Now())
+			return err
+		}, true},
+		{"reset all", func(s *Store, e *env) error {
+			_, err := s.Reset(CLI("t"), "alice", ResetOptions{Scope: ScopeAll, TTL: time.Hour * 24}, e.clk.Now())
+			return err
+		}, true},
+		{"recover", func(s *Store, e *env) error {
+			_, _, err := s.Recover(CLI("t"), "alice", "", 72*time.Hour, 24*time.Hour, Revocations{}, e.clk.Now())
+			return err
+		}, true},
+		{"unlock", func(s *Store, e *env) error { return s.Unlock(CLI("t"), "alice", e.clk.Now()) }, false},
+		{"end sessions", func(s *Store, e *env) error { return s.EndSessions(CLI("t"), "alice", "cli", e.clk.Now()) }, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			e := newEnv(t)
+			s := e.mustOpen()
+			e.setupActive(s, "alice")
+			created := e.clk.Now()
+			e.clk.Set(created.Add(time.Hour))
+			if err := c.do(s, e); err != nil {
+				t.Fatal(err)
+			}
+			if got := s.Refuses("alice", created); got != c.sets {
+				t.Fatalf("a credential made before: refused = %v, want %v", got, c.sets)
+			}
+			if c.sets && s.Refuses("alice", e.clk.Now().Add(2*time.Second)) {
+				t.Fatal("a credential made after the revocation must not be refused by it")
+			}
+		})
+	}
+}

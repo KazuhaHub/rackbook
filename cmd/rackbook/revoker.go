@@ -5,7 +5,9 @@ import (
 	"errors"
 	"slices"
 	"strings"
+	"time"
 
+	"github.com/kazuhahub/rackbook/internal/accounts"
 	"github.com/kazuhahub/rackbook/internal/auth"
 	"github.com/kazuhahub/rackbook/internal/gitstore"
 	"github.com/kazuhahub/rackbook/internal/roles"
@@ -84,4 +86,29 @@ func (r accountRevoker) RevokeGrant(_ context.Context, id string) error {
 		return nil
 	}
 	return r.grants.RevokeGrant(id, "revoked with the local account")
+}
+
+// tokenRevoked is the registry's block for local accounts: the token is on the store's revocation list, or its creator is a local
+// account whose credentials were revoked after the token was made. The second rule is what catches a token that was not in the
+// checkout when the list was made (a pull request not merged yet, a create waiting on the Git lock). Its creation time is the one
+// Rackbook wrote into tokens.yml when it made the token.
+func tokenRevoked(st *accounts.Store, t tokens.Token) bool {
+	if st.IsRevoked(accounts.KindToken, t.Hash) {
+		return true
+	}
+	if t.CreatedVia != auth.MethodLocal {
+		return false
+	}
+	name, ok := roles.LocalUsername(t.CreatedBy)
+	return ok && st.Refuses(name, tokens.ParseTime(t.Created))
+}
+
+// grantRevoked is the OAuth server's block: the grant is on the list, or the local account that approved it has had its credentials
+// revoked since. The approval time is the server's own.
+func grantRevoked(st *accounts.Store, id, subject string, approved time.Time) bool {
+	if st.IsRevoked(accounts.KindGrant, id) {
+		return true
+	}
+	name, ok := roles.LocalUsername(subject)
+	return ok && st.Refuses(name, approved)
 }

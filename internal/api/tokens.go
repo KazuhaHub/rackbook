@@ -91,7 +91,7 @@ func (s *server) listTokens(w http.ResponseWriter, r *http.Request) {
 	if !s.tokenAdmin(w, r, false) {
 		return
 	}
-	ts, err := s.o.Tokens.List()
+	ts, err := s.o.Tokens.Listed()
 	if err != nil {
 		writeError(w, http.StatusServiceUnavailable, "tokens_unreadable", err.Error())
 		return

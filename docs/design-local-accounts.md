@@ -1246,6 +1246,21 @@ and the online admin channel with `recover`, `invite`, `reset`, `unlock`, `disab
   that cannot be resolved (tokens.yml unreadable) stays pending, and then enable and the completion of a setup are refused (`409
   revocations_pending`). The offline command line records them as pending and the server applies them at its start, before it
   serves.
+- **The standing rule, `credentials_valid_after`.** The list is made from the checkout, so by itself it misses a token that is not in it
+  yet: one waiting in a pull request (write mode `pr`), or a create waiting on the Git lock. So every disable, remove, reset (every
+  scope) and `recover` also sets the account's `credentials_valid_after` in its own change, and an API token whose creator is
+  `local:<x>` and whose creation time is before it, and an OAuth grant approved by `local:<x>` before it, are refused wherever the list
+  is consulted (`Registry.Lookup`, the OAuth server's reads, refresh and code exchange). The token's creation time is the one Rackbook
+  wrote into `tokens.yml` when it made it (changing `tokens.yml` is an administrator's act, as it already is), the grant's is the
+  server's own record of the approval (`Grant.Approved`, the time the code was issued), so a grant whose code exchange raced with a disable
+  is refused too, and no grant is made for it. The console lists a token the local accounts revoked as revoked (`Registry.Listed`)
+  while its record in `tokens.yml` is still to be made.
+- **Restore and discard.** The revocation list lives in the account store, so `accept-restore` brings back the list of the backup and
+  loses what was added after it. The safe default is built in: `accept-restore` sets `credentials_valid_after` of **every** account to
+  the restore time, so the API tokens and OAuth grants every local account made before it are refused until they are made again, and
+  (in its untrusted mode, as before) writes every API token as a pending revocation of every account, which the server applies at its
+  start. `discard-store` starts a store with no accounts, so every `local:` token and grant has no live account and no role, and a
+  username is never reused: nothing can inherit them.
 - **Re-authentication gates the sensitive actions that make a credential:** creating an API token, saving roles, and approving an
   OAuth/MCP client answer `403 reauth_required` (with `reauth`: the page and the way back) to a local session whose last full
   authentication is older than `auth.local.reauth_window`; the console opens that page and returns. `auth.Authenticator.NeedsReauth`
@@ -1269,8 +1284,9 @@ and the online admin channel with `recover`, `invite`, `reset`, `unlock`, `disab
   (`rackbook passkey handle v1`); the admin socket is made in a private directory and moved to its name (no process-wide umask);
   a wrong password takes the account writer like a right one (`Store.ProbeTOTP`); under `sso_only` a non-admin's right credentials
   make the same synced audit write an administrator's sign-in does; `reauth_failures` is cleared when the sessions end and on a full
-  sign-in; under `sso_only` every refusal of a real attempt makes the one synced audit line and store write an administrator's
-  success makes, before its answer; the current password that proves a second-factor reset is reserved against the account's
+  sign-in; under `sso_only` every refusal waits for a time drawn around the running estimate of what an administrator's success
+  spends writing before its answer (nothing is written for it, no lock is held while it sleeps, the waiters are bounded to 64 for the
+  whole server and past that the answer is the `503 busy` of the hashing slots, and the refusals stay aggregated per network and minute); the current password that proves a second-factor reset is reserved against the account's
   persistent counter; a ticket of the tables gives back only into the window it was counted in; the offline `disable` and `remove` apply the last-administrator guard when `--config` names rackbook.yml; `remove`,
   `disable` and `reset --all` ask for confirmation (`--yes` skips it).
 - **Administrators act through the command line only.** The `/api/admin/accounts` endpoints and the Users screens are piece 7;

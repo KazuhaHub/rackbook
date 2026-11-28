@@ -84,9 +84,10 @@ type Options struct {
 	// Prefs holds each person's console language, for the pages this server
 	// shows; nil = the browser's language only.
 	Prefs *prefs.Store
-	// Blocked, when set, says a grant (by id) is on the revocation list of the local accounts (design-local-accounts.md, 5.11):
-	// the grant is refused at once, whether or not its state file entry could be removed.
-	Blocked func(id string) bool
+	// Blocked, when set, says a grant (its id, the identity that approved it and when) is revoked for a local account
+	// (design-local-accounts.md, 5.11): it is on the account store's revocation list, or the account's credentials_valid_after is
+	// later than the approval. The grant is refused at once, whether or not its state file entry could be removed.
+	Blocked func(id, subject string, approved time.Time) bool
 }
 
 // Server is the authorization server.

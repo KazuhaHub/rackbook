@@ -156,7 +156,7 @@ func TestAGrantOnTheRevocationListIsRefusedWhateverTheStateFileHolds(t *testing.
 	var mu sync.Mutex
 	blocked := map[string]bool{}
 	fl := &fakeLocal{active: map[string]bool{"alice": true}}
-	e := newEnv(t, opts{local: fl, blocked: func(id string) bool { mu.Lock(); defer mu.Unlock(); return blocked[id] }})
+	e := newEnv(t, opts{local: fl, blocked: func(id, _ string, _ time.Time) bool { mu.Lock(); defer mu.Unlock(); return blocked[id] }})
 	e.setRoles(&roles.Spec{Admin: []string{"local:alice"}})
 	e.method = "local"
 	client, tok := e.login("local:alice", "Alice's client")
@@ -174,5 +174,64 @@ func TestAGrantOnTheRevocationListIsRefusedWhateverTheStateFileHolds(t *testing.
 	}
 	if got := e.srv.GrantsOf("local:alice"); len(got) != 0 {
 		t.Fatalf("a blocked grant is listed: %v", got)
+	}
+}
+
+// A code approved before the account's credentials were revoked is refused at the exchange, even after the account is set up
+// again: its approval is older than credentials_valid_after (a grant whose code exchange races with a disable). A grant made later is fine.
+func TestAGrantWhoseCodeExchangeRacesWithADisableIsRefused(t *testing.T) {
+	t.Parallel()
+	var mu sync.Mutex
+	var validAfter time.Time
+	fl := &fakeLocal{active: map[string]bool{"alice": true}}
+	e := newEnv(t, opts{local: fl, blocked: func(_, subject string, approved time.Time) bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return subject == "local:alice" && !validAfter.IsZero() && approved.Before(validAfter)
+	}})
+	e.setRoles(&roles.Spec{Admin: []string{"local:alice"}})
+	e.method = "local"
+	client := e.register("racer")
+	v, ch := pkce()
+	code := e.approve("local:alice", e.params(client, testRedirect, ch)) // approved, not exchanged yet
+	// the account is disabled (credentials_valid_after is set), and set up again before the exchange
+	e.clock.advance(time.Minute)
+	mu.Lock()
+	validAfter = e.clock.now()
+	mu.Unlock()
+	e.clock.advance(time.Minute)
+	r := e.exchange(client, code, v)
+	if r.StatusCode == http.StatusOK {
+		t.Fatalf("the code of an approval older than the revocation was exchanged: %s", r.body)
+	}
+	if got := e.srv.GrantsOf("local:alice"); len(got) != 0 {
+		t.Fatalf("a grant was made: %v", got)
+	}
+	// an approval after the revocation is not caught by it
+	_, tok := e.login("local:alice", "later")
+	if r := e.mcpStatus(tok.access); r.StatusCode != http.StatusOK {
+		t.Fatalf("a grant approved after: %d %s", r.StatusCode, r.body)
+	}
+	// and a grant that existed before is refused by the same rule, everywhere the list is read
+	e2 := newEnv(t, opts{local: &fakeLocal{active: map[string]bool{"alice": true}}, blocked: func(_, subject string, approved time.Time) bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return subject == "local:alice" && !validAfter.IsZero() && approved.Before(validAfter)
+	}})
+	e2.setRoles(&roles.Spec{Admin: []string{"local:alice"}})
+	e2.method = "local"
+	mu.Lock()
+	validAfter = time.Time{}
+	mu.Unlock()
+	cl2, old := e2.login("local:alice", "old")
+	e2.clock.advance(time.Minute)
+	mu.Lock()
+	validAfter = e2.clock.now()
+	mu.Unlock()
+	if r := e2.mcpStatus(old.access); r.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("an old grant after the rule: %d", r.StatusCode)
+	}
+	if r := e2.refresh(cl2, old.refresh); r.StatusCode == http.StatusOK {
+		t.Fatal("an old grant refreshed after the rule")
 	}
 }

@@ -61,6 +61,9 @@ type Grant struct {
 	LastUsed time.Time `json:"last_used"`
 	// RefreshHash is the SHA-256 of the one refresh token that works now.
 	RefreshHash string `json:"refresh_hash"`
+	// Approved is when the person approved it (the authorization code was issued): a credentials_valid_after later than that
+	// refuses the grant, so one whose code exchange raced with a disable is refused too.
+	Approved time.Time `json:"approved,omitempty"`
 	// Retired holds the last few replaced tokens, to recognise a reused one.
 	Retired []Retired `json:"retired,omitempty"`
 }
@@ -89,7 +92,7 @@ type store struct {
 	mu   sync.Mutex
 	data fileData
 	// blocked says a grant is on the revocation list of the local accounts: it is invisible whatever the state file holds.
-	blocked func(id string) bool
+	blocked func(id, subject string, approved time.Time) bool
 }
 
 func openStore(dir string) (*store, error) {
@@ -156,7 +159,7 @@ func (s *store) mutate(fn func(d *fileData) error) error {
 func (s *store) grant(id string) *Grant {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if g := s.data.Grants[id]; g != nil && !s.isBlocked(g.ID) {
+	if g := s.data.Grants[id]; g != nil && !s.isBlocked(g) {
 		c := *g
 		return &c
 	}
@@ -179,7 +182,7 @@ func (s *store) grants(keep func(*Grant) bool) []Grant {
 	defer s.mu.Unlock()
 	var out []Grant
 	for _, g := range s.data.Grants {
-		if keep(g) && !s.isBlocked(g.ID) {
+		if keep(g) && !s.isBlocked(g) {
 			out = append(out, *g)
 		}
 	}
@@ -187,4 +190,13 @@ func (s *store) grants(keep func(*Grant) bool) []Grant {
 	return out
 }
 
-func (s *store) isBlocked(id string) bool { return s.blocked != nil && s.blocked(id) }
+func (s *store) isBlocked(g *Grant) bool {
+	if s.blocked == nil || g == nil {
+		return false
+	}
+	at := g.Approved
+	if at.IsZero() {
+		at = g.Created
+	}
+	return s.blocked(g.ID, g.Subject.ID, at)
+}

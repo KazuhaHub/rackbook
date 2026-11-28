@@ -443,6 +443,9 @@ func (s *Store) applyRestore(o Offline, se *StartError, p *accountsPlan, rep *Re
 		for n, a := range st.Accounts {
 			_ = a.RenewSessions()
 			a.GoodBuckets = nil
+			// the restored store may lack revocations made after its backup (the revocation list is part of it): the API tokens and
+			// OAuth grants every local account made before this moment are refused until they are made again (5.11)
+			a.CredentialsValidAfter = o.now().UTC()
 			if a.State == StateResetPending && a.Pending != nil && a.Pending.IssuedBy == "cli" {
 				rep.ResetNames = append(rep.ResetNames, n)
 			}

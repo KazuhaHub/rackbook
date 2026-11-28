@@ -1284,6 +1284,17 @@ does (write mode `pr`, a refused push). The record in `.rackbook/tokens.yml` is 
 minute; nothing waits for it. The offline command line records the revocations and the server applies them when it starts, before it
 serves. Until a revocation that could not be resolved is done the account cannot be enabled or set up again.
 
+A token or grant is refused by a second rule too, which needs no list: each account keeps `credentials_valid_after`, set by every
+disable, remove, reset and `recover`, and any API token created by the account, or grant approved by it, before that time is refused.
+That catches a token that was only in a pull request, or waiting for the Git lock, when the account was disabled. The token list in
+the console shows such tokens as revoked.
+
+**Restoring the store.** The revocation list is part of the account store, so `rackbook accounts accept-restore` (from a backup) loses
+the revocations made after it, and `discard-store` loses the list altogether. `accept-restore` therefore refuses every API token and
+OAuth grant that any local account made before the restore (`credentials_valid_after` of every account is the restore time) until they
+are made again, and, when the audit log cannot be trusted, also records every API token as a pending revocation. After `discard-store`
+no local account exists, so no `local:` token or grant has a role, and no username can be used again.
+
 **The admin commands.** `rackbook accounts invite | reset | unlock | disable | enable | remove | end-sessions | recover`
 talk to the **running server** over an admin channel (a Unix socket `<state-dir>/admin.sock`, mode 0600, on Linux and macOS;
 a named pipe `\\.\pipe\rackbook-<16 hex of SHA-256 of the state directory>` on Windows that only the server's account and

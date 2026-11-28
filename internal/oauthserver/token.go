@@ -169,7 +169,12 @@ func (s *Server) exchangeCode(w http.ResponseWriter, r *http.Request) {
 	}
 	refresh := gid + "." + secret
 	g := &Grant{ID: gid, Subject: c.subject, ClientID: c.client.ID, ClientName: c.client.Name, Scopes: c.scopes, Resource: c.resource,
-		Created: now, LastUsed: now, RefreshHash: hashToken(secret)}
+		Created: now, LastUsed: now, RefreshHash: hashToken(secret), Approved: c.expires.Add(-codeTTL)}
+	// a code approved before the account's credentials were revoked is refused at the exchange: no grant is made
+	if s.store.isBlocked(g) {
+		oauthError(w, http.StatusBadRequest, "invalid_grant", "the authorization code is not valid")
+		return
+	}
 	// The grant and the hash of its refresh token reach the disk before the
 	// token reaches the client.
 	if err := s.store.mutate(func(d *fileData) error {
@@ -314,7 +319,7 @@ func (s *Server) refresh(w http.ResponseWriter, r *http.Request) {
 	// The new hash is on disk before the answer leaves.
 	if err := s.store.mutate(func(d *fileData) error {
 		cur := d.Grants[gid]
-		if cur == nil || s.store.isBlocked(gid) || !equalStrings(cur.RefreshHash, h) {
+		if cur == nil || s.store.isBlocked(cur) || !equalStrings(cur.RefreshHash, h) {
 			return errNoChange
 		}
 		cur.Retired = append(cur.Retired, Retired{Hash: h, At: now})

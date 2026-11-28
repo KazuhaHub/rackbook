@@ -25,9 +25,10 @@ type Registry struct {
 	// UsePath is a JSON file that keeps the last use of each token across
 	// restarts (serve --state-dir). Empty = in memory only.
 	UsePath string
-	// Blocked, when set, says a token (by the SHA-256 of its secret) is on the revocation list of the local accounts: Lookup
-	// refuses it at once, before and whatever the commit to tokens.yml does.
-	Blocked func(hash string) bool
+	// Blocked, when set, says a token is revoked for a local account (design-local-accounts.md, 5.11): it is on the account
+	// store's revocation list, or its creator's credentials_valid_after is later than its creation. Lookup refuses it at once,
+	// whatever tokens.yml says yet, and List shows it as revoked.
+	Blocked func(Token) bool
 
 	mu     sync.Mutex
 	raw    []byte
@@ -63,6 +64,23 @@ func (r *Registry) List() ([]Token, error) {
 	return append([]Token(nil), r.parsed...), r.perr
 }
 
+// Listed is List for display: a token the local accounts have revoked is shown as revoked ("pending record": its entry in
+// tokens.yml has not been revoked yet), so the console does not offer it as active. List stays as the file has it, because the
+// record layer must see what is still to be revoked there.
+func (r *Registry) Listed() ([]Token, error) {
+	ts, err := r.List()
+	if err != nil || r.Blocked == nil {
+		return ts, err
+	}
+	for i := range ts {
+		if ts[i].Revoked == "" && r.Blocked(ts[i]) {
+			ts[i].Revoked = r.now().UTC().Truncate(time.Second).Format(time.RFC3339)
+			ts[i].RevokedBy = "rackbook: revoked with its local account (the record in tokens.yml is pending)"
+		}
+	}
+	return ts, nil
+}
+
 // Lookup finds the active token for secret. A file that does not parse is an
 // error, so every token fails closed.
 func (r *Registry) Lookup(secret string) (*Token, error) {
@@ -71,7 +89,7 @@ func (r *Registry) Lookup(secret string) (*Token, error) {
 		return nil, err
 	}
 	t, err := Match(ts, secret, r.now())
-	if err == nil && r.Blocked != nil && r.Blocked(t.Hash) {
+	if err == nil && r.Blocked != nil && r.Blocked(*t) {
 		return nil, ErrRevoked // revoked for a local account (design-local-accounts.md, 5.11), whatever tokens.yml says yet
 	}
 	return t, err

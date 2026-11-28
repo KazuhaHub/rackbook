@@ -115,7 +115,7 @@ type opts struct {
 	// local is the store of local accounts the authenticator asks (nil = none)
 	local auth.LocalAccounts
 	// blocked is the revocation list of the local accounts, consulted for every grant (nil = none)
-	blocked func(id string) bool
+	blocked func(id, subject string, approved time.Time) bool
 }
 
 type env struct {

@@ -437,6 +437,7 @@ func (s *Store) Reset(by Actor, username string, o ResetOptions, now time.Time) 
 			}
 		}
 		clearCounters(a)
+		a.CredentialsValidAfter = now.UTC()
 		mergeRevocations(&a.PendingRevocations, o.Revoke)
 		a.Notices = append(a.Notices, Notice{Time: now.UTC(), Kind: "reset:" + o.Scope, By: by.By()})
 		return a.RenewSessions()
@@ -487,6 +488,7 @@ func (s *Store) Disable(by Actor, username string, check Check, rev Revocations,
 			return fmt.Errorf("%w: the account is %s", ErrBadState, a.State)
 		}
 		a.State, a.GoodBuckets = StateDisabled, nil
+		a.CredentialsValidAfter = now.UTC()
 		mergeRevocations(&a.PendingRevocations, rev)
 		a.Notices = append(a.Notices, Notice{Time: now.UTC(), Kind: "disabled", By: by.By()})
 		return a.RenewSessions()
@@ -523,6 +525,7 @@ func (s *Store) Remove(by Actor, username string, check Check, rev Revocations, 
 			return fmt.Errorf("%w: the account is already removed", ErrBadState)
 		}
 		a.State = StateRemoved
+		a.CredentialsValidAfter = now.UTC()
 		a.Password, a.TOTP, a.Passkeys, a.Pending, a.Notices, a.LastLogin, a.LastSecondFactorFailure = "", nil, nil, nil, nil, nil, nil
 		clearCounters(a)
 		mergeRevocations(&a.PendingRevocations, rev)
