@@ -102,6 +102,7 @@ func TestInviteSetupWithTOTPSignsThePersonIn(t *testing.T) {
 	var all strings.Builder
 	all.WriteString(logs.String())
 	for _, ev := range e.events("") {
+		ev.Prev = "" // a hash chain is random hex: a six-digit code can sit in it by chance
 		raw, _ := json.Marshal(ev)
 		all.Write(raw)
 	}

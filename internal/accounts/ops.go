@@ -93,7 +93,9 @@ func (a Actor) ev(name, target, code string, detail ...string) audit.Event {
 const AllOwned = "*"
 
 // EverythingOwned is the pending revocation of every API token and OAuth grant the account owns.
-func EverythingOwned() Revocations { return Revocations{Tokens: []string{AllOwned}, Grants: []string{AllOwned}} }
+func EverythingOwned() Revocations {
+	return Revocations{Tokens: []string{AllOwned}, Grants: []string{AllOwned}}
+}
 
 func mergeRevocations(dst *Revocations, add Revocations) {
 	dst.Tokens = addUnique(dst.Tokens, add.Tokens...)
