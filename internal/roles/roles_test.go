@@ -455,3 +455,39 @@ func mustCompile(t *testing.T, spec *Spec) *Policy {
 	}
 	return p
 }
+
+func TestDescribeSaysWhatAnEntryIsWithTheParsersOwnErrors(t *testing.T) {
+	t.Parallel()
+	for _, c := range []struct{ in, kind, key, value string }{
+		{"Boss@Example.com", KindIdentity, "boss@example.com", "boss@example.com"},
+		{" *@Team.Example.com ", KindDomain, "*@team.example.com", "team.example.com"},
+		{"*", KindAny, "*", ""},
+		{"GROUP:AbC", KindGroup, "group:abc", "abc"},
+		{"APP-ROLE:Rackbook.Admin", KindAppRole, "app-role:Rackbook.Admin", "Rackbook.Admin"},
+		{"oidc:Sub-1", KindOIDC, "oidc:sub-1", "sub-1"},
+		{"mcphub:*", KindMCPHub, "mcphub:*", "*"},
+		{"oauth:Corp:Bob", KindOAuth, "oauth:corp:bob", "corp:bob"},
+		{"local:Alice", KindLocal, "local:alice", "alice"},
+	} {
+		got, err := Describe(c.in)
+		if err != nil || got.Kind != c.kind || got.Key != c.key || got.Value != c.value {
+			t.Errorf("Describe(%q) = %+v, %v; want %s %s %s", c.in, got, err, c.kind, c.key, c.value)
+		}
+	}
+	// the same messages as the compiler gives, because it is the same parser
+	for _, in := range []string{"", "a*b", "*@", "group:", "oauth:x", "app-role:", "app-role:a*"} {
+		_, derr := Describe(in)
+		_, cerr := CompileAuditors(nil, []string{in}, Options{})
+		if derr == nil || cerr == nil || !strings.HasSuffix(cerr.Error(), derr.Error()) {
+			t.Errorf("%q: Describe %v, Compile %v", in, derr, cerr)
+		}
+	}
+	// two app roles that differ by case are two entries; two identities that differ by case are one
+	a, _ := Describe("app-role:a")
+	b, _ := Describe("app-role:A")
+	c, _ := Describe("X@y.org")
+	d, _ := Describe("x@Y.ORG")
+	if a.Key == b.Key || c.Key != d.Key {
+		t.Fatalf("%+v %+v %+v %+v", a, b, c, d)
+	}
+}

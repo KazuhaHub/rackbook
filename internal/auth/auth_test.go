@@ -550,3 +550,55 @@ func TestGenerationChangesWithTheConfig(t *testing.T) {
 		t.Fatal("a reload is a new generation")
 	}
 }
+
+// CapabilitiesUnder is how the role editor tells an administrator what they would be after a change.
+func TestCapabilitiesUnderAnotherSetOfLists(t *testing.T) {
+	t.Parallel()
+	src, _ := cfgWith(t, &roles.Spec{Admin: []string{"ann@example.com"}})
+	a, err := New(context.Background(), Config{Mode: ModeNone, Config: src, Editors: []string{"legacy@example.com"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cur := src()
+	ann := roles.Subject{ID: "ann@example.com", Method: MethodOIDC, Groups: []string{"ops"}}
+	under := func(spec *roles.Spec, auditors []string, s roles.Subject) Capabilities {
+		t.Helper()
+		c, err := a.CapabilitiesUnder(cur, spec, auditors, s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return c
+	}
+	// by name and by group: the role is admin, and so it is by identity alone
+	c := under(&roles.Spec{Admin: []string{"ann@example.com", "group:ops"}}, nil, ann)
+	if c.Role != roles.Admin || c.ByIdentity != roles.Admin || len(c.RoleFrom) != 2 {
+		t.Fatalf("%+v", c)
+	}
+	// only by group: admin, but nothing that names her
+	c = under(&roles.Spec{Admin: []string{"group:ops"}}, nil, ann)
+	if c.Role != roles.Admin || c.ByIdentity != roles.None || len(c.RoleFrom) != 1 || c.RoleFrom[0] != roles.SourceGroup {
+		t.Fatalf("%+v", c)
+	}
+	// a domain entry names her; an auditor gets the viewer floor, and the capability is reported apart
+	c = under(&roles.Spec{Viewer: []string{"*@example.com"}}, []string{"ann@example.com"}, ann)
+	if c.Role != roles.Viewer || !c.Auditor || !c.AuditorByIdent || c.AuditorFrom[0] != roles.SourceIdentity {
+		t.Fatalf("%+v", c)
+	}
+	c = under(&roles.Spec{}, []string{"ann@example.com"}, ann)
+	if c.Role != roles.Viewer || !c.Auditor {
+		t.Fatalf("the viewer floor: %+v", c)
+	}
+	// the legacy editors list of the deployment is part of every policy, as it is for the running one
+	c = under(&roles.Spec{Admin: []string{"x@example.com"}}, nil, roles.Subject{ID: "legacy@example.com", Method: MethodOIDC})
+	if c.Role != roles.Editor {
+		t.Fatalf("%+v", c)
+	}
+	// nobody matches: no role, and the running policy was not touched
+	c = under(&roles.Spec{Admin: []string{"x@example.com"}}, nil, ann)
+	if c.Role != roles.None || a.RoleFor("ann@example.com") != roles.Admin {
+		t.Fatalf("%+v", c)
+	}
+	if _, err := a.CapabilitiesUnder(cur, &roles.Spec{Admin: []string{"a*b"}}, nil, ann); err == nil {
+		t.Fatal("an invalid entry must be an error")
+	}
+}

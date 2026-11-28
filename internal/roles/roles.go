@@ -256,6 +256,64 @@ func parseList(where string, in []string) ([]entry, error) {
 	return out, nil
 }
 
+// Entry kinds reported by Describe, which the role editor shows next to each entry.
+const (
+	KindIdentity = "identity" // an exact identity or e-mail
+	KindDomain   = "domain"   // *@domain
+	KindAny      = "any"      // *
+	KindGroup    = "group"    // group:<id>
+	KindAppRole  = "app-role" // app-role:<value>
+	KindOAuth    = "oauth"    // oauth:<alias>:<user>
+	KindMCPHub   = "mcphub"   // mcphub:<username>
+	KindOIDC     = "oidc"     // oidc:<sub>
+	// KindLocal is local:<username>, reserved for local accounts
+	// (docs/design-local-accounts.md, section 7). The parser still reads it as an
+	// exact identity; the editor labels it so it can say it matches nobody yet.
+	KindLocal = "local"
+)
+
+// EntryInfo is what Describe says about one entry.
+type EntryInfo struct {
+	Kind string
+	// Key is the entry in the form the matcher compares: folded to lower case
+	// (ASCII only), except an app role value, which keeps its case. Two entries
+	// with the same Key in one list are repeats.
+	Key string
+	// Value is the part after the kind's prefix ("" for *).
+	Value string
+}
+
+// Describe parses one entry with the parser that rackbook check and the server
+// use, and says what kind it is. The error is the parser's own message.
+func Describe(s string) (EntryInfo, error) {
+	e, err := parseEntry(s)
+	if err != nil {
+		return EntryInfo{}, err
+	}
+	s = strings.TrimSpace(s)
+	switch e.kind {
+	case kAny:
+		return EntryInfo{Kind: KindAny, Key: "*"}, nil
+	case kDomain:
+		return EntryInfo{Kind: KindDomain, Key: "*" + e.value, Value: e.value[1:]}, nil
+	case kGroup:
+		return EntryInfo{Kind: KindGroup, Key: "group:" + e.value, Value: e.value}, nil
+	case kAppRole:
+		return EntryInfo{Kind: KindAppRole, Key: appRolePrefix + e.value, Value: e.value}, nil
+	case kOAuth:
+		return EntryInfo{Kind: KindOAuth, Key: "oauth:" + e.alias + ":" + e.value, Value: e.alias + ":" + e.value}, nil
+	case kMCPHub:
+		return EntryInfo{Kind: KindMCPHub, Key: "mcphub:" + e.value, Value: e.value}, nil
+	case kOIDC:
+		return EntryInfo{Kind: KindOIDC, Key: "oidc:" + e.value, Value: e.value}, nil
+	}
+	key := FoldASCII(s)
+	if strings.HasPrefix(key, "local:") {
+		return EntryInfo{Kind: KindLocal, Key: key, Value: key[len("local:"):]}, nil
+	}
+	return EntryInfo{Kind: KindIdentity, Key: key, Value: key}, nil
+}
+
 // plainMethods are the authentication methods whose identities match exact,
 // domain, group and * entries.
 var plainMethods = map[string]bool{"oidc": true, "passkey": true, "cloudflare-access": true, "none": true, "cli": true}
