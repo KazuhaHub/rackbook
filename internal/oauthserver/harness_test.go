@@ -41,9 +41,11 @@ const testRedirect = "http://localhost:7777/callback"
 
 // userStub stands in for the console login: the X-Test-User header names the
 // signed-in person (login method oidc), no header means signed out.
-type userStub struct{}
+type userStub struct {
+	now func() time.Time // the sign-in time of the stub session, unless X-Test-Signin says otherwise
+}
 
-func (userStub) Identify(_ http.ResponseWriter, r *http.Request) (*auth.Identity, error) {
+func (stub userStub) Identify(_ http.ResponseWriter, r *http.Request) (*auth.Identity, error) {
 	u := r.Header.Get("X-Test-User")
 	if u == "" {
 		return nil, auth.ErrUnauthenticated
@@ -51,6 +53,13 @@ func (userStub) Identify(_ http.ResponseWriter, r *http.Request) (*auth.Identity
 	id := &auth.Identity{ID: u, Name: strings.SplitN(u, "@", 2)[0], Email: u, Method: auth.MethodOIDC}
 	if g := r.Header.Get("X-Test-Groups"); g != "" {
 		id.Groups = strings.Split(g, ",")
+	}
+	id.OIDCAt = stub.now()
+	if v := r.Header.Get("X-Test-Signin"); v != "" {
+		id.OIDCAt, _ = time.Parse(time.RFC3339, v)
+	}
+	if g := r.Header.Get("X-Test-Roles"); g != "" {
+		id.AppRoles = strings.Split(g, ",")
 	}
 	return id, nil
 }
@@ -109,6 +118,9 @@ type env struct {
 	ts       *httptest.Server
 	prefs    *prefs.Store // the console languages people saved
 	apiOpts  api.Options  // what the handler was built from (to list its routes)
+	// the groups and app roles (comma-separated) the stub console login carries
+	claimGroups, claimRoles string
+	signedIn                string // X-Test-Signin: when the stub session signed in (RFC 3339)
 }
 
 func (e *env) config() *config.Config {
@@ -194,7 +206,7 @@ func (e *env) start(ln net.Listener) {
 	if e.o.cimdSafe {
 		cimd = nil
 	}
-	authn, err := auth.New(context.Background(), auth.Config{Mode: auth.ModeOIDC, Sessions: userStub{}, Config: e.config})
+	authn, err := auth.New(context.Background(), auth.Config{Mode: auth.ModeOIDC, Sessions: userStub{now: e.clock.now}, Config: e.config})
 	if err != nil {
 		e.t.Fatal(err)
 	}
@@ -258,6 +270,15 @@ func (e *env) do(user, method, path string, body io.Reader, hdr ...string) resp 
 	}
 	if user != "" {
 		req.Header.Set("X-Test-User", user)
+		if e.claimGroups != "" {
+			req.Header.Set("X-Test-Groups", e.claimGroups)
+		}
+		if e.signedIn != "" {
+			req.Header.Set("X-Test-Signin", e.signedIn)
+		}
+		if e.claimRoles != "" {
+			req.Header.Set("X-Test-Roles", e.claimRoles)
+		}
 	}
 	for i := 0; i+1 < len(hdr); i += 2 {
 		req.Header.Set(hdr[i], hdr[i+1])

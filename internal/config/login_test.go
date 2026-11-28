@@ -101,3 +101,64 @@ func TestStateDirIsNotLedgerData(t *testing.T) {
 		t.Errorf("only the top-level .rackbook is reserved: %v", err)
 	}
 }
+
+func TestClaimsAbsolute(t *testing.T) {
+	oidc := "  mode: oidc\n  oidc: {issuer: 'https://i.example', client_id: x}\n"
+	// default: 24h, below the default absolute of 7 days
+	c, err := parse(t, oidc)
+	if err != nil || c.Auth.Session.ClaimsAbsoluteOrDefault() != 24*time.Hour {
+		t.Fatalf("%v %v", err, c.Auth.Session.ClaimsAbsoluteOrDefault())
+	}
+	// explicit
+	c, err = parse(t, oidc+"  session: {claims_absolute: 6h}\n")
+	if err != nil || c.Auth.Session.ClaimsAbsoluteOrDefault() != 6*time.Hour {
+		t.Fatalf("%v", err)
+	}
+	// the default yields to a shorter absolute instead of failing the file
+	c, err = parse(t, oidc+"  session: {idle: 2h, absolute: 8h}\n")
+	if err != nil || c.Auth.Session.ClaimsAbsoluteOrDefault() != 8*time.Hour {
+		t.Fatalf("%v %v", err, c.Auth.Session.ClaimsAbsoluteOrDefault())
+	}
+	// equal to absolute is fine
+	if _, err = parse(t, oidc+"  session: {absolute: 48h, claims_absolute: 48h}\n"); err != nil {
+		t.Fatal(err)
+	}
+	for name, tc := range map[string]struct{ auth, msg string }{
+		"above absolute":         {oidc + "  session: {claims_absolute: 8d}\n", "claims_absolute must not exceed"},
+		"above a short absolute": {oidc + "  session: {idle: 1h, absolute: 12h, claims_absolute: 13h}\n", "claims_absolute must not exceed"},
+		"negative":               {oidc + "  session: {claims_absolute: -1h}\n", "positive"},
+		"not a duration":         {oidc + "  session: {claims_absolute: soon}\n", "duration"},
+	} {
+		if _, err := parse(t, tc.auth); err == nil || !strings.Contains(err.Error(), tc.msg) {
+			t.Errorf("%s: %v (want %q)", name, err, tc.msg)
+		}
+	}
+}
+
+// auth.passkeys beside an OIDC provider loads and is reported as ignored; without
+// one it is still refused as before. A removed key is reported, not an error.
+func TestPasskeysWarningsAndRemovedKeys(t *testing.T) {
+	oidc := "  mode: oidc\n  oidc: {issuer: 'https://i.example', client_id: x}\n"
+	c, err := parse(t, oidc+"  passkeys: true\n")
+	if err != nil || len(c.Warnings) != 1 || !strings.Contains(c.Warnings[0], "auth.passkeys is ignored") {
+		t.Fatalf("%v %v", err, c.Warnings)
+	}
+	// with identity: subject it used to be an error; it is ignored like any other
+	if c, err = parse(t, oidc[:len(oidc)-len("}\n")]+", identity: subject}\n  passkeys: true\n"); err != nil || len(c.Warnings) != 1 {
+		t.Fatalf("%v %v", err, c.Warnings)
+	}
+	if c, err = parse(t, oidc+"  passkeys: false\n"); err != nil || len(c.Warnings) != 0 {
+		t.Fatalf("%v %v", err, c.Warnings)
+	}
+	if _, err = parse(t, "  mode: cloudflare-access\n  passkeys: true\n"); err == nil || !strings.Contains(err.Error(), "auth.passkeys needs auth.mode: oidc") {
+		t.Fatalf("without OIDC passkeys are refused as before: %v", err)
+	}
+	c, err = parse(t, oidc+"  passkeys_oidc_max_age: 12h\n")
+	if err != nil || len(c.Warnings) != 1 || !strings.Contains(c.Warnings[0], "auth.passkeys_oidc_max_age is no longer used") {
+		t.Fatalf("%v %v", err, c.Warnings)
+	}
+	// also without a mode: the key is reported wherever it is
+	if c, err = parse(t, "  passkeys_oidc_max_age: 12h\n"); err != nil || len(c.Warnings) != 1 {
+		t.Fatalf("%v %v", err, c.Warnings)
+	}
+}

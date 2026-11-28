@@ -7,8 +7,10 @@ package login
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,6 +19,7 @@ import (
 	"net/netip"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -63,6 +66,12 @@ type Options struct {
 	Audit          *audit.Log // sign-ins, sign-outs and refusals; nil = none
 	Now            func() time.Time
 	Context        context.Context // lifetime of the OIDC provider; default Background
+
+	// ssoPasskeys is a test seam. This Service is the OIDC login, and people who
+	// sign in through OIDC get no passkey sign-in (docs/design-audit.md, section 4),
+	// so auth.passkeys is ignored here. The passkey code stays for local accounts;
+	// the tests of it set this to build it anyway.
+	ssoPasskeys bool
 }
 
 // Service implements auth.SessionAuth and serves /auth/*.
@@ -73,17 +82,26 @@ type Service struct {
 	codec    codec
 	idle     time.Duration
 	absolute time.Duration
-	pending  *pendingStore
-	users    *userRegistry
-	base     *url.URL
-	redirect string
-	client   *http.Client
-	authn    *auth.Authenticator
+	// claimsAbsolute is the absolute lifetime of a session whose role came from
+	// groups or app roles (auth.session.claims_absolute), already below absolute.
+	claimsAbsolute time.Duration
+	pending        *pendingStore
+	users          *userRegistry
+	base           *url.URL
+	redirect       string
+	client         *http.Client
+	authn          *auth.Authenticator
 
 	pmu     sync.Mutex
 	prov    *authoidc.Provider
 	provErr error
 	provTry time.Time
+
+	limitMu    sync.Mutex
+	limitCache map[string]limitEntry // claimsLimited, per session, claims and config generation
+
+	checkedMu sync.Mutex
+	checked   map[string]any // session key -> the role policy generation it was last looked at under
 
 	pk      *passkeys
 	limit   *limiter       // unauthenticated begin endpoints
@@ -119,6 +137,7 @@ func New(o Options) (*Service, error) {
 	}
 	s.codec = codec{key: o.Key}
 	s.idle, s.absolute = o.Login.Session.IdleOrDefault(), o.Login.Session.AbsoluteOrDefault()
+	s.claimsAbsolute = o.Login.Session.ClaimsAbsoluteOrDefault()
 	s.pending = newPendingStore(s.now)
 	s.users = newUserRegistry()
 	if s.o.Prefs == nil {
@@ -145,11 +164,17 @@ func New(o Options) (*Service, error) {
 		s.client = &http.Client{Transport: tr}
 	}
 	if o.Login.Passkeys.Enabled {
-		if o.Files == nil {
-			return nil, errors.New("login: passkeys need a data repository to store credentials")
-		}
-		if s.pk, err = newPasskeys(s); err != nil {
-			return nil, err
+		if !o.ssoPasskeys {
+			// Not an error: a rackbook.yml written for an older Rackbook keeps loading. The
+			// routes stay and refuse (passkeysRefused), the console hides the passkey pages.
+			s.log.Warn("auth.passkeys is ignored: people who sign in through single sign-on are not offered passkeys, the identity provider is their second factor")
+		} else {
+			if o.Files == nil {
+				return nil, errors.New("login: passkeys need a data repository to store credentials")
+			}
+			if s.pk, err = newPasskeys(s); err != nil {
+				return nil, err
+			}
 		}
 	}
 	return s, nil
@@ -203,6 +228,9 @@ func (s *Service) Mount(mux routes.Mux, static http.Handler) {
 	if s.pk != nil {
 		mux.HandleFunc("POST /auth/passkey/begin", s.pk.loginBegin)
 		mux.HandleFunc("POST /auth/passkey/finish", s.pk.loginFinish)
+	} else if s.o.Login.Passkeys.Enabled {
+		mux.HandleFunc("POST /auth/passkey/begin", s.passkeysRefused)
+		mux.HandleFunc("POST /auth/passkey/finish", s.passkeysRefused)
 	}
 	mux.HandleFunc("GET /api/account", humansOnly(s.account))
 	mux.HandleFunc("GET /api/admin/users", humansOnly(s.adminUsers))
@@ -211,7 +239,19 @@ func (s *Service) Mount(mux routes.Mux, static http.Handler) {
 		mux.HandleFunc("POST /api/account/passkeys/finish", humansOnly(s.pk.enrolFinish))
 		mux.HandleFunc("DELETE /api/account/passkeys/{id}", humansOnly(s.pk.removeOwn))
 		mux.HandleFunc("DELETE /api/admin/passkeys/{id}", humansOnly(s.pk.removeAny))
+	} else if s.o.Login.Passkeys.Enabled {
+		refuse := humansOnly(s.passkeysRefused)
+		mux.HandleFunc("POST /api/account/passkeys/begin", refuse)
+		mux.HandleFunc("POST /api/account/passkeys/finish", refuse)
+		mux.HandleFunc("DELETE /api/account/passkeys/{id}", refuse)
+		mux.HandleFunc("DELETE /api/admin/passkeys/{id}", refuse)
 	}
+}
+
+// passkeysRefused answers every passkey route while auth.passkeys is ignored: an
+// SSO identity can neither register nor use a passkey.
+func (s *Service) passkeysRefused(w http.ResponseWriter, r *http.Request) {
+	writeErr(w, http.StatusForbidden, "passkey_sso", "passkeys are not available to people who sign in through single sign-on: the identity provider is the second factor")
 }
 
 // humansOnly refuses credentials that are not a person's browser login: API
@@ -253,7 +293,7 @@ func (s *Service) readSession(r *http.Request) (session, error) {
 	if err != nil {
 		return session{}, err
 	}
-	if err := sess.check(s.now(), s.idle, s.absolute); err != nil {
+	if err := sess.check(s.now(), s.idle, s.limitOf(sess)); err != nil {
 		return session{}, err
 	}
 	if sess.Method == auth.MethodOIDC && sess.Iss != s.o.Login.OIDC.Issuer {
@@ -290,14 +330,18 @@ func (s *Service) Identify(w http.ResponseWriter, r *http.Request) (*auth.Identi
 	now := s.now()
 	if w != nil && now.Sub(time.Unix(sess.Seen, 0)) >= refreshEvery {
 		sess.Seen = now.Unix()
-		s.setSession(w, sess)
+		// the one Set-Cookie of this response; what was sent (claims trimmed to fit) is what counts
+		if sent, _, _, err := s.setSession(w, sess); err == nil {
+			sess = sent
+		}
 	}
-	s.users.touch(sess.ID, sess.Name, sess.Method, sess.Groups, now)
+	s.users.touch(sess.ID, sess.Name, sess.Method, sess.Groups, sess.Roles, now)
+	s.observeConfig(sess)
 	return identityOf(sess), nil
 }
 
 func identityOf(sess session) *auth.Identity {
-	id := &auth.Identity{ID: sess.ID, Name: sess.Name, Method: sess.Method, Groups: sess.Groups}
+	id := &auth.Identity{ID: sess.ID, Name: sess.Name, Method: sess.Method, Groups: sess.Groups, AppRoles: sess.Roles}
 	if strings.Contains(sess.ID, "@") {
 		id.Email = sess.ID
 	}
@@ -310,18 +354,46 @@ func identityOf(sess session) *auth.Identity {
 	return id
 }
 
-func (s *Service) setSession(w http.ResponseWriter, sess session) {
-	v, err := s.codec.seal(sess)
-	if err != nil {
-		s.log.Error("could not sign a session", "err", err)
-		return
+// fit seals sess and checks that the whole Set-Cookie header fits maxSetCookieBytes. If
+// it does not, claim values are dropped, last first, from the longer list (groups when
+// they are equal), and it is sealed again, until it fits. cutGroups and cutRoles say a
+// list lost values. With both lists empty and still too long it is errCookieTooLarge.
+func (s *Service) fit(sess session) (out session, value string, maxAge int, cutGroups, cutRoles bool, err error) {
+	for {
+		left := time.Unix(sess.Issued, 0).Add(s.limitOf(sess)).Sub(s.now())
+		maxAge = max(1, int(left.Seconds()))
+		if value, err = s.codec.seal(sess); err != nil {
+			return sess, "", 0, cutGroups, cutRoles, err
+		}
+		c := http.Cookie{Name: SessionCookie, Value: value, Path: "/", MaxAge: maxAge, Secure: true, HttpOnly: true, SameSite: http.SameSiteLaxMode}
+		if len(c.String()) <= maxSetCookieBytes {
+			return sess, value, maxAge, cutGroups, cutRoles, nil
+		}
+		switch {
+		case len(sess.Groups) == 0 && len(sess.Roles) == 0:
+			return sess, "", 0, cutGroups, cutRoles, errCookieTooLarge
+		case len(strings.Join(sess.Roles, ",")) > len(strings.Join(sess.Groups, ",")):
+			sess.Roles, cutRoles = sess.Roles[:len(sess.Roles)-1], true
+		default:
+			sess.Groups, cutGroups = sess.Groups[:len(sess.Groups)-1], true
+		}
 	}
-	left := time.Unix(sess.Issued, 0).Add(s.absolute).Sub(s.now())
-	setCookie(w, SessionCookie, v, max(1, int(left.Seconds())))
 }
 
-// issue starts a session for id.
-func (s *Service) issue(w http.ResponseWriter, id *auth.Identity, method, cred string) {
+// setSession sends sess as the session cookie, with fewer claim values if it has to (see
+// fit). It returns what was sent; on an error nothing is sent.
+func (s *Service) setSession(w http.ResponseWriter, sess session) (session, bool, bool, error) {
+	sess, v, maxAge, cg, cr, err := s.fit(sess)
+	if err != nil {
+		s.log.Error("could not issue a session cookie", "err", err)
+		return sess, cg, cr, err
+	}
+	setCookie(w, SessionCookie, v, maxAge)
+	return sess, cg, cr, nil
+}
+
+// issue starts a session for id and returns it.
+func (s *Service) issue(w http.ResponseWriter, id *auth.Identity, method, cred string) (session, overage, error) {
 	now := s.now().Unix()
 	sess := session{ID: id.ID, Name: id.Name, Method: method, Issued: now, Seen: now, Cred: cred}
 	if method == auth.MethodOIDC {
@@ -329,13 +401,16 @@ func (s *Service) issue(w http.ResponseWriter, id *auth.Identity, method, cred s
 		sess.Iss = s.o.Login.OIDC.Issuer
 		sess.Cli = s.o.Login.OIDC.ClientID
 		sess.Clm, sess.Tid = id.OIDCClaim, id.OIDCTenant
-		var cut bool
-		if sess.Groups, cut = boundGroups(id.Groups); cut {
-			s.log.Warn("the ID token has more groups than fit the session cookie; the rest are ignored", "identity", id.ID)
-		}
+		// already bounded at sign-in; bounding again keeps the cookie small whatever the caller passes
+		sess.Groups, _ = boundGroups(id.Groups)
+		sess.Roles, _ = boundAppRoles(id.AppRoles)
 	}
-	s.setSession(w, sess)
-	s.users.touch(id.ID, id.Name, method, id.Groups, s.now())
+	sess, cg, cr, err := s.setSession(w, sess)
+	if err != nil {
+		return sess, overage{}, err
+	}
+	s.users.touch(id.ID, id.Name, method, sess.Groups, sess.Roles, s.now())
+	return sess, overage{groups: cg, appRoles: cr}, nil
 }
 
 // isAPI tells API-style requests (answered with JSON) from console pages
@@ -453,7 +528,7 @@ func (w *statusWriter) Write(b []byte) (int, error) {
 var loginErrors = map[string]int{
 	"no_role": http.StatusForbidden, "tenant": http.StatusForbidden,
 	"idp_error": http.StatusOK, "idp_unavailable": http.StatusOK, "expired": http.StatusOK,
-	"bad_callback": http.StatusOK, "claims": http.StatusOK, "logged_out": http.StatusOK, "passkey": http.StatusOK,
+	"bad_callback": http.StatusOK, "claims": http.StatusOK, "session_too_large": http.StatusOK, "logged_out": http.StatusOK, "passkey": http.StatusOK,
 }
 
 func (s *Service) loginPage(w http.ResponseWriter, r *http.Request, static http.Handler) {
@@ -512,6 +587,150 @@ func (s *Service) logout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.Redirect(w, r, to, http.StatusSeeOther)
+}
+
+// evaluate sets the role, the auditor capability and the claims flag of id from
+// the current config and returns it.
+func (s *Service) evaluate(id *auth.Identity) *auth.Identity {
+	if s.authn == nil {
+		return id
+	}
+	return s.authn.Evaluate(id)
+}
+
+// overageNote is the value of the login event's groups and app_roles fields.
+func overageNote(cut bool) string {
+	if cut {
+		return "overage"
+	}
+	return ""
+}
+
+// maxCheckedSessions bounds the memory of which sessions were looked at under
+// which config; when it is full the memory is dropped, which costs one more
+// (cheap) look for each session still in use.
+const maxCheckedSessions = 20_000
+
+// sessionKey names a session without a server-side row: the person and when it
+// was issued.
+func sessionKey(id string, issued int64) string { return id + "|" + strconv.FormatInt(issued, 10) }
+
+// observeRole compares the role id has now with the one stored in
+// audit/identities.json and records role_changed when they differ (docs: roles
+// from the provider's claims). signedIn is false for a sign-in that was refused.
+// While the latest rackbook.yml does not load, roles are capped at viewer and
+// say nothing about the person, so nothing is looked at.
+func (s *Service) observeRole(r *http.Request, id *auth.Identity, cause string, signedIn bool) {
+	if s.authn == nil || s.o.Audit == nil || s.authn.Degraded() {
+		return
+	}
+	s.o.Audit.ObserveRole(audit.RoleObservation{
+		Identity: id.ID, Name: id.Name, Method: id.Method, Role: id.EffectiveRole().String(), Auditor: id.IsAuditor(),
+		Addr: clientip.Of(r, s.trusted), Cause: cause, SignedIn: signedIn, Refused: !signedIn,
+	})
+}
+
+// alreadyChecked reports that sess was looked at under the config generation gen.
+func (s *Service) alreadyChecked(sess session, gen any) bool {
+	s.checkedMu.Lock()
+	defer s.checkedMu.Unlock()
+	return s.checked[sessionKey(sess.ID, sess.Issued)] == gen
+}
+
+// markChecked remembers that sess was looked at under the config generation gen.
+// It reports false when it already was, so the caller can skip the look.
+func (s *Service) markChecked(sess session, gen any) bool {
+	key := sessionKey(sess.ID, sess.Issued)
+	s.checkedMu.Lock()
+	defer s.checkedMu.Unlock()
+	if s.checked[key] == gen {
+		return false
+	}
+	if s.checked == nil || len(s.checked) >= maxCheckedSessions {
+		s.checked = map[string]any{}
+	}
+	s.checked[key] = gen
+	return true
+}
+
+// observeConfig is the lazy half of role_changed: when rackbook.yml has changed
+// since this session was last looked at, the role it has now is compared with the
+// stored one, once. A person who never comes back is not recomputed (their claims
+// are not kept). The cost on every other request is one map lookup. The session is
+// marked as looked at only after the comparison, and its event if any, are done, so
+// a failure in between is looked at again, never lost.
+func (s *Service) observeConfig(sess session) {
+	if s.authn == nil || s.authn.Degraded() {
+		return
+	}
+	gen := s.authn.Generation()
+	if s.alreadyChecked(sess, gen) {
+		return
+	}
+	id := s.evaluate(identityOf(sess))
+	if s.o.Audit != nil {
+		s.o.Audit.ObserveRole(audit.RoleObservation{
+			Identity: id.ID, Name: id.Name, Method: id.Method, Role: id.EffectiveRole().String(), Auditor: id.IsAuditor(),
+			Cause: audit.CauseConfig, Session: time.Unix(sess.Issued, 0),
+		})
+	}
+	s.markChecked(sess, gen)
+}
+
+// markObserved marks a session the sign-in has just compared with identities.json.
+func (s *Service) markObserved(sess session) {
+	if s.authn != nil && !s.authn.Degraded() {
+		s.markChecked(sess, s.authn.Generation())
+	}
+}
+
+// claimsLimited says claims contribute to the role or the auditor capability of the
+// session, so that it lives claims_absolute and not absolute. It is decided from what
+// the signed cookie carries (the identity, its groups and app roles) against the
+// CURRENT config, on every request, with the sign-in's rule: an identity entry that
+// grants the same role wins. Nothing in the cookie says how it was decided, so an old
+// cookie that is replayed, or requests that race, get the same answer.
+//
+// A session that carries no groups and no app roles is never claims-limited. While the
+// config does not load (roles are then capped at viewer, which would hide what claims
+// give) a session that carries any is limited: it fails safe. The answer is cached per
+// session, claims and config generation, for cost only: a new config is a new
+// generation, a degraded config is never cached, and an entry never outlives its
+// generation, so the cache cannot make a limit looser than the evaluation would.
+func (s *Service) claimsLimited(sess session) bool {
+	if sess.Method != auth.MethodOIDC || (len(sess.Groups) == 0 && len(sess.Roles) == 0) {
+		return false
+	}
+	if s.authn == nil || s.authn.Degraded() {
+		return true
+	}
+	gen := s.authn.Generation()
+	h := sha256.Sum256([]byte(strings.Join(sess.Groups, "\x00") + "\x01" + strings.Join(sess.Roles, "\x00")))
+	key := sessionKey(sess.ID, sess.Issued) + "|" + hex.EncodeToString(h[:8])
+	s.limitMu.Lock()
+	e, ok := s.limitCache[key]
+	s.limitMu.Unlock()
+	if ok && e.gen == gen {
+		return e.limited
+	}
+	limited := s.evaluate(identityOf(sess)).FromClaims
+	s.limitMu.Lock()
+	if s.limitCache == nil || len(s.limitCache) >= maxCheckedSessions {
+		s.limitCache = map[string]limitEntry{}
+	}
+	s.limitCache[key] = limitEntry{gen: gen, limited: limited}
+	s.limitMu.Unlock()
+	return limited
+}
+
+type limitEntry struct {
+	gen     any
+	limited bool
+}
+
+// limitOf is the absolute lifetime of sess under the current config.
+func (s *Service) limitOf(sess session) time.Duration {
+	return absoluteLimit(s.absolute, s.claimsAbsolute, s.claimsLimited(sess))
 }
 
 // roleOf evaluates the role of an identity from the current config.

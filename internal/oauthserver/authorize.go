@@ -64,24 +64,15 @@ func humanSubject(r *http.Request) (Subject, bool) {
 	case auth.MethodToken, auth.MethodOAuth, auth.MethodMCPHub:
 		return Subject{}, false
 	}
-	sub := Subject{ID: roles.FoldASCII(id.ID), Email: id.Email, Name: id.Name, Method: id.Method, Groups: boundGroups(id.Groups)}
+	sub := Subject{ID: roles.FoldASCII(id.ID), Email: id.Email, Name: id.Name, Method: id.Method, Groups: boundGroups(id.Groups), AppRoles: boundAppRoles(id.AppRoles), SignedIn: id.OIDCAt}
 	return sub, true
 }
 
-// boundGroups keeps the groups a grant stores small, like the session cookie does.
-func boundGroups(in []string) []string {
-	var out []string
-	total := 0
-	for _, g := range in {
-		g = strings.TrimSpace(g)
-		if g == "" || len(g) > 128 || len(out) >= 40 || total+len(g) > 700 {
-			continue
-		}
-		total += len(g)
-		out = append(out, g)
-	}
-	return out
-}
+// boundGroups keeps the groups a grant stores small, with the same rule as the session cookie.
+func boundGroups(in []string) []string { out, _ := roles.BoundClaim(in, true); return out }
+
+// boundAppRoles is the same for the roles claim, whose values are kept exactly as sent.
+func boundAppRoles(in []string) []string { out, _ := roles.BoundClaim(in, false); return out }
 
 // redirectBack sends the browser back to the client with an error (RFC 6749
 // section 4.1.2.1). It is used only after client_id and redirect_uri were

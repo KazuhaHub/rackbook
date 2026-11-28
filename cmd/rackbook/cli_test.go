@@ -379,3 +379,44 @@ func TestCheckRefusesTheDailyAnchorInPullRequestMode(t *testing.T) {
 		}
 	}
 }
+
+func TestCheckAcceptsAppRoleEntriesAndReportsRemovedPasskeyKeys(t *testing.T) {
+	dir := testutil.CopyExample(t)
+	cfg := filepath.Join(dir, "rackbook.yml")
+	b, _ := os.ReadFile(cfg)
+	write := func(extra string) {
+		t.Helper()
+		if err := os.WriteFile(cfg, append(append([]byte{}, b...), extra...), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("\nauth:\n  roles:\n    admin: ['app-role:Rackbook.Admin', 'group:ops']\n  auditors: ['app-role:Rackbook.Auditor']\n")
+	if out, err := run(t, "check", "--config", cfg); err != nil || !strings.HasPrefix(out, "ok:") {
+		t.Fatalf("%v %s", err, out)
+	}
+	for _, bad := range []string{"app-role:", "app-role:Bad*"} {
+		write("\nauth:\n  roles:\n    admin: ['" + bad + "']\n")
+		if out, err := run(t, "check", "--config", cfg); err == nil || !strings.Contains(out+err.Error(), "auth.roles.admin") {
+			t.Fatalf("%q must fail and name the key: %v %s", bad, err, out)
+		}
+		write("\nauth:\n  auditors: ['" + bad + "']\n")
+		if out, err := run(t, "check", "--config", cfg); err == nil || !strings.Contains(out+err.Error(), "auth.auditors") {
+			t.Fatalf("%q must fail and name the key: %v %s", bad, err, out)
+		}
+	}
+	// session.claims_absolute is validated by the same load
+	write("\nauth:\n  mode: oidc\n  oidc: {issuer: 'https://i.example', client_id: x}\n  session: {absolute: 12h, claims_absolute: 24h}\n")
+	if out, err := run(t, "check", "--config", cfg); err == nil || !strings.Contains(out+err.Error(), "claims_absolute") {
+		t.Fatalf("%v %s", err, out)
+	}
+	// auth.passkeys beside OIDC and the removed key are warnings, not errors
+	write("\nauth:\n  mode: oidc\n  oidc: {issuer: 'https://i.example', client_id: x}\n  passkeys: true\n  passkeys_oidc_max_age: 12h\n")
+	out, err := run(t, "check", "--config", cfg)
+	if err != nil || !strings.HasPrefix(out, "ok:") || !strings.Contains(out, "warning: ") || !strings.Contains(out, "auth.passkeys is ignored") || !strings.Contains(out, "auth.passkeys_oidc_max_age is no longer used") {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	out, err = run(t, "check", "--config", cfg, "--format", "json")
+	if err != nil || !strings.Contains(out, `"ok": true`) || !strings.Contains(out, "passkeys_oidc_max_age") {
+		t.Fatalf("%v\n%s", err, out)
+	}
+}

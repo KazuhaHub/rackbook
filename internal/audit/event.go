@@ -33,6 +33,18 @@ type Event struct {
 	Key      string    `json:"key,omitempty"`
 	Files    []string  `json:"files,omitempty"`
 	Detail   []string  `json:"detail,omitempty"`
+	// Groups and AppRoles are "overage" on a login whose groups or roles claim was
+	// cut off: the identity provider sent no groups at all (Entra, past 200 groups),
+	// or more than the session keeps. The sign-in succeeded without the lost values.
+	Groups   string `json:"groups,omitempty"`
+	AppRoles string `json:"app_roles,omitempty"`
+	// role_changed: the effective role and auditor capability before and after, and
+	// why the difference was seen (CauseSignIn or CauseConfig).
+	From        string `json:"from,omitempty"`
+	To          string `json:"to,omitempty"`
+	AuditorFrom *bool  `json:"auditor_from,omitempty"`
+	AuditorTo   *bool  `json:"auditor_to,omitempty"`
+	Cause       string `json:"cause,omitempty"`
 	// Prev is "sha256:<hex>" of the previous line, "" for the first line ever.
 	Prev string `json:"prev"`
 }

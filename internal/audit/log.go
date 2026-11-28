@@ -60,6 +60,8 @@ type Log struct {
 
 	stat func(*os.File) (os.FileInfo, error) // test seam: f.Stat
 
+	ids *identityStore // identities.json (identities.go); its own lock, taken before mu
+
 	offsets offsetIndex // sparse seq -> offset marks per month file (offsets.go)
 	index   indexState  // the commit index (index.go); its own lock, never held with mu
 
@@ -78,7 +80,7 @@ func Open(dir string, opts Options) (*Log, error) {
 	if opts.Now == nil {
 		opts.Now = time.Now
 	}
-	l := &Log{dir: dir, opts: opts, log: opts.Logger, stop: make(chan struct{}), stat: (*os.File).Stat}
+	l := &Log{dir: dir, opts: opts, log: opts.Logger, stop: make(chan struct{}), stat: (*os.File).Stat, ids: newIdentityStore()}
 	if l.log == nil {
 		l.log = slog.New(slog.DiscardHandler)
 	}

@@ -1,17 +1,18 @@
 package login
 
 import (
+	"bytes"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/kazuhahub/rackbook/internal/roles"
 	"net/http"
 	"os"
 	"strings"
 	"time"
-	"unicode/utf8"
 )
 
 // Cookie names. The __Host- prefix makes browsers require Secure, Path=/ and
@@ -25,8 +26,16 @@ const (
 	// enrolWindow is how recent an OIDC login must be to add a passkey.
 	enrolWindow = 10 * time.Minute
 
-	maxCookieBytes = 2048
+	// maxCookieBytes is the longest session cookie value the server reads.
+	maxCookieBytes = 4096
 )
+
+// maxSetCookieBytes bounds the whole Set-Cookie header (name, value and attributes) the
+// server sends: browsers keep a cookie of at most 4096 bytes. A variable for the tests.
+var maxSetCookieBytes = 4096
+
+// errCookieTooLarge says a session does not fit one cookie even without its groups and roles.
+var errCookieTooLarge = errors.New("the session does not fit a cookie")
 
 var (
 	errNoSession = errors.New("no session")
@@ -38,28 +47,11 @@ var (
 	errUnavailable = errors.New("passkey file unavailable")
 )
 
-// Bounds on the groups kept in the session cookie, which must stay small.
-const (
-	maxSessionGroups     = 40
-	maxSessionGroupBytes = 700 // total
-)
+// boundGroups is boundClaim for the groups claim.
+func boundGroups(in []string) (out []string, truncated bool) { return roles.BoundClaim(in, true) }
 
-// boundGroups keeps the first groups that fit the cookie. truncated says some were dropped.
-func boundGroups(in []string) (out []string, truncated bool) {
-	total := 0
-	for _, g := range in {
-		g = strings.TrimSpace(g)
-		if g == "" || len(g) > 128 || !utf8.ValidString(g) {
-			continue
-		}
-		if len(out) >= maxSessionGroups || total+len(g) > maxSessionGroupBytes {
-			return out, true
-		}
-		total += len(g)
-		out = append(out, g)
-	}
-	return out, false
-}
+// boundAppRoles is boundClaim for the roles claim.
+func boundAppRoles(in []string) (out []string, truncated bool) { return roles.BoundClaim(in, false) }
 
 // session is the signed payload of the session cookie. It holds no role: the
 // role is evaluated from auth.roles on every request.
@@ -76,6 +68,7 @@ type session struct {
 	Tid    string   `json:"tid,omitempty"`  // oidc sessions: the ID token's tenant (tid), lower case; checked by /infra
 	Cli    string   `json:"cli,omitempty"`  // oidc sessions: the client ID of that login (checked by /infra, which pins it)
 	Groups []string `json:"grp,omitempty"`  // oidc sessions: the ID token's groups claim (bounded), for group: role entries
+	Roles  []string `json:"rol,omitempty"`  // oidc sessions: the ID token's roles claim (bounded), for app-role: role entries
 	Cred   string   `json:"cred,omitempty"` // passkey sessions: the credential id used, so deleting it ends the session
 }
 
@@ -92,10 +85,13 @@ func (c codec) mac(payload string) []byte {
 
 func (c codec) seal(s session) (string, error) {
 	s.V = 1
-	b, err := json.Marshal(s)
-	if err != nil {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false) // & < > stay one byte; only quotes and backslashes grow
+	if err := enc.Encode(s); err != nil {
 		return "", err
 	}
+	b := bytes.TrimRight(buf.Bytes(), "\n")
 	p := base64.RawURLEncoding.EncodeToString(b)
 	return p + "." + base64.RawURLEncoding.EncodeToString(c.mac(p)), nil
 }
@@ -121,6 +117,16 @@ func (c codec) open(v string) (session, error) {
 		return session{}, errBadCookie
 	}
 	return s, nil
+}
+
+// absoluteLimit is the absolute lifetime of a session: claimsAbsolute when claims
+// contribute to its role (Service.claimsLimited decides, on every request), if that
+// is shorter than the normal limit.
+func absoluteLimit(absolute, claimsAbsolute time.Duration, claims bool) time.Duration {
+	if claims && claimsAbsolute > 0 && claimsAbsolute < absolute {
+		return claimsAbsolute
+	}
+	return absolute
 }
 
 // check applies the idle and absolute limits.

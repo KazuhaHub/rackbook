@@ -123,6 +123,30 @@ func (s *server) createToken(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_request", "invalid JSON body: "+err.Error())
 		return
 	}
+	// A token keeps working only through a role its creator holds by identity (an
+	// exact entry, *@domain or oidc:), because it is evaluated for the creator on
+	// every request and the creator's groups and app roles are not kept. A creator
+	// whose role (for what this token is to do) comes only from those would hand
+	// out a token that has no role, or less than it says.
+	if who := s.who(r); who != nil {
+		want := roles.Viewer
+		if b.Scope == tokens.ScopeWrite {
+			want = roles.Editor
+			if b.WriteMode == tokens.ModePush {
+				want = roles.Admin // a push token only counts while its creator is an admin by identity
+			}
+		}
+		// The auditor capability is held to the same rule without a check of its own: a token carries it
+		// only while its creator is on auth.auditors by identity, and an auditor with no role by identity
+		// has no role for the token either (the viewer floor comes from the capability), so that creator
+		// is refused here. A creator who has the role by identity and the capability only by claims gets
+		// a token without the capability, which is what the token list shows (creatorAuditor).
+		if role, _ := s.o.Auth.CapabilitiesForVia(who.ID, who.Method); role < want && who.EffectiveRole() >= want {
+			writeError(w, http.StatusForbidden, "creator_role_from_claims",
+				"your role comes from a group or an app role, which an API token cannot inherit: ask an administrator to list you by name (or *@domain) in auth.roles, then create the token")
+			return
+		}
+	}
 	if b.ExpiresDays < 0 || b.ExpiresDays > 3650 {
 		writeError(w, http.StatusBadRequest, "bad_request", "expiresDays must be between 0 (never) and 3650")
 		return

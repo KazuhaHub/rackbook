@@ -4,7 +4,7 @@ const messages = {
   // login, the account page and the users page
   auth: {
     role: { admin: '管理员', editor: '编辑', viewer: '只读', none: '无权限' } as Record<string, string>,
-    auditor: { label: '审计员', hint: '审计员是独立于角色的能力，由 rackbook.yml 的 auth.auditors 授予：可以查看并导出「活动」里的审计区域和审计日志状态，但不能显示密钥，也不能修改任何内容；只有角色同时是编辑或以上才能还原版本。管理员不会自动成为审计员。', users: '审计员在 auth.auditors 里设置，和角色分开。按组匹配时用的是服务器启动以来该用户最近一次登录带的组；之后没登录过的人只能按名字匹配。' },
+    auditor: { label: '审计员', hint: '审计员是独立于角色的能力，由 rackbook.yml 的 auth.auditors 授予：可以查看并导出「活动」里的审计区域和审计日志状态，但不能显示密钥，也不能修改任何内容；只有角色同时是编辑或以上才能还原版本。管理员不会自动成为审计员。', users: '审计员在 auth.auditors 里设置，和角色分开。按用户组或应用角色匹配时用的是服务器启动以来该用户最近一次登录带的用户组和应用角色；之后没登录过的人只能按名字匹配。' },
     method: {
       oidc: '单点登录（OIDC）',
       passkey: '通行密钥',
@@ -62,6 +62,10 @@ const messages = {
           title: '登录请求无效',
           body: '这次登录回调缺少必要信息，或与发起登录的浏览器不匹配。请从这里重新开始。',
         },
+        session_too_large: {
+          title: '无法开始会话',
+          body: '你的账号信息太长，放不进登录 Cookie，所以 Rackbook 无法让你登录。请联系管理员检查账号的名称和身份声明。',
+        },
         claims: {
           title: '无法确认你的身份',
           body: '身份提供方返回的信息里没有可用的账号标识。请联系管理员检查 auth.oidc.identity_claim 和应用注册的令牌声明。',
@@ -76,6 +80,10 @@ const messages = {
       role: '角色',
       method: '登录方式',
       roleHint: '角色由 rackbook.yml 的 auth.roles 决定，每次请求时重新计算。',
+      roleFrom: '角色来自',
+      auditorFrom: '审计员来自',
+      roleFromKinds: { identity: '你的账号（名称或域名）', group: '用户组', 'app-role': '应用角色' } as Record<string, string>,
+      claimsNote: (hours: number) => `这个角色是登录时从身份提供方提供的用户组或应用角色里读到的。在那边被移出后，下次登录就会生效，最迟在你登录后 ${hours} 小时，本次会话结束时生效（auth.session.claims_absolute）。你授权给 MCP 客户端的访问也一样：批准后过了这段时间，它只按你的账号名称对应的角色工作。`,
       passkeys: '通行密钥',
       passkeysHint: '用指纹、面容或设备 PIN 登录，无需再经过单点登录。通行密钥只是登录方式之一，丢失后仍可用单点登录。',
       passkeysEmpty: '还没有通行密钥',
@@ -105,6 +113,7 @@ const messages = {
     users: {
       title: '用户',
       description: '自服务器启动以来登录过的用户，以及已登记通行密钥的用户。角色在 rackbook.yml 的 auth.roles 中修改（走 Git 评审），这里不能改。',
+      descriptionNoPasskeys: '自服务器启动以来登录过的用户。角色在 rackbook.yml 的 auth.roles 中修改（走 Git 评审），这里不能改。',
       id: '账号',
       name: '姓名',
       role: '角色',
@@ -426,6 +435,7 @@ const messages = {
     suspectedBody: '保存已暂停。如果确实不是密钥，请勾选下面的选项后再保存；这次确认会记录在提交里。',
     notASecret: '不是密钥',
     readOnly: '当前为只读模式，或你没有修改权限，无法保存。',
+    tokenCreatorClaims: '你的角色来自用户组或应用角色，API 令牌无法继承。请管理员在 auth.roles 里按名称（或 *@域名）列出你，然后再创建令牌。',
     historyRewritten: '远端历史被改写，已暂停写入，请联系管理员。',
     configError: '配置文件无法加载，已暂停写入，请联系管理员。',
     conflictTitle: '记录已被他人修改',
@@ -914,9 +924,14 @@ const messages = {
         tenant: '租户不符',
         claims: '身份提供方的声明无法使用',
         passkey_failed: '通行密钥校验失败',
-        passkey_needs_oidc: '通行密钥需要先通过单点登录',
       } as Record<string, string>,
-      roleChanged: '角色已变更',
+      roleChanged: (from: string, to: string, auditor: string, cause: string) =>
+        `${from === to ? `角色不变（${to}）` : `角色由「${from}」变为「${to}」`}${auditor === 'on' ? '，并成为审计员' : auditor === 'off' ? '，不再是审计员' : ''}${cause ? `（${cause}）` : ''}`,
+      causes: { sign_in: '登录时发现', config: 'rackbook.yml 修改后' } as Record<string, string>,
+      overage: {
+        groups: '身份提供方给的用户组太多，超出的部分没有使用',
+        appRoles: '身份提供方给的应用角色太多，超出的部分没有使用',
+      },
       writeRefused: (area: string, code: string) => `写入被拒绝（${area}）${code ? `：${code}` : ''}`,
       codes: {
         conflict: '已被他人先行修改',

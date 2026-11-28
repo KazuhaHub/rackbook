@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"github.com/kazuhahub/rackbook/internal/locale"
 	"mime"
 	"net/http"
 	"strings"
@@ -72,8 +73,47 @@ func (s *Server) token(w http.ResponseWriter, r *http.Request) {
 // role is the role auth.roles gives the grant's subject right now.
 func (s *Server) role(sub Subject) roles.Role {
 	id := &auth.Identity{ID: sub.ID, Email: sub.Email, Method: auth.MethodOAuth}
-	s.o.Auth.EvaluateSubject(id, roles.Subject{ID: roles.FoldASCII(sub.ID), Email: sub.Email, Method: sub.Method, Groups: sub.Groups})
+	s.o.Auth.EvaluateSubject(id, roles.Subject{ID: roles.FoldASCII(sub.ID), Email: sub.Email, Method: sub.Method, Groups: sub.Groups, AppRoles: sub.AppRoles})
 	return id.Role
+}
+
+// reasonClaimsExpired is why a grant ended when the groups or app roles it was approved
+// with stopped counting and the person has no role by identity.
+const reasonClaimsExpired = "claims_expired"
+
+var claimsExpiredTexts = map[string]string{
+	"en-US": "the grant has ended: its role came from groups or app roles, which count only for a limited time after approval, and you have no role by name; authorize again",
+	"zh-CN": "授权已结束：它的角色来自用户组或应用角色，这些只在批准后的一段时间内有效，而你按名称没有角色；请重新授权",
+	"zh-TW": "授權已結束：它的角色來自群組或應用程式角色，這些只在核准後的一段時間內有效，而你依名稱沒有角色；請重新授權",
+}
+
+func claimsExpiredText(acceptLanguage string) string {
+	if t, ok := claimsExpiredTexts[locale.Match(acceptLanguage, locale.Default)]; ok {
+		return t
+	}
+	return claimsExpiredTexts["en-US"]
+}
+
+// effective is the grant's subject as it counts now. The groups and app roles in
+// it are a snapshot of the sign-in that approved the grant: they count for
+// auth.session.claims_absolute after the approval and not a moment longer, then the
+// grant is evaluated by identity entries alone, like an API token. So a role
+// removed at the identity provider cannot outlive that bound by refreshing. The
+// bound starts at the earlier of the approving session's sign-in and the grant's
+// creation, because the claims are as old as the sign-in: a session that signed in
+// 23h59m ago and approves a grant gives its claims about a minute. A grant with no
+// sign-in or creation time (made before they were recorded) has no claims left.
+func (s *Server) effective(g *Grant) Subject {
+	sub := g.Subject
+	limit := s.o.Config().Auth.Session.ClaimsAbsoluteOrDefault()
+	start := g.Subject.SignedIn
+	if g.Created.Before(start) {
+		start = g.Created
+	}
+	if start.IsZero() || !s.now().Before(start.Add(limit)) {
+		sub.Groups, sub.AppRoles = nil, nil
+	}
+	return sub
 }
 
 func (s *Server) exchangeCode(w http.ResponseWriter, r *http.Request) {
@@ -207,6 +247,12 @@ func (s *Server) refresh(w http.ResponseWriter, r *http.Request) {
 			s.fail(w, "ending a grant", err)
 			return
 		}
+		if reason == reasonClaimsExpired {
+			// a distinct answer, so the person can be told why in their language (reason says it to a program)
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_grant", "reason": reasonClaimsExpired,
+				"error_description": claimsExpiredText(r.Header.Get("Accept-Language"))})
+			return
+		}
 		oauthError(w, http.StatusBadRequest, "invalid_grant", "the grant has ended; authorize again")
 	}
 	switch {
@@ -217,7 +263,11 @@ func (s *Server) refresh(w http.ResponseWriter, r *http.Request) {
 	case now.Sub(g.LastUsed) > s.cfg().IdleExpiryOrDefault():
 		end("idle")
 		return
-	case s.role(g.Subject) == roles.None:
+	case s.role(s.effective(g)) == roles.None:
+		if s.role(g.Subject) != roles.None {
+			end(reasonClaimsExpired) // the role was only the claims', which no longer count
+			return
+		}
 		end("role removed")
 		return
 	case len(s.cfg().AllowedClients) > 0 && !contains(s.cfg().AllowedClients, g.ClientID):
@@ -439,7 +489,7 @@ func (s *Server) VerifyAccess(raw string) (*Claims, error) {
 		now.Sub(g.LastUsed) > s.cfg().IdleExpiryOrDefault() {
 		return nil, ErrInvalidToken
 	}
-	return &Claims{Subject: g.Subject, ClientID: g.ClientID, ClientName: g.ClientName, Scopes: strings.Fields(c.Scope), GrantID: g.ID}, nil
+	return &Claims{Subject: s.effective(g), ClientID: g.ClientID, ClientName: g.ClientName, Scopes: strings.Fields(c.Scope), GrantID: g.ID}, nil
 }
 
 // revoke ends a grant. It reports whether one existed, and an error when the

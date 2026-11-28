@@ -41,6 +41,7 @@ import {
 } from '../src/lib/labels.ts'
 import { displayText } from '../src/lib/display.ts'
 import { issueText } from '../src/lib/issues.ts'
+import { eventSentence } from '../src/lib/eventSentence.ts'
 import { activateLocale } from '../src/i18n/index.ts'
 import { countryName, flagEmoji, subdivisionCountry } from '../src/lib/countryDisplay.ts'
 import { COUNTRY_CODES } from '../src/lib/countries.ts'
@@ -478,6 +479,26 @@ eq('nothing entered: both need a decision', unresolvedHidden(['/token', '/ports/
 eq('entered a value', unresolvedHidden(['/token', '/ports/1/proto'], {}, { ...hdraft, token: 'typed' }, hdraft), ['/ports/1/proto'])
 eq('chose', unresolvedHidden(['/token', '/ports/1/proto'], { '/token': 'keep', '/ports/1/proto': 'empty' }, hdraft, hdraft), [])
 eq('typed and cleared again is not a decision', unresolvedHidden(['/token'], {}, { ...hdraft, token: undefined }, hdraft), ['/token'])
+
+// audit events as sentences: a role change (and why it was seen), and a sign-in whose claims were cut off
+{
+  const changed = { time: '', area: 'audit', kind: 'role_changed', from: 'editor', to: 'viewer', auditor_from: false, auditor_to: false, cause: 'config' } as const
+  const cases: [string, Parameters<typeof eventSentence>[0], Record<string, string>][] = [
+    ['role changed after a config change', changed, { 'en-US': 'role changed from Editor to Viewer (after a rackbook.yml change)', 'zh-CN': '角色由「编辑」变为「只读」（rackbook.yml 修改后）', 'zh-TW': '角色由「編輯」變更為「唯讀」（rackbook.yml 變更後）' }],
+    ['role changed at sign-in, now an auditor', { ...changed, to: 'admin', auditor_to: true, cause: 'sign_in' }, { 'en-US': 'role changed from Editor to Admin, now an auditor (seen at sign-in)', 'zh-CN': '角色由「编辑」变为「管理员」，并成为审计员（登录时发现）', 'zh-TW': '角色由「編輯」變更為「管理員」，並成為稽核員（登入時發現）' }],
+    ['auditor flag only', { ...changed, to: 'editor', auditor_from: true }, { 'en-US': 'role unchanged (Editor), no longer an auditor (after a rackbook.yml change)', 'zh-CN': '角色不变（编辑），不再是审计员（rackbook.yml 修改后）', 'zh-TW': '角色不變（編輯），不再是稽核員（rackbook.yml 變更後）' }],
+    ['role lost', { ...changed, to: 'none', cause: 'sign_in' }, { 'en-US': 'role changed from Editor to No access (seen at sign-in)' }],
+    ['unknown cause', { ...changed, cause: 'whatever' }, { 'en-US': 'role changed from Editor to Viewer (whatever)' }],
+    ['sign-in with groups cut off', { time: '', area: 'audit', kind: 'login', role: 'viewer', method: 'oidc', groups: 'overage' }, { 'en-US': 'signed in as Viewer (Single sign-on (OIDC)): the identity provider sent too many groups; the ones past the limit were not used' }],
+    ['sign-in with both cut off', { time: '', area: 'audit', kind: 'login', role: 'viewer', method: 'oidc', groups: 'overage', app_roles: 'overage' }, { 'en-US': 'signed in as Viewer (Single sign-on (OIDC)): the identity provider sent too many groups; the ones past the limit were not used; the identity provider sent too many app roles; the ones past the limit were not used' }],
+    ['plain sign-in is unchanged', { time: '', area: 'audit', kind: 'login', role: 'viewer', method: 'oidc' }, { 'en-US': 'signed in as Viewer (Single sign-on (OIDC))' }],
+  ]
+  for (const loc of ['zh-CN', 'en-US', 'zh-TW'] as const) {
+    await activateLocale(loc)
+    for (const [name, item, want] of cases) if (want[loc] !== undefined) eq(`event ${name} (${loc})`, eventSentence(item as Parameters<typeof eventSentence>[0]), want[loc])
+  }
+  await activateLocale('zh-CN')
+}
 
 if (failed) process.exit(1)
 console.log('console logic: ok')

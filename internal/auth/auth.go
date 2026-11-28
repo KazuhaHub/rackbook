@@ -250,6 +250,7 @@ func (a *Authenticator) RoleForVia(identity, method string) roles.Role {
 // auth.auditors.
 func (a *Authenticator) CapabilitiesForVia(identity, method string) (roles.Role, bool) {
 	id := roles.FoldASCII(identity)
+	// No groups and no app roles: a creator is evaluated by identity alone.
 	return a.evaluate(roles.Subject{ID: id, Email: emailOf(id), Method: method})
 }
 
@@ -276,10 +277,39 @@ func (a *Authenticator) evaluate(s roles.Subject) (roles.Role, bool) {
 	return r, auditor
 }
 
+// fromClaims says the role or the auditor capability of s, as evaluated, depends
+// on its groups or app roles: evaluated by identity alone, the role would be lower
+// or the capability would be absent. A role an identity entry also grants is not
+// from claims, even when a group entry matches too.
+func (a *Authenticator) fromClaims(s roles.Subject, role roles.Role, auditor bool) bool {
+	if len(s.Groups) == 0 && len(s.AppRoles) == 0 {
+		return false
+	}
+	r, aud := a.evaluate(s.WithoutClaims())
+	return role > r || (auditor && !aud)
+}
+
+// Sources says which kinds of role entry (roles.SourceIdentity, SourceGroup,
+// SourceAppRole) grant id its role and its auditor capability now. The account
+// page shows it as "Role from".
+func (a *Authenticator) Sources(id *Identity) (role, auditor []string) {
+	return a.Policy().Sources(id.Subject())
+}
+
+// Generation identifies the role policy now in force. It changes when a config
+// reload brings a new auth block (even an equal one), so a caller that has
+// already looked at a person for one generation need not do it again.
+func (a *Authenticator) Generation() any { return a.Policy() }
+
+// Degraded reports that the latest rackbook.yml failed to load: roles then come
+// from the last good config, capped at viewer.
+func (a *Authenticator) Degraded() bool { return a.cfg.Degraded != nil && a.cfg.Degraded() }
+
 // EvaluateSubject is Evaluate with the role and the auditor capability looked
 // up for s instead of for the identity itself (a token takes its creator's).
 func (a *Authenticator) EvaluateSubject(id *Identity, s roles.Subject) *Identity {
 	id.Role, id.Auditor = a.evaluate(s)
+	id.FromClaims = a.fromClaims(s, id.Role, id.Auditor)
 	if id.Anonymous() && id.Method == MethodNone && id.Role == roles.None {
 		id.Role = roles.Viewer
 	}

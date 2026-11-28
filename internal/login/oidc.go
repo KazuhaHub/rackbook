@@ -140,7 +140,7 @@ func (s *Service) oidcCallback(w http.ResponseWriter, r *http.Request) {
 		s.loginFail(w, r, "idp_error", entry.ret)
 		return
 	}
-	id, tid, err := s.identityFromClaims(assertion)
+	id, tid, ov, err := s.identityFromClaims(assertion)
 	if err != nil {
 		s.log.Warn("login failed: claims", "reason", err.Error(), "subject", sanitizeLog(assertion.Subject))
 		s.record(r, audit.Event{Event: "login_refused", Reason: "claims", Method: auth.MethodOIDC})
@@ -153,16 +153,34 @@ func (s *Service) oidcCallback(w http.ResponseWriter, r *http.Request) {
 		s.loginFail(w, r, "tenant", entry.ret)
 		return
 	}
-	role := s.roleOf(id)
+	if ov.groups || ov.appRoles {
+		s.log.Warn("the ID token has more groups or app roles than the sign-in can use; the rest are ignored (use app roles, or have the provider send only the groups this app uses)",
+			"identity", id.ID, "groups", ov.groups, "appRoles", ov.appRoles)
+	}
+	ev := s.evaluate(id)
+	role := ev.EffectiveRole()
 	if role == roles.None {
 		s.log.Warn("login refused: identity has no role", "identity", id.ID, "method", auth.MethodOIDC)
-		s.record(r, audit.Event{Event: "login_refused", Reason: "no_role", Identity: id.ID, Name: id.Name, Method: auth.MethodOIDC})
+		s.record(r, audit.Event{Event: "login_refused", Reason: "no_role", Identity: id.ID, Name: id.Name, Method: auth.MethodOIDC, Groups: overageNote(ov.groups), AppRoles: overageNote(ov.appRoles)})
+		// someone who had a role and lost it is a change, though they get no session
+		s.observeRole(r, ev, audit.CauseSignIn, false)
 		s.loginFail(w, r, "no_role", "")
 		return
 	}
-	s.issue(w, id, auth.MethodOIDC, "")
+	sess, cut, err := s.issue(w, id, auth.MethodOIDC, "")
+	if err != nil {
+		// even without its groups and roles the session does not fit a cookie: say so, never loop
+		s.log.Error("login refused: the session does not fit a cookie", "identity", id.ID, "err", err)
+		s.record(r, audit.Event{Event: "login_refused", Reason: "session_too_large", Identity: id.ID, Name: id.Name, Method: auth.MethodOIDC})
+		s.loginFail(w, r, "session_too_large", entry.ret)
+		return
+	}
+	// values dropped to fit the cookie count as an overage, like a list cut at the cap
+	ov.groups, ov.appRoles = ov.groups || cut.groups, ov.appRoles || cut.appRoles
 	s.log.Info("login", "identity", id.ID, "method", auth.MethodOIDC, "remote", r.RemoteAddr)
-	s.record(r, audit.Event{Event: "login", Identity: id.ID, Name: id.Name, Method: auth.MethodOIDC, Role: role.String()})
+	s.record(r, audit.Event{Event: "login", Identity: id.ID, Name: id.Name, Method: auth.MethodOIDC, Role: role.String(), Groups: overageNote(ov.groups), AppRoles: overageNote(ov.appRoles)})
+	s.observeRole(r, ev, audit.CauseSignIn, true)
+	s.markObserved(sess)
 	http.Redirect(w, r, SafeReturn(entry.ret), http.StatusSeeOther)
 }
 
@@ -172,34 +190,35 @@ const SubjectPrefix = "oidc:"
 
 // identityFromSubject names the login by the ID token's sub, which the
 // verified token binds to this issuer.
-func (s *Service) identityFromSubject(claims map[string]json.RawMessage, str func(string, bool) (string, error)) (*auth.Identity, string, error) {
+func (s *Service) identityFromSubject(claims map[string]json.RawMessage, str func(string, bool) (string, error)) (*auth.Identity, string, overage, error) {
 	sub, err := str("sub", true)
 	if err != nil {
-		return nil, "", err
+		return nil, "", overage{}, err
 	}
 	sub = strings.TrimSpace(sub)
 	if sub == "" || len(sub) > 255 || !utf8.ValidString(sub) || strings.ContainsFunc(sub, func(r rune) bool { return r <= 0x20 || r == 0x7f || r == '<' || r == '>' }) {
-		return nil, "", errors.New("claim sub is empty or not usable as an identity")
+		return nil, "", overage{}, errors.New("claim sub is empty or not usable as an identity")
 	}
 	_, nameClaim := s.o.Login.OIDC.ClaimsOrDefault()
 	name, err := str(nameClaim, false)
 	if err != nil {
-		return nil, "", err
+		return nil, "", overage{}, err
 	}
 	tid, err := str("tid", false)
 	if err != nil {
-		return nil, "", err
+		return nil, "", overage{}, err
 	}
-	return &auth.Identity{ID: roles.FoldASCII(SubjectPrefix + sub), Name: cleanName(name), Method: auth.MethodOIDC, Groups: groupsClaim(claims),
-		OIDCClaim: "sub", OIDCTenant: roles.FoldASCII(strings.TrimSpace(tid))}, tid, nil
+	groups, appRoles, ov := listClaims(claims)
+	return &auth.Identity{ID: roles.FoldASCII(SubjectPrefix + sub), Name: cleanName(name), Method: auth.MethodOIDC, Groups: groups, AppRoles: appRoles,
+		OIDCClaim: "sub", OIDCTenant: roles.FoldASCII(strings.TrimSpace(tid))}, tid, ov, nil
 }
 
 // identityFromClaims decodes the verified ID token's claims with an explicit
 // schema: the identity and name claims must be JSON strings.
-func (s *Service) identityFromClaims(a *authoidc.Assertion) (*auth.Identity, string, error) {
+func (s *Service) identityFromClaims(a *authoidc.Assertion) (*auth.Identity, string, overage, error) {
 	var claims map[string]json.RawMessage
 	if err := a.Claims(&claims); err != nil {
-		return nil, "", errors.New("claims are not a JSON object")
+		return nil, "", overage{}, errors.New("claims are not a JSON object")
 	}
 	idClaim, nameClaim := s.o.Login.OIDC.ClaimsOrDefault()
 	str := func(k string, required bool) (string, error) {
@@ -221,59 +240,107 @@ func (s *Service) identityFromClaims(a *authoidc.Assertion) (*auth.Identity, str
 	}
 	ident, err := str(idClaim, true)
 	if err != nil {
-		return nil, "", err
+		return nil, "", overage{}, err
 	}
 	ident = strings.TrimSpace(ident)
 	if ident == "" || len(ident) > 320 || !utf8.ValidString(ident) || strings.ContainsFunc(ident, func(r rune) bool {
 		return r <= 0x20 || r == 0x7f || r == 0x85 || r == 0x2028 || r == 0x2029 || r == '<' || r == '>'
 	}) {
-		return nil, "", errors.New("claim " + idClaim + " is empty or not usable as an identity")
+		return nil, "", overage{}, errors.New("claim " + idClaim + " is empty or not usable as an identity")
 	}
 	if strings.HasPrefix(strings.ToLower(ident), SubjectPrefix) {
 		// The oidc: prefix names subject identities only; a claim must not be able to forge one.
-		return nil, "", errors.New("claim " + idClaim + " must not start with " + SubjectPrefix)
+		return nil, "", overage{}, errors.New("claim " + idClaim + " must not start with " + SubjectPrefix)
 	}
 	if strings.EqualFold(ident, auth.AnchorIdentity) {
 		// the identity of the audit anchor's commit belongs to Rackbook itself
-		return nil, "", errors.New("claim " + idClaim + " must not be " + auth.AnchorIdentity)
+		return nil, "", overage{}, errors.New("claim " + idClaim + " must not be " + auth.AnchorIdentity)
 	}
 	if idClaim == "email" {
 		// An e-mail address is only an identity if the IdP vouches for it
 		// (Entra does not: its "email" claim is user-editable).
 		var verified bool
 		if raw, ok := claims["email_verified"]; !ok || json.Unmarshal(raw, &verified) != nil || !verified {
-			return nil, "", errors.New("claim email is used as the identity but email_verified is not true")
+			return nil, "", overage{}, errors.New("claim email is used as the identity but email_verified is not true")
 		}
 	}
 	name, err := str(nameClaim, false)
 	if err != nil {
-		return nil, "", err
+		return nil, "", overage{}, err
 	}
 	name = cleanName(name)
 	tid, err := str("tid", false)
 	if err != nil {
-		return nil, "", err
+		return nil, "", overage{}, err
 	}
-	id := &auth.Identity{ID: roles.FoldASCII(ident), Name: name, Method: auth.MethodOIDC, Groups: groupsClaim(claims),
+	groups, appRoles, ov := listClaims(claims)
+	id := &auth.Identity{ID: roles.FoldASCII(ident), Name: name, Method: auth.MethodOIDC, Groups: groups, AppRoles: appRoles,
 		OIDCClaim: idClaim, OIDCTenant: roles.FoldASCII(strings.TrimSpace(tid))}
 	if strings.Contains(ident, "@") {
 		id.Email = id.ID
 	}
-	return id, tid, nil
+	return id, tid, ov, nil
 }
 
-// groupsClaim reads the ID token's groups claim (an array of strings, as Entra
-// and Keycloak send it); anything else is no groups.
-func groupsClaim(claims map[string]json.RawMessage) []string {
-	raw, ok := claims["groups"]
+// overage says which claim lists of the ID token could not be used whole. The
+// sign-in still succeeds, with the values that fit (none, for Entra's overage);
+// the login event records it.
+type overage struct{ groups, appRoles bool }
+
+// listClaims reads the groups and the roles claims, bounded as the session keeps
+// them (first 40 values, 700 bytes), and says which was cut off.
+//
+// Only the top-level claims are read: Keycloak's resource_access.<client>.roles
+// is not, a mapper has to put the roles in the top-level roles claim.
+func listClaims(claims map[string]json.RawMessage) (groups, appRoles []string, ov overage) {
+	if entraGroupsOverage(claims) {
+		// Entra sends no groups past 200 and points at Microsoft Graph instead: whatever
+		// groups claim might be there is not the person's whole membership, so none is used.
+		ov.groups = true
+	} else {
+		groups, ov.groups = boundGroups(stringList(claims, "groups"))
+	}
+	appRoles, ov.appRoles = boundAppRoles(stringList(claims, "roles"))
+	return groups, appRoles, ov
+}
+
+// stringList reads a claim that is an array of strings, as Entra, Keycloak and
+// Authentik send groups and roles; anything else is an empty list.
+func stringList(claims map[string]json.RawMessage, name string) []string {
+	raw, ok := claims[name]
 	if !ok {
 		return nil
 	}
-	var g []string
-	if json.Unmarshal(raw, &g) != nil {
+	var v []string
+	if json.Unmarshal(raw, &v) != nil {
 		return nil
 	}
-	return g
+	return v
+}
+
+// entraGroupsOverage detects Entra's two signals that the groups were left out
+// because the person is in too many (more than 200 in a JWT): _claim_names has a
+// "groups" key, and hasgroups is true (a boolean, or the string "true").
+func entraGroupsOverage(claims map[string]json.RawMessage) bool {
+	if raw, ok := claims["_claim_names"]; ok {
+		var names map[string]json.RawMessage
+		if json.Unmarshal(raw, &names) == nil {
+			if _, ok := names["groups"]; ok {
+				return true
+			}
+		}
+	}
+	if raw, ok := claims["hasgroups"]; ok {
+		var b bool
+		if json.Unmarshal(raw, &b) == nil {
+			return b
+		}
+		var str string
+		if json.Unmarshal(raw, &str) == nil {
+			return strings.EqualFold(strings.TrimSpace(str), "true")
+		}
+	}
+	return false
 }
 
 func tenantAllowed(allowed []string, tid string) bool {

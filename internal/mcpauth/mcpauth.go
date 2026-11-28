@@ -229,11 +229,11 @@ func (r *Resource) builtinToken(req *http.Request, b *oauthserver.Server, raw st
 		return nil, r.invalidToken(req, err.Error())
 	}
 	id := &auth.Identity{ID: roles.FoldASCII(c.Subject.ID), Name: c.Subject.Name, Email: c.Subject.Email, Method: auth.MethodOAuth,
-		Client: c.ClientName, Issuer: config.BuiltinIssuerAlias, Scopes: c.Scopes, ScopeLimited: true, Via: "mcp", Groups: c.Subject.Groups}
+		Client: c.ClientName, Issuer: config.BuiltinIssuerAlias, Scopes: c.Scopes, ScopeLimited: true, Via: "mcp", Groups: c.Subject.Groups, AppRoles: c.Subject.AppRoles}
 	id.Narrow = narrowByScopes(r.mcp(), c.Scopes)
 	// The role comes from the person's own login identity (their sign-in method
 	// decides which role entries match), not from the OAuth method.
-	r.Auth.EvaluateSubject(id, roles.Subject{ID: id.ID, Email: c.Subject.Email, Method: c.Subject.Method, Groups: c.Subject.Groups})
+	r.Auth.EvaluateSubject(id, roles.Subject{ID: id.ID, Email: c.Subject.Email, Method: c.Subject.Method, Groups: c.Subject.Groups, AppRoles: c.Subject.AppRoles})
 	if id.Role == roles.None {
 		r.log().Info("mcp access token refused", "reason", "no role", "user", id.ID, "issuer", "built-in")
 		return nil, r.invalidToken(req, "no role")

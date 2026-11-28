@@ -32,6 +32,9 @@ func newCheck() *cobra.Command {
 				l := ledger.Load(cfg, nil)
 				confirmed, _ := gitstore.ConfirmedRecords(cmd.Context(), cfg.Dir)
 				issues = validate.RunWith(l, validate.Options{Confirmed: func(coll, id string) bool { return confirmed[edit.RecordRef(coll, id)] }})
+				for _, w := range cfg.Warnings {
+					issues = append(issues, ledger.Issue{Rule: ledger.RuleConfig, Severity: "warning", Message: w})
+				}
 				collections = len(l.Collections)
 				for _, c := range l.Collections {
 					records += len(c.Records)

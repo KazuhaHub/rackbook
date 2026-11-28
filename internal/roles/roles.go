@@ -8,7 +8,10 @@
 //	    viewer: ["*"]
 //
 // Entries are matched case-insensitively, folding ASCII letters only: a
-// look-alike such as the Kelvin sign (U+212A) is not a "k".
+// look-alike such as the Kelvin sign (U+212A) is not a "k". The one exception
+// is app-role:<value>, which is exact and case-sensitive, because app role
+// values are (Entra, Keycloak and Authentik treat "Rackbook.Admin" and
+// "rackbook.admin" as two roles); the "app-role:" prefix itself is not.
 //
 //	user@example.com   exact identity (or e-mail)
 //	*@example.com      any identity or e-mail in that domain
@@ -17,6 +20,7 @@
 //	oauth:<alias>:<user>  a user of the OAuth issuer auth.mcp.trusted_issuers[].alias
 //	oauth:<alias>:*    any user of that issuer
 //	group:<id>         a group the identity carries (Subject.Groups)
+//	app-role:<value>   an app role the identity carries (Subject.AppRoles)
 //	*                  anyone authenticated
 //
 // Which entries can match depends on how the identity was authenticated.
@@ -45,6 +49,7 @@ package roles
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 )
 
@@ -148,7 +153,18 @@ type Subject struct {
 	Email  string
 	Method string // how the identity was authenticated; see the package comment
 	Issuer string // method oauth: the alias of the trusted issuer
-	Groups []string
+	// Groups and AppRoles are the claims of an OIDC login (the ID token's
+	// groups and roles). Only entries of the kinds group: and app-role: look at
+	// them. They are nil for a token's creator, which is evaluated by identity.
+	Groups   []string
+	AppRoles []string
+}
+
+// WithoutClaims returns s without the groups and app roles, which is the view
+// a token creator is evaluated by: only entries that name the identity match.
+func (s Subject) WithoutClaims() Subject {
+	s.Groups, s.AppRoles = nil, nil
+	return s
 }
 
 type entry struct {
@@ -165,10 +181,27 @@ const (
 	kGroup
 	kAny
 	kOIDC
+	kAppRole
 )
 
+// appRolePrefix starts an app-role entry. The value after it is kept as
+// written.
+const appRolePrefix = "app-role:"
+
 func parseEntry(s string) (entry, error) {
-	s = FoldASCII(strings.TrimSpace(s))
+	s = strings.TrimSpace(s)
+	// An app role value is case-sensitive, so it is read before the entry is folded.
+	if len(s) >= len(appRolePrefix) && strings.EqualFold(s[:len(appRolePrefix)], appRolePrefix) {
+		v := strings.TrimSpace(s[len(appRolePrefix):])
+		switch {
+		case v == "":
+			return entry{}, fmt.Errorf("%q: app role value is empty", s)
+		case strings.ContainsFunc(v, func(r rune) bool { return r < 0x20 || r == 0x7f || r == '*' }):
+			return entry{}, fmt.Errorf("%q: an app role value has no control characters or wildcards", s)
+		}
+		return entry{kind: kAppRole, value: v}, nil
+	}
+	s = FoldASCII(s)
 	switch {
 	case s == "":
 		return entry{}, fmt.Errorf("empty entry")
@@ -270,6 +303,9 @@ func (e entry) matches(s Subject, opt Options) bool {
 				return true
 			}
 		}
+	case kAppRole:
+		// exact and case-sensitive, like the values Entra, Keycloak and Authentik issue
+		return slices.Contains(s.AppRoles, e.value)
 	case kDomain:
 		return strings.HasSuffix(s.ID, e.value) || strings.HasSuffix(FoldASCII(s.Email), e.value)
 	case kExact:
@@ -366,4 +402,57 @@ func (p *Policy) IsAuditor(s Subject) bool {
 		}
 	}
 	return false
+}
+
+// Source kinds reported by Sources.
+const (
+	SourceIdentity = "identity" // an exact entry, *@domain, oidc:, *, mcphub: or oauth:
+	SourceGroup    = "group"
+	SourceAppRole  = "app-role"
+)
+
+func (e entry) source() string {
+	switch e.kind {
+	case kGroup:
+		return SourceGroup
+	case kAppRole:
+		return SourceAppRole
+	}
+	return SourceIdentity
+}
+
+// Sources says which kinds of entry grant s the role Evaluate returns and the
+// auditor capability IsAuditor returns: the kinds of the entries that match in
+// the list of the highest role, and in auth.auditors. Both are sorted and
+// have no repeats; a role from the v0.1 editors list or from the default (no
+// roles block) is "identity". An auditor with no role of their own has the viewer
+// floor, which comes from the same entries as the capability.
+func (p *Policy) Sources(s Subject) (role, auditor []string) {
+	s.ID = FoldASCII(s.ID)
+	kinds := func(list []entry) []string {
+		var out []string
+		for _, e := range list {
+			if e.matches(s, p.opt) && !slices.Contains(out, e.source()) {
+				out = append(out, e.source())
+			}
+		}
+		slices.Sort(out)
+		return out
+	}
+	for _, l := range [][]entry{p.admin, p.editor, p.view} {
+		if k := kinds(l); len(k) > 0 {
+			role = k
+			break
+		}
+	}
+	auditor = kinds(p.auditors)
+	if len(role) == 0 {
+		switch {
+		case len(auditor) > 0:
+			role = auditor // the viewer floor of an auditor
+		case !p.explicit:
+			role = []string{SourceIdentity} // everyone is an editor, or the editors list's viewers
+		}
+	}
+	return role, auditor
 }

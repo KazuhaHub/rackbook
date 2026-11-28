@@ -123,6 +123,11 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	for _, w := range cfg.Warnings {
+		if w != cfg.Auth.Login.PasskeysIgnoredWarning() { // the login service says that one itself
+			logger.Warn("rackbook.yml: " + w)
+		}
+	}
 
 	committerStr, _ := f.GetString("committer")
 	committer, err := gitstore.ParseIdentity(committerStr)
@@ -392,9 +397,7 @@ func newLogin(cfg *config.Config, store *gitstore.Store, prefStore *prefs.Store,
 		TrustedProxies: proxies, Login: cfg.Auth.Login, Config: store.Config, BaseURL: baseURL, Key: key, ClientSecret: secret, CAFile: caFile,
 		ReadOnly: readOnly, Logger: logger, Prefs: prefStore, Audit: auditLog,
 	}
-	if cfg.Auth.Passkeys.Enabled {
-		o.Files = store
-	}
+	// auth.passkeys is ignored under OIDC (login.New says so), so no credential store is given
 	return login.New(o)
 }
 

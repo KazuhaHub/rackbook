@@ -533,3 +533,100 @@ func TestAuditorCannotRevokeAnotherPersonsGrantOnAnyRoute(t *testing.T) {
 		t.Fatal("an auditor revoked the editor's grant")
 	}
 }
+
+// The groups and app roles of a grant are a snapshot of the sign-in that approved
+// it. They count for claims_absolute (24h) after the approval; then the grant is
+// evaluated by identity entries alone, like an API token.
+func TestGrantClaimsStopCountingAfterClaimsAbsolute(t *testing.T) {
+	for _, kind := range []string{"app role", "group"} {
+		t.Run(kind, func(t *testing.T) {
+			e := newEnv(t, opts{})
+			if kind == "group" {
+				e.claimGroups = "ops"
+			} else {
+				e.claimRoles = "Ops"
+			}
+			e.setRoles(&roles.Spec{
+				Admin:  []string{boss, "app-role:Ops", "group:ops"},
+				Viewer: []string{"vic@example.com", "ed@example.com"},
+			})
+			canWrite := func(user, grant string) bool {
+				for _, g := range e.get(user, "/api/account/grants").json()["grants"].([]any) {
+					if m := g.(map[string]any); m["id"] == grant {
+						return m["canWrite"] == true
+					}
+				}
+				t.Fatal("grant not listed")
+				return false
+			}
+			// ed is a viewer by name and an admin by the claim; boss is an admin by name and carries the claim too
+			cidEd, ed := e.login("ed@example.com", "ed-client")
+			cidBoss, bo := e.login(boss, "boss-client")
+			if !canWrite("ed@example.com", ed.grant) || !canWrite(boss, bo.grant) {
+				t.Fatal("both can write while the claims count")
+			}
+			e.clock.advance(23 * time.Hour)
+			r := e.refresh(cidEd, ed.refresh)
+			if r.StatusCode != 200 || !canWrite("ed@example.com", ed.grant) {
+				t.Fatalf("inside claims_absolute: %d %s", r.StatusCode, r.body)
+			}
+			ed.refresh = r.str("refresh_token")
+			e.clock.advance(2 * time.Hour)
+			// refresh still works: the grant falls to the identity role (viewer), not to nothing
+			r = e.refresh(cidEd, ed.refresh)
+			if r.StatusCode != 200 {
+				t.Fatalf("refresh after claims_absolute: %d %s", r.StatusCode, r.body)
+			}
+			if canWrite("ed@example.com", ed.grant) {
+				t.Fatal("the claim must not count after claims_absolute")
+			}
+			if e.mcpStatus(r.str("access_token")).StatusCode != 200 {
+				t.Fatal("the viewer by name keeps a working grant")
+			}
+			// an admin by name is unaffected
+			rb := e.refresh(cidBoss, bo.refresh)
+			if rb.StatusCode != 200 || !canWrite(boss, bo.grant) {
+				t.Fatalf("an identity admin: %d %s", rb.StatusCode, rb.body)
+			}
+			// with no identity entry at all the grant ends at the next refresh
+			e.setRoles(&roles.Spec{Admin: []string{boss, "app-role:Ops", "group:ops"}})
+			if r := e.refresh(cidEd, r.str("refresh_token")); r.str("error") != "invalid_grant" {
+				t.Fatalf("no identity role left: %s", r.body)
+			}
+			// a grant that ends for want of its claims says so
+			cid2, tok2 := e.login("ed@example.com", "c2")
+			e.setRoles(&roles.Spec{Admin: []string{boss, "app-role:Ops", "group:ops"}})
+			e.clock.advance(25 * time.Hour)
+			if r := e.refresh(cid2, tok2.refresh); r.str("error") != "invalid_grant" || r.str("reason") != "claims_expired" || r.str("error_description") == "" {
+				t.Fatalf("%s", r.body)
+			}
+		})
+	}
+}
+
+// The claims are as old as the sign-in that approved the grant, so their bound starts there: a
+// session that signed in 23h59m ago and approves a grant gives its claims about a minute.
+func TestGrantClaimsAreBoundedFromTheApprovingSignIn(t *testing.T) {
+	e := newEnv(t, opts{})
+	e.claimRoles = "Ops"
+	e.setRoles(&roles.Spec{Admin: []string{"app-role:Ops"}, Viewer: []string{"ed@example.com"}})
+	e.signedIn = e.clock.now().Add(-(24*time.Hour - time.Minute)).UTC().Format(time.RFC3339)
+	cid, tok := e.login("ed@example.com", "c")
+	canWrite := func() bool {
+		for _, g := range e.get("ed@example.com", "/api/account/grants", "X-Test-Signin", e.signedIn).json()["grants"].([]any) {
+			if m := g.(map[string]any); m["id"] == tok.grant {
+				return m["canWrite"] == true
+			}
+		}
+		t.Fatal("not listed")
+		return false
+	}
+	if !canWrite() {
+		t.Fatal("the claim counts for the first minute")
+	}
+	e.clock.advance(2 * time.Minute)
+	r := e.refresh(cid, tok.refresh)
+	if r.StatusCode != 200 || canWrite() {
+		t.Fatalf("after the minute the grant is evaluated by identity alone (viewer): %d %s", r.StatusCode, r.body)
+	}
+}

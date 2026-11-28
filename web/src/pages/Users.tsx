@@ -41,9 +41,11 @@ export default function Users() {
   }
 
   const users = q.data?.users ?? []
+  // under single sign-on nobody has a passkey: the column and its dialog have nothing to show
+  const showPasskeys = q.data?.passkeysEnabled === true
   return (
     <div>
-      <PageHeader icon={<UsersIcon />} title={U.title} description={U.description} />
+      <PageHeader icon={<UsersIcon />} title={U.title} description={showPasskeys ? U.description : U.descriptionNoPasskeys} />
       {q.isPending ? (
         <Skeleton className="h-40 w-full" />
       ) : q.isError ? (
@@ -59,7 +61,7 @@ export default function Users() {
             <table className="w-full border-collapse text-sm">
               <thead className="bg-muted/60">
                 <tr className="border-b text-left text-xs text-muted-foreground">
-                  {[U.id, U.role, U.method, U.lastSeen, U.passkeys].map((h) => (
+                  {[U.id, U.role, U.method, U.lastSeen, ...(showPasskeys ? [U.passkeys] : [])].map((h) => (
                     <th key={h} className="h-10 px-4 font-semibold tracking-wide whitespace-nowrap">
                       {h}
                     </th>
@@ -89,29 +91,31 @@ export default function Users() {
                     <td className="px-4 py-2.5 whitespace-nowrap text-muted-foreground">
                       {u.seen && u.lastSeen ? relativeTime(u.lastSeen) : U.notSeen}
                     </td>
-                    <td className="px-4 py-2.5">
-                      {u.passkeys.length === 0 ? (
-                        <span className="text-muted-foreground">{U.none}</span>
-                      ) : (
-                        <ul className="space-y-1">
-                          {u.passkeys.map((k) => (
-                            <li key={k.id} className="flex items-center gap-2">
-                              <KeyRound className="size-3.5 shrink-0 text-muted-foreground" />
-                              <span className="min-w-0 truncate">{k.name}</span>
-                              <Button
-                                variant="ghost"
-                                size="icon-xs"
-                                aria-label={`${U.deleteKey}${t.common.colon}${k.name}`}
-                                title={U.deleteKey}
-                                onClick={() => setRemoving({ user: u, key: k })}
-                              >
-                                <Trash2 />
-                              </Button>
-                            </li>
-                          ))}
-                        </ul>
-                      )}
-                    </td>
+                    {showPasskeys && (
+                      <td className="px-4 py-2.5">
+                        {u.passkeys.length === 0 ? (
+                          <span className="text-muted-foreground">{U.none}</span>
+                        ) : (
+                          <ul className="space-y-1">
+                            {u.passkeys.map((k) => (
+                              <li key={k.id} className="flex items-center gap-2">
+                                <KeyRound className="size-3.5 shrink-0 text-muted-foreground" />
+                                <span className="min-w-0 truncate">{k.name}</span>
+                                <Button
+                                  variant="ghost"
+                                  size="icon-xs"
+                                  aria-label={`${U.deleteKey}${t.common.colon}${k.name}`}
+                                  title={U.deleteKey}
+                                  onClick={() => setRemoving({ user: u, key: k })}
+                                >
+                                  <Trash2 />
+                                </Button>
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                      </td>
+                    )}
                   </tr>
                 ))}
               </tbody>

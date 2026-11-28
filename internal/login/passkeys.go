@@ -327,9 +327,16 @@ func (p *passkeys) loginFinish(w http.ResponseWriter, r *http.Request) {
 		refused("no_role", id)
 		return
 	}
-	p.s.issue(w, id, auth.MethodPasskey, base64.RawURLEncoding.EncodeToString(res.Credential.ID))
+	sess, _, err := p.s.issue(w, id, auth.MethodPasskey, base64.RawURLEncoding.EncodeToString(res.Credential.ID))
+	if err != nil {
+		fail(http.StatusInternalServerError, "session_too_large", "the session does not fit a cookie", "identity", id.ID)
+		refused("session_too_large", id)
+		return
+	}
 	p.s.log.Info("login", "identity", id.ID, "method", auth.MethodPasskey, "remote", r.RemoteAddr)
 	p.s.record(r, audit.Event{Event: "login", Identity: id.ID, Name: id.Name, Method: auth.MethodPasskey, Role: role.String()})
+	p.s.observeRole(r, id, audit.CauseSignIn, true)
+	p.s.markObserved(sess)
 	writeJSON(w, http.StatusOK, map[string]string{"return": SafeReturn(r.URL.Query().Get("return"))})
 }
 
@@ -524,6 +531,17 @@ func (s *Service) account(w http.ResponseWriter, r *http.Request) {
 	if l := s.o.Prefs.Locale(who.ID); l != "" {
 		out["locale"] = l
 	}
+	if s.authn != nil {
+		// which kinds of entry in auth.roles and auth.auditors grant this person what they have
+		rf, af := s.authn.Sources(who)
+		out["roleFrom"], out["auditorFrom"] = nonNil(rf), nonNil(af)
+	}
+	if sess, err := s.readSession(r); err == nil && s.claimsLimited(sess) {
+		// the role (or the auditor capability) was read from the claims at sign-in, so a
+		// removal at the provider is seen at the next sign-in and at the latest when the session ends
+		out["claimsAbsolute"] = int(s.limitOf(sess).Seconds())
+		out["sessionEnds"] = time.Unix(sess.Issued, 0).Add(s.limitOf(sess)).UTC().Format(time.RFC3339)
+	}
 	if s.pk != nil {
 		if sess, err := s.readSession(r); err == nil && sess.Method == auth.MethodOIDC && sess.OIDCAt != 0 {
 			until := time.Unix(sess.OIDCAt, 0).Add(enrolWindow)
@@ -551,6 +569,7 @@ type userOut struct {
 	LastSeen  *time.Time   `json:"lastSeen,omitempty"`
 	Passkeys  []passkeyOut `json:"passkeys"`
 	groups    []string     // the last groups seen (memory only), for group: entries
+	appRoles  []string     // the last app roles seen (memory only), for app-role: entries
 }
 
 func (s *Service) adminUsers(w http.ResponseWriter, r *http.Request) {
@@ -562,7 +581,7 @@ func (s *Service) adminUsers(w http.ResponseWriter, r *http.Request) {
 	var order []string
 	for _, u := range s.users.list() {
 		u := u
-		byID[u.ID] = &userOut{ID: u.ID, Name: u.Name, Method: u.Method, Seen: true, FirstSeen: &u.FirstSeen, LastSeen: &u.LastSeen, Passkeys: []passkeyOut{}, groups: u.Groups}
+		byID[u.ID] = &userOut{ID: u.ID, Name: u.Name, Method: u.Method, Seen: true, FirstSeen: &u.FirstSeen, LastSeen: &u.LastSeen, Passkeys: []passkeyOut{}, groups: u.Groups, appRoles: u.AppRoles}
 		order = append(order, u.ID)
 	}
 	resp := map[string]any{"passkeysEnabled": s.pk != nil}
@@ -587,12 +606,19 @@ func (s *Service) adminUsers(w http.ResponseWriter, r *http.Request) {
 	users := make([]userOut, 0, len(order))
 	for _, id := range order {
 		e := byID[id]
-		who := &auth.Identity{ID: e.ID, Method: auth.MethodOIDC, Email: emailOf(e.ID), Groups: e.groups}
+		who := &auth.Identity{ID: e.ID, Method: auth.MethodOIDC, Email: emailOf(e.ID), Groups: e.groups, AppRoles: e.appRoles}
 		e.Role, e.Auditor = s.roleOf(who).String(), s.auditorOf(who)
 		users = append(users, *e)
 	}
 	resp["users"] = users
 	writeJSON(w, http.StatusOK, resp)
+}
+
+func nonNil(s []string) []string {
+	if s == nil {
+		return []string{}
+	}
+	return s
 }
 
 func emailOf(id string) string {

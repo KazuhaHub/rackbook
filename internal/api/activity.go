@@ -23,6 +23,7 @@ func (s *server) activityRoutes(mux *routeMux) {
 	mux.HandleFunc("GET /api/activity", s.activity)
 	mux.HandleFunc("GET /api/activity/commit/{area}/{hash}", s.activityCommit)
 	mux.HandleFunc("GET /api/audit/status", s.auditStatus)
+	mux.HandleFunc("GET /api/audit/identities", s.auditIdentities)
 	mux.HandleFunc("POST /api/audit/ack", s.auditAck)
 }
 
@@ -108,6 +109,15 @@ type activityItem struct {
 	Host    string   `json:"host,omitempty"`
 	Files   []string `json:"files,omitempty"`
 	Detail  []string `json:"detail,omitempty"`
+	// sign-in events: the groups or roles claim was cut off ("overage"); the person signed in without the lost values.
+	Groups   string `json:"groups,omitempty"`
+	AppRoles string `json:"app_roles,omitempty"`
+	// role_changed: the role and auditor capability before and after, and why it was seen (sign_in or config).
+	From        string `json:"from,omitempty"`
+	To          string `json:"to,omitempty"`
+	AuditorFrom *bool  `json:"auditor_from,omitempty"`
+	AuditorTo   *bool  `json:"auditor_to,omitempty"`
+	Cause       string `json:"cause,omitempty"`
 
 	at  time.Time // the time, to the second
 	src int       // ledger, infra, audit: the tie-break after the time
@@ -162,6 +172,7 @@ func eventItems(es []audit.Event, showAddr bool) []*activityItem {
 		}
 		it := &activityItem{Area: area, Kind: e.Event, Event: e.Event, Seq: e.Seq, Identity: e.Identity, Name: e.Name, Method: e.Method,
 			Reason: e.Reason, Code: e.Code, Role: e.Role, Outcome: e.Outcome, Action: e.Action, Host: e.Host, Files: e.Files,
+			Groups: e.Groups, AppRoles: e.AppRoles, From: e.From, To: e.To, AuditorFrom: e.AuditorFrom, AuditorTo: e.AuditorTo, Cause: e.Cause,
 			at: e.Time.UTC().Truncate(time.Second), src: 2}
 		for _, d := range e.Detail {
 			if v, ok := strings.CutPrefix(d, "token:"); ok {
@@ -416,6 +427,29 @@ func (s *server) auditStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, s.auditStatusOut())
+}
+
+// auditIdentities lists audit/identities.json: for each person who signed in, the
+// last role and auditor flag Rackbook saw, when and how. It holds no groups and no
+// claims. It is part of the audit log's story about sign-ins, so it is visible to
+// the same people as the sign-in events: administrators and auditors (seeAudit).
+func (s *server) auditIdentities(w http.ResponseWriter, r *http.Request) {
+	if !s.canSeeIdentities(w, r) {
+		return
+	}
+	out := []audit.IdentityEntry{}
+	if s.o.Audit != nil {
+		out = append(out, s.o.Audit.Identities()...)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"enabled": s.o.Audit != nil, "max": audit.MaxIdentities, "identities": out})
+}
+
+func (s *server) canSeeIdentities(w http.ResponseWriter, r *http.Request) bool {
+	if s.who(r) != nil && s.canSee(r, seeAudit) {
+		return true
+	}
+	writeError(w, http.StatusForbidden, "forbidden", "only administrators and auditors may see the sign-in identities")
+	return false
 }
 
 func (s *server) auditStatusOut() map[string]any {

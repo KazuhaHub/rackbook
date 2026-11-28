@@ -4,6 +4,9 @@
 // MOCK_PROBLEMS=1 seeds records that fail validation. MOCK_ROLE=admin|editor|viewer|auditor|auditor-editor
 // picks whose view the demo shows (auditor = viewer plus the auditor capability, auditor-editor = editor plus it);
 // MOCK_INFRA_AUDITOR=1 makes the user an infra auditor (read-only /infra, no secrets) instead of an infra admin.
+// MOCK_LOGIN=1 with MOCK_ROLE_FROM=identity|group|app-role (comma-separated) shows where the role comes from on
+// the account page; a role without "identity" is read from claims, so the page shows the claims_absolute note and
+// creating an API token is refused (creator_role_from_claims). The activity feed carries role_changed events.
 import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
@@ -297,6 +300,11 @@ export function mockApi(root: string): Plugin {
     { id: 'pk1', name: 'MacBook Pro', created: new Date(Date.now() - 3 * 86400000).toISOString() },
   ]
   const mockRole = process.env.MOCK_ROLE ?? 'admin'
+  const roleFrom = (process.env.MOCK_ROLE_FROM ?? 'identity').split(',').map((s) => s.trim()).filter(Boolean)
+  const fromClaims = !roleFrom.includes('identity')
+  const mockTokens: { name: string; prefix: string; scope: string; createdBy: string; created: string; status: string; creatorRole: string; warnings: string[]; lastUsed?: string }[] = [
+    { name: 'ci-bot', prefix: 'rbk_Ab12Cd34', scope: 'read', createdBy: 'boss@example.com', created: new Date(Date.now() - 12 * 86400000).toISOString(), status: 'active', creatorRole: 'admin', warnings: [], lastUsed: new Date(Date.now() - 3600000).toISOString() },
+  ]
   const infraAuditor = process.env.MOCK_INFRA_AUDITOR === '1'
   const roleOf = mockRole.startsWith('auditor') ? (mockRole === 'auditor-editor' ? 'editor' : 'viewer') : mockRole
   const user = readOnly
@@ -481,7 +489,7 @@ export function mockApi(root: string): Plugin {
       return true
     }
     if (p === '/auth/config') {
-      return send(res, 200, { oidc: true, provider: 'microsoft', passkeys: true, locale: matchLocale(req.headers['accept-language']), defaultLocale: cfg.i18n?.default ?? 'zh-CN' }), true
+      return send(res, 200, { oidc: true, provider: 'microsoft', passkeys: false, locale: matchLocale(req.headers['accept-language']), defaultLocale: cfg.i18n?.default ?? 'zh-CN' }), true
     }
     if (p === '/auth/logout') return send(res, 200, { login: '/auth/login?error=logged_out' }), true
     if (!p.startsWith('/api/')) return false
@@ -498,7 +506,13 @@ export function mockApi(root: string): Plugin {
       return send(res, 200, { locale: l }), true
     }
     if (login && head === 'account' && !cname && method === 'GET') {
-      return send(res, 200, { id: user.id, name: user.name, email: user.email, role: user.role, ...('auditor' in user ? { auditor: true } : {}), authMethod: 'oidc', ...(userLocale ? { locale: userLocale } : {}), passkeysEnabled: true, canEnrol: true, enrolUntil: new Date(Date.now() + 600000).toISOString(), passkeys }), true
+      // people who sign in through single sign-on have no passkeys: the console hides that part
+      return send(res, 200, {
+        id: user.id, name: user.name, email: user.email, role: user.role, ...('auditor' in user ? { auditor: true } : {}), authMethod: 'oidc',
+        ...(userLocale ? { locale: userLocale } : {}), passkeysEnabled: false, canEnrol: false, passkeys: [],
+        roleFrom, auditorFrom: 'auditor' in user ? ['group'] : [],
+        ...(fromClaims ? { claimsAbsolute: 86400, sessionEnds: new Date(Date.now() + 20 * 3600000).toISOString() } : {}),
+      }), true
     }
     if (login && head === 'account' && cname === 'passkeys' && method === 'DELETE') {
       const i = passkeys.findIndex((k) => k.id === rest[0])
@@ -507,14 +521,38 @@ export function mockApi(root: string): Plugin {
     }
     if (login && head === 'admin' && cname === 'users' && method === 'GET') {
       return send(res, 200, {
-        passkeysEnabled: true,
+        passkeysEnabled: false,
         users: [
-          { id: user.id, name: user.name, method: 'oidc', role: user.role, ...('auditor' in user ? { auditor: true } : {}), seen: true, lastSeen: new Date().toISOString(), passkeys },
+          { id: user.id, name: user.name, method: 'oidc', role: user.role, ...('auditor' in user ? { auditor: true } : {}), seen: true, lastSeen: new Date().toISOString(), passkeys: [] },
           { id: 'audie@example.com', name: 'Audie', method: 'oidc', role: 'viewer', auditor: true, seen: true, lastSeen: new Date(Date.now() - 7200000).toISOString(), passkeys: [] },
-          { id: 'ed@kazuha.org', name: 'Ed', method: 'passkey', role: 'editor', seen: true, lastSeen: new Date(Date.now() - 3600000).toISOString(), passkeys: [] },
-          { id: 'former@example.com', role: 'none', seen: false, passkeys: [{ id: 'pk9', name: 'old phone', created: new Date(Date.now() - 40 * 86400000).toISOString() }] },
+          { id: 'ed@kazuha.org', name: 'Ed', method: 'oidc', role: 'editor', seen: true, lastSeen: new Date(Date.now() - 3600000).toISOString(), passkeys: [] },
+          { id: 'former@example.com', role: 'none', seen: false, passkeys: [] },
         ],
       }), true
+    }
+    if (head === 'admin' && cname === 'tokens') {
+      // API tokens: kept in memory. A creator whose role comes only from groups or app roles is refused, as the server does.
+      if (!user.canAdmin) return send(res, 403, { error: 'forbidden', message: 'only administrators may manage API tokens' }), true
+      if (method === 'GET' && !rest.length) return send(res, 200, { tokens: mockTokens, mcpUrl: 'https://ledger.example.com/mcp' }), true
+      if (method === 'POST' && !rest.length) {
+        const body = await readBody(req)
+        if (fromClaims) {
+          return send(res, 403, { error: 'creator_role_from_claims', message: 'your role comes from a group or an app role, which an API token cannot inherit: ask an administrator to list you by name (or *@domain) in auth.roles, then create the token' }), true
+        }
+        const name = String(body.name ?? '').trim()
+        if (!name) return send(res, 400, { error: 'bad_request', message: 'a token needs a name' }), true
+        if (mockTokens.some((k) => k.name === name)) return send(res, 409, { error: 'exists', message: 'a token with this name already exists' }), true
+        const secret = 'rbk_' + 'x'.repeat(43)
+        const token = { name, prefix: secret.slice(0, 12), scope: body.scope === 'write' ? 'write' : 'read', createdBy: user.id, created: new Date().toISOString(), status: 'active', creatorRole: user.role, warnings: [] as string[] }
+        mockTokens.unshift(token)
+        return send(res, 201, { token, secret, snippet: { type: 'streamable-http', url: 'https://ledger.example.com/mcp', headers: { Authorization: 'Bearer ' + secret } }, claudeCode: `claude mcp add --transport http rackbook https://ledger.example.com/mcp --header "Authorization: Bearer ${secret}"` }), true
+      }
+      if (method === 'DELETE' && rest.length === 1) {
+        const k = mockTokens.find((x) => x.name === rest[0])
+        if (!k) return send(res, 404, { error: 'not_found', message: 'no such token' }), true
+        k.status = 'revoked'
+        return send(res, 200, { ok: true }), true
+      }
     }
     if (head === 'admin' && cname === 'accept-remote' && method === 'POST') {
       const body = await readBody(req)
@@ -643,6 +681,17 @@ export function mockApi(root: string): Plugin {
       const problems = auditProblem ? [{ kind: 'cut_from_end', seq: 41, file: 'audit-2026-11.jsonl', recordedAt: 44 }] : []
       return send(res, 200, { enabled: true, ok: !auditProblem, problems, lastSeq: 52 }), true
     }
+    if (head === 'audit' && cname === 'identities' && method === 'GET') {
+      const ago = (m: number) => new Date(Date.now() - m * 60000).toISOString()
+      return send(res, 200, {
+        enabled: true, max: 5000,
+        identities: [
+          { identity: user.id, name: user.name, role: user.role, ...('auditor' in user ? { auditor: true } : {}), lastSignIn: ago(2), method: 'oidc' },
+          { identity: 'ed@kazuha.org', name: 'Ed', role: 'viewer', lastSignIn: ago(60), method: 'oidc' },
+          { identity: 'audie@example.com', name: 'Audie', role: 'viewer', auditor: true, lastSignIn: ago(120), method: 'oidc' },
+        ],
+      }), true
+    }
     if (head === 'audit' && cname === 'ack' && method === 'POST') {
       if (!user.canAdmin) return send(res, 403, { error: 'forbidden', message: 'only administrators may acknowledge the audit log status' }), true
       auditProblem = false
@@ -675,6 +724,10 @@ export function mockApi(root: string): Plugin {
       items.push(
         { time: ago(2), area: 'audit', kind: 'login', seq: 51, identity: user.id, name: user.name, method: 'oidc', role: roleOf, addr: '203.0.113.0' },
         { time: ago(40), area: 'audit', kind: 'login_refused', seq: 50, identity: 'guest@example.com', reason: 'no_role', method: 'oidc' },
+        // a role that changed after rackbook.yml did (seen lazily), one seen at sign-in, an auditor flag, and a sign-in whose groups were cut off
+        { time: ago(8), area: 'audit', kind: 'role_changed', seq: 53, identity: 'ed@kazuha.org', name: 'Ed', method: 'oidc', from: 'editor', to: 'viewer', auditor_from: false, auditor_to: false, cause: 'config' },
+        { time: ago(12), area: 'audit', kind: 'role_changed', seq: 52, identity: 'audie@example.com', name: 'Audie', method: 'oidc', from: 'viewer', to: 'viewer', auditor_from: false, auditor_to: true, cause: 'sign_in', addr: '203.0.113.0' },
+        { time: ago(20), area: 'audit', kind: 'login', seq: 49, identity: 'big@example.com', name: 'Big Groups', method: 'oidc', role: 'viewer', groups: 'overage', addr: '203.0.113.0' },
         { time: ago(26 * 60), area: 'audit', kind: 'chain_problem', seq: 44, code: 'cut_from_end', detail: ['seq=41'] },
         { time: ago(26 * 60 - 5), area: 'infra', kind: 'secret_revealed', seq: 45, identity: user.id, name: user.name, host: 'alpha-host' },
         { time: ago(30 * 60), area: 'infra', kind: 'commit', hash: 'e5f6a7b8'.padEnd(40, '1'), short: 'e5f6a7b', subject: 'infra(host_vars/alpha-host): enable beszel-agent', identity: user.id, name: user.name, verified: true },

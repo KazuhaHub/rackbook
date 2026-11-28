@@ -54,6 +54,9 @@ type Config struct {
 	// Path is the absolute path of the config file; Dir its directory.
 	Path string `yaml:"-"`
 	Dir  string `yaml:"-"`
+	// Warnings are things in the file that are accepted but do nothing (an ignored
+	// or removed key). `rackbook check` prints them; the server logs them at start.
+	Warnings []string `yaml:"-"`
 
 	scanner       *secretscan.Scanner
 	logo, favicon *Asset // branding images, read at load (branding.go)
@@ -832,6 +835,7 @@ func Parse(data []byte, path string) (*Config, error) {
 	if err := cfg.finish(); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
+	cfg.Warnings = append(cfg.Warnings, cfg.Auth.Login.warnings(top)...)
 	return cfg, nil
 }
 

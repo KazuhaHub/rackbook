@@ -18,6 +18,8 @@ type SeenUser struct {
 	// Groups are the groups of the last session seen, for evaluating group: entries
 	// of auth.roles and auth.auditors in the users list. Memory only, never sent.
 	Groups []string `json:"-"`
+	// AppRoles are the same for app-role: entries.
+	AppRoles []string `json:"-"`
 }
 
 type userRegistry struct {
@@ -29,7 +31,7 @@ const maxSeenUsers = 10_000
 
 func newUserRegistry() *userRegistry { return &userRegistry{seen: map[string]*SeenUser{}} }
 
-func (u *userRegistry) touch(id, name, method string, groups []string, now time.Time) {
+func (u *userRegistry) touch(id, name, method string, groups, appRoles []string, now time.Time) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	e := u.seen[id]
@@ -44,8 +46,8 @@ func (u *userRegistry) touch(id, name, method string, groups []string, now time.
 		e.Name = name
 	}
 	e.Method, e.LastSeen = method, now
-	if method == "oidc" || len(groups) > 0 { // only an OIDC session carries groups
-		e.Groups = groups
+	if method == "oidc" || len(groups) > 0 || len(appRoles) > 0 { // only an OIDC session carries groups and app roles
+		e.Groups, e.AppRoles = groups, appRoles
 	}
 }
 

@@ -326,3 +326,31 @@ func TestTokenCarriesTheAuditorCapabilityOfItsCreator(t *testing.T) {
 		t.Fatalf("%v", u)
 	}
 }
+
+// A token works through the identity entry its creator is listed by (an exact entry,
+// *@domain). When that entry goes and only group: or app-role: entries remain, the
+// creator has no role by identity and the token stops, as with any role loss. The
+// claims are not part of the creator's evaluation, so no such entry ever revives it.
+func TestTokenStopsWhenItsCreatorLosesTheIdentityEntry(t *testing.T) {
+	h := newHarness(t, hopts{rolesYAML: "    admin: [\"*@example.com\"]\n"})
+	secret, _ := h.createToken(map[string]any{"name": "w", "scope": "write", "collections": []string{"todo"}})
+	cfg := filepath.Join(h.dir, "rackbook.yml")
+	setRoles := func(body string) {
+		b, _ := os.ReadFile(cfg)
+		s := string(b)
+		i := strings.Index(s, "  roles:\n")
+		j := strings.Index(s, "  mcp:\n")
+		os.WriteFile(cfg, []byte(s[:i]+"  roles:\n"+body+s[j:]), 0o644)
+	}
+	if code, m, _ := h.do("GET", "/api/meta", secret, nil); code != 200 || m["user"].(map[string]any)["role"] != "editor" {
+		t.Fatalf("%d %v", code, m)
+	}
+	setRoles("    admin: [\"group:ops\", \"app-role:Rackbook.Admin\", \"mcphub:boss\", \"oauth:corp:*\"]\n")
+	if code, m, _ := h.do("GET", "/api/meta", secret, nil); code != 403 || m["error"] != "no_role" {
+		t.Fatalf("claim, mcphub and oauth entries must never carry a creator's token: %d %v", code, m)
+	}
+	setRoles("    admin: [\"*@example.com\"]\n")
+	if code, _, _ := h.do("GET", "/api/meta", secret, nil); code != 200 {
+		t.Fatalf("%d", code)
+	}
+}

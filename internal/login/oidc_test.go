@@ -2,6 +2,7 @@ package login
 
 import (
 	"encoding/json"
+	"github.com/kazuhahub/rackbook/internal/roles"
 	"net/http"
 	"net/url"
 	"strings"
@@ -743,7 +744,7 @@ func TestBoundGroups(t *testing.T) {
 	for _, g := range out {
 		total += len(g)
 	}
-	if !cut || total > maxSessionGroupBytes || len(out) > maxSessionGroups {
+	if !cut || total > roles.MaxClaimBytes || len(out) > roles.MaxClaimValues {
 		t.Fatalf("%d groups, %d bytes, cut %v", len(out), total, cut)
 	}
 }

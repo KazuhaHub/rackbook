@@ -1,7 +1,7 @@
 # Audit history and roles from the identity provider
 
-Status: design, agreed 2026-11-22. Phase 1 (pieces 1 to 5) is built (3.5); the rest is not. Phase 2
-starts with the light version (2a); SCIM (2b) comes later. Phase 3 is accepted. The owner's decisions of
+Status: design, agreed 2026-11-22. Phase 1 (pieces 1 to 5) is built (3.5). Phase 2a is built except the
+console role editor (section 4, "As built, part 1" below); SCIM (2b) comes later. Phase 3 is accepted. The owner's decisions of
 2026-11-22 are in section 7; local accounts beside SSO, and the sign-in security settings, have their own
 design, [design-local-accounts.md](design-local-accounts.md).
 
@@ -100,7 +100,7 @@ Events (each with `time`, `identity`, `method` and `addr` where known):
 |---|---|
 | `login`, `logout` | `role` (the effective role at sign-in or sign-out); `groups: overage` when the token's groups were cut off (3.1 below and 4; phase 2a) |
 | `login_refused` | `reason`: `no_role`, `tenant`, `claims`, `passkey_failed` (local accounts add their own reasons, [design-local-accounts.md](design-local-accounts.md), section 10) |
-| `role_changed` | `from`, `to`, `because`: `config` (a `rackbook.yml` commit) or `claims` (different groups or app roles) |
+| `role_changed` | `from`, `to`, `auditor_from`, `auditor_to`, `cause`: `config` (seen at the person's next request after a `rackbook.yml` commit) or `sign_in` (seen at sign-in, which is when different groups or app roles show; section 4, as built) |
 | `write_refused` | `area` (ledger / infra), `code` (`conflict`, `stale_login`, `forbidden`, `checks_failed`, …) |
 | `secret_revealed`, `secret_reveal_refused`, `reencrypted` | `host`, `key` (never the value) |
 | `accept_remote`, `history_rewritten` | the commits involved |
@@ -497,17 +497,84 @@ This builds on what exists: the role is computed from the identity and the claim
   entries never match them). Creating a token is refused, with a clear message,
   when the creator's role comes only from groups or app roles. Otherwise the token would silently have no
   role.
-- **Editing roles in the console** (admin, **Users → Roles**): the lists in `auth.roles` and
+- **Editing roles in the console** (admin, **Users → Roles**; part 2, **not built yet**): the lists in `auth.roles` and
   `auth.auditors`, with a diff preview. Saving is a commit to `rackbook.yml` through `yamledit`, so comments
   and layout are kept and every change by hand is in the history. It refuses to remove the last admin, and
   refuses to remove the editing admin's own admin entry.
-- **Local accounts beside SSO** (username, password and a mandatory second factor), designed in
+- **Local accounts beside SSO** (username, password and a mandatory second factor; **not built**), designed in
   [design-local-accounts.md](design-local-accounts.md). As in the owner's other products, a deployment can
   offer both: `auth.login.mode` decides what the sign-in page shows and `auth.login.sso_only` what the local
   endpoint accepts (admins are always exempt, as the break-glass path). Local identities are
   `local:<username>`, assigned in `auth.roles` beside SSO entries and edited with the same role editor;
   section 7 of that design says how the editor treats them. The same console gets a **Sign-in & security**
   page whose settings are `auth.*` keys in `rackbook.yml`, saved as commits like role edits.
+
+### As built, part 1 (2026-11-23)
+
+Done: app roles, overage, no passkeys for SSO identities, `claims_absolute`, `audit/identities.json` with
+`role_changed` and its API, the token rule, and the README, `docs/api.md` and console work for them (account
+page, token refusal, Activity sentences in zh-CN, zh-TW and en-US, the mock API). **Not built:** the console
+role editor (part 2) and local accounts. Where it differs from the text above:
+
+- **Roles from claims.** `app-role:<value>` is a new entry kind (`internal/roles`), accepted in `auth.roles` and
+  `auth.auditors` through the same parser, so `rackbook check` validates it with the same messages (an empty value,
+  control characters and wildcards are errors). It is exact and case-sensitive: `group:` folds ASCII case because group
+  ids are GUIDs, app role values are names that Entra, Keycloak and Authentik keep apart by case. The prefix is not
+  case-sensitive. Only the top-level `roles` claim is read. A subject login (`identity: subject`) still matches only
+  `oidc:` entries, as with groups. Built-in OAuth grants carry the roles claim next to the groups, so an MCP client
+  of an app-role person works. The claims of a grant are a snapshot of the approving sign-in, and they stop counting `claims_absolute` after the approval (`Server.effective`, counted from the earlier of the approving session's sign-in, stored on the grant, and the grant's `created`; a grant with neither has no claims left, no migration; the refresh that ends because of it answers `claims_expired`): the grant is then evaluated by identity entries alone, like an API token, so a role removed at the provider cannot outlive that bound by refreshing (groups and app roles alike). A person with no identity entry ends the grant at the next refresh.
+- **Caps and cookie.** Both lists are capped at the first 40 values and 700 bytes (one shared helper, `roles.BoundClaim`, for
+  the session and the grants). Two full lists did not fit the old 2 048-byte cookie limit, so the whole `Set-Cookie` header
+  (name, value and attributes) may be 4 096 bytes, the session is encoded without HTML escaping, and each list has an
+  encoded-size budget of 900 bytes. Every sealed cookie is measured; if it is over, values are dropped from the longer list,
+  last first, and the login event carries the overage marker; if even empty lists do not fit the sign-in is a
+  `login_refused` with reason `session_too_large` and an error page, never a loop.
+- **Overage.** (Corrected 2026-11-23: a list cut at the cap keeps a prefix; only Entra's overage drops all groups.) The `login` event gets `groups: "overage"` and `app_roles: "overage"` (new fields of the event, not
+  `detail`; the design's `groups: overage`). Entra's two signals, `_claim_names` with a `groups` key and `hasgroups` (a
+  boolean or `"true"`), both mean no group is used. A list cut at 40 values or 700 bytes keeps the values that fit, in
+  token order, instead of none: a prefix can only lower a role, and "none past the cap" would have taken away today's
+  group roles for people in 20 to 40 groups. A `login_refused` for no role carries the same note. The server logs a
+  warning.
+- **Passkeys.** The login service exists only with OIDC, and passkeys were only ever a feature of it (`auth.passkeys`
+  already needed `auth.mode: oidc`), so "ignored when OIDC is configured" is "always, for now". `auth.passkeys` loads, with
+  a warning at start and from `rackbook check`; the passkey routes are registered and answer `403 passkey_sso` (a refusal
+  rather than a 404, so the console and any client can tell); nothing is built or written. The passkey code is kept and
+  only built by an unexported option that the tests of it set. `auth.passkeys_oidc_max_age`, `passkey_needs_oidc` and
+  `last_oidc` were never built (only an unused console label for the second was left; it is removed); a
+  `passkeys_oidc_max_age` key in `rackbook.yml` is a `check` warning. There is no TOTP. The old error for `auth.passkeys`
+  with `identity: subject` is gone (passkeys are ignored). Without OIDC `auth.passkeys` is still an error, as before.
+  `rackbook.yml` warnings are a new `Config.Warnings`, printed by `rackbook check`.
+- **`claims_absolute`.** Default 24 h; an explicit value must be positive and at most `absolute` (a default under a shorter
+  `absolute` just gives way). It is read at start with `idle` and `absolute`. Claims count when "the effective role is higher than the identity entries alone give, or the auditor capability
+  exists only through claims": `Identity.FromClaims`, computed by `Authenticator.Evaluate`. An identity entry that grants
+  the same role wins; `*` counts as an identity entry. There is no flag in the cookie any more (a first version had one and it could be replayed
+  or raced): `Service.claimsLimited` decides on every request from the cookie's identity and claims against the
+  current config, with the same identity-wins rule, cached per session, claims and config generation for cost only. While the
+  config does not load, a session that carries any groups or app roles gets the claims limit (fail safe). `role_changed`'s
+  lazy look marks a session as looked at only after its event is written.
+- **`identities.json`.** In `audit/` beside the chain (the retention and verification code ignore it), `{version,
+  identities: {id: {name, role, auditor, lastSignIn, method}}}`, mode 0600, replaced atomically, 5 000 entries (about 750 KB), the
+  oldest sign-in evicted first. The event is appended before the file is rewritten, so a crash repeats an event rather than
+  losing one. A file that cannot be read is set aside as `identities.json.unreadable` and the store starts empty.
+- **`role_changed`.** Fields `from`, `to`, `auditor_from`, `auditor_to` and `cause`, which is `sign_in` or `config`, not
+  the table's `because: config|claims`: the only moment claims change is a sign-in, so `claims` is `sign_in`. A first
+  sign-in writes no event. A sign-in refused for no role is compared too and moves the last sign-in time (without a session), so an older session cannot write the old role back as a change later. The lazy
+  comparison runs in `Identify`, once for each session (person and issue time) and role policy generation (the
+  `*roles.Policy` the authenticator compiles when the config object changes), remembered in memory (bounded at
+  20 000); a restart costs one extra comparison. Nothing is compared while the latest `rackbook.yml` does not load (roles
+  are capped at viewer then), and a session older than the person's last sign-in is skipped, so two sessions with
+  different claims cannot write each other's roles back and forth.
+- **`GET /api/audit/identities`** is for administrators **and auditors** (`seeAudit`), not admins only as 4 says: it holds
+  what the sign-in events hold (who, when, how, the role), which auditors see, and no more. It lists most recent first.
+  `GET /api/account` gained `roleFrom`, `auditorFrom`, `claimsAbsolute` and `sessionEnds` for the account page.
+- **Tokens.** A token creator was already evaluated by identity only (no groups, no app roles), so nothing to change
+  in `RoleForVia`; `oauth:` and `mcphub:` never match because the creator's recorded method is the console's. Creation
+  answers `403 creator_role_from_claims` when the identity-only role is below what the token needs (viewer for `read`,
+  editor for `write`) and the creator's own role is not: which covers a role with no identity entry at all, and a
+  viewer-by-name who is admin by group asking for a write token. A push token needs admin by identity: one made by an admin who is admin only by group is refused with the same code. The auditor capability of a token
+  follows identity entries the same way.
+
+Not done in part 1: the role editor; local accounts and the `local:` gate of design-local-accounts.md section 7; reading the audit log or `identities.json` from the CLI or MCP.
 
 ## 5. Phase 2b: SCIM (later)
 
