@@ -30,7 +30,7 @@ func newRoot() *cobra.Command {
 		newCheck(), newServe(), newMCP(), newExport(),
 		newList(), newGet(), newAdd(), newSet(), newRm(),
 		newSchema(), newAcceptRemote(), newVersion(),
-		newToken(), newAudit(),
+		newToken(), newAudit(), newAccounts(),
 	)
 	return root
 }

@@ -40,26 +40,38 @@ func (l *Log) prune() {
 	if l.opts.RetentionMonths <= 0 {
 		return
 	}
+	if l.pruneOnce() && l.opts.Pin != nil {
+		l.opts.Pin.Held() // no lock of the log is held here: the callee may append
+	}
+}
+
+// pruneOnce is one retention pass. It reports whether the retention pin held a
+// month back that the retention alone would have deleted.
+func (l *Log) pruneOnce() (held bool) {
+	pin := ""
+	if l.opts.Pin != nil {
+		pin = l.opts.Pin.Month()
+	}
 	// The scan reads whole files: it runs without the lock, so appends are not held up.
 	// The lock is taken to change anything, and only if nothing was appended meanwhile.
 	l.mu.Lock()
 	seq, failed := l.seq, l.failed
 	l.mu.Unlock()
 	if seq == 0 {
-		return
+		return false
 	}
 	if failed != "" {
 		l.log.Warn("audit log: retention skipped: the log is in a failed state", "reason", failed)
-		return
+		return held
 	}
 	s, err := scanDir(l.dir)
 	if err != nil {
 		l.log.Error("audit log: retention could not read the log", "err", err)
-		return
+		return held
 	}
 	if fresh := s.report.fresh(); len(fresh) > 0 {
 		l.log.Warn("audit log: retention skipped: the chain has a problem that is not recorded in it yet", "problem", fresh[0].Describe())
-		return
+		return held
 	}
 	holds := map[string]bool{}
 	for _, p := range s.recorded {
@@ -70,13 +82,18 @@ func (l *Log) prune() {
 	files, err := listFiles(l.dir)
 	if err != nil {
 		l.log.Error("audit log: retention could not list the files", "err", err)
-		return
+		return held
 	}
 	cutoff := monthIndex(l.opts.Now().UTC()) - l.opts.RetentionMonths
 	keep := 0
 	for keep < len(files)-1 {
 		var y, m int
 		if _, err := parseMonth(files[keep], &y, &m); err != nil || y*12+m-1 >= cutoff {
+			break
+		}
+		if pin != "" && files[keep] >= monthFile(pin) {
+			l.log.Warn("audit log: retention delayed: the month holds the account store's last change", "file", files[keep], "pin", pin)
+			held = true
 			break
 		}
 		if holds[files[keep]] {
@@ -88,13 +105,18 @@ func (l *Log) prune() {
 	if keep < len(s.pending) {
 		keep = len(s.pending) // a delete an earlier run did not finish
 	}
+	// the pin outranks it, and head.json's first_file is not trusted to say what may go
+	for pin != "" && keep > 0 && files[keep-1] >= monthFile(pin) {
+		keep--
+		held = true
+	}
 	if keep == 0 {
-		return
+		return held
 	}
 	prev, err := firstPrevOf(filepath.Join(l.dir, files[keep]))
 	if err != nil {
 		l.log.Error("audit log: retention could not read the first kept file", "file", files[keep], "err", err)
-		return
+		return held
 	}
 	if pruneAfterScan != nil {
 		pruneAfterScan()
@@ -103,14 +125,14 @@ func (l *Log) prune() {
 	defer l.mu.Unlock()
 	if l.seq != seq || l.failed != "" {
 		l.log.Warn("audit log: retention skipped: the log changed while it was read; it tries again on the next run")
-		return
+		return held
 	}
 	oldFirst, oldPrev := l.firstFile, l.firstPrev
 	l.firstFile, l.firstPrev = files[keep], prev
 	if err := l.writeHead(); err != nil {
 		l.firstFile, l.firstPrev = oldFirst, oldPrev
 		l.log.Error("audit log: retention could not write head.json", "err", err)
-		return
+		return held
 	}
 	for _, name := range files[:keep] {
 		if err := os.Remove(filepath.Join(l.dir, name)); err != nil {
@@ -119,6 +141,7 @@ func (l *Log) prune() {
 		}
 		l.log.Info("audit log: deleted a month past the retention", "file", name, "retentionMonths", l.opts.RetentionMonths)
 	}
+	return held
 }
 
 func parseMonth(name string, y, m *int) (bool, error) {
