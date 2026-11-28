@@ -29,14 +29,15 @@ import (
 
 // The offline commands of local accounts (docs/design-local-accounts.md, 11.2). They work on the files in
 // --state-dir directly, with the state key, and they need the server stopped: they take the state
-// directory's lock. They are not reachable from HTTP, and `serve` does not read the state key yet.
+// directory's lock. They are not reachable from HTTP.
 
 func newAccounts() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "accounts",
-		Short: "Offline commands for the local account store in --state-dir (not usable yet)",
-		Long: `Local accounts are not usable yet: nothing in the server reads the account store. These
-commands prepare and repair the encrypted files under --state-dir:
+		Short: "Offline commands for the local account store in --state-dir (sign-in is not built yet)",
+		Long: `Local accounts cannot sign in yet: serve --auth login with the state key opens the account store and
+evaluates local: role entries, but the sign-in pages and the online commands come later. These commands prepare
+and repair the encrypted files under --state-dir:
 
   accounts/accounts.enc   the account store (encrypted under the state key)
   secrets.enc             provider secrets set in the console (encrypted under the state key)

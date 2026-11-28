@@ -203,7 +203,8 @@ auth:
     viewer: ["*"]
 ```
 
-Entries are exact identities, `*@domain`, `mcphub:<username>`, `group:<id>`, `app-role:<value>` or
+Entries are exact identities, `*@domain`, `mcphub:<username>`, `group:<id>`, `app-role:<value>`,
+`local:<username>` or `local:*` (local accounts, see [Local accounts](#local-accounts)) or
 `*` (anyone authenticated), matched case-insensitively (except `app-role:`, which is exact and
 case-sensitive); the highest role wins.
 Viewers read, editors also create, edit and delete records, admins also do
@@ -215,6 +216,15 @@ current config on every request, so a change pulled from Git applies at once; fo
 `app-role:` entries what is read at once is the entry, while the claims it is matched against are
 read at sign-in (see [Roles from the identity provider's claims](#roles-from-the-identity-providers-claims)).
 `/api/meta` reports `user.role`, `user.canEdit` and `user.canAdmin`.
+
+`local:` entries match only a local account (`user.authMethod: local`), and no other kind of entry does:
+`*` and `*@domain` never reach a local account, and an identity from single sign-on, MCP, an OAuth issuer or a
+token that is merely called `local:alice` matches nothing (single sign-on refuses such a name at sign-in). The
+username in an entry is lower case, 1 to 32 characters of letters, digits, `.`, `_` and `-`, starting with a letter; the
+entry is compared case-insensitively. A local account has a role only while it is active, restricted or
+passkey-only: a disabled, removed, invited or reset account has none, on every path (session, API token, OAuth grant
+and access token), at once. Without a `roles` block a local account has no role (the "everyone is an editor"
+default is for the people the file does not know), so a deployment with local accounts needs one.
 
 #### Auditors
 
@@ -293,8 +303,9 @@ only: it is hidden for anyone else and the server answers `403` regardless (an a
   newest tip: if the remote moved meanwhile it is made again there, and checked against the lists as they are
   then.
 - **Warnings.** An entry that can match nobody here (`group:`, `app-role:` or `oidc:` without single sign-on, an
-  `oauth:` alias that is not in `auth.mcp.trusted_issuers`, `mcphub:` without an MCPHub issuer, `local:`), an
-  wide entries in `admin` or `editor` (`*`, `*@domain`, `mcphub:*`, `oauth:<alias>:*`), an entry also in another role (the highest wins), and, in
+  `oauth:` alias that is not in `auth.mcp.trusted_issuers`, `mcphub:` without an MCPHub issuer, `local:` while local
+  accounts are not available, a `local:` name that has no account, or whose account is disabled or removed), a
+  wide entry in `admin` or `editor` (`*`, `*@domain`, `mcphub:*`, `oauth:<alias>:*`, `local:*`), an entry also in another role (the highest wins), and, in
   the preview, an added identity or `*@domain` entry that nobody in `audit/identities.json` matches, which is
   usually a typo. Group and app role entries cannot be checked: their claims are not kept.
 - **Pull request mode.** Last-admin and self-lockout are checked for each pull request against the tracked
@@ -315,8 +326,13 @@ only: it is hidden for anyone else and the server answers `403` regardless (an a
   `--infra-auditors`), not `rackbook.yml`, so the editor does not show or touch them (the page says so, and names the
   one group or app role each flag has, if any; see *Infra administrators by one group or app role*).
 
-Local accounts ([design](docs/design-local-accounts.md), not built) will appear as `local:<username>` entries;
-the editor already labels such an entry and warns that it matches nobody yet.
+Local accounts appear as `local:<username>` entries. `GET /api/admin/roles` has a `local` object,
+`{available, accounts: [{username, name, state}]}`, so the console can offer them by name (nothing of an account's
+credentials is in it). The last-admin rule counts the admin entries somebody can sign in through: a `local:` entry
+counts only while local accounts are available and the account (for `local:*`, some account) is not disabled or
+removed, so an edit that leaves no such admin is refused as `last_admin`; an admin list that already had none is not
+refused for an unrelated edit. The self-lockout rules evaluate a local administrator on their own session like any
+other.
 
 ### Any OAuth provider: MCP and MCPHub
 
@@ -961,6 +977,11 @@ record in Git; the audit log also holds one `commit` line for each commit Rackbo
 
 ## Built-in login (OIDC)
 
+`--auth login` is the built-in login (`--auth oidc` stays as an alias). It enables whichever of single sign-on and
+[local accounts](#local-accounts) are configured: SSO when `auth.oidc` names a provider (with
+`RACKBOOK_OIDC_CLIENT_SECRET`), local accounts when a state key is given (`RACKBOOK_STATE_KEY` or `--state-key-file`,
+and `--state-dir`). The server refuses to start only if neither is available. There is no `--auth local`.
+
 Rackbook logs people in itself with OpenID Connect (the primary way to deploy
 it; tested with Microsoft Entra ID, and any standards-compliant IdP such as
 Keycloak, Authentik or Google works the same way). It keeps no database: sessions are signed
@@ -1171,11 +1192,34 @@ Logins, refusals and logouts go to the server log (stdout) and, with `--state-di
 passkey ceremony is rate limited per client (the first `CF-Connecting-IP` /
 `X-Forwarded-For` address when the request comes from a loopback or private proxy).
 
-## Local accounts (coming)
+## Local accounts
 
 Local accounts beside SSO are being built in pieces ([docs/design-local-accounts.md](docs/design-local-accounts.md)).
-**They are not usable yet:** there is no local sign-in, no page and no setting, and `rackbook serve` does not read
-anything described here. What exists is the foundation under `--state-dir`:
+**Local sign-in is coming in piece 4:** there is no sign-in page and no password or TOTP endpoint yet, so nobody can
+hold a local session today. What the server does since piece 3 is everything around the identity:
+
+- **`--auth login` with a state key** opens the encrypted account store under `--state-dir` at start, with the full
+  start sequence, and **refuses to start** when it cannot: a wrong or missing key (a state directory that holds account
+  files and no key is refused too), an account store that is missing, older than the audit log or edited, a log that was
+  rolled back. The message names the code and the offline command that applies (`rackbook accounts accept-restore`,
+  `discard-store`, `rekey`). With no state key there are no local accounts and sign-in is single sign-on only; with
+  neither the server does not start. `--audit-retention-months` keeps the exact months the account files need.
+- **Sessions of method `local`.** A local session is the same signed cookie, with the account's session id (`sid`),
+  the time of the last full authentication and the factor, and its MAC key is derived per account
+  (`HKDF-SHA256(session key, salt = the account's session secret, info = "rackbook.session.local.v1" + sid)`). It
+  stops being valid when the account's session id or secret is renewed (a reset, ending sessions, a rekey of the
+  account) and when the account is disabled or removed; a state key alone, or the session key alone, forges nothing.
+  Nothing in the server creates one yet: the sign-in of piece 4 will.
+- **`local:` entries** in `auth.roles` and `auth.auditors` (see [Roles](#roles)), evaluated for a local identity on
+  every path: console sessions, API tokens (the token records `created_via: local` and follows its creator), and OAuth
+  grants and access tokens of the built-in authorization server and of `/mcp`. A token stops working at once when its
+  creator's account is disabled or removed.
+- **The role editor** offers the accounts by name, notes the entries that match nobody, and counts local admins in the
+  last-admin rule (see [Editing roles in the console](#editing-roles-in-the-console)).
+- **Audit.** An audit event may carry `target`, the account an administrator or the command line acted on when that is
+  not the actor (`local:<username>`). It is in the log, in the Activity items and in the JSONL export.
+
+The foundation under `--state-dir`:
 
 - **The state key**: 32 or more random bytes (`openssl rand -base64 32`), different from the session key. It encrypts
   `<state-dir>/accounts/accounts.enc` and `<state-dir>/secrets.enc` (XChaCha20-Poly1305, a subkey for each file by HKDF) and
@@ -1194,11 +1238,12 @@ anything described here. What exists is the foundation under `--state-dir`:
 - **Before sign-in is enabled** (piece 4) the embedded list of common passwords, now a short stand-in, must be replaced by the full list of the 100 000
   most common passwords; a test guards it. Rolling back the state directory *together with* the end of the audit log is not detected by the account
   store itself: enable the daily audit anchor or keep a copy of the log elsewhere ([docs/design-local-accounts.md](docs/design-local-accounts.md), 4.7).
-  `rackbook serve` keeps `--audit-retention-months` away from the months that account state may need, even though it does not read the state key yet.
 
 ```sh
 openssl rand -base64 32 > /etc/rackbook/state.key && chmod 0400 /etc/rackbook/state.key   # outside --state-dir
 rackbook accounts list --state-dir /var/lib/rackbook --state-key-file /etc/rackbook/state.key
+rackbook serve --auth login --state-dir /var/lib/rackbook --state-key-file /etc/rackbook/state.key \
+  --session-key-file /etc/rackbook/session.key --base-url https://ledger.example.com ...
 ```
 
 ## Audit log

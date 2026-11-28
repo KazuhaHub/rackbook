@@ -985,7 +985,8 @@ Each ships with a demo in three languages before merge.
    the account store with its single writer and start sequence; `secrets.enc`; the three username records; argon2id
    with slots; password rules; TOTP. Offline `rackbook accounts rekey | accept-restore | discard-store | list`.
 3. **Local identity and roles:** `--auth login`, method `local` in the codec with the per-account MAC key, `local:`
-   entries, `policyRole` on all three paths, token creator method, the `target` audit field.
+   entries, `policyRole` on all three paths, token creator method, the `target` audit field. **Built (2026-11-28): see
+   "As built, piece 3".**
 4. **Local sign-in and setup:** the separate pages with their CSP (`securityHeaders` per path); the one-step sign-in;
    `login_mode` and `sso_only` with the local-admin guard; the throttle, locks, NIST cap and 2FA limits;
    `clientip.Bucket` and `clientip.Addr`; the counter tables; aggregated events; the admin channel (socket and named
@@ -1103,6 +1104,71 @@ and the online admin channel with `recover`, `invite`, `reset`, `unlock`, `disab
     with the reminder to pull first. If the audit line is written but `ErrNotDurable` comes back, the change may still complete at the next start.
 - **New dependency:** none. `golang.org/x/crypto` (argon2) moved from indirect to direct in `go.mod`; `crypto/hkdf` is the standard
   library, and `golang.org/x/text` (`norm`, `cases`) was already a direct dependency.
+
+### As built, piece 3 (2026-11-28): local identity and roles
+
+**Built.**
+
+- **`--auth login`** (alias `oidc`; `auth.ParseMode`, both are the one internal mode) with `--state-key-file` / `RACKBOOK_STATE_KEY`.
+  `serve` reads the state key (`statekey.LoadKey`) before it opens anything, builds the retention pin with it (the exact month of each
+  store, as 4.6 asks; with no key the pin stays conservative as in piece 2), opens the audit log, then opens the account store with the
+  start sequence of 4.3. A refusal stops the server with the code, the message and the offline command that applies. Refused as well: a
+  state key without `--state-dir`, a key file inside the state directory, a state key equal to the session key, and a state directory
+  that holds `accounts/accounts.enc` or `secrets.enc` while no key is given (starting without it would leave the accounts unreadable and
+  their `local:` roles silent). With no state key there are no local accounts; with no `auth.oidc` and no state key `serve` says neither
+  is available and does not start. The login service starts without SSO (`sso` false: no provider, `/auth/oidc/*` is `404 sso_off`,
+  `/auth/config` says `oidc: false`), and `RACKBOOK_OIDC_CLIENT_SECRET` is needed only when `auth.oidc` is configured. YAML `auth.mode`
+  is unchanged (`none`, `cloudflare-access`, `oidc`); only the flag has the name `login`.
+- **Method `local` in the codec.** `session` has `sid`, `aat` and `fac`; the cookie is signed with
+  `HKDF-SHA256(ikm = session key, salt = account.session_secret, info = "rackbook.session.local.v1" || sid)` and its own MAC label. `open`
+  looks at the claimed method of the unverified payload only to choose the key: a payload that says `local` is checked with its account's
+  key alone and one that says anything else with the session key alone. The account must be live (`active`, `restricted`, `passkey_only`)
+  and have the payload's `sid`, otherwise the cookie is refused and cleared. Without a store of local accounts no local session is valid.
+  The store gives it `LiveSession(username)` (sid and a copy of the secret); `accounts.Account.Live` is the one definition of the live states.
+- **No route issues a local session.** `Service.issue` refuses the method, the sealing path is reached only with the account's current
+  `sid`, and the tests' helper (`internal/login/local_harness_test.go`) stands in for the sign-in of piece 4. `TestNoRouteIssuesALocalSession`
+  walks every route of the API mux (`api.RoutePatterns`) with three kinds of body, as nobody, as an SSO administrator and as a local
+  administrator, and fails if any answer sets a session cookie that opens as method `local`.
+- **`local:` entries** (`internal/roles`): `local:<username>` and `local:*`; the username is validated by the rule of 5.1 (`roles.ValidLocalUsername`,
+  held equal to `accounts.ValidUsername` by a test), folded like every entry. They match only method `local` (`*` and `*@domain` never
+  reach a local identity, and no other method matches a `local:` entry). A file without a roles block gives a local account no role (the
+  "everyone is an editor" default is not for it). An OIDC identity that starts with `local:` is refused at sign-in, as `oidc:` is.
+- **`policyRole`** (`(*Authenticator).policyRole(p, s)`) is the one place `evaluate` computes role and auditor capability, so it covers
+  `Evaluate`, `RoleForVia` / `CapabilitiesForVia`, `EvaluateSubject` (OAuth grants and access tokens on `/mcp`, API tokens) and
+  `CapabilitiesUnder` (the role editor). For a subject whose ID starts with `local:`, or whose method is `local`, role and capability are
+  none unless the ID is `local:<valid username>`, the method is `local` and `auth.LocalAccounts.LocalActive(username)` says the account is
+  live. `auth.Config.Local` is the store (nil: no local identity has a role).
+- **Token creator method.** `tokens.creatorMethod` records `local` (`created_via: local`), so the creator is evaluated as the local
+  identity. The piece-2 behaviour (a local creator evaluated as method `none`) is gone. Tokens and grants stop and come back with the account's
+  live state; their revocation at disable and reset (5.11, `pending_revocations`) is piece 7.
+- **The role editor** (`rolesedit.Local`, `AnnotateLocal`, `Request.Local`; `api.Options.Local`): `GET /api/admin/roles` has
+  `local: {available, accounts: [{username, name, state}]}`; notes `local_unavailable`, `local_no_account`, `local_inactive`; the last-admin
+  rule counts the admin entries through which someone can sign in (7: "counts admins who can actually sign in"): a `local:` entry only while
+  local accounts are available and the account (for `local:*`, some account) is not disabled or removed. A list that has no such admin already is
+  not refused for an edit that leaves it so, only an edit that takes the last one away. Self-lockout needs no code of its own: the caller is
+  evaluated by `CapabilitiesUnder`, which goes through `policyRole`. The part of 7 that refuses to remove the last local admin while `sso_only`
+  is on belongs to piece 4 with `sso_only` itself.
+- **`target`** (the field exists since piece 2) now reaches the Activity items and the JSONL export of audit rows.
+- **Layering.** The HTTP-facing packages still do not import `internal/accounts` or `internal/statekey` (`TestNoHTTPPackageDependsOnTheAccountStore`
+  stays, with its comment changed): they see the store through `login.LocalSessions`, `auth.LocalAccounts` and `api.LocalRoster`, and
+  `cmd/rackbook` adapts it. `rolesedit` keeps its own two state names (a test holds them to `accounts`).
+
+**Where it differs from the text above:**
+
+- **"Rekey".** The per-account key has the session key as its input and the account's secret as its salt, as 6 says, so a rekey of the *state
+  key* (`rackbook accounts rekey`) does not end sessions: the secrets are re-encrypted unchanged. What ends them is a renewal of the
+  account's `sid` and `session_secret` (a reset, ending sessions, disable and remove as the writers do them), which is what the tests call a
+  rekey of the account. A leaked state key alone, or a leaked session key alone, forges nothing; both together would.
+- **Disabled, then enabled.** A disabled account has no live session whatever its `sid`, but an old cookie would come back on enabling if disable
+  had not renewed `sid` and secret. Nothing online disables an account yet (`accept-restore` renews them when it re-applies a disable, and so
+  must the online disable of piece 4, as 5.9 implies); a test holds the codec side: an old cookie stays dead after the account is renewed and enabled.
+- **Last-admin** is refined as written above: 7 says "counts admins who can actually sign in" and does not say how an edit that does not touch the
+  admins is treated.
+- **No web change.** The console's TypeScript type of an Activity item does not name `target`, and the console words no note code for
+  `local_no_account` and `local_inactive` (it falls back to the server's English message); both come with the Users screens (piece 7).
+- **Not here.** Sign-in, `aat` and re-authentication (`403 reauth_required`), `sso_only` and `login_mode`, the throttle, the admin channel and the
+  online `recover`, the revocation of tokens and grants at disable and reset (`pending_revocations`), `settings_problem` banners. `secrets.enc` is not
+  opened by `serve` yet (the console-set secrets are piece 6); its presence without a key is refused like the account store's.
 
 ---
 
