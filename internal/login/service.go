@@ -64,8 +64,12 @@ type Options struct {
 	TrustedProxies []netip.Prefix // --trusted-proxy CIDRs
 	Logger         *slog.Logger
 	Audit          *audit.Log // sign-ins, sign-outs and refusals; nil = none
-	Now            func() time.Time
-	Context        context.Context // lifetime of the OIDC provider; default Background
+	// Infra is the --infra-admins and --infra-auditors lists (nil = no /infra). The login
+	// only asks them how a person is an infra administrator, for the login event and the
+	// account page; it never decides /infra access.
+	Infra   *auth.InfraAccess
+	Now     func() time.Time
+	Context context.Context // lifetime of the OIDC provider; default Background
 
 	// ssoPasskeys is a test seam. This Service is the OIDC login, and people who
 	// sign in through OIDC get no passkey sign-in (docs/design-audit.md, section 4),

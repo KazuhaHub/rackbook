@@ -68,13 +68,35 @@ func (s *server) infraRoutes(mux *routeMux) {
 
 // canInfraAdmin reports whether the caller is an infra administrator.
 func (s *server) canInfraAdmin(r *http.Request) bool {
-	return s.o.Infra != nil && s.o.Infra.Admins.Allows(s.who(r))
+	return s.infraVia(s.who(r)) != ""
+}
+
+// infraVia is how who is an infra administrator now (identity, group or app_role),
+// or "" when they are not. The claim entry lapses claims_absolute after the sign-in:
+// it is decided here on every request from the signed session, so a replayed cookie
+// gets no more than the original did.
+func (s *server) infraVia(who *auth.Identity) string {
+	if s.o.Infra == nil {
+		return ""
+	}
+	return s.o.Infra.Admins.Via(who, s.now())
+}
+
+// stampInfra is a copy of who that carries how they are an infra administrator, for the
+// audit trail of what they do next.
+func (s *server) stampInfra(who *auth.Identity) *auth.Identity {
+	if who == nil {
+		return nil
+	}
+	c := *who
+	c.InfraVia = s.infraVia(who)
+	return &c
 }
 
 // canInfra reports whether the caller may read the infra pages: an infra
 // administrator or an infra auditor.
 func (s *server) canInfra(r *http.Request) bool {
-	return s.canInfraAdmin(r) || (s.o.Infra != nil && s.o.Infra.Auditors.Allows(s.who(r)))
+	return s.canInfraAdmin(r) || (s.o.Infra != nil && s.o.Infra.Auditors.Via(s.who(r), s.now()) != "")
 }
 
 // infraAdmin gates the secrets and every write: infra administrators only.

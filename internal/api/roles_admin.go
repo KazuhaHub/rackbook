@@ -165,6 +165,19 @@ func (s *server) rolesView(r *http.Request) map[string]any {
 		// the /infra administrators and auditors are set by the deployment (flags), not here
 		"infra": s.o.Infra != nil,
 	}
+	if s.o.Infra != nil {
+		// the one group or app role each of the two flags names, if any ("group:<id>", "app-role:<value>")
+		claims := map[string]string{}
+		if e := s.o.Infra.Admins.ClaimEntry(); e != "" {
+			claims["admins"] = e
+		}
+		if e := s.o.Infra.Auditors.ClaimEntry(); e != "" {
+			claims["auditors"] = e
+		}
+		if len(claims) > 0 {
+			out["infraClaims"] = claims
+		}
+	}
 	if problem != "" {
 		out["problem"] = problem
 	}

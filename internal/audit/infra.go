@@ -18,7 +18,7 @@ const migratedName = "migrated"
 
 // FromInfra maps an infra audit entry to an event: the outcome says which one.
 func FromInfra(a ansiblerepo.AuditEntry) Event {
-	e := Event{Time: a.Time, Identity: a.Who, Action: a.Action, Outcome: a.Outcome, Files: a.Files, Detail: a.Detail, Area: "infra"}
+	e := Event{Time: a.Time, Identity: a.Who, Action: a.Action, Outcome: a.Outcome, Files: a.Files, Detail: a.Detail, Area: "infra", InfraVia: a.Via}
 	switch a.Outcome {
 	case "revealed":
 		e.Event = "secret_revealed"

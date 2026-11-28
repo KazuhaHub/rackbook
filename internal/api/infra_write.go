@@ -40,11 +40,7 @@ func (s *server) infraAudit(who *auth.Identity, action, outcome string) {
 	if s.o.Infra == nil || s.o.Infra.Audit == nil {
 		return
 	}
-	id := ""
-	if who != nil {
-		id = who.ID
-	}
-	s.o.Infra.Audit.Record(ansiblerepo.AuditEntry{Time: s.now(), Who: id, Action: action, Outcome: outcome})
+	s.o.Infra.Audit.Record(ansiblerepo.AuditEntry{Time: s.now(), Who: who.IDOrEmpty(), Action: action, Outcome: outcome, Via: s.infraVia(who)})
 }
 
 // infraWriter admits a write: the caller is an infra administrator, the
@@ -65,7 +61,7 @@ func (s *server) infraWriter(w http.ResponseWriter, r *http.Request) (*auth.Iden
 			"maxAgeSeconds", int64(s.o.Infra.Admins.WriteAge()/time.Second))
 		return nil, false
 	}
-	return who, true
+	return s.stampInfra(who), true
 }
 
 func (s *server) infraWriteState(w http.ResponseWriter, r *http.Request) {

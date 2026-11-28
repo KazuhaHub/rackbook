@@ -265,10 +265,20 @@ var infraRouteClass = map[string]string{
 
 func TestInfraRouteClasses(t *testing.T) {
 	t.Parallel()
-	const auditorU, neitherU = "aud@kazuha.org", "editor@kazuha.org"
+	const auditorU, neitherU, claimU = "aud@kazuha.org", "editor@kazuha.org", "claim@kazuha.org"
+	const adminRole, auditGroup = "Rackbook.InfraAdmin", "7d1c0b52-0000-4000-8000-000000000001"
 	var opts api.Options
 	s := newSEnv(t, func(o *api.Options, io *api.InfraOptions) {
-		ia, err := auth.NewInfraAuditors([]string{auditorU})
+		// an administrator by identity and one by app role; an auditor by identity and one by group
+		admins, err := auth.NewInfraAdmins([]string{"me@kazuha.org", "app-role:" + adminRole})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := admins.Pin(testIssuer, testClient, "", testTenant, 12*time.Hour); err != nil {
+			t.Fatal(err)
+		}
+		io.Admins = admins
+		ia, err := auth.NewInfraAuditors([]string{auditorU, "group:" + auditGroup})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -311,7 +321,16 @@ func TestInfraRouteClasses(t *testing.T) {
 		hdr  map[string]string
 	}{
 		{"infra admin", me},
+		{"infra admin by app role", map[string]string{"X-User": claimU, "X-App-Roles": "x," + adminRole}},
 		{"infra auditor", map[string]string{"X-User": auditorU}},
+		{"infra auditor by group", map[string]string{"X-User": claimU, "X-Groups": "g," + auditGroup}},
+		{"admin app role, but sent as a group", map[string]string{"X-User": claimU, "X-Groups": adminRole}},
+		{"admin app role past claims_absolute", map[string]string{"X-User": claimU, "X-App-Roles": adminRole, "X-Signed-In-Age": "90000"}},
+		{"auditor group past claims_absolute", map[string]string{"X-User": claimU, "X-Groups": auditGroup, "X-Signed-In-Age": "90000"}},
+		{"admin app role, other tenant", map[string]string{"X-User": claimU, "X-App-Roles": adminRole, "X-Tenant": "tenant-2"}},
+		{"admin app role, other client", map[string]string{"X-User": claimU, "X-App-Roles": adminRole, "X-Client": "other-app"}},
+		{"admin app role by passkey", map[string]string{"X-User": claimU, "X-App-Roles": adminRole, "X-Method": auth.MethodPasskey}},
+		{"claims dropped by an overage", map[string]string{"X-User": claimU}},
 		{"neither", map[string]string{"X-User": neitherU}},
 		{"infra auditor by passkey", map[string]string{"X-User": auditorU, "X-Method": auth.MethodPasskey}},
 		{"infra auditor, other issuer", map[string]string{"X-User": auditorU, "X-Issuer": "https://evil.test"}},
@@ -335,31 +354,30 @@ func TestInfraRouteClasses(t *testing.T) {
 			}
 		}
 		for _, p := range people {
-			if p.name == "infra admin" && method != "GET" {
+			if (p.name == "infra admin" || p.name == "infra admin by app role") && method != "GET" {
 				continue // what an administrator's writes do is covered by the editor tests; here nothing may change
 			}
 			code, out, _ := s.do(t, method, fill.Replace(path), body, p.hdr)
 			gate := code == http.StatusForbidden && out["error"] == "forbidden"
 			var wantGate bool // the route's own gate refuses this person
-			switch p.name {
-			case "infra admin":
+			admin := p.name == "infra admin" || p.name == "infra admin by app role"
+			auditor := p.name == "infra auditor" || p.name == "infra auditor by group"
+			switch {
+			case admin:
 				wantGate = false
-			case "infra auditor":
+			case auditor:
 				wantGate = class != "read"
-			default: // neither, passkey, wrong provider, wrong tenant, token
+			default: // neither, passkey, wrong provider, wrong tenant, token, a claim that does not count
 				wantGate = true
 			}
-			if p.name == "infra admin" && class == "read" && code != 200 {
-				t.Errorf("%s as %s: %d %v", pat, p.name, code, out)
-			}
-			if p.name == "infra auditor" && class == "read" && code != 200 {
+			if (admin || auditor) && class == "read" && code != 200 {
 				t.Errorf("%s as %s: %d %v", pat, p.name, code, out)
 			}
 			if gate != wantGate {
 				t.Errorf("%s (%s) as %s: %d %v, want the gate's 403 = %v", pat, class, p.name, code, out, wantGate)
 			}
 			// an auditor never gets a success from a secret or write route
-			if p.name != "infra admin" && class != "read" && code >= 200 && code < 300 {
+			if !admin && class != "read" && code >= 200 && code < 300 {
 				t.Errorf("%s as %s: %d", pat, p.name, code)
 			}
 		}

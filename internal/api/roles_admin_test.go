@@ -62,6 +62,7 @@ type rolesOpts struct {
 	pr       bool // write.mode: pr, with a GitHub that answers
 	readOnly bool
 	yml      string
+	infra    *api.InfraOptions // the /infra lists, for the note of the Roles tab (its repository is not used)
 }
 
 func newRolesEnv(t *testing.T, o rolesOpts) *rolesEnv {
@@ -114,7 +115,7 @@ func newRolesEnv(t *testing.T, o rolesOpts) *rolesEnv {
 			t.Fatal(err)
 		}
 		a.SetBearer(testBearer{})
-		op.Auth, op.ReadOnly, op.Audit = a, o.readOnly, e.log
+		op.Auth, op.ReadOnly, op.Audit, op.Infra = a, o.readOnly, e.log, o.infra
 		op.Tokens = &tokens.Registry{Store: op.Store}
 		e.opts = *op
 	}, e.server, func(so *gitstore.Options) {
@@ -190,6 +191,37 @@ func (e *rolesEnv) serverFile(t *testing.T) string {
 		t.Fatal(err)
 	}
 	return string(b)
+}
+
+// The Roles tab shows the one group or app role each /infra flag names (administrators only).
+func TestRolesGetShowsTheInfraClaimEntries(t *testing.T) {
+	t.Parallel()
+	ia, _ := auth.NewInfraAdmins([]string{"ops@example.com", "app-role:Rackbook.InfraAdmin"})
+	au, _ := auth.NewInfraAuditors([]string{"group:" + opsGrp})
+	for _, l := range []*auth.InfraAdmins{ia, au} {
+		if err := l.Pin(testIssuer, testClient, "", testTenant, 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	e := newRolesEnv(t, rolesOpts{infra: &api.InfraOptions{Admins: ia, Auditors: au}})
+	code, m, _ := e.do(t, "GET", "/api/admin/roles", nil, as(adminU))
+	if code != 200 || m["infra"] != true {
+		t.Fatalf("%d %v", code, m)
+	}
+	c, _ := m["infraClaims"].(map[string]any)
+	if c["admins"] != "app-role:Rackbook.InfraAdmin" || c["auditors"] != "group:"+opsGrp || len(c) != 2 {
+		t.Fatalf("%v", m["infraClaims"])
+	}
+	if code, _, _ := e.do(t, "GET", "/api/admin/roles", nil, as("guest@example.com")); code != 403 {
+		t.Fatalf("not for a viewer: %d", code)
+	}
+	// identities only: no entry to show
+	ia2, _ := auth.NewInfraAdmins([]string{"ops@example.com"})
+	_ = ia2.Pin(testIssuer, testClient, "", testTenant, 0)
+	e = newRolesEnv(t, rolesOpts{infra: &api.InfraOptions{Admins: ia2}})
+	if _, m, _ := e.do(t, "GET", "/api/admin/roles", nil, as(adminU)); m["infra"] != true || m["infraClaims"] != nil {
+		t.Fatalf("%v", m)
+	}
 }
 
 func TestRolesGetShape(t *testing.T) {

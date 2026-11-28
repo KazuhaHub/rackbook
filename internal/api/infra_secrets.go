@@ -41,11 +41,7 @@ func (s *server) infraSecretsAudit(who *auth.Identity, host, file, action, outco
 	if s.o.Infra == nil || s.o.Infra.Audit == nil {
 		return
 	}
-	id := ""
-	if who != nil {
-		id = who.ID
-	}
-	s.o.Infra.Audit.Record(ansiblerepo.AuditEntry{Time: s.now(), Who: id, Action: "infra(secrets/" + host + "): " + action, Outcome: outcome, Files: []string{file}, Detail: detail})
+	s.o.Infra.Audit.Record(ansiblerepo.AuditEntry{Time: s.now(), Who: who.IDOrEmpty(), Action: "infra(secrets/" + host + "): " + action, Outcome: outcome, Files: []string{file}, Detail: detail, Via: s.infraVia(who)})
 }
 
 // revealLimit is one ceiling on the reveals of one person.
@@ -166,7 +162,7 @@ func (s *server) infraSecretsGate(w http.ResponseWriter, r *http.Request, needWr
 			"maxAgeSeconds", int64(s.o.Infra.Admins.WriteAge()/time.Second))
 		return nil, false
 	}
-	return who, true
+	return s.stampInfra(who), true
 }
 
 func (s *server) infraSecrets(w http.ResponseWriter, r *http.Request) {

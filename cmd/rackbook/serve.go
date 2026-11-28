@@ -97,8 +97,8 @@ RACKBOOK_GITHUB_TOKEN.`,
 	f.Duration("infra-write-max-age", auth.DefaultInfraWriteAge, "how recent an administrator's sign-in must be for an infra write (older: sign in again)")
 	f.String("infra-managed-group", "managed", `inventory group whose hosts must each have host_vars and a SOPS file, and that holds every host of every group ("" = no such check)`)
 	f.String("infra-agent-group", "infra_agent", `inventory group that must list exactly the managed hosts, checked only when the inventory has it ("" = no such check)`)
-	f.StringSlice("infra-admins", nil, "exact identities (comma-separated) who may see /infra; they must sign in with --auth oidc (API tokens, MCP and OAuth tokens never count; not read from rackbook.yml)")
-	f.StringSlice("infra-auditors", nil, "exact identities (comma-separated) who may read /infra but not its secrets and may change nothing; the same rules as --infra-admins (OIDC login sessions only, the identity provider pinned by the --infra-oidc-* flags; needs --infra-admins)")
+	f.StringSlice("infra-admins", nil, "exact identities (comma-separated) who may see /infra, and at most one group:<id> or app-role:<value> entry (the syntax of auth.roles; it needs the --infra-oidc-issuer, -client-id and -tenant pins, and counts for auth.session.claims_absolute after the sign-in); they must sign in with --auth oidc (API tokens, MCP and OAuth tokens never count; not read from rackbook.yml)")
+	f.StringSlice("infra-auditors", nil, "exact identities (comma-separated) who may read /infra but not its secrets and may change nothing; the same rules as --infra-admins, with its own single group:/app-role: entry, independent of the administrators' (OIDC login sessions only, the identity provider pinned by the --infra-oidc-* flags; needs --infra-admins)")
 	f.String("hub-status-file", "", "status.json of the infra hub (infra-hub status -o json), shown under /infra; kept fresh by a timer outside Rackbook (needs --infra-repo)")
 	f.StringSlice("trusted-proxy", nil, "CIDRs (or addresses) of reverse proxies whose CF-Connecting-IP header is believed when rate-limiting failed API-token attempts")
 	return cmd
@@ -220,7 +220,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	acfg := auth.Config{Mode: mode, Team: team, Audience: aud, Editor: editor, Editors: editors, Config: store.Config, Degraded: func() bool { return store.ConfigProblem() != "" }}
 	if mode == auth.ModeOIDC {
 		caFile, _ := f.GetString("oidc-ca-file")
-		if loginSvc, err = newLogin(cfg, store, prefStore, baseURL, caFile, f, readOnly, auditLog, logger); err != nil {
+		if loginSvc, err = newLogin(cfg, store, prefStore, baseURL, caFile, f, readOnly, auditLog, infra, logger); err != nil {
 			return err
 		}
 		acfg.Sessions = loginSvc
@@ -376,7 +376,7 @@ func consoleBuilt(dist fs.FS) bool {
 // newLogin builds the built-in login for --auth oidc: the OIDC client secret
 // comes only from RACKBOOK_OIDC_CLIENT_SECRET, the session key from
 // RACKBOOK_SESSION_KEY or --session-key-file.
-func newLogin(cfg *config.Config, store *gitstore.Store, prefStore *prefs.Store, baseURL, caFile string, f *pflag.FlagSet, readOnly bool, auditLog *audit.Log, logger *slog.Logger) (*login.Service, error) {
+func newLogin(cfg *config.Config, store *gitstore.Store, prefStore *prefs.Store, baseURL, caFile string, f *pflag.FlagSet, readOnly bool, auditLog *audit.Log, infra *api.InfraOptions, logger *slog.Logger) (*login.Service, error) {
 	keyFile, _ := f.GetString("session-key-file")
 	key, err := login.LoadSessionKey(os.Getenv("RACKBOOK_SESSION_KEY"), keyFile)
 	if err != nil {
@@ -396,6 +396,9 @@ func newLogin(cfg *config.Config, store *gitstore.Store, prefStore *prefs.Store,
 	o := login.Options{
 		TrustedProxies: proxies, Login: cfg.Auth.Login, Config: store.Config, BaseURL: baseURL, Key: key, ClientSecret: secret, CAFile: caFile,
 		ReadOnly: readOnly, Logger: logger, Prefs: prefStore, Audit: auditLog,
+	}
+	if infra != nil {
+		o.Infra = &auth.InfraAccess{Admins: infra.Admins, Auditors: infra.Auditors}
 	}
 	// auth.passkeys is ignored under OIDC (login.New says so), so no credential store is given
 	return login.New(o)
@@ -432,6 +435,8 @@ func newInfra(ctx context.Context, f *pflag.FlagSet, cfg *config.Config, mode st
 	if err := ia.Pin(issuer, clientID, claim, tenant, maxAge); err != nil {
 		return nil, err
 	}
+	// a claim entry lapses claims_absolute after the sign-in, the value the login itself runs with
+	ia.SetClaimsAbsolute(cfg.Auth.Session.ClaimsAbsoluteOrDefault())
 	var infraAuditors *auth.InfraAdmins
 	if f.Changed("infra-auditors") {
 		auditors, _ := f.GetStringSlice("infra-auditors")
@@ -442,6 +447,7 @@ func newInfra(ctx context.Context, f *pflag.FlagSet, cfg *config.Config, mode st
 		if err := infraAuditors.Pin(issuer, clientID, claim, tenant, maxAge); err != nil {
 			return nil, err
 		}
+		infraAuditors.SetClaimsAbsolute(cfg.Auth.Session.ClaimsAbsoluteOrDefault())
 	}
 	li := cfg.Auth.Login.OIDC
 	liClaim, _ := li.ClaimsOrDefault()
@@ -520,7 +526,7 @@ func newInfra(ctx context.Context, f *pflag.FlagSet, cfg *config.Config, mode st
 		}
 		repo.Run(ctx)
 	}()
-	logger.Info("infra pages on", "repo", absDir, "branch", branch, "admins", len(admins), "auditors", infraAuditors.Len(), "hubStatus", status != "", "editors", write && !readOnly, "issuer", issuer, "writeMaxAge", ia.WriteAge().String())
+	logger.Info("infra pages on", "repo", absDir, "branch", branch, "admins", ia.Len(), "adminClaim", ia.ClaimEntry(), "auditors", infraAuditors.Len(), "auditorClaim", infraAuditors.ClaimEntry(), "hubStatus", status != "", "editors", write && !readOnly, "issuer", issuer, "writeMaxAge", ia.WriteAge().String())
 	return &api.InfraOptions{Repo: repo, Admins: ia, Auditors: infraAuditors, StatusFile: status, Write: write, Audit: infraAudit}, nil
 }
 

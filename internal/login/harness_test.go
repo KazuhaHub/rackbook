@@ -94,6 +94,9 @@ type options struct {
 	session         string            // extra lines under auth.session, with their 4-space indent
 	oidc            string            // extra lines under auth.oidc
 	files           map[string]string // extra files in the data repository
+	// infra builds the /infra lists the login asks about (it is given the env, whose provider is
+	// the one to pin)
+	infra func(e *env) *auth.InfraAccess
 }
 
 func git(t *testing.T, dir string, args ...string) string {
@@ -221,6 +224,9 @@ func newEnv(t *testing.T, o options) *env {
 		Config: st.Config, HTTPClient: e.idpS.Client(), ReadOnly: o.readOnly, Logger: logger, Now: e.clk.Now,
 	}
 	lo.ssoPasskeys = o.passkeys
+	if o.infra != nil {
+		lo.Infra = o.infra(e)
+	}
 	if cfg.Auth.Passkeys.Enabled {
 		lo.Files = st
 	}

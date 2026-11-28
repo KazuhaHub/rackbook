@@ -112,6 +112,11 @@ type activityItem struct {
 	// sign-in events: the groups or roles claim was cut off ("overage"); the person signed in without the lost values.
 	Groups   string `json:"groups,omitempty"`
 	AppRoles string `json:"app_roles,omitempty"`
+	// how the person was an infra administrator (identity, group or app_role) on a sign-in and on infra events; infra_overage on a
+	// sign-in: the claim entry of --infra-admins or --infra-auditors could not be used because its list was cut off (groups, app_roles).
+	InfraVia        string `json:"infra_via,omitempty"`
+	InfraAuditorVia string `json:"infra_auditor_via,omitempty"`
+	InfraOverage    string `json:"infra_overage,omitempty"`
 	// role_changed: the role and auditor capability before and after, and why it was seen (sign_in or config).
 	From        string `json:"from,omitempty"`
 	To          string `json:"to,omitempty"`
@@ -172,7 +177,7 @@ func eventItems(es []audit.Event, showAddr bool) []*activityItem {
 		}
 		it := &activityItem{Area: area, Kind: e.Event, Event: e.Event, Seq: e.Seq, Identity: e.Identity, Name: e.Name, Method: e.Method,
 			Reason: e.Reason, Code: e.Code, Role: e.Role, Outcome: e.Outcome, Action: e.Action, Host: e.Host, Files: e.Files,
-			Groups: e.Groups, AppRoles: e.AppRoles, From: e.From, To: e.To, AuditorFrom: e.AuditorFrom, AuditorTo: e.AuditorTo, Cause: e.Cause,
+			Groups: e.Groups, AppRoles: e.AppRoles, InfraVia: e.InfraVia, InfraAuditorVia: e.InfraAuditorVia, InfraOverage: e.InfraOverage, From: e.From, To: e.To, AuditorFrom: e.AuditorFrom, AuditorTo: e.AuditorTo, Cause: e.Cause,
 			at: e.Time.UTC().Truncate(time.Second), src: 2}
 		for _, d := range e.Detail {
 			if v, ok := strings.CutPrefix(d, "token:"); ok {

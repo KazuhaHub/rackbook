@@ -536,6 +536,26 @@ func (s *Service) account(w http.ResponseWriter, r *http.Request) {
 		rf, af := s.authn.Sources(who)
 		out["roleFrom"], out["auditorFrom"] = nonNil(rf), nonNil(af)
 	}
+	if s.o.Infra != nil && who.Method == auth.MethodOIDC {
+		// /infra through a group or app role: the account page says so, and when it lapses
+		now := s.now()
+		admin, aud := s.o.Infra.Via(who, now)
+		if admin == auth.InfraViaIdentity {
+			admin = ""
+		}
+		if aud == auth.InfraViaIdentity {
+			aud = ""
+		}
+		if admin != "" || aud != "" {
+			out["infraFrom"], out["infraAuditorFrom"] = admin, aud
+			l := s.o.Infra.Admins
+			if admin == "" {
+				l = s.o.Infra.Auditors
+			}
+			out["infraEnds"] = l.ClaimEnds(who).UTC().Format(time.RFC3339)
+			out["infraClaimsAbsolute"] = int(l.ClaimsAbsolute().Seconds())
+		}
+	}
 	if sess, err := s.readSession(r); err == nil && s.claimsLimited(sess) {
 		// the role (or the auditor capability) was read from the claims at sign-in, so a
 		// removal at the provider is seen at the next sign-in and at the latest when the session ends
