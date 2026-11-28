@@ -142,9 +142,6 @@ func (e *env) setAuth(o envOpts) {
 	e.cfg.Store(c)
 }
 
-// reconfigure replaces the auth block's extra settings.
-func (e *env) reconfigure(o envOpts) { e.setAuth(o) }
-
 func (e *env) slept() []time.Duration {
 	e.mu.Lock()
 	defer e.mu.Unlock()

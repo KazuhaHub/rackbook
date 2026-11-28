@@ -130,10 +130,7 @@ func verifyPassword(pw, stored string) bool {
 
 var dummySalt = []byte("rackbook-dummy-1")
 
-// burn runs one argon2id at the current parameters on a fixed salt and discards the result: the
-// dummy check of 5.6 step 5.
-func burn(pw string) { burnWith(current, pw) }
-
+// burnWith runs one argon2id on a fixed salt and discards the result: the dummy check of 5.6 step 5.
 func burnWith(p argonParams, pw string) {
 	sum := argon2.IDKey([]byte(normalise(pw)), dummySalt, p.t, p.m, p.p, argonKeyLen)
 	_ = sum

@@ -1,3 +1,5 @@
+//go:build !windows
+
 package localauth
 
 import (
@@ -8,7 +10,6 @@ import (
 	"io"
 	"net"
 	"os"
-	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -262,9 +263,6 @@ func (a *atomicBool) get() bool  { a.mu.Lock(); defer a.mu.Unlock(); return a.v 
 func (a *atomicBool) set(v bool) { a.mu.Lock(); a.v = v; a.mu.Unlock() }
 
 func TestAdminSocketIsPrivateAndExclusive(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("the named pipe has its own security descriptor")
-	}
 	e := newEnv(t, envOpts{})
 	e.serveAdmin()
 	st, err := os.Stat(socketPath(e.dir))

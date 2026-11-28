@@ -1,3 +1,5 @@
+//go:build !windows
+
 package main
 
 import (
@@ -76,6 +78,17 @@ func TestServeMountsLocalSignInAndTheAdminChannel(t *testing.T) {
 		}
 		if time.Now().After(deadline) {
 			t.Fatalf("no admin socket:\n%s", serveOut.String())
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	// the socket is made before the HTTP listener: wait for both
+	for {
+		if c, err := net.DialTimeout("tcp", addr, time.Second); err == nil {
+			c.Close()
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the server does not listen:\n%s", serveOut.String())
 		}
 		time.Sleep(50 * time.Millisecond)
 	}

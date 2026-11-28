@@ -355,13 +355,6 @@ func (t *tables) ClearName(name string) {
 	}
 }
 
-// sizes is for the tests.
-func (t *tables) sizes() (buckets, pairs, names int) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	return len(t.buck), len(t.pair), len(t.name)
-}
-
 type lockSetting struct {
 	Enabled  bool
 	Duration time.Duration

@@ -80,14 +80,19 @@ type facts struct {
 }
 
 func (s *Service) signIn(w http.ResponseWriter, r *http.Request) {
-	var in signInRequest
-	if !decode(w, r, &in) {
-		return
-	}
 	set := s.settings()
 	bucket, addr := s.where(r)
 	if !s.auditOK() {
 		fail(w, http.StatusServiceUnavailable, "audit_unavailable", msgAuditDown)
+		return
+	}
+	// 1. before the body is read, the name looked up or anything hashed: the flood ceiling
+	if s.tables.Flood(bucket) {
+		s.refuseEarly(w, facts{bucket: bucket, addr: addr}, "flood")
+		return
+	}
+	var in signInRequest
+	if !decode(w, r, &in) {
 		return
 	}
 	name := normalise(in.Username)
@@ -95,11 +100,6 @@ func (s *Service) signIn(w http.ResponseWriter, r *http.Request) {
 	ctx := withBucket(r.Context(), bucket)
 	f := facts{name: name, bucket: bucket, addr: addr}
 
-	// 1. before the name is looked up, without hashing: the flood ceiling
-	if s.tables.Flood(bucket) {
-		s.refuseEarly(w, f, "flood")
-		return
-	}
 	// the CAPTCHA, when one is configured and needed (piece 5): an unsolved one is the same answer for every name
 	if c := s.o.Captcha; c != nil && c.Required(bucket, name) {
 		if err := c.Verify(ctx, in.Attempt, in.Captcha, addr); err != nil {

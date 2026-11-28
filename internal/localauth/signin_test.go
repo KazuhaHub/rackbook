@@ -565,11 +565,8 @@ func TestPastTheBudgetTimingFollowsARealCheck(t *testing.T) {
 		}
 		e.svc.sample.Add(d, fmt.Sprintf("seed%d", i), "")
 	}
-	for e.svc.budget.Take("exhaust") || e.svc.budget.Take("exhaust2") { // the budget of this minute is spent for the whole server
-		for i := 0; i < dummyPerMinute; i++ {
-			e.svc.budget.Take(fmt.Sprintf("x%d", i))
-		}
-		break
+	for i := 0; i < dummyPerMinute; i++ { // the budget of this minute is spent for the whole server
+		e.svc.budget.Take(fmt.Sprintf("x%d", i))
 	}
 	const n = 150
 	var real, ghost []float64
