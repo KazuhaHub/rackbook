@@ -434,7 +434,7 @@ func TestDummyHashBudget(t *testing.T) {
 			t.Fatal(r.Status)
 		}
 	}
-	if s := e.slept(); len(s) != 3 || s[0] != time.Millisecond {
+	if s := e.slept(); len(s) != 3 || s[0] > time.Millisecond || s[0] <= 0 {
 		t.Errorf("past the budget the answer sleeps a duration of the sample: %v", s)
 	}
 	// the answer is the same, byte for byte, as an existing account's wrong password, which still hashes

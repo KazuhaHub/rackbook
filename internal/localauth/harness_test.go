@@ -100,7 +100,7 @@ func newEnv(t *testing.T, o envOpts) *env {
 	}
 	e.login.Bind(e.authn)
 	so := Options{
-		Store: e.store, Key: k, Audit: e.log, Login: e.login, Config: e.cfg.Load, BaseURL: testBase, SSO: o.sso, Now: e.clk.Now,
+		StateDir: e.dir, Store: e.store, Key: k, Audit: e.log, Login: e.login, Config: e.cfg.Load, BaseURL: testBase, SSO: o.sso, Now: e.clk.Now,
 		Hasher: accounts.NewHasherCost(accounts.NewSlots(3, 5*time.Second), 64, 1, 1), SkipCalibration: true,
 		Sleep: func(d time.Duration) { e.mu.Lock(); e.sleeps = append(e.sleeps, d); e.mu.Unlock() },
 		IsAdmin: func(u string) bool {

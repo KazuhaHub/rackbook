@@ -328,3 +328,5 @@ func withGoodBucket(a *accounts.Account, bucket string, now time.Time) {
 	}
 	a.GoodBuckets = keep
 }
+
+func contextBackground() context.Context { return context.Background() }
