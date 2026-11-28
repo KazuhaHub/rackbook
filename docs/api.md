@@ -379,14 +379,56 @@ Public endpoints (no session):
 - `GET /auth/login[?return=<path>][&error=<code>]` — the console's login page
   (`error`: `no_role`, `tenant` (both served with status 403), `idp_error`,
   `idp_unavailable`, `expired`, `bad_callback`, `claims`, `session_too_large`, `logged_out`). With a
-  valid session and no `error` it redirects to `return`.
-- `GET /auth/config` → `{"oidc": bool, "provider": "oidc", "passkeys": bool, "label": string,
-  "name": string, "logo": bool, "locale": string, "defaultLocale": string}`. `locale` is
+  valid session and no `error` it redirects to `return`. With `auth.login.mode: sso_redirect`, single sign-on configured and
+  no session, it redirects (`303`) to `/auth/oidc/start` (keeping `return`) unless the query has `error` or `local=1`
+  (`local=1` shows the local form: the way in for administrators when the provider breaks).
+- `GET /auth/config` → `{"oidc": bool, "provider": "oidc", "passkeys": bool, "mode": string, "local": bool, "label": string,
+  "name": string, "logo": bool, "locale": string, "defaultLocale": string}`. `mode` is `auth.login.mode` as the page
+  uses it (`dual`, `sso_first`, `sso_redirect`, `local_only`; every mode is `local_only` when `oidc` is false) and `local` says
+  local accounts are offered (a state key and a state directory). `sso_only` is not here: it is the endpoint's business. `locale` is
   the `Accept-Language` match (see `GET /api/meta`) and `defaultLocale` is `i18n.default`;
   the response has `Vary: Accept-Language` and `Cache-Control: no-store`. `label` is `auth.oidc.label` (empty when unset),
   `name` is `branding.name` (empty when unset) and `logo` says whether
   `branding.logo` is configured. `provider` is kept for older consoles and is always
   `"oidc"`. `oidc` is false when only local accounts are configured (`--auth login` without `auth.oidc`); `/auth/oidc/start` and `/auth/oidc/callback` then answer `404 sso_off`.
+- **Local accounts** (docs/design-local-accounts.md, 5 and 8; the console pages are documents of their own). Every answer
+  is JSON with `Cache-Control: no-store` and, for an error, `{"error": <code>, "message": <english text>}`; the console words
+  the codes itself. Every path under `/auth/` carries the stricter `Content-Security-Policy: default-src 'self'; script-src
+  'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; connect-src 'self'; frame-src 'none';
+  object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'` (no `'unsafe-eval'`; the origin of a CAPTCHA
+  provider is added for scripts and frames when the CAPTCHA of a later piece is on); the rest of the console keeps its own.
+  - `GET /auth/local/setup`, `GET /auth/local/reauth` — the console's pages for an invite or reset link and for
+    re-authentication. The link's token is in the URL fragment, which never reaches the server.
+  - `POST /auth/local/attempt` `{}` → `200 {"attempt": <sealed token>, "captcha": false, "passkey": {"publicKey": …}}`. The token
+    carries the passkey challenge (nothing is kept on the server), is bound to the client network, expires in 5 minutes and is
+    used once. `captcha` is false until the CAPTCHA of a later piece is on.
+  - `POST /auth/local/login` `{"username", "password", "code"?, "passkey"?, "attempt"?, "return"?}` — the one-step sign-in: the
+    password and **either** the 6-digit `code` **or** the passkey assertion (with its `attempt`) are checked in the same request.
+    `200 {"ok": true, "return": <path>}` sets the session cookie (the audit line is written first: `503 audit_unavailable` and no
+    session when it cannot be). Failures: `401 sign_in_failed` for everything that depends on the name (unknown, wrong
+    password, wrong or reused code, disabled, removed, invited, reset-pending, a restricted or passkey-only account, TOTP stopped
+    for the account), after one argon2id run or an equal wait, with one body for all of them; `403 sso_required` instead of it
+    for every such failure while `sso_only` is in force, and for the correct credentials of an account that is not an
+    administrator; `429 too_many_attempts` for the flood ceiling (600 requests a minute per network), the throttle and the locks,
+    after a fixed 250 ms and without a hash, the same for every name; `401 captcha_required` once a CAPTCHA is configured and
+    unsolved; `403 no_role` for correct credentials of an account that has no role (no session); `503 busy` when no hashing slot
+    freed in 5 seconds; `503 audit_unavailable`; `400 bad_request`.
+  - `POST /auth/local/setup/open` `{"token"}` — holds the link for this browser for 30 minutes (cookie `__Host-rackbook_setup`)
+    and says what it is for: `200 {"kind": "invite"|"reset", "scope": "all"|"password"|"second_factor", "username", "name",
+    "minLength", "expires", "newPassword", "currentPassword", "newFactor", "proveFactor", "proveWith": ["totp","passkey"]}`.
+    `404 invite_invalid`, `410 invite_expired`, `409 invite_claimed` (held by another browser), `409 revocations_pending`.
+  - `POST /auth/local/setup/totp` `{"token"}` → `200 {"enrol", "secret", "uri"}` (a new authenticator secret, sealed into `enrol`, as
+    base32 and as an `otpauth://` URI); `POST /auth/local/setup/passkey` `{"token"}` → `200 {"ceremony", "options"}`.
+  - `POST /auth/local/setup/finish` `{"token", "password"?, "current_password"?, "totp"?: {"enrol", "code"}, "passkey"?: {"ceremony",
+    "credential", "name"}, "proof"?: {"code"} | {"attempt", "passkey"}, "return"?}` — one audited change that sets what the scope
+    names, makes the account active, consumes the link and renews the session id and secret, then signs the person in:
+    `200 {"ok": true, "signedIn": bool, "return"?, "reason"?}` (`signedIn: false` with `reason: no_role` for an account with no
+    role). `422 password_rules` (`rule`: `too_short`, `too_long`, `common`, `contains_username`, `contains_host`), `422
+    factor_required` (a second factor is never optional), `422 bad_code`, `422 passkey_failed`, `401 sign_in_failed` for a wrong
+    current password or existing factor (ten of these end the link), and the link errors above.
+  - `POST /auth/local/reauth` `{"password", "code"?, "passkey"?, "attempt"?, "return"?}` — needs a local session. `200 {"ok":
+    true, "return"}` sets a new cookie with the time of this authentication. `401 sign_in_failed` (the third consecutive failure
+    ends every session of the account and clears the cookie), `401 login_required` without a local session.
 - `GET /branding/logo`, `GET /branding/favicon` — the images of `branding.logo` and
   `branding.favicon` (also public; GET and HEAD only). They carry the exact
   `Content-Type`, `X-Content-Type-Options: nosniff`, `Cache-Control: no-cache`, an

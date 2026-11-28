@@ -1,8 +1,8 @@
 # Local accounts beside SSO, and sign-in security settings
 
 Status: design. Decided by the owner on 2026-11-22, reviewed six times, then restructured the same day to follow
-the owner's own products, Passwall-Sub-Panel (PSP) and StockAnalysisPrediction-Report-Portal (RP). Nothing here is
-built yet, except piece 2 of section 13 (the audit and state foundations, built 2026-11-28). Builds on [design-audit.md](design-audit.md) (the audit log, phase 2a) and
+the owner's own products, Passwall-Sub-Panel (PSP) and StockAnalysisPrediction-Report-Portal (RP). Pieces 2, 3 and 4 of
+section 13 are built (the audit and state foundations, the local identity, and local sign-in and setup, all 2026-11-28); the rest is not. Builds on [design-audit.md](design-audit.md) (the audit log, phase 2a) and
 [design-v0.2.md](design-v0.2.md) (the built-in login). Section 14 records the owner's last answers; nothing is
 open.
 
@@ -990,7 +990,7 @@ Each ships with a demo in three languages before merge.
 4. **Local sign-in and setup:** the separate pages with their CSP (`securityHeaders` per path); the one-step sign-in;
    `login_mode` and `sso_only` with the local-admin guard; the throttle, locks, NIST cap and 2FA limits;
    `clientip.Bucket` and `clientip.Addr`; the counter tables; aggregated events; the admin channel (socket and named
-   pipe) and the online CLI including `recover`.
+   pipe) and the online CLI including `recover`. **Built (2026-11-28): see "As built, piece 4".**
 5. **CAPTCHA:** authcore's `TokenVerifier` and `ImageGenerator` as RP uses them, with the sealing `Store`; attempt
    tokens, the replay and solved sets, budgets, the hostname rule, concurrency, the outage probe. authcore/captcha
    brings `github.com/mojocn/base64Captcha` and its image libraries into `go.sum` for the first time; this PR reviews
@@ -1169,6 +1169,93 @@ and the online admin channel with `recover`, `invite`, `reset`, `unlock`, `disab
 - **Not here.** Sign-in, `aat` and re-authentication (`403 reauth_required`), `sso_only` and `login_mode`, the throttle, the admin channel and the
   online `recover`, the revocation of tokens and grants at disable and reset (`pending_revocations`), `settings_problem` banners. `secrets.enc` is not
   opened by `serve` yet (the console-set secrets are piece 6); its presence without a key is refused like the account store's.
+
+### As built, piece 4 (2026-11-28): local sign-in and setup
+
+**Built.**
+
+- **`internal/localauth`** is the one package that sees the account store and the state key on the HTTP side; it issues a
+  session only through `login.Service.IssueLocal`, the one sanctioned path (`Service.issue` still refuses `local`).
+  `login.Service` also has `LocalSession`, `RecentAuth(r, window)` (the check of 6) and `LocalRole`.
+- **The pages and endpoints** under `/auth/local/`: `GET setup` and `GET reauth` (the console's pages), `POST attempt`, `login`,
+  `setup/open`, `setup/totp`, `setup/passkey`, `setup/finish`, `reauth`; documented in docs/api.md. **`securityHeaders` has a
+  policy per path:** every path under `/auth/` gets `api.AuthPageCSP` (no `'unsafe-eval'`, `form-action 'self'`, `frame-src
+  'none'`, the CAPTCHA provider's origin added for scripts and frames when piece 5 passes it), the rest the console's.
+- **The one-step sign-in (5.6)** in the order of 8.1: flood ceiling (600 a minute per /48 or IPv4 address, `429`); a passkey
+  assertion verified before any hash; the throttle and the `ip` and `ip_account` locks (fixed 250 ms, no hash, the same for every
+  name); the name lookup; the `account` lock (from the store for an account, from the name table otherwise); a dummy argon2id
+  (or, past the budget, an equal wait) for every name that cannot sign in; the password in a slot (the reserved one from a known
+  network); the code or the passkey; `sso_only` only after both verified; the audit line (`login`, `RecordSync`) before the
+  session. The failure counters of an answered attempt are written after the answer (`Content-Length` known, `Flush`ed first); if
+  that write fails the next attempt is the one refused with `503 audit_unavailable`.
+- **`login_mode` and `sso_only` (2.1)** in `config.SignInSettings` (`PageMode`, `SSOOnlyConfigured`) and `localauth.Service.ssoOnly`
+  (the local-admin guard). `GET /auth/config` carries `mode` and `local`; `sso_redirect` redirects `/auth/login` unless `?local=1`
+  or `?error=`. The last active local administrator cannot be disabled or removed while `sso_only` is in force (the account
+  change refuses with `last_local_admin`), and the role editor refuses an edit that takes the last local `admin` entry away
+  (`422 last_local_admin`).
+- **Counters (8.6):** the bucket table (throttle), the pair table and the name table, keyed by HMAC under a key made at start,
+  bounded as 8.6 says (100 000 pair rows, 1 000 per bucket, 50 000 name rows, 200 new name rows per bucket and hour; the rows
+  with the fewest failures go first, locked ones too), a name or pair without a row gets the throttle only; the store's
+  `consecutive_failures`, `totp_failures`, `passkey_path_failures` and `account` locks. The dummy-hash budget (60 a minute, 2 per
+  bucket), the hash-only sample (256 entries, at most 16 per bucket and per account, 16 calibration runs in the background at
+  start, no sleeping before it holds 16) and the sleeper (queue wait of the moment, then a drawn duration). `clientip.Bucket` and
+  `clientip.Addr`. Aggregated `login_refused` events (first per account per bucket and minute in full, a `summary` after, beyond
+  100 buckets one summary without `addr`).
+- **Links and setup (5.1 to 5.5, 5.8):** `accounts.Store.Invite`, `OpenLink` (the 30-minute hold bound to a browser by a cookie
+  whose hash is in the account), `CompleteSetup` (password and a mandatory second factor in one change), `Reset` (the three
+  scopes; at issuance the account is `reset_pending`, sessions are renewed, counters, locks and known networks are cleared),
+  `Disable`, `Enable`, `Remove`, `EndSessions`, `Unlock`, `Recover`. TOTP enrolment seals the secret into a token; a passkey
+  ceremony is sealed into its token (nothing minted by an unauthenticated caller is kept by the server).
+- **Re-authentication (5.7):** `POST /auth/local/reauth`, in the reserved slot, one answer; three failures end the account's
+  sessions (`sessions_ended`, `reason: reauth_failed`).
+- **The admin channel (11.3):** the handshake and sealed frames of 11.3 on a Unix socket (mode 0600) and a Windows named pipe
+  (`FILE_FLAG_FIRST_PIPE_INSTANCE`, a descriptor for the server's account and Administrators; it compiles and vets with
+  `GOOS=windows`, it was not run on Windows). The online command line: `rackbook accounts invite | reset | unlock | disable |
+  enable | remove | end-sessions | recover`, with the same code run on the files when no server answers. The online disable renews
+  `sid` and the session secret, as piece 3 asked. `recover --grant-admin` commits the `local:<username>` admin entry through the
+  role editor's write path.
+- **The console:** the sign-in form and the modes on `/auth/login`, `LocalSetup` (one page for invite and reset links, by scope),
+  `LocalReauth`, in zh-CN, zh-TW and en-US, laid out for 375 px, with a mock demo of each page and of the uniform failure answer
+  (`web/dev/mock.ts`, `localAuthDemo`).
+
+**Where it differs from the text above:**
+
+- **Cipher of the sealed tokens:** XChaCha20-Poly1305 with a random 192-bit nonce, as in piece 2, instead of AES-256-GCM.
+- **The replay set** is one set (20 000 entries, 20 per bucket, nothing evicted) for the sealed passkey ceremonies. The *free*,
+  *image* and *solved* partitions of 8.7 belong to the CAPTCHA and are piece 5. **The CAPTCHA is off:** `localauth.Captcha` is the
+  hook point (`Required`, `Verify`; nil), asked before the throttle when set; `auth.captcha` in `rackbook.yml` is read and
+  reported as a warning, never acted on, and the throttle refuses a network until its window ends.
+- **The pair table's failures are counted in the throttle window** (a row that sat idle for a window starts again) instead of
+  strictly "consecutive, cleared on success"; a success still deletes the pair's row.
+- **Local-admin guard at every sign-in, not at load.** 2.1 says the server checks the guard at every load of the config. It is
+  computed from the store and the roles on each sign-in instead (so that disabling the last local administrator is felt at
+  once), and `settings_problem` (`sso_only_without_local_admin`) is written when it first fails. The admin banner is piece 6.
+- **Passwordless passkey sign-in** is not built: `auth.local.passwordless` other than `off` is refused as a config error.
+- **Revoking API tokens and OAuth grants (5.11) is piece 7.** Disable, remove and the reset do not fill
+  `pending_revocations`; they stop everything because the account has no role while it is not live. Enable and the completion of
+  a setup are refused while `pending_revocations` is not empty (accept-restore can fill it), but a token whose account is
+  enabled again works again.
+- **Re-authentication is the endpoint and the check, not yet the gate.** `RecentAuth` exists; `403 reauth_required` on the
+  sensitive actions of 6 (password and factors, account administration, API tokens, saving roles, the settings page, approving an
+  MCP client) comes with piece 7 and the pages that need it. The counter rule of piece 2 gets one addition: a `reauth` event for
+  the account may reset `reauth_failures` (and nothing else), because a re-authentication proves the password and the factor
+  again without being a sign-in (`last_login` does not move).
+- **Administrators act through the command line only.** The `/api/admin/accounts` endpoints and the Users screens are piece 7;
+  every command is `account_*` with `method: cli`. The holder's `notices` (reset, disable, enable, unlock) are recorded and not
+  shown yet.
+- **Offline command line.** Without a server there is no `rackbook.yml` to read: the link lifetimes are `--invite-ttl` and
+  `--reset-ttl` (72 h and 24 h by default), the link is `--base-url` (else it starts at `/auth/local/setup`), and the `sso_only`
+  guard and `--grant-admin` are online only.
+- **No QR code is drawn.** The page shows the base32 secret with a copy button and an `otpauth://` link; no QR library is in
+  the console's dependencies and none could be checked against a scanner here, and a wrong picture is worse than none (the code
+  that confirms the factor would fail, so nothing wrong is ever stored).
+- **Throttle on setup proofs.** The existing password or factor a reset link asks for is checked in the reserved slot and counts
+  in the memory tables like a sign-in; ten failures kill the link (in memory, forgotten at a restart).
+- **Tests of timing** run the Kolmogorov-Smirnov comparison with cheap argon2id parameters and 150 samples each (`accounts.NewHasherCost`
+  is the seam; the server never calls it), with a critical value at alpha = 0.00001 because the machine is shared.
+- **zh-TW** uses 通行密鑰 for a passkey, as the console already did.
+- **`piece4SignInBuilt` stays false.** The full common-password list (at least 10 000 entries) is not in the repository yet
+  (about 270 entries are), so the guard test of piece 2 is still skipped; the constant is to be set when the list is in.
 
 ---
 
