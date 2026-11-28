@@ -105,6 +105,11 @@ func (l *Log) pruneOnce() (held bool) {
 	if keep < len(s.pending) {
 		keep = len(s.pending) // a delete an earlier run did not finish
 	}
+	// the pin outranks it, and head.json's first_file is not trusted to say what may go
+	for pin != "" && keep > 0 && files[keep-1] >= monthFile(pin) {
+		keep--
+		held = true
+	}
 	if keep == 0 {
 		return held
 	}

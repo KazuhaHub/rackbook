@@ -1,6 +1,7 @@
 package audit
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -142,5 +143,96 @@ func TestRetentionPinMovesForwardWithTheCheckpoint(t *testing.T) {
 	left := reopen(t, dir, pin)
 	if len(left) != 2 || left[0] != "audit-2026-10.jsonl" {
 		t.Fatalf("after the checkpoint September goes: %v", left)
+	}
+}
+
+func TestRecordSyncFsyncFailureLeavesNoLineAndNoSeq(t *testing.T) {
+	l, dir := newLog(t, Options{})
+	if _, err := l.RecordSync(ev("login")); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "audit-2026-11.jsonl")
+	before, _ := os.ReadFile(path)
+	l.syncFile = func(*os.File) error { return errors.New("fsync failed") }
+	if seq, err := l.RecordSync(ev("login")); err == nil || errors.Is(err, ErrNotDurable) || seq != 0 {
+		t.Fatalf("seq %d err %v: a failed fsync is a failed append", seq, err)
+	}
+	after, _ := os.ReadFile(path)
+	if string(after) != string(before) {
+		t.Fatal("a failed fsync left a line in the file")
+	}
+	l.syncFile = (*os.File).Sync
+	if seq, err := l.RecordSync(ev("login")); err != nil || seq != 2 {
+		t.Fatalf("the seq must not have moved: %d %v", seq, err)
+	}
+	if rep, err := Verify(dir); err != nil || len(rep.Problems) != 0 {
+		t.Fatalf("Verify: %v %v", rep.Problems, err)
+	}
+}
+
+func TestRecordSyncDirectoryFsyncOfANewMonthFileFails(t *testing.T) {
+	l, dir := newLog(t, Options{})
+	l.syncDirFn = func(string) error { return errors.New("dir fsync failed") }
+	seq, _, err := l.RecordSyncMonth(Event{Event: "login", Identity: "a@example.com", Time: at(2026, 12, 1)})
+	if !errors.Is(err, ErrNotDurable) || seq != 1 {
+		t.Fatalf("seq %d err %v: RecordSync must fail, and say the line has its seq", seq, err)
+	}
+	// the line is there and took its seq: the next append is 2, never 1 again
+	l.syncDirFn = syncDir
+	if seq, err := l.RecordSync(Event{Event: "login", Identity: "a@example.com", Time: at(2026, 12, 2)}); err != nil || seq != 2 {
+		t.Fatalf("next seq = %d %v", seq, err)
+	}
+	if rep, err := Verify(dir); err != nil || len(rep.Problems) != 0 {
+		t.Fatalf("Verify: %v %v", rep.Problems, err)
+	}
+	// Record (which returns nothing) is unaffected
+	l.syncDirFn = func(string) error { return errors.New("dir fsync failed") }
+	l.Record(Event{Event: "login", Identity: "a@example.com", Time: at(2027, 1, 2)})
+	if seq, _ := l.Head(); seq != 3 {
+		t.Fatalf("seq = %d", seq)
+	}
+}
+
+func TestRecordSyncCloseFailureAfterASuccessfulFsync(t *testing.T) {
+	l, dir := newLog(t, Options{})
+	l.closeFile = func(f *os.File) error { f.Close(); return errors.New("close failed") }
+	seq, _, err := l.RecordSyncMonth(ev("login"))
+	if !errors.Is(err, ErrNotDurable) || seq != 1 {
+		t.Fatalf("seq %d err %v", seq, err)
+	}
+	l.closeFile = (*os.File).Close
+	if seq, err := l.RecordSync(ev("login")); err != nil || seq != 2 {
+		t.Fatalf("the seq of the written line was reused: %d %v", seq, err)
+	}
+	var n int
+	if err := l.EachEvent("", func(Event, string) bool { n++; return true }); err != nil || n != 2 {
+		t.Fatalf("%d lines, %v", n, err)
+	}
+	if rep, err := Verify(dir); err != nil || len(rep.Problems) != 0 {
+		t.Fatalf("Verify: %v %v", rep.Problems, err)
+	}
+}
+
+func TestRetentionPinOutranksAnUnfinishedDelete(t *testing.T) {
+	dir := threeMonths(t)
+	// head.json claims October is the first file, as if an earlier pass had got that far
+	b, err := os.ReadFile(filepath.Join(dir, "head.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var h map[string]any
+	if err := json.Unmarshal(b, &h); err != nil {
+		t.Fatal(err)
+	}
+	l, _ := Open(dir, Options{})
+	prev, _ := firstPrevOf(filepath.Join(dir, "audit-2026-10.jsonl"))
+	l.Close()
+	h["first_file"], h["first_prev"] = "audit-2026-10.jsonl", prev
+	b, _ = json.Marshal(h)
+	os.WriteFile(filepath.Join(dir, "head.json"), b, 0o600)
+	pin := &testPin{month: "2026-09"}
+	left := reopen(t, dir, pin)
+	if len(left) != 3 {
+		t.Fatalf("the pin must outrank a delete that an earlier run did not finish: %v", left)
 	}
 }

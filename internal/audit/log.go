@@ -60,7 +60,10 @@ type Log struct {
 	known     map[string]bool // recorded chain problems, by problemKey: what ReviewAnchors must not record twice
 	anchorOK  anchorCache     // anchors that matched the log in this process
 
-	stat func(*os.File) (os.FileInfo, error) // test seam: f.Stat
+	stat      func(*os.File) (os.FileInfo, error) // test seam: f.Stat
+	syncFile  func(*os.File) error                // test seam: f.Sync
+	closeFile func(*os.File) error                // test seam: f.Close
+	syncDirFn func(string) error                  // test seam: fsync of the directory
 
 	ids *identityStore // identities.json (identities.go); its own lock, taken before mu
 
@@ -82,7 +85,7 @@ func Open(dir string, opts Options) (*Log, error) {
 	if opts.Now == nil {
 		opts.Now = time.Now
 	}
-	l := &Log{dir: dir, opts: opts, log: opts.Logger, stop: make(chan struct{}), stat: (*os.File).Stat, ids: newIdentityStore()}
+	l := &Log{dir: dir, opts: opts, log: opts.Logger, stop: make(chan struct{}), stat: (*os.File).Stat, syncFile: (*os.File).Sync, closeFile: (*os.File).Close, syncDirFn: syncDir, ids: newIdentityStore()}
 	if l.log == nil {
 		l.log = slog.New(slog.DiscardHandler)
 	}
@@ -398,22 +401,29 @@ func (l *Log) append(e Event) error {
 	size := st.Size()
 	_, werr := f.Write(append(raw, '\n'))
 	if werr == nil {
-		werr = f.Sync()
+		werr = l.syncFile(f)
 	}
 	if werr != nil && f.Truncate(size) != nil {
 		// a partial line may be left: never glue another one onto it
 		l.failed = "a write failed and the partial line could not be removed: " + werr.Error()
 		l.status = Status{Problem: l.failed, FirstBrokenSeq: l.seq + 1}
 	}
-	if cerr := f.Close(); werr == nil {
-		werr = cerr
-	}
+	cerr := l.closeFile(f)
 	if werr != nil {
 		return werr
 	}
+	// The line is written and fsynced from here on, so its seq is taken whatever happens next: a
+	// failed close or a failed fsync of the directory (a new month file) only means that it may not
+	// be durable. The state advances, so the next append never reuses the seq, and the caller hears
+	// ErrNotDurable.
+	var notDurable error
+	if cerr != nil {
+		notDurable = cerr
+	}
 	if errors.Is(statErr, os.ErrNotExist) {
-		if err := syncDir(l.dir); err != nil {
+		if err := l.syncDirFn(l.dir); err != nil {
 			l.log.Error("audit log: could not sync the directory", "err", err)
+			notDurable = errors.Join(notDurable, err)
 		}
 	}
 	l.seq, l.hash, l.curFile = e.Seq, hashOf(raw), name
@@ -422,6 +432,9 @@ func (l *Log) append(e Event) error {
 	}
 	if err := l.writeHead(); err != nil {
 		l.log.Error("audit log: could not write head.json", "err", err)
+	}
+	if notDurable != nil {
+		return fmt.Errorf("%w: %v", ErrNotDurable, notDurable)
 	}
 	return nil
 }

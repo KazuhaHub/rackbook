@@ -20,6 +20,11 @@ type RetentionPin interface {
 	Held()
 }
 
+// ErrNotDurable is returned, wrapped, when a line was written and fsynced and took its seq, but the close
+// of the file or the fsync of the directory (a new month file) failed, so the line may not survive a power cut.
+// RecordSync callers that need the line (account changes) treat the event as written and stop writing.
+var ErrNotDurable = errors.New("the audit line was written, but the file or its directory could not be synced")
+
 // ErrNoLog is returned by RecordSync on a nil log.
 var ErrNoLog = errors.New("there is no audit log")
 
@@ -40,6 +45,9 @@ func (l *Log) RecordSyncMonth(e Event) (seq int64, month string, err error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if err := l.append(e); err != nil {
+		if errors.Is(err, ErrNotDurable) {
+			return l.seq, monthOfFile(l.curFile), err // the line has its seq
+		}
 		return 0, "", err
 	}
 	return l.seq, monthOfFile(l.curFile), nil
@@ -79,7 +87,13 @@ func (l *Log) EachEvent(fromMonth string, fn func(e Event, month string) bool) e
 	if l == nil {
 		return nil
 	}
-	files, err := listFiles(l.dir)
+	return EachEventInDir(l.dir, fromMonth, fn)
+}
+
+// EachEventInDir is EachEvent for an audit directory that is not open: the retention pin reads
+// it before the log opens.
+func EachEventInDir(dir, fromMonth string, fn func(e Event, month string) bool) error {
+	files, err := listFiles(dir)
 	if err != nil {
 		return err
 	}
@@ -87,7 +101,7 @@ func (l *Log) EachEvent(fromMonth string, fn func(e Event, month string) bool) e
 		if fromMonth != "" && name < monthFile(fromMonth) {
 			continue
 		}
-		f, err := os.Open(filepath.Join(l.dir, name))
+		f, err := os.Open(filepath.Join(dir, name))
 		if errors.Is(err, os.ErrNotExist) {
 			continue
 		}
