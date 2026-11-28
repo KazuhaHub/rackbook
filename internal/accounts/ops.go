@@ -86,6 +86,56 @@ func (a Actor) ev(name, target, code string, detail ...string) audit.Event {
 	return e
 }
 
+// ---- revocations (5.11)
+
+// AllOwned is the marker "every API token (or OAuth grant) of this account, found when it is applied": the pending
+// revocation of an account whose tokens and grants nobody listed, such as one made by the offline command line.
+const AllOwned = "*"
+
+// EverythingOwned is the pending revocation of every API token and OAuth grant the account owns.
+func EverythingOwned() Revocations { return Revocations{Tokens: []string{AllOwned}, Grants: []string{AllOwned}} }
+
+func mergeRevocations(dst *Revocations, add Revocations) {
+	dst.Tokens = addUnique(dst.Tokens, add.Tokens...)
+	dst.Grants = addUnique(dst.Grants, add.Grants...)
+}
+
+// revDetail is the audit detail of a revocation: names and ids, never a secret.
+func revDetail(rev Revocations) []string {
+	var d []string
+	if len(rev.Tokens) > 0 {
+		d = append(d, "tokens:"+strings.Join(rev.Tokens, ","))
+	}
+	if len(rev.Grants) > 0 {
+		d = append(d, "grants:"+strings.Join(rev.Grants, ","))
+	}
+	return d
+}
+
+// RevocationsApplied records that the revocations in done were carried out, and removes them from the account's
+// pending ones. A pending entry that is the AllOwned marker is removed by done holding it.
+func (s *Store) RevocationsApplied(by Actor, username string, done Revocations) error {
+	_, err := s.Change(by.ev("account_revocations_applied", username, "", revDetail(done)...), func(st *State) error {
+		a := st.Accounts[username]
+		if a == nil {
+			return ErrNoSuchUser
+		}
+		a.PendingRevocations = Revocations{Tokens: without(a.PendingRevocations.Tokens, done.Tokens), Grants: without(a.PendingRevocations.Grants, done.Grants)}
+		return nil
+	})
+	return err
+}
+
+func without(from, remove []string) []string {
+	var out []string
+	for _, v := range from {
+		if !slices.Contains(remove, v) {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
 // ---- link tokens
 
 // NewLinkToken is a fresh 256-bit link token, base64url without padding.
@@ -226,6 +276,10 @@ func (s *Store) OpenLink(token, holderHash, addr string, now time.Time) (usernam
 	if err := a.CheckLink(kind, holderHash, now); err != nil {
 		return username, kind, err
 	}
+	if p := a.Pending; !p.HeldUntil.IsZero() && subtle.ConstantTimeCompare([]byte(p.HeldBy), []byte(holderHash)) == 1 && now.Before(p.HeldUntil) {
+		// the same browser opens it again: the hold is the one it already has, never longer than the first 30 minutes
+		return username, kind, nil
+	}
 	_, err = s.Change(Self(username, a.Name, addr).ev("account_link_opened", "", kind), func(st *State) error {
 		cur := st.Accounts[username]
 		if cur.Pending == nil || string(cur.Pending.TokenHash) != string(a.Pending.TokenHash) {
@@ -321,6 +375,8 @@ func clearCounters(a *Account) {
 type ResetOptions struct {
 	Scope string
 	TTL   time.Duration
+	// Revoke is added to the account's pending revocations in the same change (5.11); the event lists it.
+	Revoke Revocations
 	// Check, when set, is called with the state the change starts from; an error refuses the change.
 	Check func(st *State) error
 }
@@ -342,7 +398,7 @@ func (s *Store) Reset(by Actor, username string, o ResetOptions, now time.Time) 
 		return "", err
 	}
 	expires := now.Add(o.TTL).UTC()
-	_, err = s.Change(by.ev("account_reset_issued", username, o.Scope, "expires:"+expires.Format(time.RFC3339)), func(st *State) error {
+	_, err = s.Change(by.ev("account_reset_issued", username, o.Scope, append([]string{"expires:" + expires.Format(time.RFC3339)}, revDetail(o.Revoke)...)...), func(st *State) error {
 		a := st.Accounts[username]
 		if a == nil {
 			return ErrNoSuchUser
@@ -372,6 +428,7 @@ func (s *Store) Reset(by Actor, username string, o ResetOptions, now time.Time) 
 			}
 		}
 		clearCounters(a)
+		mergeRevocations(&a.PendingRevocations, o.Revoke)
 		a.Notices = append(a.Notices, Notice{Time: now.UTC(), Kind: "reset:" + o.Scope, By: by.By()})
 		return a.RenewSessions()
 	})
@@ -383,12 +440,12 @@ func (s *Store) Reset(by Actor, username string, o ResetOptions, now time.Time) 
 
 // Recover is the lockout fallback of 11.2: it creates the account (an invite) when there is none, and issues a full
 // reset when there is. created says which.
-func (s *Store) Recover(by Actor, username, name string, inviteTTL, resetTTL time.Duration, now time.Time) (token string, created bool, err error) {
+func (s *Store) Recover(by Actor, username, name string, inviteTTL, resetTTL time.Duration, rev Revocations, now time.Time) (token string, created bool, err error) {
 	if st := s.Snapshot(); st.Accounts[username] == nil {
 		token, err = s.Invite(by, username, name, inviteTTL, now)
 		return token, true, err
 	}
-	token, err = s.Reset(by, username, ResetOptions{Scope: ScopeAll, TTL: resetTTL}, now)
+	token, err = s.Reset(by, username, ResetOptions{Scope: ScopeAll, TTL: resetTTL, Revoke: rev}, now)
 	return token, false, err
 }
 
@@ -397,8 +454,8 @@ func (s *Store) Recover(by Actor, username, name string, inviteTTL, resetTTL tim
 // Check is a guard run inside a change against the state it starts from.
 type Check func(st *State) error
 
-func (s *Store) changeOne(by Actor, event, code, username string, check Check, fn func(a *Account) error) error {
-	_, err := s.Change(by.ev(event, username, code), func(st *State) error {
+func (s *Store) changeOne(by Actor, event, code, username string, check Check, fn func(a *Account) error, detail ...string) error {
+	_, err := s.Change(by.ev(event, username, code, detail...), func(st *State) error {
 		a := st.Accounts[username]
 		if a == nil {
 			return ErrNoSuchUser
@@ -415,15 +472,16 @@ func (s *Store) changeOne(by Actor, event, code, username string, check Check, f
 
 // Disable sets the account disabled: its session id and secret are renewed (so a later enable does not bring old
 // cookies back) and its known networks cleared; sessions end at once and local:<username> has no role.
-func (s *Store) Disable(by Actor, username string, check Check, now time.Time) error {
+func (s *Store) Disable(by Actor, username string, check Check, rev Revocations, now time.Time) error {
 	return s.changeOne(by, "account_disabled", "", username, check, func(a *Account) error {
 		if a.State == StateDisabled || a.State == StateRemoved {
 			return fmt.Errorf("%w: the account is %s", ErrBadState, a.State)
 		}
 		a.State, a.GoodBuckets = StateDisabled, nil
+		mergeRevocations(&a.PendingRevocations, rev)
 		a.Notices = append(a.Notices, Notice{Time: now.UTC(), Kind: "disabled", By: by.By()})
 		return a.RenewSessions()
-	})
+	}, revDetail(rev)...)
 }
 
 // Enable reverses a disable. It is refused while revocations are pending.
@@ -450,7 +508,7 @@ func (s *Store) Enable(by Actor, username string, now time.Time) error {
 }
 
 // Remove deletes the account's credentials and leaves a tombstone: the name stays used (4.5).
-func (s *Store) Remove(by Actor, username string, check Check, now time.Time) error {
+func (s *Store) Remove(by Actor, username string, check Check, rev Revocations, now time.Time) error {
 	return s.changeOne(by, "account_removed", "", username, check, func(a *Account) error {
 		if a.State == StateRemoved {
 			return fmt.Errorf("%w: the account is already removed", ErrBadState)
@@ -458,8 +516,9 @@ func (s *Store) Remove(by Actor, username string, check Check, now time.Time) er
 		a.State = StateRemoved
 		a.Password, a.TOTP, a.Passkeys, a.Pending, a.Notices, a.LastLogin, a.LastSecondFactorFailure = "", nil, nil, nil, nil, nil, nil
 		clearCounters(a)
+		mergeRevocations(&a.PendingRevocations, rev)
 		return a.RenewSessions()
-	})
+	}, revDetail(rev)...)
 }
 
 // EndSessions renews the account's session id and secret, which ends every session, and clears its known networks.
@@ -479,6 +538,7 @@ func (s *Store) EndSessions(by Actor, username, reason string, now time.Time) er
 			return fmt.Errorf("%w: the account is removed", ErrBadState)
 		}
 		a.GoodBuckets = nil
+		a.ReauthFailures = 0 // the sessions that failed re-authentications are gone: the count starts again (5.7)
 		return a.RenewSessions()
 	})
 	return err

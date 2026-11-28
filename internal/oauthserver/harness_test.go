@@ -67,6 +67,16 @@ func (stub userStub) Identify(_ http.ResponseWriter, r *http.Request) (*auth.Ide
 	return id, nil
 }
 func (userStub) Public(*http.Request) bool { return false }
+
+// RecentAuth is what login.Service answers for a local session: the stub's X-Test-Signin is when the person fully
+// authenticated (now when the header is absent).
+func (stub userStub) RecentAuth(r *http.Request, window time.Duration) bool {
+	at := stub.now()
+	if v := r.Header.Get("X-Test-Signin"); v != "" {
+		at, _ = time.Parse(time.RFC3339, v)
+	}
+	return stub.now().Sub(at) < window
+}
 func (userStub) Reject(w http.ResponseWriter, r *http.Request, _ error) {
 	if strings.HasPrefix(r.URL.Path, "/api/") {
 		w.WriteHeader(http.StatusUnauthorized)

@@ -185,14 +185,14 @@ func TestDisableEnableRemoveAndEndSessions(t *testing.T) {
 	if sid1 == sid0 {
 		t.Fatal("end-sessions must renew the session id")
 	}
-	if err := s.Disable(CLI("op"), "alice", nil, e.clk.Now()); err != nil {
+	if err := s.Disable(CLI("op"), "alice", nil, Revocations{}, e.clk.Now()); err != nil {
 		t.Fatal(err)
 	}
 	a := s.Snapshot().Accounts["alice"]
 	if a.State != StateDisabled || a.SID == sid1 || s.LocalActive("alice") {
 		t.Fatalf("disable must end sessions and renew sid and secret: %+v", a)
 	}
-	if err := s.Disable(CLI("op"), "alice", nil, e.clk.Now()); !errors.Is(err, ErrBadState) {
+	if err := s.Disable(CLI("op"), "alice", nil, Revocations{}, e.clk.Now()); !errors.Is(err, ErrBadState) {
 		t.Fatalf("disable twice: %v", err)
 	}
 	sid2 := a.SID
@@ -202,7 +202,7 @@ func TestDisableEnableRemoveAndEndSessions(t *testing.T) {
 	if a = s.Snapshot().Accounts["alice"]; a.State != StateActive || a.SID == sid2 {
 		t.Fatalf("enable must bring back an active account under new session credentials: %+v", a)
 	}
-	if err := s.Remove(CLI("op"), "alice", nil, e.clk.Now()); err != nil {
+	if err := s.Remove(CLI("op"), "alice", nil, Revocations{}, e.clk.Now()); err != nil {
 		t.Fatal(err)
 	}
 	a = s.Snapshot().Accounts["alice"]
@@ -218,7 +218,7 @@ func TestEnableIsRefusedWhileRevocationsArePending(t *testing.T) {
 	e := newEnv(t)
 	s := e.mustOpen()
 	e.setupActive(s, "alice")
-	if err := s.Disable(CLI("op"), "alice", nil, e.clk.Now()); err != nil {
+	if err := s.Disable(CLI("op"), "alice", nil, Revocations{}, e.clk.Now()); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.Change(CLI("op").ev("account_unlocked", "alice", ""), func(st *State) error {
@@ -255,12 +255,12 @@ func TestUnlockClearsLocksAndRestrictions(t *testing.T) {
 func TestRecoverCreatesOrFullyResets(t *testing.T) {
 	e := newEnv(t)
 	s := e.mustOpen()
-	tok, created, err := s.Recover(CLI("op"), "carol", "Carol", 72*time.Hour, 24*time.Hour, e.clk.Now())
+	tok, created, err := s.Recover(CLI("op"), "carol", "Carol", 72*time.Hour, 24*time.Hour, Revocations{}, e.clk.Now())
 	if err != nil || !created || tok == "" {
 		t.Fatalf("%v %v", created, err)
 	}
 	e.finish(s, tok)
-	_, created, err = s.Recover(CLI("op"), "carol", "", 72*time.Hour, 24*time.Hour, e.clk.Now())
+	_, created, err = s.Recover(CLI("op"), "carol", "", 72*time.Hour, 24*time.Hour, Revocations{}, e.clk.Now())
 	if err != nil || created {
 		t.Fatalf("%v %v", created, err)
 	}

@@ -284,6 +284,21 @@ func (s *Store) UseTOTP(username, code string, now time.Time, ev *audit.Event) e
 	}, nil)
 }
 
+var dummyTOTPSecret = make([]byte, 20)
+
+// ProbeTOTP takes the writer lock and checks a code against the account's secret (a dummy one when there is none), and
+// writes nothing: the work UseTOTP does for a code that fails, for the sign-in that must not tell a wrong password from a
+// right one by how long it holds the writer (5.6, 8.6).
+func (s *Store) ProbeTOTP(username, code string, now time.Time) {
+	s.eng.wmu.Lock()
+	defer s.eng.wmu.Unlock()
+	secret, last := dummyTOTPSecret, int64(0)
+	if a := s.eng.cur.Accounts[username]; a != nil && a.TOTP != nil {
+		secret, last = a.TOTP.Secret, a.TOTP.LastStep
+	}
+	_, _ = VerifyTOTP(secret, code, now, last)
+}
+
 // ErrNotCounterOnly is returned by Counter when its callback changed anything but counters.
 var ErrNotCounterOnly = errors.New("a counter write may change only counter fields; use Change, which is audited")
 

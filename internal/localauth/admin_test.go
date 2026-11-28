@@ -269,6 +269,13 @@ func TestAdminSocketIsPrivateAndExclusive(t *testing.T) {
 	if err != nil || st.Mode().Perm() != 0o600 {
 		t.Fatalf("%v %v", st, err)
 	}
+	// the socket was made in a private directory (no process-wide umask) and moved to its name: nothing is left behind
+	ents, _ := os.ReadDir(e.dir)
+	for _, d := range ents {
+		if strings.HasPrefix(d.Name(), ".admin-") {
+			t.Fatalf("a temporary directory of the socket is left: %s", d.Name())
+		}
+	}
 	if _, err := e.svc.ServeAdmin(); err == nil || !strings.Contains(err.Error(), "another process holds") {
 		t.Fatalf("a second server on the same state directory: %v", err)
 	}

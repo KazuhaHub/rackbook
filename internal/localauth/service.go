@@ -88,9 +88,14 @@ type Service struct {
 	replay  *replaySet
 	pk      *passkeyKit
 
-	// counterFailed is set when a counter write of an answered attempt could not be made: the next attempt is
-	// refused with 503 audit_unavailable (8.6).
-	counterFailed atomic.Bool
+	// degraded is set when a counter write or an audit line could not be written. While it is set every attempt, right or wrong,
+	// gets the same 503 before anything is verified; a probe write on a backoff clears it when the store works again.
+	degraded  atomic.Bool
+	probeMu   sync.Mutex
+	nextProbe time.Time
+	guard     *acctGuard
+	revMu     sync.Mutex
+	revoker   Revoker
 
 	problemMu   sync.Mutex
 	problemSeen bool
@@ -126,6 +131,7 @@ func New(o Options) (*Service, error) {
 	s.refused = newAggregator("login_refused", func(e audit.Event) { s.o.Audit.Record(e) })
 	s.sealer = newSealer(o.Key)
 	s.replay = newReplaySet(s.now)
+	s.guard = newAcctGuard()
 	if s.pk, err = newPasskeyKit(s.base, o.Store, o.Key, s.sealer, s.now, s.replay); err != nil {
 		return nil, err
 	}
@@ -232,7 +238,7 @@ func (s *Service) localAdminExists() bool {
 	var names []string
 	s.store.Peek(func(st *accounts.State) {
 		for n, a := range st.Accounts {
-			if a.State == accounts.StateActive && a.Password != "" && (a.TOTP != nil || len(a.Passkeys) > 0) {
+			if a.Live() && a.Password != "" && (a.TOTP != nil || len(a.Passkeys) > 0) {
 				names = append(names, n)
 			}
 		}
@@ -291,13 +297,46 @@ func (s *Service) where(r *http.Request) (bucket, addr string) {
 	return clientip.Bucket(r, s.o.Trusted, 48), clientip.Addr(r, s.o.Trusted)
 }
 
-// auditOK refuses an attempt when the audit log cannot be written, or when the counters of the last answered
-// attempt could not be (the next attempt is the one refused, 8.6).
-func (s *Service) auditOK() bool {
-	if s.counterFailed.CompareAndSwap(true, false) {
+// probeBackoff is how long a degraded service waits between two probe writes.
+const probeBackoff = 5 * time.Second
+
+// available says an attempt may be answered at all. It is not while the audit log cannot be written, and not while the service is
+// degraded (an earlier counter write failed): every attempt, whether its credentials are right or wrong, then gets the same 503,
+// so that nobody learns anything from which attempts fail. A degraded service tries one probe write per backoff and, when it
+// works, says so in the audit log and goes on.
+func (s *Service) available() bool {
+	if !s.o.Audit.Writable() {
 		return false
 	}
-	return s.o.Audit.Writable()
+	if !s.degraded.Load() {
+		return true
+	}
+	s.probeMu.Lock()
+	defer s.probeMu.Unlock()
+	now := s.now()
+	if now.Before(s.nextProbe) {
+		return false
+	}
+	s.nextProbe = now.Add(probeBackoff)
+	if err := s.store.Counter(nil, func(*accounts.State) error { return nil }); err != nil {
+		return false
+	}
+	if s.degraded.CompareAndSwap(true, false) {
+		s.o.Audit.Record(audit.Event{Event: "sign_in_degraded", Method: "local", Code: "end"})
+		s.log.Info("local sign-in is available again: the store can be written")
+	}
+	return true
+}
+
+// degrade latches the service after a write failed.
+func (s *Service) degrade(err error) {
+	s.probeMu.Lock()
+	s.nextProbe = s.now().Add(probeBackoff)
+	s.probeMu.Unlock()
+	if s.degraded.CompareAndSwap(false, true) {
+		s.o.Audit.Record(audit.Event{Event: "sign_in_degraded", Method: "local", Code: "start"})
+		s.log.Error("local sign-in is refused until the store or the audit log can be written again", "err", err)
+	}
 }
 
 // normalise is the username as typed, folded to the form accounts use. Whether it is an account is not decided here.

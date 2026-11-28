@@ -57,6 +57,7 @@ type env struct {
 	cfg    atomic.Pointer[config.Config]
 	mu     sync.Mutex
 	sleeps []time.Duration
+	rev    *fakeRevoker
 }
 
 type envOpts struct {
@@ -115,6 +116,8 @@ func newEnv(t *testing.T, o envOpts) *env {
 		t.Fatal(err)
 	}
 	t.Cleanup(e.svc.Close)
+	e.rev = &fakeRevoker{}
+	e.svc.SetRevoker(e.rev)
 	// a ready sample, so that the budget behaves as it does after the first seconds of a start
 	for i := 0; i < sampleReady; i++ {
 		e.svc.sample.Add(time.Millisecond, "", "")
@@ -304,4 +307,64 @@ func httptestRequest(b *browser) *http.Request {
 
 func decodeBase32(s string) ([]byte, error) {
 	return base32.StdEncoding.WithPadding(base32.NoPadding).DecodeString(strings.ToUpper(strings.ReplaceAll(s, " ", "")))
+}
+
+// fakeRevoker owns tokens and grants by account and records what was revoked.
+type fakeRevoker struct {
+	mu      sync.Mutex
+	tokens  map[string][]string // account -> token names
+	grants  map[string][]string
+	revoked []string
+}
+
+func (f *fakeRevoker) own(user string, tokens, grants []string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.tokens == nil {
+		f.tokens, f.grants = map[string][]string{}, map[string][]string{}
+	}
+	f.tokens[user] = append(f.tokens[user], tokens...)
+	f.grants[user] = append(f.grants[user], grants...)
+}
+
+func (f *fakeRevoker) Owned(user string) ([]string, []string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.tokens[user]...), append([]string(nil), f.grants[user]...), nil
+}
+
+func (f *fakeRevoker) RevokeToken(_ context.Context, name string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.revoked = append(f.revoked, "token:"+name)
+	for u, ts := range f.tokens {
+		f.tokens[u] = without(ts, name)
+	}
+	return nil
+}
+
+func (f *fakeRevoker) RevokeGrant(_ context.Context, id string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.revoked = append(f.revoked, "grant:"+id)
+	for u, gs := range f.grants {
+		f.grants[u] = without(gs, id)
+	}
+	return nil
+}
+
+func (f *fakeRevoker) did() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.revoked...)
+}
+
+func without(in []string, drop string) []string {
+	var out []string
+	for _, v := range in {
+		if v != drop {
+			out = append(out, v)
+		}
+	}
+	return out
 }

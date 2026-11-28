@@ -1231,15 +1231,39 @@ and the online admin channel with `recover`, `invite`, `reset`, `unlock`, `disab
   computed from the store and the roles on each sign-in instead (so that disabling the last local administrator is felt at
   once), and `settings_problem` (`sso_only_without_local_admin`) is written when it first fails. The admin banner is piece 6.
 - **Passwordless passkey sign-in** is not built: `auth.local.passwordless` other than `off` is refused as a config error.
-- **Revoking API tokens and OAuth grants (5.11) is piece 7.** Disable, remove and the reset do not fill
-  `pending_revocations`; they stop everything because the account has no role while it is not live. Enable and the completion of
-  a setup are refused while `pending_revocations` is not empty (accept-restore can fill it), but a token whose account is
-  enabled again works again.
-- **Re-authentication is the endpoint and the check, not yet the gate.** `RecentAuth` exists; `403 reauth_required` on the
-  sensitive actions of 6 (password and factors, account administration, API tokens, saving roles, the settings page, approving an
-  MCP client) comes with piece 7 and the pages that need it. The counter rule of piece 2 gets one addition: a `reauth` event for
+- **Revoking API tokens and OAuth grants (5.11) is built here, pulled forward from piece 7** because sign-in exposes it. Disable,
+  remove, every reset scope and `recover` record `pending_revocations` in the same change (the marker `*` stands for "every token
+  and grant the account owns when it is applied", beside the names and ids that could be listed, which the event shows), then
+  `localauth.ApplyRevocations` revokes the account's API tokens (a commit to `.rackbook/tokens.yml` through the registry, by
+  creator and `created_via: local`) and its OAuth grants (`oauthserver.Server.GrantsOf`, `RevokeGrant`), and records
+  `account_revocations_applied`. A failure leaves them pending: enable and the completion of a setup are refused (`409
+  revocations_pending`) and the server retries every minute. The offline command line cannot revoke: it records them, and the
+  server applies every account's pending revocations at its start, before it serves.
+- **Re-authentication gates the sensitive actions that make a credential:** creating an API token, saving roles, and approving an
+  OAuth/MCP client answer `403 reauth_required` (with `reauth`: the page and the way back) to a local session whose last full
+  authentication is older than `auth.local.reauth_window`; the console opens that page and returns. `auth.Authenticator.NeedsReauth`
+  and `RequireRecentAuth` are the check; only local accounts are asked (a person from single sign-on re-authenticates at the
+  provider). The account administration screens and the settings page, which would be gated too, are piece 6 and 7. The counter rule of piece 2 gets one addition: a `reauth` event for
   the account may reset `reauth_failures` (and nothing else), because a re-authentication proves the password and the factor
   again without being a sign-in (`last_login` does not move).
+- **Reserve before work (8.4, 8.6).** The throttle, the pair and name counters, and the account's own attempt counters are
+  reserved before any hash or code check: `tables.Begin` checks and counts in one critical section and a success gives its place
+  back (`Refund`); an account's reservations (`reservePassword`, `reserveTOTP`) read the stored count plus the attempts in flight
+  under a lock of the account, add this attempt, and are released in the same critical section as the counter write that
+  replaces them. The success write re-checks the state, the known network and the second-factor limits on the committed state.
+  The counter writes remain after the answer, as 8.6 asks.
+- **A failed counter write latches the sign-in:** every attempt, right or wrong, gets the same `503` before anything is
+  verified, an event `sign_in_degraded` (`code: start`) is written, and a probe write on a 5-second backoff clears it (`end`).
+- **The reset proof by passkey:** `VerifyAssertion` accepts an account in `reset_pending` for a password-scope reset proof only.
+  The TOTP proof of a reset link counts against the account's own per-day limit (reserved before the code is checked); the
+  per-link cap of ten wrong proofs stays as an extra.
+- **Smaller changes:** the local-admin guard counts `restricted` and `passkey_only` administrators; a repeated open of a link keeps
+  the first 30-minute hold; the flood ceiling is checked before any body is read; the passkey user handle has its own subkey
+  (`rackbook passkey handle v1`); the admin socket is made in a private directory and moved to its name (no process-wide umask);
+  a wrong password takes the account writer like a right one (`Store.ProbeTOTP`); under `sso_only` a non-admin's right credentials
+  make the same synced audit write an administrator's sign-in does; `reauth_failures` is cleared when the sessions end and on a full
+  sign-in; the offline `disable` and `remove` apply the last-administrator guard when `--config` names rackbook.yml; `remove`,
+  `disable` and `reset --all` ask for confirmation (`--yes` skips it).
 - **Administrators act through the command line only.** The `/api/admin/accounts` endpoints and the Users screens are piece 7;
   every command is `account_*` with `method: cli`. The holder's `notices` (reset, disable, enable, unlock) are recorded and not
   shown yet.

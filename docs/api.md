@@ -429,6 +429,10 @@ Public endpoints (no session):
   - `POST /auth/local/reauth` `{"password", "code"?, "passkey"?, "attempt"?, "return"?}` — needs a local session. `200 {"ok":
     true, "return"}` sets a new cookie with the time of this authentication. `401 sign_in_failed` (the third consecutive failure
     ends every session of the account and clears the cookie), `401 login_required` without a local session.
+  - **`403 reauth_required`** `{"error", "message", "reauth": "/auth/local/reauth?return=<path>"}` is what a local session whose
+    last full authentication is older than `auth.local.reauth_window` (default 10 minutes) gets from `POST /api/admin/tokens`,
+    `POST /api/admin/roles` and `POST /api/oauth/consent` with `approve: true` (the consent request is not used up). The console goes
+    to `reauth` and comes back to `return`.
 - `GET /branding/logo`, `GET /branding/favicon` — the images of `branding.logo` and
   `branding.favicon` (also public; GET and HEAD only). They carry the exact
   `Content-Type`, `X-Content-Type-Options: nosniff`, `Cache-Control: no-cache`, an

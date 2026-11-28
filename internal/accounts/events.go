@@ -8,7 +8,7 @@ package accounts
 var accountChangeEvents = names(
 	"account_invited", "account_invite_revoked", "account_link_opened", "account_setup_completed",
 	"account_reset_issued", "account_unlocked", "password_changed", "factor_added", "factor_removed",
-	"sessions_ended", "account_disabled", "account_enabled", "account_removed",
+	"sessions_ended", "account_disabled", "account_enabled", "account_removed", "account_revocations_applied",
 	"account_store_checkpoint", "account_store_problem", "account_store_restored", "account_store_rekeyed",
 )
 

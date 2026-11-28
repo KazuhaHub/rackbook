@@ -267,7 +267,7 @@ func nonNilWarnings(w []rolesedit.Warning) []rolesedit.Warning {
 
 // rolesSave commits the change.
 func (s *server) rolesSave(w http.ResponseWriter, r *http.Request) {
-	if !s.rolesAdmin(w, r) || !s.writable(w, r, roles.Manage) || s.rolesDegraded(w) {
+	if !s.rolesAdmin(w, r) || !s.writable(w, r, roles.Manage) || s.rolesDegraded(w) || s.o.Auth.RequireRecentAuth(w, r) {
 		return
 	}
 	req, ok := s.rolesRequest(w, r)

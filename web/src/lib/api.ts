@@ -66,6 +66,9 @@ export async function apiFetch<T>(path: string, init: RequestInit = {}): Promise
         window.location.assign(loginUrl({ error: body.reason === 'expired' ? 'expired' : undefined }))
       } else if (res.status === 403 && body?.error === 'no_role') {
         window.location.assign(loginUrl({ error: 'no_role', returnTo: '/' }))
+      } else if (res.status === 403 && body?.error === 'reauth_required' && typeof body.reauth === 'string' && body.reauth.startsWith('/auth/local/reauth')) {
+        // a local account must confirm its password and second factor again; the page comes back to this one
+        window.location.assign(body.reauth)
       }
     }
     // A refused secret is shown like a validation error, on the field it was found in.

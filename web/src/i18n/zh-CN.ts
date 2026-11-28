@@ -53,6 +53,7 @@ const messages = {
       reauth: {
         title: '确认是你本人',
         subtitle: '请再次输入密码和验证码后继续',
+        reason: '这项操作需要你刚刚确认过身份。确认后会回到刚才的页面，请再操作一次。',
         submit: '确认',
         working: '正在确认…',
       },

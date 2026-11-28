@@ -113,7 +113,7 @@ type createTokenBody struct {
 }
 
 func (s *server) createToken(w http.ResponseWriter, r *http.Request) {
-	if !s.tokenAdmin(w, r, true) {
+	if !s.tokenAdmin(w, r, true) || s.o.Auth.RequireRecentAuth(w, r) { // a new credential needs a recent authentication (6)
 		return
 	}
 	var b createTokenBody

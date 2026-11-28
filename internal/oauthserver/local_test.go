@@ -5,6 +5,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/kazuhahub/rackbook/internal/roles"
 )
@@ -85,4 +86,65 @@ func TestLookAlikeOfALocalAccountHasNoGrant(t *testing.T) {
 // consentRedirect says the authorization request was taken to the consent page.
 func consentRedirect(r resp) bool {
 	return r.StatusCode == http.StatusFound && strings.HasPrefix(r.Header.Get("Location"), "/oauth/consent")
+}
+
+// Approving a client hands out a credential: a local account that did not fully authenticate recently is asked to again
+// (403 reauth_required), before the request is used up, so the same consent page works after the re-authentication.
+func TestApprovingAClientNeedsARecentAuthenticationOfALocalAccount(t *testing.T) {
+	t.Parallel()
+	fl := &fakeLocal{active: map[string]bool{"alice": true}}
+	e := newEnv(t, opts{local: fl})
+	e.setRoles(&roles.Spec{Admin: []string{"local:alice"}})
+	e.method = "local"
+	clientID := e.register("stale")
+	_, ch := pkce()
+	r := e.startAuth("local:alice", e.params(clientID, testRedirect, ch))
+	req := strings.TrimPrefix(r.Header.Get("Location"), "/oauth/consent?req=")
+	old := e.clock.now().Add(-time.Hour).UTC().Format(time.RFC3339)
+	d := e.postJSON("local:alice", "/api/oauth/consent", map[string]any{"req": req, "approve": true}, "X-Test-Signin", old)
+	if d.StatusCode != http.StatusForbidden || d.str("error") != "reauth_required" || !strings.HasPrefix(d.str("reauth"), "/auth/local/reauth?return=") {
+		t.Fatalf("%d %s", d.StatusCode, d.body)
+	}
+	// denying needs nothing, and the request was not used up: approving after a re-authentication works
+	d = e.postJSON("local:alice", "/api/oauth/consent", map[string]any{"req": req, "approve": true})
+	if d.StatusCode != http.StatusOK {
+		t.Fatalf("after re-authenticating: %d %s", d.StatusCode, d.body)
+	}
+}
+
+// Revoking a person's grants (design-local-accounts.md, 5.11): the access token and the refresh of every grant of the identity
+// are refused, and another person's grant is left alone.
+func TestGrantsOfAnIdentityAreRevokedWithTheAccount(t *testing.T) {
+	t.Parallel()
+	fl := &fakeLocal{active: map[string]bool{"alice": true, "bob": true}}
+	e := newEnv(t, opts{local: fl})
+	e.setRoles(&roles.Spec{Admin: []string{"local:alice", "local:bob"}})
+	e.method = "local"
+	clientAlice, tokA := e.login("local:alice", "Alice's client")
+	_, tokB := e.login("local:bob", "Bob's client")
+	ids := e.srv.GrantsOf("local:alice")
+	if len(ids) != 1 || ids[0] != tokA.grant {
+		t.Fatalf("%v (grant %s)", ids, tokA.grant)
+	}
+	if r := e.mcpStatus(tokA.access); r.StatusCode != http.StatusOK {
+		t.Fatalf("before: %d", r.StatusCode)
+	}
+	if err := e.srv.RevokeGrant(ids[0], "revoked with the local account"); err != nil {
+		t.Fatal(err)
+	}
+	if r := e.mcpStatus(tokA.access); r.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("an access token of a revoked grant: %d", r.StatusCode)
+	}
+	if r := e.refresh(clientAlice, tokA.refresh); r.StatusCode == http.StatusOK {
+		t.Fatal("a refresh of a revoked grant was accepted")
+	}
+	if r := e.mcpStatus(tokB.access); r.StatusCode != http.StatusOK {
+		t.Fatalf("another person's grant: %d", r.StatusCode)
+	}
+	if got := e.srv.GrantsOf("local:alice"); len(got) != 0 {
+		t.Fatalf("%v", got)
+	}
+	if err := e.srv.RevokeGrant("no-such-grant", "x"); err != nil {
+		t.Fatalf("a grant that is gone is not an error: %v", err)
+	}
 }

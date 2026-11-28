@@ -12,7 +12,9 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/kazuhahub/rackbook/internal/accounts"
+	"github.com/kazuhahub/rackbook/internal/config"
 	"github.com/kazuhahub/rackbook/internal/localauth"
+	"github.com/kazuhahub/rackbook/internal/roles"
 )
 
 // The commands of local accounts that change accounts (docs/design-local-accounts.md, 11.2): invite, reset, unlock, disable,
@@ -42,6 +44,17 @@ func runAdmin(cmd *cobra.Command, req localauth.AdminRequest) error {
 	}
 	defer key.Zero()
 	req.Operator = operatorOf(cmd)
+	if msg := confirmText(req); msg != "" {
+		if yes, _ := cmd.Flags().GetBool("yes"); !yes {
+			ok, err := confirm(cmd, msg+" Type yes to go on: ")
+			if err != nil {
+				return err
+			}
+			if !ok {
+				return errors.New("not confirmed: nothing was changed")
+			}
+		}
+	}
 	out := cmd.OutOrStdout()
 	ctx := cmd.Context()
 	if ctx == nil {
@@ -75,13 +88,59 @@ func runAdmin(cmd *cobra.Command, req localauth.AdminRequest) error {
 		return err
 	}
 	base, _ := cmd.Flags().GetString("base-url")
-	env := localauth.AdminEnv{
+	guard, err := offlineGuard(cmd)
+	if err != nil {
+		return err
+	}
+	env := localauth.AdminEnv{Guard: guard,
 		Store: st, BaseURL: base,
 		InviteTTL: func() time.Duration { return durationFlag(cmd, "invite-ttl", 72*time.Hour) },
 		ResetTTL:  func() time.Duration { return durationFlag(cmd, "reset-ttl", 24*time.Hour) },
 	}
 	fmt.Fprintln(cmd.ErrOrStderr(), "the server is not running: working on the files in --state-dir directly")
 	return report(out, env.Do(req))
+}
+
+// confirmText says what a command that is hard to undo does, for the confirmation it asks for (--yes skips it).
+func confirmText(req localauth.AdminRequest) string {
+	switch {
+	case req.Cmd == "remove":
+		return "This removes " + req.Username + ": its credentials are deleted and its sessions end, and the name can never be used again."
+	case req.Cmd == "disable":
+		return "This disables " + req.Username + ": its sessions end at once and its API tokens and app connections are revoked."
+	case req.Cmd == "reset" && req.All:
+		return "This resets EVERY account: all sessions end, every API token and app connection is revoked, and each person must use a new link."
+	}
+	return ""
+}
+
+// offlineGuard is the last-administrator guard of 5.9 for the command line with the server stopped. It needs rackbook.yml
+// (--config) to know whether sso_only is in force and who holds the admin role; without it the guard cannot be checked, and the
+// command says so.
+func offlineGuard(cmd *cobra.Command) (func(*accounts.State, string) error, error) {
+	if cmd.Flags().Lookup("config") == nil {
+		return nil, nil
+	}
+	path, _ := cmd.Flags().GetString("config")
+	if path == "" {
+		if c := cmd.Name(); c == "disable" || c == "remove" {
+			fmt.Fprintln(cmd.ErrOrStderr(), "note: without --config the sso_only guard (the last local administrator cannot be disabled or removed) is not checked")
+		}
+		return nil, nil
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		return nil, err
+	}
+	pol, err := roles.CompileAuditors(cfg.Auth.Roles, cfg.Auth.Auditors, roles.Options{MCPMatchEmail: cfg.Auth.MCP.MatchEmail}, cfg.Auth.Editors...)
+	if err != nil {
+		return nil, err
+	}
+	isAdmin := func(u string) bool {
+		return pol.Evaluate(roles.Subject{ID: roles.LocalPrefix + u, Method: roles.MethodLocal}) == roles.Admin
+	}
+	ssoOnly := func() bool { return cfg.Auth.SignInSettings().SSOOnlyConfigured(ssoConfigured(cfg)) }
+	return localauth.LastAdminGuard(ssoOnly, isAdmin), nil
 }
 
 func durationFlag(cmd *cobra.Command, name string, def time.Duration) time.Duration {
@@ -125,6 +184,12 @@ func newAdminCommands() []*cobra.Command {
 		c := &cobra.Command{Use: use, Short: short, Args: args}
 		c.RunE = func(cmd *cobra.Command, a []string) error { return runAdmin(cmd, build(cmd, a)) }
 		c.Flags().String("base-url", "", "the public https URL of the console, for the full link when the server is not running")
+		if use := strings.Fields(use)[0]; use == "disable" || use == "remove" || use == "reset" {
+			c.Flags().Bool("yes", false, "do not ask for confirmation")
+		}
+		if use := strings.Fields(use)[0]; use == "disable" || use == "remove" {
+			c.Flags().String("config", "", "rackbook.yml, to apply the sso_only guard (the last local administrator) when the server is not running")
+		}
 		if flags != nil {
 			flags(c)
 		}

@@ -1,8 +1,10 @@
 package localauth
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -52,6 +54,9 @@ type AdminEnv struct {
 	BaseURL   string
 	InviteTTL func() time.Duration
 	ResetTTL  func() time.Duration
+	// Revoker lists and revokes the API tokens and OAuth grants an account owns (5.11). nil: the server is not running (the
+	// offline command line): the revocations are recorded as pending, and the server applies them at its next start.
+	Revoker Revoker
 	// Guard is run inside every disable and remove: it refuses what would leave sso_only without a local administrator.
 	Guard func(st *accounts.State, username string) error
 	// Unlocked is told an account's counters were cleared, so that the memory tables forget it too.
@@ -119,11 +124,13 @@ func (e AdminEnv) Do(req AdminRequest) AdminResponse {
 			scope = accounts.ScopeAll
 		}
 		if !req.All {
-			tok, err := e.Store.Reset(by, user, accounts.ResetOptions{Scope: scope, TTL: e.ResetTTL()}, now)
+			tok, err := e.Store.Reset(by, user, accounts.ResetOptions{Scope: scope, TTL: e.ResetTTL(), Revoke: e.revocation(user)}, now)
 			if err != nil {
 				return fail1(err)
 			}
-			return AdminResponse{OK: true, Links: []AdminLink{e.resetLink(user, scope, tok, now)}}
+			out := AdminResponse{OK: true, Links: []AdminLink{e.resetLink(user, scope, tok, now)}}
+			e.revoke(by, user, &out)
+			return out
 		}
 		out := AdminResponse{OK: true}
 		for _, n := range e.Store.Snapshot().Names() {
@@ -131,13 +138,14 @@ func (e AdminEnv) Do(req AdminRequest) AdminResponse {
 			if a == nil || a.State == accounts.StateRemoved || a.State == accounts.StateDisabled {
 				continue
 			}
-			tok, err := e.Store.Reset(by, n, accounts.ResetOptions{Scope: scope, TTL: e.ResetTTL()}, now)
+			tok, err := e.Store.Reset(by, n, accounts.ResetOptions{Scope: scope, TTL: e.ResetTTL(), Revoke: e.revocation(n)}, now)
 			if err != nil {
 				out.Lines = append(out.Lines, fmt.Sprintf("%s: %v", n, err))
 				out.OK = false
 				continue
 			}
 			out.Links = append(out.Links, e.resetLink(n, scope, tok, now))
+			e.revoke(by, n, &out)
 		}
 		return out
 	case "unlock":
@@ -149,20 +157,24 @@ func (e AdminEnv) Do(req AdminRequest) AdminResponse {
 		}
 		return AdminResponse{OK: true, Lines: []string{user + " is unlocked"}}
 	case "disable":
-		if err := e.Store.Disable(by, user, check, now); err != nil {
+		if err := e.Store.Disable(by, user, check, e.revocation(user), now); err != nil {
 			return fail1(err)
 		}
-		return AdminResponse{OK: true, Lines: []string{user + " is disabled; its sessions ended"}}
+		out := AdminResponse{OK: true, Lines: []string{user + " is disabled; its sessions ended"}}
+		e.revoke(by, user, &out)
+		return out
 	case "enable":
 		if err := e.Store.Enable(by, user, now); err != nil {
 			return fail1(err)
 		}
 		return AdminResponse{OK: true, Lines: []string{user + " is enabled"}}
 	case "remove":
-		if err := e.Store.Remove(by, user, check, now); err != nil {
+		if err := e.Store.Remove(by, user, check, e.revocation(user), now); err != nil {
 			return fail1(err)
 		}
-		return AdminResponse{OK: true, Lines: []string{user + " is removed; the name stays used"}}
+		out := AdminResponse{OK: true, Lines: []string{user + " is removed; the name stays used"}}
+		e.revoke(by, user, &out)
+		return out
 	case "end-sessions":
 		if !req.All {
 			if err := e.Store.EndSessions(by, user, "cli", now); err != nil {
@@ -185,7 +197,7 @@ func (e AdminEnv) Do(req AdminRequest) AdminResponse {
 		}
 		return out
 	case "recover":
-		tok, created, err := e.Store.Recover(by, user, req.Name, e.InviteTTL(), e.ResetTTL(), now)
+		tok, created, err := e.Store.Recover(by, user, req.Name, e.InviteTTL(), e.ResetTTL(), e.revocation(user), now)
 		if err != nil {
 			return fail1(err)
 		}
@@ -196,6 +208,7 @@ func (e AdminEnv) Do(req AdminRequest) AdminResponse {
 		} else {
 			out.Links = []AdminLink{e.resetLink(user, accounts.ScopeAll, tok, now)}
 			out.Lines = append(out.Lines, "a full reset is issued: whoever opens the link takes over the account")
+			e.revoke(by, user, &out)
 		}
 		if req.GrantAdmin {
 			switch {
@@ -234,26 +247,167 @@ func (s *Service) AdminEnv() AdminEnv {
 			}
 			return s.o.GrantAdmin(contextBackground(), username, operator)
 		},
-		Now: s.now,
+		Now:     s.now,
+		Revoker: s.currentRevoker(),
 	}
+}
+
+func (s *Service) currentRevoker() Revoker {
+	s.revMu.Lock()
+	defer s.revMu.Unlock()
+	return s.revoker
 }
 
 // lastAdminGuard refuses to disable or remove the last active local administrator while sso_only is on (5.9, 2.1).
 func (s *Service) lastAdminGuard(st *accounts.State, target string) error {
-	if !s.ssoOnly(s.settings()) || s.o.IsAdmin == nil {
-		return nil
-	}
-	isAdmin := func(n string) bool {
-		a := st.Accounts[n]
-		return a != nil && a.State == accounts.StateActive && a.Password != "" && (a.TOTP != nil || len(a.Passkeys) > 0) && s.o.IsAdmin(n)
-	}
-	if !isAdmin(target) {
-		return nil
-	}
-	for n := range st.Accounts {
-		if n != target && isAdmin(n) {
+	return LastAdminGuard(func() bool { return s.ssoOnly(s.settings()) }, s.o.IsAdmin)(st, target)
+}
+
+// LastAdminGuard is the guard of 5.9: while ssoOnly says sso_only is in force, the last local administrator (an account that is
+// live, with a password and a second factor, and holds the admin role by isAdmin) cannot be disabled or removed. The online
+// server and the offline command line, which reads rackbook.yml for this, share it.
+func LastAdminGuard(ssoOnly func() bool, isAdmin func(string) bool) func(st *accounts.State, target string) error {
+	return func(st *accounts.State, target string) error {
+		if isAdmin == nil || !ssoOnly() {
 			return nil
 		}
+		admin := func(n string) bool {
+			a := st.Accounts[n]
+			return a != nil && a.Live() && a.Password != "" && (a.TOTP != nil || len(a.Passkeys) > 0) && isAdmin(n)
+		}
+		if !admin(target) {
+			return nil
+		}
+		for n := range st.Accounts {
+			if n != target && admin(n) {
+				return nil
+			}
+		}
+		return ErrLastLocalAdmin
 	}
-	return ErrLastLocalAdmin
+}
+
+// Revoker lists and revokes what an account owns outside the store: the API tokens it created (a commit to .rackbook/tokens.yml)
+// and the OAuth grants of the built-in authorization server and of /mcp.
+type Revoker interface {
+	// Owned lists the names of the active API tokens created by local:<username> and the ids of its OAuth grants.
+	Owned(username string) (tokens, grants []string, err error)
+	RevokeToken(ctx context.Context, name string) error
+	RevokeGrant(ctx context.Context, id string) error
+}
+
+// revocation is what a disable, a remove or a reset records as pending (5.11): every token and grant the account owns when it
+// is applied (the AllOwned marker), and, when they can be listed now, their names and ids, which the audit event shows.
+func (e AdminEnv) revocation(user string) accounts.Revocations {
+	rev := accounts.EverythingOwned()
+	if e.Revoker != nil {
+		if names, ids, err := e.Revoker.Owned(user); err == nil {
+			rev.Tokens, rev.Grants = append(rev.Tokens, names...), append(rev.Grants, ids...)
+		}
+	}
+	return rev
+}
+
+// revoke carries out the revocations pending for the account and says what happened. Without a Revoker, or when one fails, they
+// stay pending: the server applies them at its next start and retries every minute.
+func (e AdminEnv) revoke(by accounts.Actor, user string, out *AdminResponse) {
+	if e.Revoker == nil {
+		out.Lines = append(out.Lines, "the API tokens and app connections of "+user+" are recorded to be revoked: the server does it when it starts")
+		return
+	}
+	n, m, err := ApplyRevocations(context.Background(), e.Store, e.Revoker, by, user)
+	if err != nil {
+		out.Lines = append(out.Lines, fmt.Sprintf("revoking the API tokens and app connections of %s failed (%v): they stay pending and are retried every minute", user, err))
+		return
+	}
+	out.Lines = append(out.Lines, fmt.Sprintf("revoked %d API tokens and %d app connections of %s", n, m, user))
+}
+
+// ApplyRevocations carries out the pending revocations of one account: every token and grant the AllOwned marker stands for, and
+// the names and ids listed. It revokes first and records afterwards, so a failure leaves them pending and a retry revokes again
+// (revoking is idempotent). It returns how many tokens and grants it revoked.
+func ApplyRevocations(ctx context.Context, st *accounts.Store, rv Revoker, by accounts.Actor, user string) (tokens, grants int, err error) {
+	a := st.Lookup(user)
+	if a == nil || a.PendingRevocations.Empty() {
+		return 0, 0, nil
+	}
+	pend := a.PendingRevocations
+	names, ids := pend.Tokens, pend.Grants
+	if slices.Contains(pend.Tokens, accounts.AllOwned) || slices.Contains(pend.Grants, accounts.AllOwned) {
+		ot, og, err := rv.Owned(user)
+		if err != nil {
+			return 0, 0, err
+		}
+		if slices.Contains(pend.Tokens, accounts.AllOwned) {
+			names = append(slices.Clone(pend.Tokens), ot...)
+		}
+		if slices.Contains(pend.Grants, accounts.AllOwned) {
+			ids = append(slices.Clone(pend.Grants), og...)
+		}
+	}
+	for _, n := range slices.Compact(slices.Sorted(slices.Values(names))) {
+		if n == accounts.AllOwned {
+			continue
+		}
+		if err := rv.RevokeToken(ctx, n); err != nil {
+			return tokens, grants, err
+		}
+		tokens++
+	}
+	for _, g := range slices.Compact(slices.Sorted(slices.Values(ids))) {
+		if g == accounts.AllOwned {
+			continue
+		}
+		if err := rv.RevokeGrant(ctx, g); err != nil {
+			return tokens, grants, err
+		}
+		grants++
+	}
+	done := accounts.Revocations{Tokens: slices.Clone(pend.Tokens), Grants: slices.Clone(pend.Grants)}
+	done.Tokens, done.Grants = append(done.Tokens, names...), append(done.Grants, ids...)
+	return tokens, grants, st.RevocationsApplied(by, user, done)
+}
+
+// SetRevoker gives the service what it needs to revoke tokens and grants; call it before ApplyAllRevocations.
+func (s *Service) SetRevoker(r Revoker) {
+	s.revMu.Lock()
+	s.revoker = r
+	s.revMu.Unlock()
+}
+
+// ApplyAllRevocations carries out every account's pending revocations: at start, before the server serves, and every minute
+// after (RunRevocations), so that what could not be done at the time of a disable or a reset, or was recorded by the offline
+// command line, is not forgotten.
+func (s *Service) ApplyAllRevocations(ctx context.Context) error {
+	rv := s.currentRevoker()
+	if rv == nil {
+		return nil
+	}
+	var first error
+	for _, n := range s.store.Snapshot().Names() {
+		if a := s.store.Lookup(n); a == nil || a.PendingRevocations.Empty() {
+			continue
+		}
+		if _, _, err := ApplyRevocations(ctx, s.store, rv, accounts.Actor{Method: "system"}, n); err != nil {
+			s.log.Warn("pending revocations of a local account could not be applied; they are retried", "account", n, "err", err)
+			if first == nil {
+				first = err
+			}
+		}
+	}
+	return first
+}
+
+// RunRevocations retries ApplyAllRevocations every minute until ctx ends.
+func (s *Service) RunRevocations(ctx context.Context) {
+	t := time.NewTicker(time.Minute)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			_ = s.ApplyAllRevocations(ctx)
+		}
+	}
 }

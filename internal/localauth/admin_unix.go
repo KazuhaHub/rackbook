@@ -31,13 +31,30 @@ func listenAdmin(stateDir string) (net.Listener, func(), error) {
 	if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return nil, nil, err
 	}
-	old := syscall.Umask(0o177) // the socket is created 0600, with no moment in which it is wider
-	ln, err := net.Listen("unix", path)
-	syscall.Umask(old)
+	// The socket is made in a directory that only this user can enter, so there is no moment at which it is reachable by
+	// another user, and the process-wide umask (which every other thread would feel) is not touched. It is then given mode
+	// 0600 and moved to its name.
+	tmp, err := os.MkdirTemp(stateDir, ".admin-")
 	if err != nil {
 		return nil, nil, err
 	}
-	_ = os.Chmod(path, 0o600)
+	defer os.RemoveAll(tmp)
+	if err := os.Chmod(tmp, 0o700); err != nil {
+		return nil, nil, err
+	}
+	bound := filepath.Join(tmp, "s")
+	ln, err := net.Listen("unix", bound)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := os.Chmod(bound, 0o600); err != nil {
+		ln.Close()
+		return nil, nil, err
+	}
+	if err := os.Rename(bound, path); err != nil {
+		ln.Close()
+		return nil, nil, err
+	}
 	return ln, func() { os.Remove(path) }, nil
 }
 

@@ -1273,7 +1273,14 @@ sets a new password), `second_factor` (the person enters the current password, t
 invite). There is no e-mail and no "forgot password": a lost factor is an administrator's reset.
 
 **Re-authentication.** `/auth/local/reauth` is the same one-step form for a person who is signed in; three failures end every
-session of the account. Which actions need it is piece 7; `login.Service.RecentAuth` is the check.
+session of the account. A local account that did not fully authenticate within `auth.local.reauth_window` is answered `403
+reauth_required` when it creates an API token, saves roles or approves an OAuth/MCP client; the console opens the page and comes
+back. (The account administration and settings screens will be gated the same way when they exist.)
+
+**Revocation.** Disabling, removing or resetting an account (any scope), and `recover`, revoke every API token it created and
+every OAuth/MCP grant it approved. They are recorded in the same audited change and carried out at once when the server runs; the
+offline command line records them and the server carries them out when it starts, before it serves (and retries a failure every
+minute). Until they are done the account cannot be enabled or set up again.
 
 **The admin commands.** `rackbook accounts invite | reset | unlock | disable | enable | remove | end-sessions | recover`
 talk to the **running server** over an admin channel (a Unix socket `<state-dir>/admin.sock`, mode 0600, on Linux and macOS;
@@ -1290,7 +1297,7 @@ work on the files directly, with the same output (pass `--base-url` for a full l
 | `invite <username> [--name ...]` | makes the account and prints its setup link |
 | `reset <username> --scope password\|second_factor\|all`, `reset --all` | issues a reset link: the account is `reset_pending` (no role), its sessions end, its counters and known networks clear; `--all` is for incident response |
 | `unlock <username>` | clears locks and failure counters, lifts `restricted` and `passkey_only` |
-| `disable`, `enable`, `remove <username>` | disable renews the session id and secret, so sessions end at once and an old cookie does not return on enable; remove leaves a tombstone, the name stays used |
+| `disable`, `enable`, `remove <username>` | `disable`, `remove` and `reset --all` ask for confirmation (`--yes` skips it); offline, `disable` and `remove` apply the last-local-administrator guard when `--config` names rackbook.yml. Disable renews the session id and secret, so sessions end at once and an old cookie does not return on enable; remove leaves a tombstone, the name stays used |
 | `end-sessions <username>\|--all` | renews the session id and secret |
 | `recover <username> [--grant-admin]` | the lockout fallback: invites the account if it does not exist, else issues a full reset; `--grant-admin` also commits `local:<username>` to `auth.roles.admin` (online; offline it prints the line to add) |
 | `list`, `rekey`, `accept-restore`, `discard-store` | offline repairs of the store, see below |
@@ -1316,7 +1323,7 @@ What the server does around the identity (since piece 3):
 - **Audit.** Events carry `target` (the account an administrator or the command line acted on): `account_invited`,
   `account_link_opened`, `account_setup_completed`, `account_reset_issued`, `account_unlocked`, `account_disabled`,
   `account_enabled`, `account_removed`, `sessions_ended`, `login`, `reauth`, `login_refused`, `account_restricted`,
-  `account_locked`, `settings_problem`. Every account change and every local sign-in **fails closed**: when the audit log
+  `account_locked`, `account_revocations_applied`, `sign_in_degraded`, `settings_problem`. Every account change and every local sign-in **fails closed**: when the audit log
   cannot be written the answer is `503 audit_unavailable` and nothing changes.
 
 The offline commands `rackbook accounts list | rekey | accept-restore | discard-store` work on the encrypted files with the

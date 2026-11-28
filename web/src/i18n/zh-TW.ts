@@ -54,6 +54,7 @@ const messages = {
       reauth: {
         title: '確認是你本人',
         subtitle: '請再次輸入密碼與驗證碼後繼續',
+        reason: '這項操作需要你剛剛確認過身分。確認後會回到剛才的頁面，請再操作一次。',
         submit: '確認',
         working: '正在確認…',
       },

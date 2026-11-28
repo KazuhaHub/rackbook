@@ -58,6 +58,7 @@ const messages = {
       reauth: {
         title: 'Confirm it is you',
         subtitle: 'Enter your password and a code again to continue',
+        reason: 'This action needs a fresh confirmation. After it you return to the page you came from; do the action again.',
         submit: 'Confirm',
         working: 'Confirming…',
       },

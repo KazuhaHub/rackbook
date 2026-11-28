@@ -59,7 +59,7 @@ func newPasskeyKit(base *url.URL, st *accounts.Store, k *statekey.Key, s *sealer
 	if err != nil {
 		return nil, fmt.Errorf("passkeys: %w", err)
 	}
-	return &passkeyKit{login: login, enrol: enrol, handleKey: k.Sub(statekey.PurposeAttempts), store: st}, nil
+	return &passkeyKit{login: login, enrol: enrol, handleKey: k.Sub(statekey.PurposePasskeyHandle), store: st}, nil
 }
 
 // userHandle is the WebAuthn user handle of an account: stable for its life, the same for all its credentials,
@@ -79,7 +79,10 @@ func (k *passkeyKit) BeginLogin(ctx context.Context) (*protocol.CredentialAssert
 var ErrNoPasskey = errors.New("the passkey assertion is not valid")
 
 // VerifyAssertion checks an assertion against the sealed ceremony and returns the account that owns the credential.
-func (k *passkeyKit) VerifyAssertion(ctx context.Context, token string, assertion json.RawMessage) (username string, err error) {
+//
+// resetProof lets an account in reset_pending own the credential: a password-scope reset keeps the factors, and the person
+// proves one of them before choosing a new password (5.8). It is for that proof only; a sign-in never passes it.
+func (k *passkeyKit) VerifyAssertion(ctx context.Context, token string, assertion json.RawMessage, resetProof bool) (username string, err error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "/", bytes.NewReader(assertion))
 	if err != nil {
 		return "", ErrNoPasskey
@@ -92,7 +95,7 @@ func (k *passkeyKit) VerifyAssertion(ctx context.Context, token string, assertio
 	st := k.store.Snapshot()
 	for _, n := range st.Names() {
 		a := st.Accounts[n]
-		if !a.Live() {
+		if !a.Live() && !(resetProof && a.State == accounts.StateResetPending && a.Pending != nil && a.Pending.Scope == accounts.ScopePassword) {
 			continue
 		}
 		for _, p := range a.Passkeys {

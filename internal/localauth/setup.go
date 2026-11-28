@@ -121,7 +121,7 @@ func (s *Service) linkAccount(token, holder string, now time.Time) (*accounts.Ac
 func (s *Service) linkGate(w http.ResponseWriter, r *http.Request, set config.SignInSettings) (facts, bool) {
 	bucket, addr := s.where(r)
 	f := facts{bucket: bucket, addr: addr}
-	if !s.auditOK() {
+	if !s.available() {
 		fail(w, http.StatusServiceUnavailable, "audit_unavailable", msgAuditDown)
 		return f, false
 	}
@@ -134,13 +134,13 @@ func (s *Service) linkGate(w http.ResponseWriter, r *http.Request, set config.Si
 
 // setupOpen holds the link for this browser and says what it is for.
 func (s *Service) setupOpen(w http.ResponseWriter, r *http.Request) {
-	var in linkRequest
-	if !decode(w, r, &in) {
+	set := s.settings()
+	f, ok := s.linkGate(w, r, set) // the flood ceiling comes before the body is read
+	if !ok {
 		return
 	}
-	set := s.settings()
-	f, ok := s.linkGate(w, r, set)
-	if !ok {
+	var in linkRequest
+	if !decode(w, r, &in) {
 		return
 	}
 	if c := s.tables.Pre(f.bucket, "", set.ThrottleMax, set.ThrottleWindow); c.Throttled {
@@ -159,7 +159,7 @@ func (s *Service) setupOpen(w http.ResponseWriter, r *http.Request) {
 	username, kind, err := s.store.OpenLink(in.Token, hash, f.addr, now)
 	if err != nil {
 		if errors.Is(err, accounts.ErrLinkInvalid) {
-			s.tables.Fail(f.bucket, "", false, set.ThrottleMax, set.ThrottleWindow, lockSetting{})
+			s.tables.Fail(f.bucket, "", set.ThrottleMax, set.ThrottleWindow, lockSetting{})
 		}
 		if username != "" {
 			f.acct = &accounts.Account{Username: username}
@@ -233,12 +233,12 @@ type totpEnrol struct {
 
 // setupTOTP makes the secret of a new authenticator: sealed into a token the page sends back with the code.
 func (s *Service) setupTOTP(w http.ResponseWriter, r *http.Request) {
-	var in linkRequest
-	if !decode(w, r, &in) {
-		return
-	}
 	f, ok := s.linkGate(w, r, s.settings())
 	if !ok {
+		return
+	}
+	var in linkRequest
+	if !decode(w, r, &in) {
 		return
 	}
 	a, hash, ok := s.heldAccount(w, r, in.Token, f)
@@ -269,12 +269,12 @@ func (s *Service) productName() string {
 
 // setupPasskey starts the registration of a passkey.
 func (s *Service) setupPasskey(w http.ResponseWriter, r *http.Request) {
-	var in linkRequest
-	if !decode(w, r, &in) {
-		return
-	}
 	f, ok := s.linkGate(w, r, s.settings())
 	if !ok {
+		return
+	}
+	var in linkRequest
+	if !decode(w, r, &in) {
 		return
 	}
 	a, hash, ok := s.heldAccount(w, r, in.Token, f)
@@ -331,13 +331,13 @@ func (s *Service) passwordError(w http.ResponseWriter, err error) {
 // setupFinish writes the setup: the password, the second factor, and, in one change, an active account. The
 // person is signed in.
 func (s *Service) setupFinish(w http.ResponseWriter, r *http.Request) {
-	var in setupFinishRequest
-	if !decode(w, r, &in) {
-		return
-	}
 	set := s.settings()
 	f, ok := s.linkGate(w, r, set)
 	if !ok {
+		return
+	}
+	var in setupFinishRequest
+	if !decode(w, r, &in) {
 		return
 	}
 	a, hold, ok := s.heldAccount(w, r, in.Token, f)
@@ -352,15 +352,26 @@ func (s *Service) setupFinish(w http.ResponseWriter, r *http.Request) {
 		scope = accounts.ScopeAll
 	}
 	tokenKey := string(accounts.HashToken(in.Token))
-	proofFailed := func() {
-		f.reason = "bad_credentials"
-		s.afterFailure(f, set)
-		setupFails.add(tokenKey)
-		reply(w, http.StatusUnauthorized, map[string]string{"error": "sign_in_failed", "message": msgFailed})
-	}
-	if c := s.tables.Pre(f.bucket, a.Username, set.ThrottleMax, set.ThrottleWindow); c.Throttled || c.Locked {
+	// this attempt is counted in the throttle before any proof is checked, and given back when the setup goes through
+	tk, c := s.tables.Begin(f.bucket, a.Username, set.ThrottleMax, set.ThrottleWindow, lockOf(set), true)
+	var res *resv
+	finished := false
+	defer func() {
+		if !finished {
+			s.tables.Refund(tk)
+			res.release()
+		}
+	}()
+	if c.Throttled || c.Locked {
 		s.refuseEarly(w, f, "throttled")
 		return
+	}
+	proofFailed := func(codeTried bool) {
+		f.reason, f.proof, f.codeWrong = "bad_credentials", true, codeTried
+		finished = true
+		s.afterFailure(f, set, tk, res)
+		setupFails.add(tokenKey)
+		reply(w, http.StatusUnauthorized, map[string]string{"error": "sign_in_failed", "message": msgFailed})
 	}
 	cls := accounts.ClassPriority // a person who holds a link must not be queued behind a flood
 
@@ -376,24 +387,32 @@ func (s *Service) setupFinish(w http.ResponseWriter, r *http.Request) {
 		}
 		s.sample.Add(took, f.bucket, a.Username)
 		if !ok || a.Password == "" {
-			proofFailed()
+			proofFailed(false)
 			return
 		}
 	case accounts.ScopePassword: // an existing factor, then a new password
-		passed := false
+		passed, tried := false, false
 		if p := in.Proof; p != nil {
 			switch {
 			case p.Code != "" && a.TOTP != nil:
-				passed = s.store.UseTOTP(a.Username, p.Code, now, nil) == nil
+				// a wrong code counts against the account's own limit, reserved before the code is checked
+				var held bool
+				if res, held = s.reserveTOTP(a.Username, res, set); !held {
+					s.store.ProbeTOTP(a.Username, p.Code, now)
+				} else if passed = s.store.UseTOTP(a.Username, p.Code, now, nil) == nil; !passed {
+					tried = true
+				}
 			case len(p.Passkey) > 0:
-				owner, _ := s.pk.VerifyAssertion(ctx, p.Attempt, p.Passkey)
+				// the account is reset_pending: its passkey proves the person for this purpose only
+				owner, _ := s.pk.VerifyAssertion(ctx, p.Attempt, p.Passkey, true)
 				passed = owner == a.Username
 			}
 		}
 		if !passed {
-			proofFailed()
+			proofFailed(tried)
 			return
 		}
+		res.release()
 	}
 
 	// the new password
@@ -455,6 +474,9 @@ func (s *Service) setupFinish(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	clearHold(w)
+	s.tables.Refund(tk)
+	res.release()
+	finished = true
 	s.signedInAfterSetup(w, r, f, username, factor, in.Return)
 }
 

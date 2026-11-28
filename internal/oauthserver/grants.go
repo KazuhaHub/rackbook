@@ -113,3 +113,20 @@ func (s *Server) revokeAny(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
+
+// GrantsOf lists the ids of the grants a person (by identity, such as local:alice) approved. A local account's grants are
+// revoked with it (design-local-accounts.md, 5.11).
+func (s *Server) GrantsOf(identity string) []string {
+	var ids []string
+	for _, g := range s.store.grants(func(g *Grant) bool { return g.Subject.ID == identity }) {
+		ids = append(ids, g.ID)
+	}
+	return ids
+}
+
+// RevokeGrant ends one grant: its access tokens stop working and its refresh is refused. A grant that is already gone is not
+// an error. reason is kept in the state file's log line only.
+func (s *Server) RevokeGrant(id, reason string) error {
+	_, err := s.revoke(id, reason)
+	return err
+}

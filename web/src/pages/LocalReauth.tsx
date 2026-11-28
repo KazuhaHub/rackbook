@@ -20,6 +20,7 @@ export default function LocalReauth() {
   }, [cfg?.name])
   return (
     <AuthShell cfg={cfg} subtitle={t.auth.local.reauth.subtitle}>
+      {params.get('return') && <p className="text-sm text-muted-foreground">{t.auth.local.reauth.reason}</p>}
       <LocalSignInForm kind="reauth" ret={ret} autoFocus />
     </AuthShell>
   )

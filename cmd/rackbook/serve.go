@@ -327,6 +327,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	}
 	resource := &mcpauth.Resource{Config: store.Config, Auth: authn, Verifier: &oauth.Verifier{}, Tokens: registry, Limiter: &tokens.Limiter{}, TrustedProxies: proxies, Log: logger}
 	var oauthSrv api.OAuthServer
+	var grantsSrv *oauthserver.Server
 	if builtin {
 		srv, err := oauthserver.New(oauthserver.Options{Issuer: baseURL, Resource: cfg.Auth.MCP.Resource, StateDir: stateDir,
 			Config: store.Config, Auth: authn, Log: logger, TrustedProxies: proxies, Prefs: prefStore})
@@ -334,10 +335,24 @@ func runServe(cmd *cobra.Command, _ []string) error {
 			return err
 		}
 		resource.Builtin, oauthSrv = srv, srv
+		grantsSrv = srv
 	}
 	authn.SetBearer(resource)
 	meta := resource.MetadataHandler()
 	mcpSrv := mcpserver.NewWithOptions(mcpserver.Options{Source: store.Ledger, Version: version, Backend: store, ReadOnly: readOnly, Logger: logger})
+	// What a local account owns outside the account store is revoked with it: the pending revocations of every account are
+	// carried out now, before the server serves, and retried every minute (5.11).
+	if localSvc != nil {
+		rv := accountRevoker{registry: registry}
+		if grantsSrv != nil {
+			rv.grants = grantsSrv
+		}
+		localSvc.SetRevoker(rv)
+		if err := localSvc.ApplyAllRevocations(ctx); err != nil {
+			logger.Warn("pending revocations of local accounts could not all be applied; they are retried every minute", "err", err)
+		}
+		go localSvc.RunRevocations(ctx)
+	}
 	var roster api.LocalRoster
 	if localStore != nil {
 		roster = ssoOnlyRoster{rosterOf{localStore}, localSvc}

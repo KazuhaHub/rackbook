@@ -137,15 +137,6 @@ func (t *tables) Pre(bucket, name string, max int, window time.Duration) Check {
 	return c
 }
 
-// NameLocked says a lock of scope account is held on a name that is not an account (a made-up name). Existing
-// accounts keep theirs in the store.
-func (t *tables) NameLocked(name string) bool {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	r := t.name[t.nameKey(name)]
-	return r != nil && r.locked(t.now())
-}
-
 // NameFails is the failures of the typed name over all buckets in the window.
 func (t *tables) NameFails(name string, window time.Duration) int {
 	t.mu.Lock()
@@ -158,21 +149,47 @@ func (t *tables) NameFails(name string, window time.Duration) int {
 	return r.fails
 }
 
-// Failure is the outcome of recording a failed attempt.
-type Failure struct {
-	// AccountLock says the failures of the name reached the throttle's max with scope account: the lock belongs on
-	// the account (the store) when it exists, and in the name table when it does not (done here).
-	AccountLock bool
-	Locked      bool // some lock was set by this failure
+// ticket is the reservation of one attempt in the tables: Begin counts the attempt as a failure before any work is done, so that
+// a burst of parallel requests cannot all be checked against the counts that were there before the first of them. A success gives
+// it back (Refund); a failure keeps it. The locks the attempt set are remembered so that a success undoes them too.
+type ticket struct {
+	counted                          bool
+	bucket                           string
+	pk                               pairKey
+	nk                               [16]byte
+	pair, name                       bool
+	lockedIP, lockedPair, lockedName bool
 }
 
-// Fail records a failed attempt of a typed name from a bucket: the bucket's failures, the pair's and the name's.
-// lock is the setting: enabled, duration and scope. exists says the name is an account.
-func (t *tables) Fail(bucket, name string, exists bool, max int, window time.Duration, lock lockSetting) Failure {
+// AccountLock says this attempt's failure reached the throttle's max for the name with scope account: the lock belongs in the
+// store too when the name is an account.
+func (k ticket) AccountLock() bool { return k.lockedName }
+
+// Begin checks the throttle and the locks and, when the attempt may go on (or enforce is false: a verified passkey goes past
+// both), counts it against the bucket, the pair and the name in the same critical section, setting a lock when the count
+// reaches max. The check that refuses an attempt is read from the same rows that the count is written to.
+func (t *tables) Begin(bucket, name string, max int, window time.Duration, lock lockSetting, enforce bool) (ticket, Check) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	now := t.now()
-	var f Failure
+	nk := t.nameKey(name)
+	pk := pairKey{nk, bucket}
+	var c Check
+	if r := t.buck[bucket]; r != nil {
+		r.live(now, window)
+		c.Throttled = r.fails >= max
+		c.Locked = r.locked(now)
+	}
+	if r := t.pair[pk]; r != nil {
+		c.Locked = c.Locked || r.locked(now)
+	}
+	if r := t.name[nk]; r != nil {
+		c.Locked = c.Locked || r.locked(now)
+	}
+	if enforce && (c.Throttled || c.Locked) {
+		return ticket{}, c
+	}
+	tk := ticket{counted: true, bucket: bucket, pk: pk, nk: nk}
 
 	b := t.buck[bucket]
 	if b == nil {
@@ -188,12 +205,9 @@ func (t *tables) Fail(bucket, name string, exists bool, max int, window time.Dur
 	b.fails++
 	b.last = now
 	if lock.Enabled && lock.Scope == "ip" && b.fails >= max && !b.locked(now) {
-		b.lockUntil, f.Locked = now.Add(lock.Duration), true
+		b.lockUntil, tk.lockedIP = now.Add(lock.Duration), true
 	}
 
-	nk := t.nameKey(name)
-	// the pair: consecutive failures of this name from this bucket
-	pk := pairKey{nk, bucket}
 	p := t.pair[pk]
 	if p == nil && t.pairsOf[bucket] < maxPairRowsPerBucket {
 		if len(t.pair) >= maxPairRows {
@@ -209,12 +223,12 @@ func (t *tables) Fail(bucket, name string, exists bool, max int, window time.Dur
 		p.live(now, window)
 		p.fails++
 		p.last = now
+		tk.pair = true
 		if lock.Enabled && lock.Scope == "ip_account" && p.fails >= max && !p.locked(now) {
-			p.lockUntil, f.Locked = now.Add(lock.Duration), true
+			p.lockUntil, tk.lockedPair = now.Add(lock.Duration), true
 		}
 	}
 
-	// the name over all buckets
 	n := t.name[nk]
 	if n == nil && t.mayAddName(bucket, now) {
 		if len(t.name) >= maxNameRows {
@@ -229,14 +243,50 @@ func (t *tables) Fail(bucket, name string, exists bool, max int, window time.Dur
 		n.live(now, window)
 		n.fails++
 		n.last = now
+		tk.name = true
 		if lock.Enabled && lock.Scope == "account" && n.fails >= max && !n.locked(now) {
-			f.AccountLock, f.Locked = true, true
-			if !exists {
-				n.lockUntil = now.Add(lock.Duration)
-			}
+			n.lockUntil, tk.lockedName = now.Add(lock.Duration), true
 		}
 	}
-	return f
+	return tk, c
+}
+
+// Refund gives back what Begin counted, for an attempt that turned out to be a success (or one that never reached the
+// password check: busy). The pair of a success is gone altogether (consecutive failures end), and a lock this attempt set is
+// lifted.
+func (t *tables) Refund(tk ticket) {
+	if !tk.counted {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if r := t.buck[tk.bucket]; r != nil {
+		if r.fails > 0 {
+			r.fails--
+		}
+		if tk.lockedIP {
+			r.lockUntil = time.Time{}
+		}
+	}
+	if _, ok := t.pair[tk.pk]; ok {
+		delete(t.pair, tk.pk)
+		if t.pairsOf[tk.bucket]--; t.pairsOf[tk.bucket] <= 0 {
+			delete(t.pairsOf, tk.bucket)
+		}
+	}
+	if r := t.name[tk.nk]; r != nil {
+		if r.fails > 0 {
+			r.fails--
+		}
+		if tk.lockedName {
+			r.lockUntil = time.Time{}
+		}
+	}
+}
+
+// Fail counts a failure that had no reservation (a link that is not valid): the same counting, no check.
+func (t *tables) Fail(bucket, name string, max int, window time.Duration, lock lockSetting) {
+	t.Begin(bucket, name, max, window, lock, false)
 }
 
 // mayAddName limits the name rows one bucket makes to maxNewNameRowsPerHour an hour.
@@ -321,20 +371,6 @@ func (t *tables) evictPairs(now time.Time, window time.Duration) {
 			delete(t.pairsOf, b)
 		} else if left[b] != n {
 			t.pairsOf[b] = left[b]
-		}
-	}
-}
-
-// Succeed clears the pair of a successful sign-in (consecutive failures end). The bucket and name windows run out
-// on their own: a success of one person does not forgive the failures of the network.
-func (t *tables) Succeed(bucket, name string) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	pk := pairKey{t.nameKey(name), bucket}
-	if _, ok := t.pair[pk]; ok {
-		delete(t.pair, pk)
-		if t.pairsOf[bucket]--; t.pairsOf[bucket] <= 0 {
-			delete(t.pairsOf, bucket)
 		}
 	}
 }

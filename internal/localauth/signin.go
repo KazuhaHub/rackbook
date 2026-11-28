@@ -60,14 +60,6 @@ func hasAccountLock(a *accounts.Account, now time.Time) bool {
 	return false
 }
 
-func totpLocked(a *accounts.Account, set config.SignInSettings, now time.Time) bool {
-	return a.TOTPFailures >= set.TOTPPerDay && !a.TOTPWindowStart.IsZero() && now.Before(a.TOTPWindowStart.Add(24*time.Hour))
-}
-
-func passkeyPathLimited(a *accounts.Account, set config.SignInSettings, now time.Time) bool {
-	return a.PasskeyPathFailures >= set.PasskeyPathPerHour && !a.PasskeyWindowStart.IsZero() && now.Before(a.PasskeyWindowStart.Add(time.Hour))
-}
-
 // facts is what is known of a failed attempt when its counters are written.
 type facts struct {
 	name, bucket, addr string
@@ -76,13 +68,14 @@ type facts struct {
 	passwordWrong      bool // a real password check ran and failed
 	codeWrong          bool // the password was right and the code was not
 	viaPasskey         bool // a verified passkey went past the throttle (passkey_path_failures)
+	proof              bool // a proof for a reset link: the account is reset_pending, its second-factor counter still counts
 	reauth             bool // a failed re-authentication (5.7): reauth_failures count, three end every session
 }
 
 func (s *Service) signIn(w http.ResponseWriter, r *http.Request) {
 	set := s.settings()
 	bucket, addr := s.where(r)
-	if !s.auditOK() {
+	if !s.available() {
 		fail(w, http.StatusServiceUnavailable, "audit_unavailable", msgAuditDown)
 		return
 	}
@@ -113,41 +106,56 @@ func (s *Service) signIn(w http.ResponseWriter, r *http.Request) {
 	// throttle and the locks (8.2, 8.3)
 	var pkOwner string
 	if len(in.Passkey) > 0 && in.Attempt != "" {
-		pkOwner, _ = s.pk.VerifyAssertion(ctx, in.Attempt, in.Passkey)
+		pkOwner, _ = s.pk.VerifyAssertion(ctx, in.Attempt, in.Passkey, false)
 	}
 	acct := s.store.Lookup(name)
 	f.acct = acct
-	passkeyOK := pkOwner != "" && pkOwner == name && acct != nil && acct.Live() && !passkeyPathLimited(acct, set, now)
-	if !passkeyOK {
-		// the throttle and the locks of scope ip and ip_account answer alike for every name
-		c := s.tables.Pre(bucket, name, set.ThrottleMax, set.ThrottleWindow)
-		switch {
-		case c.Throttled:
-			s.refuseEarly(w, f, "throttled")
-			return
-		case c.Locked:
-			s.refuseEarly(w, f, "locked")
-			return
+	passkeyOK := pkOwner != "" && pkOwner == name && acct != nil && acct.Live()
+
+	// 2. the throttle and the locks of scope ip, ip_account and account (memory), checked and counted in one step: this attempt
+	// is counted as a failure before any work is done, and given back if it turns out to be a success
+	tk, chk := s.tables.Begin(bucket, name, set.ThrottleMax, set.ThrottleWindow, lockOf(set), !passkeyOK)
+	var res *resv
+	finished := false
+	defer func() {
+		if !finished { // an early refusal, a busy answer, a request that went away: nothing was spent
+			s.tables.Refund(tk)
+			res.release()
 		}
-		// 2. the name is looked up: a lock of scope account, from the store for an account and from the name table
-		// for any other name, with the same answer and delay
-		if acct != nil && hasAccountLock(acct, now) || acct == nil && s.tables.NameLocked(name) {
-			s.refuseEarly(w, f, "locked")
-			return
-		}
+	}()
+	switch {
+	case !passkeyOK && chk.Throttled:
+		s.refuseEarly(w, f, "throttled")
+		return
+	case !passkeyOK && chk.Locked:
+		s.refuseEarly(w, f, "locked")
+		return
+	case !passkeyOK && acct != nil && hasAccountLock(acct, now): // the lock of an account is in the store too, and outlives a restart
+		s.refuseEarly(w, f, "locked")
+		return
 	}
 	ssoOnly := s.ssoOnly(set)
 
-	// 3. an account that cannot sign in this attempt gets a dummy argon2id (or, past the budget, an equal wait) and the
-	// same answer as a wrong password
-	f.reason = s.cannotSignIn(acct, in, passkeyOK, bucket, set, now)
-	if f.reason != "" {
+	// 3. the account's own counters: this attempt reserves its place before anything is hashed. An account that cannot sign in
+	// this attempt gets a dummy argon2id (or, past the budget, an equal wait) and the same answer as a wrong password
+	var reason string
+	acct, res, reason = s.reservePassword(name, bucket, passkeyOK, in.Code != "", false, set)
+	f.acct = acct
+	if reason == "passkey_path_limit" {
+		passkeyOK = false
+	}
+	f.reason = reason
+	if reason != "" {
 		if err := s.deadEnd(ctx, bucket, s.classFor(acct, bucket)); err != nil {
 			s.busy(w, f, err)
 			return
 		}
+		if in.Code != "" {
+			s.store.ProbeTOTP(name, in.Code, now)
+		}
 		s.answerFailed(w, ssoOnly)
-		s.afterFailure(f, set)
+		finished = true
+		s.afterFailure(f, set, tk, nil)
 		return
 	}
 
@@ -161,27 +169,47 @@ func (s *Service) signIn(w http.ResponseWriter, r *http.Request) {
 	factor := ""
 	switch {
 	case !ok:
-		f.passwordWrong, f.viaPasskey = true, passkeyOK
-		f.reason = "bad_credentials"
+		f.passwordWrong, f.viaPasskey, f.reason = true, passkeyOK, "bad_credentials"
+		if in.Code != "" { // the writer is taken for a wrong password as it is for a right one
+			s.store.ProbeTOTP(name, in.Code, now)
+		}
 	case passkeyOK:
+		res.releasePassword()
 		factor = "passkey"
-	case in.Code != "" && acct.TOTP != nil && s.store.UseTOTP(name, in.Code, now, nil) == nil:
-		factor = "totp"
+	case in.Code != "" && acct.TOTP != nil:
+		res.releasePassword()
+		var held bool
+		if res, held = s.reserveTOTP(name, res, set); !held {
+			f.reason = "totp_locked" // the limit was spent while this attempt waited: no code is checked
+			s.store.ProbeTOTP(name, in.Code, now)
+		} else if s.store.UseTOTP(name, in.Code, now, nil) == nil {
+			factor = "totp"
+		} else {
+			f.codeWrong, f.reason = true, "bad_credentials"
+		}
 	default:
-		f.codeWrong = in.Code != ""
+		res.releasePassword()
 		f.reason = "bad_credentials"
 	}
 	if factor == "" {
 		s.answerFailed(w, ssoOnly)
-		s.afterFailure(f, set)
+		finished = true
+		s.afterFailure(f, set, tk, res)
 		return
 	}
 
 	// 5. sso_only, only now that the password and the second factor verified: until here every outcome was the same
 	if ssoOnly && !s.isAdmin(name) {
+		// the same writes an administrator's success makes, so that how long this takes does not say who is one
 		f.reason = "sso_required"
+		ev := audit.Event{Event: "login_refused", Identity: "local:" + name, Method: "local", Reason: "sso_required", Addr: addr}
+		if err := s.store.Counter(&ev, func(*accounts.State) error { return nil }); err != nil {
+			s.counterError(w, f, err)
+			return
+		}
+		res.release()
+		finished = true
 		reply(w, http.StatusForbidden, map[string]string{"error": "sso_required", "message": msgSSORequired})
-		s.afterFailure(f, set) // it counts as a guess like any other, in the memory tables
 		return
 	}
 	// 6. success: the audit line is written before the session exists (fail closed)
@@ -195,10 +223,13 @@ func (s *Service) signIn(w http.ResponseWriter, r *http.Request) {
 	ev := audit.Event{Event: "login", Identity: "local:" + name, Name: acct.Name, Method: "local", Role: role.String(), Addr: addr, Detail: []string{"factor:" + factor}}
 	if err := s.store.Counter(&ev, func(st *accounts.State) error {
 		a := st.Accounts[name]
-		if a == nil || !a.Live() {
+		// what was decided at the reservation is decided again here, on the committed state of this very write: an account that
+		// became restricted, passkey-only or out of second-factor attempts while this attempt was running is refused,
+		// whatever was computed
+		if a == nil || !a.Live() || !s.mayCommit(a, factor == "passkey", bucket, set, now, factor) {
 			return errNotLive
 		}
-		a.ConsecutiveFailures, a.TOTPFailures, a.PasskeyPathFailures = 0, 0, 0
+		a.ConsecutiveFailures, a.TOTPFailures, a.PasskeyPathFailures, a.ReauthFailures = 0, 0, 0, 0
 		a.TOTPWindowStart, a.PasskeyWindowStart = time.Time{}, time.Time{}
 		a.Locks = nil
 		if a.State == accounts.StateRestricted || a.State == accounts.StatePasskeyOnly {
@@ -211,7 +242,9 @@ func (s *Service) signIn(w http.ResponseWriter, r *http.Request) {
 		s.counterError(w, f, err)
 		return
 	}
-	s.tables.Succeed(bucket, name)
+	s.tables.Refund(tk)
+	res.release()
+	finished = true
 	if _, err := s.o.Login.IssueLocal(w, r, login.LocalGrant{Username: name, Name: acct.Name, Factor: factor}); err != nil {
 		s.log.Error("could not issue a local session", "err", err)
 		fail(w, http.StatusInternalServerError, "internal", "internal error")
@@ -223,13 +256,35 @@ func (s *Service) signIn(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// mayCommit is the check of a success inside its counter write (8.4): the account's state, the known networks and the
+// second-factor limits, on the committed state.
+func (s *Service) mayCommit(a *accounts.Account, viaPasskey bool, bucket string, set config.SignInSettings, now time.Time, factor string) bool {
+	switch a.State {
+	case accounts.StateRestricted:
+		if !viaPasskey && !inGoodBuckets(a, bucket, now) {
+			return false
+		}
+	case accounts.StatePasskeyOnly:
+		if !viaPasskey {
+			return false
+		}
+	}
+	if factor == "totp" && totpCount(a, now) >= set.TOTPPerDay {
+		return false
+	}
+	if viaPasskey && passkeyCount(a, now) >= set.PasskeyPathPerHour {
+		return false
+	}
+	return true
+}
+
 var errNotLive = errors.New("the account cannot sign in")
 
 func (s *Service) isAdmin(name string) bool { return s.o.IsAdmin != nil && s.o.IsAdmin(name) }
 
 // cannotSignIn says why this attempt cannot reach the password check, or "" when it can. The reasons are for the audit
 // log; the answer is the same for all of them.
-func (s *Service) cannotSignIn(a *accounts.Account, in signInRequest, passkeyOK bool, bucket string, set config.SignInSettings, now time.Time) string {
+func (s *Service) cannotSignIn(a *accounts.Account, in signInRequest, passkeyOK bool, bucket string, set config.SignInSettings, now time.Time, totpSeen int) string {
 	if a == nil {
 		return "unknown_account"
 	}
@@ -254,7 +309,7 @@ func (s *Service) cannotSignIn(a *accounts.Account, in signInRequest, passkeyOK 
 	if a.Password == "" {
 		return "not_set_up"
 	}
-	if !passkeyOK && in.Code != "" && totpLocked(a, set, now) {
+	if !passkeyOK && in.Code != "" && totpSeen >= set.TOTPPerDay {
 		return "totp_locked"
 	}
 	return ""
@@ -298,7 +353,7 @@ func (s *Service) refuseEarly(w http.ResponseWriter, f facts, reason string) {
 }
 
 // busy answers 503 when no hashing slot became free in time (or the request went away).
-func (s *Service) busy(w http.ResponseWriter, f facts, err error) {
+func (s *Service) busy(w http.ResponseWriter, f facts, err error) { // the caller's deferred refund gives the places back
 	if errors.Is(err, accounts.ErrBusy) {
 		f.reason = "busy"
 		s.record(f)
@@ -309,19 +364,15 @@ func (s *Service) busy(w http.ResponseWriter, f facts, err error) {
 	fail(w, http.StatusServiceUnavailable, "busy", msgBusy)
 }
 
-// counterError answers a success whose audit line could not be written: no session, 503.
+// counterError answers a success whose audit line or counters could not be written: no session, 503. The service is then
+// degraded until a write works again (see available).
 func (s *Service) counterError(w http.ResponseWriter, f facts, err error) {
-	if errors.Is(err, accounts.ErrAuditUnavailable) || errors.Is(err, accounts.ErrStoreFailed) {
-		s.log.Error("local sign-in refused: the audit log cannot be written", "err", err)
+	if errors.Is(err, accounts.ErrAuditUnavailable) || errors.Is(err, accounts.ErrStoreFailed) || (!errors.Is(err, errNotLive) && !errors.Is(err, accounts.ErrNotCounterOnly)) {
+		s.degrade(err)
 		fail(w, http.StatusServiceUnavailable, "audit_unavailable", msgAuditDown)
 		return
 	}
-	if errors.Is(err, errNotLive) {
-		reply(w, http.StatusUnauthorized, map[string]string{"error": "sign_in_failed", "message": msgFailed})
-		return
-	}
-	s.log.Error("local sign-in failed", "err", err)
-	fail(w, http.StatusInternalServerError, "internal", "internal error")
+	reply(w, http.StatusUnauthorized, map[string]string{"error": "sign_in_failed", "message": msgFailed})
 }
 
 // record counts a refusal and writes it in full when it is the first of its account in the bucket this minute.
@@ -343,22 +394,29 @@ func (s *Service) refusalEvent(f facts) audit.Event {
 	return e
 }
 
-// afterFailure is everything a failed attempt costs once its answer has been sent (8.6): the memory counters, then the
-// counters of an existing account in the store, with the attempt's audit line appended by RecordSync in the same write.
-// If that write fails the answer already sent stands, and the next attempt is the one refused with 503.
-func (s *Service) afterFailure(f facts, set config.SignInSettings) {
+// afterFailure is everything a failed attempt costs once its answer has been sent (8.6): the counters of an existing account in
+// the store, with the attempt's audit line appended by RecordSync in the same write, and the release of the place the attempt
+// reserved, in the same critical section as the write. The memory tables were counted when the attempt began (tk). If the
+// write fails the answer already sent stands, and the service is degraded: it refuses every attempt, right or wrong alike,
+// until a write works again.
+func (s *Service) afterFailure(f facts, set config.SignInSettings, tk ticket, res *resv) {
 	now := s.now()
-	tf := s.tables.Fail(f.bucket, f.name, f.acct != nil, set.ThrottleMax, set.ThrottleWindow, lockOf(set))
 	ident := ""
 	if f.acct != nil {
 		ident = "local:" + f.name
 	}
 	full := s.refused.Note(now, f.bucket, f.addr, ident, f.reason)
-	cur := (*accounts.Account)(nil)
-	if f.acct != nil {
-		cur = s.store.Lookup(f.name)
+	if f.acct == nil {
+		if full {
+			s.o.Audit.Record(s.refusalEvent(f))
+		}
+		return
 	}
-	touches := cur != nil && cur.Live() && (f.passwordWrong || f.codeWrong || tf.AccountLock || f.reauth)
+	defer s.guard.lock(f.name)()
+	defer res.releaseLocked()
+	cur := s.store.Lookup(f.name)
+	live := cur != nil && (cur.Live() || f.proof && cur.State == accounts.StateResetPending)
+	touches := live && (f.passwordWrong || f.codeWrong || tk.AccountLock() || f.reauth)
 	if !touches {
 		if full {
 			s.o.Audit.Record(s.refusalEvent(f))
@@ -375,9 +433,9 @@ func (s *Service) afterFailure(f facts, set config.SignInSettings) {
 	case f.passwordWrong && stateForCount(cur.State, cur.ConsecutiveFailures+1, set.NISTCap) != cur.State:
 		st := stateForCount(cur.State, cur.ConsecutiveFailures+1, set.NISTCap)
 		ev = &audit.Event{Event: "account_restricted", Identity: ident, Method: "local", Code: st, Addr: f.addr, Detail: []string{"failures:" + itoa(cur.ConsecutiveFailures+1)}}
-	case f.codeWrong && totpAfter(cur, set, now) >= set.TOTPPerDay && cur.TOTPFailures < set.TOTPPerDay:
+	case f.codeWrong && totpAfter(cur, set, now) >= set.TOTPPerDay && totpCount(cur, now) < set.TOTPPerDay:
 		ev = &audit.Event{Event: "account_locked", Identity: ident, Method: "local", Code: "totp", Addr: f.addr, Detail: []string{"failures:" + itoa(totpAfter(cur, set, now))}}
-	case tf.AccountLock:
+	case tk.AccountLock():
 		ev = &audit.Event{Event: "account_locked", Identity: ident, Method: "local", Code: "account", Addr: f.addr, Detail: []string{"until:" + now.Add(set.LockDuration).UTC().Format(time.RFC3339)}}
 	case full:
 		ev = &plain
@@ -387,7 +445,7 @@ func (s *Service) afterFailure(f facts, set config.SignInSettings) {
 	}
 	err := s.store.Counter(ev, func(st *accounts.State) error {
 		a := st.Accounts[f.name]
-		if a == nil || !a.Live() {
+		if a == nil || !(a.Live() || f.proof && a.State == accounts.StateResetPending) {
 			return nil
 		}
 		if f.passwordWrong {
@@ -404,20 +462,18 @@ func (s *Service) afterFailure(f facts, set config.SignInSettings) {
 		if f.reauth {
 			a.ReauthFailures++
 		}
-		if tf.AccountLock {
+		if tk.AccountLock() {
 			a.Locks = append(liveLocks(a.Locks, now), accounts.Lock{Scope: config.LockScopeAccount, Until: now.Add(set.LockDuration).UTC()})
 		}
 		return nil
 	})
 	if err != nil {
-		s.counterFailed.Store(true)
-		s.log.Error("the counters of a failed sign-in could not be written; the next attempt is refused", "err", err)
+		s.degrade(err)
 		return
 	}
 	if f.reauth && cur.ReauthFailures+1 >= MaxReauthFailures {
 		if err := s.store.EndSessions(accounts.Self(f.name, cur.Name, f.addr), f.name, "reauth_failed", now); err != nil {
-			s.counterFailed.Store(true)
-			s.log.Error("the sessions of an account could not be ended after failed re-authentications", "err", err)
+			s.degrade(err)
 		}
 	}
 }

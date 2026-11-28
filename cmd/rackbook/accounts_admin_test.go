@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -82,10 +84,28 @@ func TestOfflineCommandsInviteResetRecoverWithoutAPasswordOnTheCommandLine(t *te
 		t.Fatal("a bad scope was accepted")
 	}
 	// disable, enable, remove, end-sessions, unlock
-	for _, c := range [][]string{{"disable", "bob"}, {"enable", "bob"}, {"unlock", "bob"}, {"end-sessions", "bob"}, {"end-sessions", "--all"}, {"remove", "bob"}} {
+	for _, c := range [][]string{{"unlock", "bob"}, {"end-sessions", "bob"}, {"end-sessions", "--all"}, {"disable", "bob", "--yes"}} {
 		if out, err := run(t, f.args(append([]string{"accounts"}, c...)...)...); err != nil {
 			t.Fatalf("%v: %v\n%s", c, err, out)
 		}
+	}
+	// the tokens and grants of a disabled account are recorded to be revoked by the server at its next start: until then it stays
+	// disabled (an enable is refused), and a removal goes on
+	if out, err := run(t, f.args("accounts", "enable", "bob")...); err == nil || !strings.Contains(err.Error(), "still to be revoked") {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	if out, err := run(t, f.args("accounts", "remove", "bob", "--yes")...); err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	// without --yes the commands that are hard to undo ask, and a no changes nothing
+	if _, err := run(t, f.args("accounts", "remove", "alice")...); err == nil || !strings.Contains(err.Error(), "not confirmed") {
+		t.Fatalf("remove without a yes: %v", err)
+	}
+	if _, err := runWithStdin(t, "yes\n", append([]string{"accounts", "disable", "alice"}, f.args()...)...); err != nil {
+		t.Fatalf("disable after a yes: %v", err)
+	}
+	if _, err := run(t, f.args("accounts", "reset", "--all")...); err == nil || !strings.Contains(err.Error(), "not confirmed") {
+		t.Fatalf("reset --all without a yes: %v", err)
 	}
 	if out, err := run(t, f.args("accounts", "list")...); err != nil || !strings.Contains(out, "removed") {
 		t.Fatalf("%v\n%s", err, out)
@@ -120,7 +140,57 @@ func TestOnlineCommandsGoOverTheAdminChannelWhenAServerRuns(t *testing.T) {
 		t.Fatal("mallory was invited")
 	}
 	// errors of the server come back as errors of the command
-	if _, err := run(t, f.args("accounts", "disable", "nobody-here")...); err == nil || !strings.Contains(err.Error(), "no such account") {
+	if _, err := run(t, f.args("accounts", "disable", "nobody-here", "--yes")...); err == nil || !strings.Contains(err.Error(), "no such account") {
 		t.Fatalf("%v", err)
+	}
+}
+
+// Without a server the last-administrator guard of 5.9 is applied when rackbook.yml is given: sso_only is on, boss is the only
+// local administrator, so boss cannot be disabled or removed; a second administrator lifts it.
+func TestOfflineDisableAppliesTheLastAdminGuardUnderSSOOnly(t *testing.T) {
+	f := newAccountsFixture(t)
+	l, s := f.open(t)
+	hasher := accounts.NewHasherCost(accounts.NewSlots(3, 5*time.Second), 64, 1, 1)
+	mkActive := func(name string) {
+		tok, err := s.Invite(accounts.CLI("t"), name, name, 72*time.Hour, time.Now())
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, hold, _ := accounts.NewHold()
+		if _, _, err := s.OpenLink(tok, hold, "", time.Now()); err != nil {
+			t.Fatal(err)
+		}
+		sec, _ := accounts.NewTOTPSecret()
+		fac, err := accounts.NewTOTPFactor(sec, accounts.TOTPCode(sec, accounts.TOTPStep(time.Now())), time.Now())
+		if err != nil {
+			t.Fatal(err)
+		}
+		pw, _ := hasher.Hash(t.Context(), accounts.ClassNormal, "correct horse battery staple")
+		if _, err := s.CompleteSetup(accounts.Setup{Token: tok, Holder: hold, Password: pw, TOTP: fac, Factor: "totp"}, time.Now()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mkActive("boss")
+	mkActive("deputy")
+	l.Close()
+	cfg := filepath.Join(t.TempDir(), "rackbook.yml")
+	yml := "collections:\n  a: {file: a.yml, schema: s.json}\nauth:\n  mode: oidc\n  oidc: {issuer: 'https://idp.example', client_id: x}\n  login: {sso_only: true}\n  roles:\n    admin: ['local:boss']\n"
+	if err := os.WriteFile(cfg, []byte(yml), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := run(t, f.args("accounts", "disable", "boss", "--yes", "--config", cfg)...); err == nil || !strings.Contains(err.Error(), "last active local administrator") {
+		t.Fatalf("the only local administrator was disabled: %v", err)
+	}
+	if _, err := run(t, f.args("accounts", "remove", "boss", "--yes", "--config", cfg)...); err == nil {
+		t.Fatal("the only local administrator was removed")
+	}
+	// a non-admin is not protected, and with a second administrator the first can go
+	if out, err := run(t, f.args("accounts", "disable", "deputy", "--yes", "--config", cfg)...); err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	// without --config the guard cannot be checked, and the command says so
+	out, err := run(t, f.args("accounts", "remove", "bob", "--yes")...)
+	if err != nil || !strings.Contains(out, "sso_only guard") {
+		t.Fatalf("%v\n%s", err, out)
 	}
 }

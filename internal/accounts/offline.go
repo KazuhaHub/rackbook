@@ -310,7 +310,7 @@ func storeLevel(name string) bool {
 
 // accountOf names the account a change event is about, "" for none.
 func accountOf(ev audit.Event) string {
-	if storeLevel(ev.Event) {
+	if storeLevel(ev.Event) || ev.Event == "account_revocations_applied" { // bookkeeping: it names no change to re-apply
 		return ""
 	}
 	n := strings.TrimPrefix(ev.Target, "local:")
