@@ -344,7 +344,7 @@ func (s *server) markVerified(items []*activityItem) {
 func (s *server) activityStreams(ctx context.Context, r *http.Request, f *activityFilter, cur activityCursor) (map[string]activityStream, error) {
 	out := map[string]activityStream{}
 	// state markers follow seeState and the client address follows seeAudit
-	showState, showAddr := s.canSee(r, seeState), s.canSee(r, seeAudit)
+	showState, showAddr, showInfra := s.canSee(r, seeState), s.canSee(r, seeAudit), s.canSee(r, seeInfra)
 	inRange := func(it *activityItem) bool {
 		return (f.since.IsZero() || !it.at.Before(f.since)) && (f.until.IsZero() || !it.at.After(f.until))
 	}
@@ -404,7 +404,7 @@ func (s *server) activityStreams(ctx context.Context, r *http.Request, f *activi
 			qq := q
 			qq.Before, qq.Limit, qq.MaxScan = before, limit, maxScan
 			pg, err := s.o.Audit.Read(qq)
-			return pg, eventItems(pg.Events, showAddr), err
+			return pg, eventItems(pg.Events, showAddr, showInfra), err
 		}}
 	}
 	return out, nil

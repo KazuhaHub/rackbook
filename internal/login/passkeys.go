@@ -536,6 +536,30 @@ func (s *Service) account(w http.ResponseWriter, r *http.Request) {
 		rf, af := s.authn.Sources(who)
 		out["roleFrom"], out["auditorFrom"] = nonNil(rf), nonNil(af)
 	}
+	if s.o.Infra != nil && who.Method == auth.MethodOIDC {
+		// the effective /infra capability: an administrator outranks an auditor, and a name outranks a
+		// claim. Only a capability that rests on a group or app role lapses, so only it has an end.
+		now := s.now()
+		admin, aud := s.o.Infra.Via(who, now)
+		l := s.o.Infra.Admins
+		if admin != "" {
+			// superseded: the administrator's capability is the one in force; a named auditor
+			// stays when an administrator by group or app role lapses, and the page says so
+			if aud == auth.InfraViaIdentity && admin != auth.InfraViaIdentity {
+				out["infraAuditorRemains"] = true
+			}
+			aud = ""
+		} else {
+			l = s.o.Infra.Auditors
+		}
+		if admin != "" || aud != "" {
+			out["infraFrom"], out["infraAuditorFrom"] = admin, aud
+			if admin != auth.InfraViaIdentity && aud != auth.InfraViaIdentity {
+				out["infraEnds"] = l.ClaimEnds(who).UTC().Format(time.RFC3339)
+				out["infraClaimsAbsolute"] = int(l.ClaimsAbsolute().Seconds())
+			}
+		}
+	}
 	if sess, err := s.readSession(r); err == nil && s.claimsLimited(sess) {
 		// the role (or the auditor capability) was read from the claims at sign-in, so a
 		// removal at the provider is seen at the next sign-in and at the latest when the session ends

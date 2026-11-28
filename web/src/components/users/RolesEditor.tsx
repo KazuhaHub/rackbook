@@ -437,9 +437,17 @@ function Editor({ view, refetch }: { view: RolesView; refetch: () => Promise<unk
       <AddForm draft={draft} disabled={locked} sso={view.sso} onAdd={(list, value) => edit(addEntry(draft, list, value))} />
 
       {view.infra && (
-        <p className="flex items-start gap-2 text-xs text-muted-foreground">
-          <Info className="mt-px size-3.5 shrink-0" /> {R.infraNote}
-        </p>
+        <div className="space-y-1 text-xs text-muted-foreground" data-testid="infra-note">
+          <p className="flex items-start gap-2">
+            <Info className="mt-px size-3.5 shrink-0" /> {R.infraNote}
+          </p>
+          {(view.infraClaims?.admins || view.infraClaims?.auditors) && (
+            <p className="pl-5.5">
+              {view.infraClaims.admins && <>{R.infraClaimAdmins(view.infraClaims.admins, Math.max(1, Math.round(view.infraClaims.claimsAbsolute / 3600)))} </>}
+              {view.infraClaims.auditors && <>{R.infraClaimAuditors(view.infraClaims.auditors, Math.max(1, Math.round(view.infraClaims.claimsAbsolute / 3600)))}</>}
+            </p>
+          )}
+        </div>
       )}
 
       <div className="flex flex-wrap items-center gap-2 border-t pt-4">

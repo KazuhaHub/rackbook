@@ -654,7 +654,7 @@ Phase 2b gets its own design note before it is built.
 
 ---
 
-## 6. Phase 3: `/infra` admins by group (accepted 2026-11-22)
+## 6. Phase 3: `/infra` admins by group (accepted 2026-11-22; built 2026-11-28)
 
 Today `--infra-admins` is a list of exact identities in the infra deployment. The proposal: also accept
 **one** group or app role, pinned together with the issuer, client and tenant that are already pinned.
@@ -664,6 +664,40 @@ The trade-off, plainly: whoever can change that Entra group or app-role assignme
 owners) can make anyone an infra admin, and an infra admin is root on every host. Today only a change to
 the infra repository can do that. The owner accepted this trade-off on 2026-11-22. `/infra` stays OIDC-only:
 local accounts never reach it.
+
+### As built, phase 3 (2026-11-28)
+
+**Built.** `--infra-admins` and `--infra-auditors` each accept, beside exact identities, at most one `group:<id>` or
+`app-role:<value>` entry (`roles.Describe`, the parser of `auth.roles`; `oidc:<sub>` stays an identity entry, as before).
+Two entries, `*`, `*@domain`, `oauth:`, `mcphub:`, `local:`, and an entry without the issuer, client and tenant pins are refused at
+start. The two flags are independent. `auth.InfraAdmins.Via` decides, on every request: a listed identity (`identity`),
+or the entry (`group`, `app_role`) for an OIDC browser session under the pinned issuer, client, claim and tenant whose capped
+claim lists, as the cookie keeps them, hold the value. Never for tokens, OAuth or MCP grants, MCPHub, passkeys, Cloudflare
+Access or local accounts; a subject login (`oidc:` ids) never matches a claim entry (as in `auth.roles`). A dropped or cut list
+matches nothing (fail closed).
+
+**Lifetime: only the infra capability lapses.** The entry counts for `--infra-claims-absolute` (1h to 24h, default 24h) after the sign-in (`OIDCAt`, in the signed
+cookie); after that `/infra` answers `403` while the console session goes on. A named identity does not lapse, and wins when both
+apply. This is simpler than ending the whole session: the login service stays unaware of the infra flags, and a person who holds
+their ledger role by name keeps their session. The decision is per request from the cookie and the clock, so a replayed cookie
+gets nothing back. The write age applies on top.
+
+**Audit.** `login` carries `infra_via`, `infra_auditor_via` and, when the entry is set, unmatched, and the sign-in lost the list
+it needs, `infra_overage` (`groups`, `app_roles`, or both). Infra commits and infra events without a commit carry `infra_via`
+(`Identity.InfraVia`, stamped by the infra gates; `ansiblerepo.AuditEntry.Via`). Activity items and sentences show them.
+
+**Console.** The account page (`infraFrom`, `infraAuditorFrom`, `infraEnds`, `infraClaimsAbsolute`) says `/infra` access
+comes through a group or app role and when it lapses; `GET /api/admin/roles` has `infraClaims` for the Roles tab note; zh-CN,
+zh-TW and en-US; mock `MOCK_INFRA_VIA` and `MOCK_INFRA_CLAIMS`.
+
+**Deviations.** (1) The lifetime is a deploy flag, `--infra-claims-absolute`, not the ledger's `auth.session.claims_absolute`: a
+first version read the ledger's value at start, which let a ledger administrator lengthen root access after a restart. Nothing in
+`rackbook.yml` reaches it. (1a) On an Entra issuer a `group:` value must be a GUID; elsewhere a start warning recommends app roles.
+(1b) `infra_*` fields on events are given only to infra administrators and auditors. (2) The account page shows the capability in force (name, group or app role), with a lapse only for a claim; an administrator's line supersedes the auditor's. (3) Auditors and administrators share one lifetime setting. (4) The claim entry is also refused when the tenant pin is
+missing for a non-Entra issuer (the brief's "all pins set"); named identities still need no tenant there. (5) The infra repository
+and its deployment were not touched; the deploy example is in the README only.
+
+**Not done.** Nothing that changes `rackbook.yml`'s role editor (the infra entries are flags, shown read-only).
 
 ## 7. Decisions (2026-11-22)
 

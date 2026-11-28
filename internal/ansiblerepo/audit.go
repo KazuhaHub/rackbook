@@ -17,6 +17,7 @@ type AuditEntry struct {
 	Outcome string    `json:"outcome"` // validation_failed, conflict, no_change, push_failed, busy, revert_refused, reauth_required, forbidden, revealed, reveal_failed, rate_limited, no_such_key
 	Files   []string  `json:"files,omitempty"`
 	Detail  []string  `json:"detail,omitempty"` // issue codes or conflicting commits; never values
+	Via     string    `json:"via,omitempty"`    // how Who is an infra administrator: identity, group or app_role
 }
 
 // Auditor records an AuditEntry.

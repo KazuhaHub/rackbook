@@ -38,6 +38,14 @@ type Event struct {
 	// or more than the session keeps. The sign-in succeeded without the lost values.
 	Groups   string `json:"groups,omitempty"`
 	AppRoles string `json:"app_roles,omitempty"`
+	// InfraVia is how the person was an infra administrator when the event happened:
+	// identity (a listed identity), group or app_role (the claim entry of
+	// --infra-admins). InfraAuditorVia is the same for --infra-auditors, on a login. InfraOverage
+	// is on a login whose claim entry was not matched because the list it needs was cut
+	// off or dropped: groups, app_roles or both.
+	InfraVia        string `json:"infra_via,omitempty"`
+	InfraAuditorVia string `json:"infra_auditor_via,omitempty"`
+	InfraOverage    string `json:"infra_overage,omitempty"`
 	// role_changed: the effective role and auditor capability before and after, and
 	// why the difference was seen (CauseSignIn or CauseConfig).
 	From        string `json:"from,omitempty"`
@@ -56,6 +64,7 @@ func (e *Event) By(who *auth.Identity) {
 		return
 	}
 	e.Identity, e.Name, e.Method = who.ID, who.Name, who.Method
+	e.InfraVia = who.InfraVia
 	if who.Token != "" {
 		e.Detail = append(e.Detail, "token:"+who.Token)
 	}

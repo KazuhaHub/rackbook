@@ -178,7 +178,15 @@ func (s *Service) oidcCallback(w http.ResponseWriter, r *http.Request) {
 	// values dropped to fit the cookie count as an overage, like a list cut at the cap
 	ov.groups, ov.appRoles = ov.groups || cut.groups, ov.appRoles || cut.appRoles
 	s.log.Info("login", "identity", id.ID, "method", auth.MethodOIDC, "remote", r.RemoteAddr)
-	s.record(r, audit.Event{Event: "login", Identity: id.ID, Name: id.Name, Method: auth.MethodOIDC, Role: role.String(), Groups: overageNote(ov.groups), AppRoles: overageNote(ov.appRoles)})
+	e := audit.Event{Event: "login", Identity: id.ID, Name: id.Name, Method: auth.MethodOIDC, Role: role.String(), Groups: overageNote(ov.groups), AppRoles: overageNote(ov.appRoles)}
+	if s.o.Infra != nil {
+		// how the person is an infra administrator or auditor, from the claims the session kept
+		now := s.now()
+		kept := identityOf(sess)
+		e.InfraVia, e.InfraAuditorVia = s.o.Infra.Via(kept, now)
+		e.InfraOverage = s.o.Infra.Overage(kept, now, ov.groups, ov.appRoles)
+	}
+	s.record(r, e)
 	s.observeRole(r, ev, audit.CauseSignIn, true)
 	s.markObserved(sess)
 	http.Redirect(w, r, SafeReturn(entry.ret), http.StatusSeeOther)

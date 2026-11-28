@@ -20,6 +20,7 @@ import { GrantsList } from '@/components/GrantsList'
 import { PageHeader } from '@/components/common'
 import { roleLabel } from '@/components/layout/UserMenu'
 import { t } from '@/i18n'
+import { formatDateTime } from '@/i18n/format'
 import { apiFetch, errorMessage } from '@/lib/api'
 import { hasSession, isSSO, logout, useAccount, type Passkey } from '@/lib/auth'
 import { relativeTime } from '@/lib/ledger'
@@ -130,6 +131,28 @@ export default function Account() {
               </Field>
             )}
             {acc && kinds(acc.auditorFrom) && <Field label={A.auditorFrom}>{kinds(acc.auditorFrom)}</Field>}
+            {acc && (acc.infraFrom || acc.infraAuditorFrom) && (
+              <Field label={A.infraFrom}>
+                <span data-testid="infra-from">
+                  {[
+                    acc.infraFrom ? A.infraFromKinds[acc.infraFrom]?.admin : '',
+                    acc.infraAuditorFrom ? A.infraFromKinds[acc.infraAuditorFrom]?.auditor : '',
+                  ]
+                    .filter(Boolean)
+                    .join(t.common.listSep)}
+                </span>
+                {acc.infraAuditorRemains && acc.infraEnds ? (
+                  <p className="mt-1.5 text-xs text-muted-foreground" data-testid="infra-auditor-remains">
+                    {A.infraAuditorRemains(formatDateTime(acc.infraEnds))}
+                  </p>
+                ) : null}
+                {acc.infraClaimsAbsolute && acc.infraEnds ? (
+                  <p className="mt-1.5 text-xs text-muted-foreground">
+                    {A.infraAccessNote(Math.max(1, Math.round(acc.infraClaimsAbsolute / 3600)), formatDateTime(acc.infraEnds))}
+                  </p>
+                ) : null}
+              </Field>
+            )}
             <Field label={A.method}>{t.auth.method[method] ?? method}</Field>
           </dl>
         </CardContent>

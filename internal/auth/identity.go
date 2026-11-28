@@ -59,6 +59,11 @@ type Identity struct {
 	OIDCTenant string
 	OIDCAt     time.Time
 
+	// InfraVia is how this person is an infra administrator (InfraVia* constants), set
+	// by the infra gates on the copy of the identity they hand to an edit, so that the
+	// audit trail of the edit says it. Empty everywhere else.
+	InfraVia string
+
 	// Scopes are the OAuth scopes (or token scopes) the credential carries;
 	// ScopeLimited says the credential can be narrower than the user's role,
 	// in which case Narrow decides how.

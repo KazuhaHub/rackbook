@@ -40,17 +40,14 @@ func (s *server) infraAudit(who *auth.Identity, action, outcome string) {
 	if s.o.Infra == nil || s.o.Infra.Audit == nil {
 		return
 	}
-	id := ""
-	if who != nil {
-		id = who.ID
-	}
-	s.o.Infra.Audit.Record(ansiblerepo.AuditEntry{Time: s.now(), Who: id, Action: action, Outcome: outcome})
+	s.o.Infra.Audit.Record(ansiblerepo.AuditEntry{Time: s.now(), Who: who.IDOrEmpty(), Action: action, Outcome: outcome, Via: s.recordedVia(who)})
 }
 
 // infraWriter admits a write: the caller is an infra administrator, the
 // editors are on, and the sign-in is recent.
 func (s *server) infraWriter(w http.ResponseWriter, r *http.Request) (*auth.Identity, bool) {
-	if !s.infraAdmin(w, r) {
+	via, ok := s.infraAdminVia(w, r)
+	if !ok {
 		s.infraAudit(s.who(r), r.Method+" "+r.URL.Path, "forbidden")
 		return nil, false
 	}
@@ -58,7 +55,7 @@ func (s *server) infraWriter(w http.ResponseWriter, r *http.Request) (*auth.Iden
 		writeError(w, http.StatusForbidden, "read_only", "editing the infra repository is switched off here")
 		return nil, false
 	}
-	who := s.who(r)
+	who := stampInfra(s.who(r), via)
 	if !s.o.Infra.Admins.Fresh(who, s.now()) {
 		s.infraAudit(who, r.Method+" "+r.URL.Path, "reauth_required")
 		writeError(w, http.StatusForbidden, "reauth_required", "sign in again to edit the infra repository",

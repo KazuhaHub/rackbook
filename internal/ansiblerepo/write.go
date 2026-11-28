@@ -156,9 +156,9 @@ func (r *Repo) record(who *auth.Identity, p *plan, scope, action, outcome string
 	if r.o.Audit == nil {
 		return
 	}
-	id := ""
+	id, via := "", ""
 	if who != nil {
-		id = who.ID
+		id, via = who.ID, who.InfraVia
 	}
 	act := "infra(" + scope + "): " + action
 	if p != nil {
@@ -167,7 +167,7 @@ func (r *Repo) record(who *auth.Identity, p *plan, scope, action, outcome string
 			files = filesOf(p)
 		}
 	}
-	r.o.Audit.Record(AuditEntry{Time: r.o.Now().UTC(), Who: id, Action: act, Outcome: outcome, Files: files, Detail: detail})
+	r.o.Audit.Record(AuditEntry{Time: r.o.Now().UTC(), Who: id, Action: act, Outcome: outcome, Files: files, Detail: detail, Via: via})
 }
 
 func issueCodes(is []Issue) []string {

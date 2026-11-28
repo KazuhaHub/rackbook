@@ -40,6 +40,10 @@ export type ActivityItem = {
   /** sign-in events: "overage" when the groups or roles claim was cut off */
   groups?: string
   app_roles?: string
+  /** how the person was an infra administrator (or, on a sign-in, auditor): identity, group or app_role; and what an overage cost them */
+  infra_via?: string
+  infra_auditor_via?: string
+  infra_overage?: string
   /** role_changed: the role and auditor flag before and after, and why it was seen */
   from?: string
   to?: string

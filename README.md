@@ -312,7 +312,8 @@ only: it is hidden for anyone else and the server answers `403` regardless (an a
 - **Tokens and grants never reach it.** The API token layer reaches only the record paths, and the handler also
   refuses a token, an OAuth or an MCPHub credential, so only a person's console session can edit roles.
 - **`/infra`.** Its administrators and auditors come from deployment flags (`--infra-admins`,
-  `--infra-auditors`), not `rackbook.yml`, so the editor does not show or touch them (the page says so).
+  `--infra-auditors`), not `rackbook.yml`, so the editor does not show or touch them (the page says so, and names the
+  one group or app role each flag has, if any; see *Infra administrators by one group or app role*).
 
 Local accounts ([design](docs/design-local-accounts.md), not built) will appear as `local:<username>` entries;
 the editor already labels such an entry and warns that it matches nobody yet.
@@ -710,13 +711,14 @@ rackbook serve --auth oidc … \
 | `--infra-repo` | A git clone of the repository, made once by you (Rackbook does not clone). Every `--pull-interval` Rackbook runs `git fetch` and resets the clone to `origin/<branch>`; local changes in it are discarded. It pushes only with `--infra-write`, and then only commits made by the editors. It must not be, or sit inside, the ledger clone |
 | `--infra-branch` | The branch followed, and the branch the editors commit to (default `main`) |
 | `--infra-ssh-key` | (Or use the [GitHub App](#github-app-instead-of-deploy-keys): its token for this clone is `contents: read`, and `contents: write` only for an edit.) The private key (give it a read-only deploy key) used to fetch this clone, and only this clone. It cannot be combined with `--infra-write`. It reaches git in `GIT_SSH_COMMAND` in the environment of the git process, not on a command line; a `known_hosts` file beside the key is used with strict host key checking when it exists |
-| `--infra-admins` | Comma-separated exact identities (no wildcards) who may use `/infra`. This is **not** `auth.roles`, and it is never read from `rackbook.yml`, so nobody can grant it by editing the ledger. Needs `--auth oidc`: only a person who signed in with the console's OIDC login counts. API tokens (also the token of a listed person), MCP clients, OAuth access tokens, passkey and Cloudflare Access identities are answered `403 forbidden` |
-| `--infra-auditors` | Optional. Comma-separated exact identities who may **read** `/infra` but nothing more (needs `--infra-admins`). Same rules as `--infra-admins`: OIDC login sessions only (never a token, MCP client, OAuth token, passkey or Cloudflare Access identity), the identity provider pinned by the `--infra-oidc-*` flags below, never read from `rackbook.yml`. They read hosts, groups, certificates, IP lists, commits, the diffs of infra commits and the infra audit events. They get `403 forbidden` on the secrets (the list of key names, reveal, set, unset, re-encrypt), on the raw `host_vars` editor file (kept admin-only as defence in depth: it sends no content when the hide scan finds anything), and on every edit and revert. The boundary for plaintext in `host_vars` is that scan: a secret it does not recognise reaches an infra auditor through the host page (`GET /api/infra/hosts/{name}`) and through infra commit diffs, exactly as it reaches infra administrators A person on both lists is an administrator. Deploy it by adding the flag to the service's command line next to `--infra-admins` |
+| `--infra-admins` | Comma-separated exact identities (no wildcards) who may use `/infra`, and optionally **one** `group:<id>` or `app-role:<value>` entry (see *Infra administrators by one group or app role*). This is **not** `auth.roles`, and it is never read from `rackbook.yml`, so nobody can grant it by editing the ledger. Needs `--auth oidc`: only a person who signed in with the console's OIDC login counts. API tokens (also the token of a listed person), MCP clients, OAuth access tokens, MCPHub, local accounts, passkey and Cloudflare Access identities are answered `403 forbidden`. Any other kind of entry (`*`, `*@domain`, `oauth:`, `mcphub:`, `local:`), a second claim entry, and a claim entry without the issuer, client and tenant pins are refused when the server starts |
+| `--infra-auditors` | Optional. Comma-separated exact identities who may **read** `/infra` but nothing more (needs `--infra-admins`). Same rules as `--infra-admins`: OIDC login sessions only (never a token, MCP client, OAuth token, passkey or Cloudflare Access identity), the identity provider pinned by the `--infra-oidc-*` flags below, never read from `rackbook.yml`. They read hosts, groups, certificates, IP lists, commits, the diffs of infra commits and the infra audit events. They get `403 forbidden` on the secrets (the list of key names, reveal, set, unset, re-encrypt), on the raw `host_vars` editor file (kept admin-only as defence in depth: it sends no content when the hide scan finds anything), and on every edit and revert. The boundary for plaintext in `host_vars` is that scan: a secret it does not recognise reaches an infra auditor through the host page (`GET /api/infra/hosts/{name}`) and through infra commit diffs, exactly as it reaches infra administrators A person on both lists is an administrator. Deploy it by adding the flag to the service's command line next to `--infra-admins`. It takes the same entries as `--infra-admins`, with its own single `group:`/`app-role:` entry; the two claim entries are independent of each other (one may be set without the other, and they may name different groups or roles) |
 | `--infra-oidc-issuer`, `--infra-oidc-client-id` | **Required** with `--infra-repo`. The identity provider (issuer URL) and the application (client ID) that infra administrators sign in with. A session counts only if it was issued under exactly this issuer **and** this client ID (and the claim and tenant below); anything else is `403`, however it was obtained. See *Why the identity provider is pinned* |
 | `--infra-oidc-identity-claim` | The ID token claim the administrators' identities are taken from (default `preferred_username`; `sub` for subject identities, which are then listed as `oidc:<sub>`). A session whose identity came from another claim is refused, so `auth.oidc.identity_claim` in the ledger cannot change who counts as an administrator |
 | `--infra-oidc-tenant` | The tenant (the `tid` claim) the administrators sign in from. **Required for an Entra issuer**, and a tenant GUID in `--infra-oidc-issuer` must equal it; optional for other providers (then a session without a tenant is expected). A session from another tenant is refused; `allowed_tenants` in the ledger is not trusted |
 | `--infra-write` | Turn on the editors. Needs `--github-app-id` (the App must have `Contents: read and write` on the infra repository) and cannot be combined with `--infra-ssh-key`; on a `--read-only` server the editors stay off |
 | `--sops-age-key-file` | The age identity file Rackbook edits the infra repository's SOPS secrets with (see *Editing secrets*); empty = the secrets editor is off. Needs `--infra-write`, `--state-dir` (the reveal limits are kept there) and the `sops` and `age-keygen` binaries (the container image has them, pinned and checksummed). Mount the file read-only; it is Rackbook's own key, generated on the host, never an administrator's key. Rackbook shows its public key on the secrets page, to be added as a recipient of every **host** rule in `.sops.yaml` (never the `secrets/admin.sops.yaml` rule) |
+| `--infra-claims-absolute` | How long after a sign-in the `group:` or `app-role:` entry of `--infra-admins` or `--infra-auditors` counts (default and longest `24h`, shortest `1h`; anything else stops the server at start). It is set here, never read from `rackbook.yml`, so nobody who can edit the ledger can lengthen it |
 | `--infra-write-max-age` | How recent a person's sign-in must be for a write (default `12h`). An older session can still read; a write answers `403 reauth_required` and the console offers *Sign in again* |
 | `--infra-managed-group`, `--infra-agent-group` | The inventory group whose hosts must each have host_vars and a SOPS file and that must contain every host of every group (default `managed`), and the group that must list exactly the managed hosts (default `infra_agent`). A group the inventory does not have switches its rule off; `""` disables the rule |
 | `--hub-status-file` | The hub's `infra-hub status -o json` document (`apiVersion: v1`), rewritten by a timer on the same machine; mount it read-only into the container |
@@ -739,6 +741,84 @@ three minutes the pages say *Status unavailable* with the reason and show none o
 stale report is never read as current. The repository's last sync time and error are shown too.
 `/infra` is not part of the ledger and is never offered on `/mcp`. The API is under `/api/infra`
 (docs/api.md). The Git runner is the ledger's guarded one (see *Rackbook never force-pushes*).
+
+### Infra administrators by one group or app role
+
+Instead of (or beside) naming each administrator in the deployment, `--infra-admins` accepts **at most one**
+entry of the form `group:<id>` or `app-role:<value>`, in the syntax of `auth.roles` (the group id is a GUID on
+Entra and is matched without regard to case; an app role value is exact and case-sensitive). `--infra-auditors`
+takes its own, separate entry the same way:
+
+```
+--infra-admins "alice@example.org,app-role:Rackbook.InfraAdmin" \
+--infra-auditors "group:7d1c0b52-0000-4000-8000-000000000001" \
+```
+
+Adding or removing an infra administrator is then a change in Entra, not a deploy. **Prefer an app role.** A group is
+matched by the value the identity provider sends: on Entra that must be the group's object ID (a GUID, which Rackbook
+requires there and refuses anything else at start), but group display names are not unique and users can often create
+groups, so with any other provider a `group:` entry is only as safe as that provider's naming (Rackbook logs a warning
+at start). An app role is named and assigned by the application's owners. A person is an infra
+administrator through the entry only when **all** of these hold:
+
+- they signed in with the console's OIDC login (a browser session);
+- the session was issued under the pinned issuer, client and tenant (and identity claim), exactly as for a named
+  administrator, so all three `--infra-oidc-*` pins must be set when there is an entry (Rackbook refuses to start
+  otherwise). Note `--infra-oidc-tenant`: the pins are shared by every list, so if a non-Entra provider sends no `tid`
+  claim, **nobody** matches, named administrators included, once the pin is set;
+- the group or app role is among the values the session kept (at most 40 groups and 40 app roles, in token order,
+  within the cookie budget). If the identity provider dropped the claim (Entra sends no groups past 200) or the list
+  was cut before the value, the person is **not** matched: an overage fails closed. The sign-in event says so
+  (`infra_overage`, see below).
+
+It never counts for API tokens, OAuth or MCP grants, MCPHub, passkeys, Cloudflare Access or local accounts, and a
+login named by its subject (`--infra-oidc-identity-claim sub`) matches the entry never, as for `group:` entries in
+`auth.roles`. A named identity still works beside it and wins when both apply.
+
+**The trade-off.** Whoever can change that Entra group or app-role assignment (Entra administrators, group owners)
+can make anyone an infra administrator, and an infra administrator is root on every host: today only a change to the
+infra repository or the deployment can do that. The owner accepted this on 2026-11-22
+([docs/design-audit.md](docs/design-audit.md), section 6). Use a **dedicated group that only named owners can
+change**, or an app role assigned by named Entra administrators, never a broad or self-service group, and keep the
+group's owners and the people who may assign the role few. Prefer an app role (readable names, no group limits).
+
+**Lifetime.** The entry counts for `--infra-claims-absolute` (default and longest 24 h, shortest 1 h) after the sign-in; it is a
+deployment flag and `rackbook.yml` (`auth.session.*`) has no say in it. A person who is an infra administrator **only** through the entry is one for `--infra-claims-absolute` after
+the sign-in, even if their console session goes on (for example because they hold their ledger role by name); then
+`/infra` answers `403` until they sign in again, which reads the claims again. So a removal at Entra takes effect at
+their next sign-in and at the latest `--infra-claims-absolute` after the last one. A write already admitted when the time passes
+completes, and is recorded as admitted. The decision is made on every request from
+the signed session cookie and the clock, and nothing about it is stored, so replaying an old cookie restores nothing.
+A named identity has no such limit (it does not depend on claims). The write age (`--infra-write-max-age`) applies on top:
+a write still needs a sign-in younger than that.
+
+The account page shows, for such a person, that `/infra` access comes through a group or an app role and when it
+lapses; the Roles tab of *Users* shows the entry each flag names (administrators only, `infraClaims` in
+`GET /api/admin/roles`).
+
+**Upgrade note.** The entries of `--infra-admins` and `--infra-auditors` are now parsed like `auth.roles`. A value that was
+silently accepted before (a wildcard such as `*@example.org`, `local:x`, `oauth:`, `mcphub:`) now stops the server at start
+with the entry named; `oidc:<sub>` and exact identities are unchanged.
+
+**Audit.** The `login` event, the infra commit events and the infra events without a commit (refused writes,
+secret reveals, re-encryption) carry `infra_via`: `identity`, `group` or `app_role`, how that person was an infra
+administrator. A `login` also carries `infra_auditor_via` for `--infra-auditors`. When an entry is set, the person
+was not matched, and the sign-in lost the groups or app roles that entry needs, the `login` has `infra_overage`
+(`groups`, `app_roles` or both, comma-separated). These fields are shown in the Activity page and its export only to infra
+administrators and infra auditors; a ledger administrator or auditor who is neither does not get them, so the list of infra
+administrators does not leak.
+
+**Deploy example** (an example only; the values are the infra deployment's own):
+
+```
+ExecStart=/usr/local/bin/rackbook serve --auth oidc … \
+  --infra-repo /data/infra \
+  --infra-admins "alice@example.org,app-role:Rackbook.InfraAdmin" \
+  --infra-auditors "app-role:Rackbook.InfraAuditor" \
+  --infra-oidc-issuer https://login.microsoftonline.com/<tenant>/v2.0 \
+  --infra-oidc-client-id <the console's application ID> \
+  --infra-oidc-tenant <the Entra tenant ID>
+```
 
 ### Why the identity provider is pinned
 
@@ -1999,7 +2079,7 @@ Rackbook 永远不会 force push，也不会改写或删除远端分支和标签
 不能查看密钥、不能写入，管理员也不会自动成为审计员。`/infra` 里对应的是 `--infra-auditors`：与 `--infra-admins` 同样固定
 身份提供方、只认控制台 OIDC 登录会话，只能读（看不到密钥，也不能改和还原）。能用 `/infra` 的人由 `--infra-admins` 指定（不是 `auth.roles`，也不来自台账里的 `rackbook.yml`），
 必须是用控制台 OIDC 登录的会话，并且登录所用的身份提供方必须正是 `--infra-oidc-issuer` 与 `--infra-oidc-client-id`
-固定的那一个（签发方、客户端 ID、身份声明 `--infra-oidc-identity-claim` 和租户 `--infra-oidc-tenant` 都来自命令行，不来自台账里可被改动的 `auth.oidc`）；API 令牌、MCP、OAuth 令牌一律 `403`。
+固定的那一个（签发方、客户端 ID、身份声明 `--infra-oidc-identity-claim` 和租户 `--infra-oidc-tenant` 都来自命令行，不来自台账里可被改动的 `auth.oidc`）；API 令牌、MCP、OAuth 令牌一律 `403`。`--infra-admins`（以及各自独立的 `--infra-auditors`）除了具体身份，还可以再带**最多一个** `group:<id>` 或 `app-role:<值>`：在 Entra 里改这个用户组或应用角色就能增减管理员，不必重新部署；它要求签发方、客户端和租户都已固定，只对 OIDC 浏览器会话有效（令牌、OAuth、MCPHub、本地账号永远不行），用户组或应用角色被截断时视为不匹配；仅靠它得到的权限在登录后 `--infra-claims-absolute`（默认且最长 24 小时，最短 1 小时，只在命令行设置、不读 `rackbook.yml`）失效，需重新登录。代价是：谁能改这个 Entra 用户组或应用角色的分配，谁就能让任何人成为每台主机的 root，所以应使用只有指定负责人能修改的专用用户组，或由指定 Entra 管理员分配的应用角色（详见上文 *Infra administrators by one group or app role*）。
 加上 `--infra-write` 后，管理员还能编辑 host_vars、按 `feature.yml` 生成的功能开关表单和主机分组，并在提交历史里还原某次提交：
 每次保存就是一个直接提交到主分支的提交（作者是登录的人，带 `Edited-by`、`Edited-via`、`Files` 尾注），提交前由
 Rackbook 自己检查（YAML、重复键、清单形状、受管主机的 host_vars 与 SOPS 文件、功能设置、密钥扫描；host_vars 里不许有模板语法和 `ansible_*` 变量，不许有锚点、别名、合并键；group_vars 不可编辑），写入需要最近
