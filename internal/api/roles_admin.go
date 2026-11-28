@@ -130,7 +130,10 @@ func (s *server) localView() rolesedit.Local {
 	if s.o.Local == nil {
 		return rolesedit.Local{}
 	}
-	l := rolesedit.Local{Available: true, States: map[string]string{}}
+	cfg := s.o.Store.Config()
+	// the built-in login with no single sign-on: only local accounts can sign in
+	sso := cfg.Auth.Login.OIDC.Issuer != "" || cfg.Auth.Login.OIDC.ClientID != ""
+	l := rolesedit.Local{Available: true, States: map[string]string{}, LocalOnly: s.o.Auth.Mode() == auth.ModeOIDC && !sso}
 	for _, a := range s.o.Local.Roster() {
 		l.States[a.Username] = a.State
 	}

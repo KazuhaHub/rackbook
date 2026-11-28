@@ -48,7 +48,7 @@ func TestLocalEntriesAreAddedAndRemovedLikeAnyOther(t *testing.T) {
 	}
 	// the entry kinds and what the editor says of each
 	for list, want := range map[string]map[string][]string{
-		ListAdmin:    {"local:alice": nil, "LOCAL:Dave": nil},
+		ListAdmin:    {"local:alice": nil, "LOCAL:Dave": {"warning:local_inactive"}}, // dave is invited
 		ListAuditors: {"local:carol": nil, "local:erin": {"warning:local_inactive"}},
 	} {
 		for v, w := range want {
@@ -121,13 +121,13 @@ func TestLastAdminCountsAdminsWhoCanSignIn(t *testing.T) {
 		t.Fatalf("%+v", r)
 	}
 	// replacing the last local admin by a disabled, a removed or an unknown account leaves nobody who can sign in
-	for _, v := range []string{"local:erin", "local:frank", "local:ghost"} {
+	for _, v := range []string{"local:erin", "local:frank", "local:ghost", "local:dave"} { // dave is invited: no sign-in yet
 		if r := try(with(v), localState()); r == nil || r.Code != CodeLastAdmin {
 			t.Errorf("%s: %+v", v, r)
 		}
 	}
-	// accounts that can sign in now or once their setup is done count
-	for _, v := range []string{"local:alice", "local:bob", "local:carol", "local:dave", "local:*", "LOCAL:Alice"} {
+	// accounts that can sign in count (restricted and passkey_only limit new sign-ins only)
+	for _, v := range []string{"local:alice", "local:bob", "local:carol", "local:*", "LOCAL:Alice"} {
 		if r := try(with(v), localState()); r != nil {
 			t.Errorf("%s: %+v", v, r)
 		}
@@ -167,5 +167,46 @@ func TestStatesAreTheAccountStoresStates(t *testing.T) {
 	t.Parallel()
 	if stateDisabled != accounts.StateDisabled || stateRemoved != accounts.StateRemoved {
 		t.Fatal("the states differ from internal/accounts")
+	}
+}
+
+// A deployment with local accounts alone (--auth login without auth.oidc): nobody else signs in, so an admin entry of
+// another kind is no admin who can sign in; an invited or reset account is not one yet either.
+func TestLastAdminInALocalOnlyDeployment(t *testing.T) {
+	t.Parallel()
+	cfg := load(t, strings.Replace(localBlock, `admin: ["local:alice"]`, `admin: ["local:alice", "boss@example.com"]`, 1))
+	cur, _ := Current(cfg)
+	ver := Version(cur)
+	local := localState()
+	local.LocalOnly = true
+	try := func(admin ...string) *Refusal {
+		t.Helper()
+		l := cur
+		l.Admin = admin
+		p, err := Build(cfg, Request{Version: ver, Lists: l, Local: local})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return p.Refusal
+	}
+	// taking local:alice away leaves boss@example.com, whom nobody can sign in as
+	if r := try("boss@example.com"); r == nil || r.Code != CodeLastAdmin {
+		t.Fatalf("%+v", r)
+	}
+	if r := try("boss@example.com", "local:dave"); r == nil || r.Code != CodeLastAdmin {
+		t.Fatalf("an invited account is no admin yet: %+v", r)
+	}
+	if r := try("boss@example.com", "local:bob"); r != nil {
+		t.Fatalf("%+v", r)
+	}
+	// with single sign-on the other entry counts, as before
+	local.LocalOnly = false
+	if r := try("boss@example.com"); r != nil {
+		t.Fatalf("%+v", r)
+	}
+	// the note for an account that has not finished its setup
+	a := AnnotateLocal(cfg, Lists{Admin: []string{"local:dave"}}, local)
+	if n := notes(a, ListAdmin, "local:dave"); !slices.Contains(n, "warning:local_inactive") {
+		t.Fatalf("%v", n)
 	}
 }

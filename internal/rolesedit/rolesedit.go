@@ -245,8 +245,13 @@ const (
 // The states of an account the editor tells apart (the same strings as internal/accounts, which a test holds
 // together; this package does not import it, so that nothing HTTP-facing depends on the account store).
 const (
-	stateDisabled = "disabled"
-	stateRemoved  = "removed"
+	stateActive       = "active"
+	stateRestricted   = "restricted"
+	statePasskeyOnly  = "passkey_only"
+	stateDisabled     = "disabled"
+	stateRemoved      = "removed"
+	stateInvited      = "invited"
+	stateResetPending = "reset_pending"
 )
 
 // Local says what the deployment has of local accounts (docs/design-local-accounts.md, 7). The zero
@@ -256,19 +261,24 @@ type Local struct {
 	Available bool
 	// States is the state of every account by username (active, restricted, passkey_only, invited, reset_pending, disabled, removed), removed ones included.
 	States map[string]string
+	// LocalOnly says the built-in login has no single sign-on: only local accounts can sign in, so no
+	// entry of another kind names somebody who can.
+	LocalOnly bool
 }
 
-// usable says an account can sign in now or once its setup is done: it exists and is not disabled
-// or removed.
+// usable says an account can hold a session and so has a role: active, restricted or passkey_only (the last two
+// limit new sign-ins only, design 6). An invited account has no sign-in yet and a reset one has lost its
+// credentials, so neither counts until its setup is done.
 func (l Local) usable(state string) bool {
-	return state != "" && state != stateDisabled && state != stateRemoved
+	return state == stateActive || state == stateRestricted || state == statePasskeyOnly
 }
 
-// canSignIn says the entry, which parsed as info, can match somebody who can sign in here. Entries
-// of every kind but local: are taken to; a local: entry needs local accounts and an account.
+// canSignIn says the entry, which parsed as info, can match somebody who can sign in here. A local: entry
+// needs local accounts and a usable account; an entry of any other kind counts unless the login is local
+// accounts alone (LocalOnly), where nobody else signs in.
 func (l Local) canSignIn(info roles.EntryInfo) bool {
 	if info.Kind != roles.KindLocal {
-		return true
+		return !l.LocalOnly
 	}
 	if !l.Available {
 		return false
@@ -388,6 +398,8 @@ func kindNotes(cfg *config.Config, list string, info roles.EntryInfo, local Loca
 			w(NoteLocalInactive, "this account was removed and its name cannot be used again, so this entry matches nobody")
 		case st == stateDisabled:
 			w(NoteLocalInactive, "this account is disabled, so this entry matches nobody until it is enabled")
+		case st == stateInvited || st == stateResetPending:
+			w(NoteLocalInactive, "this account has not finished its setup (an invite or a reset is pending), so this entry matches nobody until it has")
 		}
 	}
 	return out
