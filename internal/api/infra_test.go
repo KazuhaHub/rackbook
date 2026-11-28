@@ -95,6 +95,13 @@ func (testBearer) AuthenticateBearer(r *http.Request) (*auth.Identity, error) {
 	case "mcphub":
 		id.Method = auth.MethodMCPHub
 	}
+	// a credential may also carry the claim values, as a grant made from a sign-in does
+	if v := r.Header.Get("X-Groups"); v != "" {
+		id.Groups = strings.Split(v, ",")
+	}
+	if v := r.Header.Get("X-App-Roles"); v != "" {
+		id.AppRoles = strings.Split(v, ",")
+	}
 	return id, nil
 }
 func (testBearer) Challenge(r *http.Request) string { return "" }

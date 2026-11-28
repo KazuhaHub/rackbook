@@ -209,7 +209,7 @@ func TestRolesGetShowsTheInfraClaimEntries(t *testing.T) {
 		t.Fatalf("%d %v", code, m)
 	}
 	c, _ := m["infraClaims"].(map[string]any)
-	if c["admins"] != "app-role:Rackbook.InfraAdmin" || c["auditors"] != "group:"+opsGrp || len(c) != 2 {
+	if c["admins"] != "app-role:Rackbook.InfraAdmin" || c["auditors"] != "group:"+opsGrp || c["claimsAbsolute"] != float64(86400) || len(c) != 3 {
 		t.Fatalf("%v", m["infraClaims"])
 	}
 	if code, _, _ := e.do(t, "GET", "/api/admin/roles", nil, as("guest@example.com")); code != 403 {

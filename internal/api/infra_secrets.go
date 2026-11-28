@@ -41,7 +41,7 @@ func (s *server) infraSecretsAudit(who *auth.Identity, host, file, action, outco
 	if s.o.Infra == nil || s.o.Infra.Audit == nil {
 		return
 	}
-	s.o.Infra.Audit.Record(ansiblerepo.AuditEntry{Time: s.now(), Who: who.IDOrEmpty(), Action: "infra(secrets/" + host + "): " + action, Outcome: outcome, Files: []string{file}, Detail: detail, Via: s.infraVia(who)})
+	s.o.Infra.Audit.Record(ansiblerepo.AuditEntry{Time: s.now(), Who: who.IDOrEmpty(), Action: "infra(secrets/" + host + "): " + action, Outcome: outcome, Files: []string{file}, Detail: detail, Via: s.recordedVia(who)})
 }
 
 // revealLimit is one ceiling on the reveals of one person.
@@ -143,7 +143,8 @@ func (l *revealLimiter) save() {
 // an infra administrator with a recent sign-in, and secrets set up. needWrite
 // also asks for the editors to be on (they commit).
 func (s *server) infraSecretsGate(w http.ResponseWriter, r *http.Request, needWrite bool) (*auth.Identity, bool) {
-	if !s.infraAdmin(w, r) {
+	via, ok := s.infraAdminVia(w, r)
+	if !ok {
 		s.infraAudit(s.who(r), r.Method+" "+r.URL.Path, "forbidden")
 		return nil, false
 	}
@@ -155,14 +156,14 @@ func (s *server) infraSecretsGate(w http.ResponseWriter, r *http.Request, needWr
 		writeError(w, http.StatusForbidden, "read_only", "editing the infra repository is switched off here")
 		return nil, false
 	}
-	who := s.who(r)
+	who := stampInfra(s.who(r), via)
 	if !s.o.Infra.Admins.Fresh(who, s.now()) {
 		s.infraAudit(who, r.Method+" "+r.URL.Path, "reauth_required")
 		writeError(w, http.StatusForbidden, "reauth_required", "sign in again to use the secrets",
 			"maxAgeSeconds", int64(s.o.Infra.Admins.WriteAge()/time.Second))
 		return nil, false
 	}
-	return s.stampInfra(who), true
+	return who, true
 }
 
 func (s *server) infraSecrets(w http.ResponseWriter, r *http.Request) {

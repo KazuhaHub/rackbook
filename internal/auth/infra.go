@@ -28,7 +28,7 @@ import (
 // Beside exact identities the list may hold at most one claim entry, group:<id>
 // or app-role:<value>, the syntax of auth.roles. It admits a person whose
 // OIDC session carries that group or app role (as the cookie keeps it,
-// capped), under the same pins, and only for claims_absolute after the
+// capped), under the same pins, and only for --infra-claims-absolute after the
 // sign-in (see Via). It is never read from the ledger either.
 type InfraAdmins struct {
 	flag     string // the flag this list came from, for messages
@@ -41,9 +41,11 @@ type InfraAdmins struct {
 
 	claimKind  string // roles.KindGroup or roles.KindAppRole; "" = no claim entry
 	claimValue string // the group id (lower case) or the app role value (as written)
-	// claimsAbsolute is how long after the sign-in the claim entry counts: the
-	// auth.session.claims_absolute the login runs with (0 = DefaultClaimsAbsolute).
+	// claimsAbsolute is how long after the sign-in the claim entry counts
+	// (--infra-claims-absolute; 0 = DefaultClaimsAbsolute). It comes from the
+	// deployment only, never from rackbook.yml, which others can edit.
 	claimsAbsolute time.Duration
+	entra          bool // the pinned issuer is Entra: a group: value must then be a GUID
 }
 
 // How an infra capability was granted, as Via reports it and the audit log records it
@@ -54,12 +56,17 @@ const (
 	InfraViaAppRole  = "app_role"
 )
 
-// DefaultClaimsAbsolute is how long a claim entry counts after the sign-in when no
-// configuration says otherwise (the default of auth.session.claims_absolute).
-const DefaultClaimsAbsolute = 24 * time.Hour
+// How long a claim entry counts after the sign-in: --infra-claims-absolute, default and
+// longest 24 hours, shortest one hour.
+const (
+	DefaultClaimsAbsolute = 24 * time.Hour
+	MinClaimsAbsolute     = time.Hour
+)
 
 // DefaultInfraWriteAge is how recent the sign-in must be for a write.
 const DefaultInfraWriteAge = 12 * time.Hour
+
+var guidFull = regexp.MustCompile(`(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 
 var guidRe = regexp.MustCompile(`(?i)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}`)
 
@@ -86,8 +93,13 @@ func (a *InfraAdmins) Pin(issuer, clientID, claim, tenant string, writeAge time.
 	if writeAge == 0 {
 		writeAge = DefaultInfraWriteAge
 	}
+	a.entra = false
 	if u, err := url.Parse(issuer); err == nil {
 		entra := u.Host == "login.microsoftonline.com" || u.Host == "sts.windows.net" || strings.HasSuffix(u.Host, ".b2clogin.com")
+		a.entra = entra
+		if entra && a.claimKind == roles.KindGroup && !guidFull.MatchString(a.claimValue) {
+			return fmt.Errorf("%s: group:%s is not a group object ID (a GUID): with an Entra issuer a group is named by its ID, because display names are not unique and people can often create groups; use the GUID, or better an app-role: entry", a.flagName(), a.claimValue)
+		}
 		if entra && tenant == "" {
 			return fmt.Errorf("--infra-oidc-tenant is required for an Entra issuer (the tid of the sign-in)")
 		}
@@ -166,14 +178,26 @@ func newInfraList(flag string, entries []string) (*InfraAdmins, error) {
 	return a, nil
 }
 
-// SetClaimsAbsolute tells the list how long, after a sign-in, its claim entry
-// counts: the auth.session.claims_absolute the login runs with, read once at start
-// like the login's own, so editing rackbook.yml cannot lengthen it. Without it the
-// default of that setting applies.
-func (a *InfraAdmins) SetClaimsAbsolute(d time.Duration) {
+// SetClaimsAbsolute sets how long, after a sign-in, the claim entry counts
+// (--infra-claims-absolute): from one to 24 hours, 0 meaning the default. It is a
+// deployment setting and nothing in rackbook.yml can change it.
+func (a *InfraAdmins) SetClaimsAbsolute(d time.Duration) error {
+	if d == 0 {
+		d = DefaultClaimsAbsolute
+	}
+	if d < MinClaimsAbsolute || d > DefaultClaimsAbsolute {
+		return fmt.Errorf("--infra-claims-absolute must be between %s and %s, not %s", MinClaimsAbsolute, DefaultClaimsAbsolute, d)
+	}
 	if a != nil {
 		a.claimsAbsolute = d
 	}
+	return nil
+}
+
+// WarnGroupNames is true when the list's claim entry is a group and the pinned issuer is not
+// Entra, so the group value is a name that may not be unique (server start warns).
+func (a *InfraAdmins) WarnGroupNames() bool {
+	return a != nil && a.claimKind == roles.KindGroup && !a.entra
 }
 
 // ClaimsAbsolute is how long after a sign-in the claim entry counts.
@@ -206,7 +230,7 @@ func (a *InfraAdmins) Allows(id *Identity) bool { return a.Via(id, time.Now()) !
 //
 // The claim entry counts only if the group or app role is in the session's
 // capped lists, so a claim that was dropped or cut (an overage) matches
-// nothing, and only for claims_absolute after the sign-in. Both are decided
+// nothing, and only for --infra-claims-absolute after the sign-in. Both are decided
 // here, on every request, from the signed cookie's values: nothing is stored
 // that an old cookie could replay. A listed identity wins and has no such limit.
 // A login named by its subject (identity claim sub) matches the claim entry
@@ -248,7 +272,7 @@ func (a *InfraAdmins) Via(id *Identity, now time.Time) string {
 }
 
 // ClaimEnds is when the claim entry stops counting for id's session: the sign-in
-// plus claims_absolute. Zero when the list has no claim entry or id has no sign-in time.
+// plus --infra-claims-absolute. Zero when the list has no claim entry or id has no sign-in time.
 func (a *InfraAdmins) ClaimEnds(id *Identity) time.Time {
 	if a == nil || a.claimKind == "" || id == nil || id.OIDCAt.IsZero() {
 		return time.Time{}

@@ -1,6 +1,7 @@
 package api_test
 
 import (
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -330,7 +331,11 @@ func TestInfraRouteClasses(t *testing.T) {
 		{"admin app role, other tenant", map[string]string{"X-User": claimU, "X-App-Roles": adminRole, "X-Tenant": "tenant-2"}},
 		{"admin app role, other client", map[string]string{"X-User": claimU, "X-App-Roles": adminRole, "X-Client": "other-app"}},
 		{"admin app role by passkey", map[string]string{"X-User": claimU, "X-App-Roles": adminRole, "X-Method": auth.MethodPasskey}},
+		{"claims cut at the cap (the value was past it)", map[string]string{"X-User": claimU, "X-Groups": fillers(40, "g"), "X-App-Roles": fillers(40, "r")}},
 		{"claims dropped by an overage", map[string]string{"X-User": claimU}},
+		{"API token with the claim values", map[string]string{"Authorization": "Bearer token", "X-Groups": auditGroup, "X-App-Roles": adminRole}},
+		{"OAuth grant with the claim values", map[string]string{"Authorization": "Bearer oauth", "X-Groups": auditGroup, "X-App-Roles": adminRole}},
+		{"MCPHub with the claim values", map[string]string{"Authorization": "Bearer mcphub", "X-Groups": auditGroup, "X-App-Roles": adminRole}},
 		{"neither", map[string]string{"X-User": neitherU}},
 		{"infra auditor by passkey", map[string]string{"X-User": auditorU, "X-Method": auth.MethodPasskey}},
 		{"infra auditor, other issuer", map[string]string{"X-User": auditorU, "X-Issuer": "https://evil.test"}},
@@ -469,4 +474,13 @@ func TestAuditorListReloads(t *testing.T) {
 	if code, m = meta("new@example.com"); code != 403 {
 		t.Fatalf("removed again: %d %v", code, m)
 	}
+}
+
+// fillers is n comma-separated values that match nothing.
+func fillers(n int, prefix string) string {
+	v := make([]string, n)
+	for i := range v {
+		v[i] = fmt.Sprintf("%s%02d", prefix, i)
+	}
+	return strings.Join(v, ",")
 }

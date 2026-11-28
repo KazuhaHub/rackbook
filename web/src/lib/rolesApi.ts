@@ -46,7 +46,7 @@ export type RolesView = {
   /** /infra administrators and auditors exist (they are set by the deployment, not here) */
   infra: boolean
   /** the one group or app role each /infra flag names ("group:<id>", "app-role:<value>"), when it names one */
-  infraClaims?: { admins?: string; auditors?: string }
+  infraClaims?: { admins?: string; auditors?: string; claimsAbsolute: number }
   you?: RolesCap
 }
 

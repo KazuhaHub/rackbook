@@ -202,7 +202,9 @@ func TestInfraIdentityEntryStillWorksBesideAClaimEntry(t *testing.T) {
 
 func TestInfraClaimEntryLapsesAtClaimsAbsolute(t *testing.T) {
 	l := claimList(t, "alice@x.org", "group:"+cGroup)
-	l.SetClaimsAbsolute(2 * time.Hour)
+	if err := l.SetClaimsAbsolute(2 * time.Hour); err != nil {
+		t.Fatal(err)
+	}
 	g := []string{cGroup}
 	claim := func(age time.Duration) string { return l.Via(session("bob@x.org", age, g, nil), cNow) }
 	if claim(time.Hour) != InfraViaGroup || claim(2*time.Hour-time.Second) != InfraViaGroup {
@@ -283,5 +285,59 @@ func TestInfraOverageIsNamedOnlyWhenItCostSomething(t *testing.T) {
 	// only the list a claim entry needs is named
 	if got := (&InfraAccess{Admins: claimList(t, "group:"+cGroup)}).Overage(none, cNow, false, true); got != "" {
 		t.Errorf("roles were cut but the entry is a group: %q", got)
+	}
+}
+
+func TestInfraClaimsAbsoluteIsOneToTwentyFourHours(t *testing.T) {
+	l := claimList(t, "group:"+cGroup)
+	for _, d := range []time.Duration{time.Hour, 6 * time.Hour, 24 * time.Hour, 0} {
+		if err := l.SetClaimsAbsolute(d); err != nil {
+			t.Errorf("%s: %v", d, err)
+		}
+	}
+	if l.ClaimsAbsolute() != DefaultClaimsAbsolute {
+		t.Fatalf("0 is the default: %s", l.ClaimsAbsolute())
+	}
+	for _, d := range []time.Duration{-time.Hour, time.Second, 59 * time.Minute, 24*time.Hour + time.Second, 7 * 24 * time.Hour} {
+		if err := l.SetClaimsAbsolute(d); err == nil || !strings.Contains(err.Error(), "--infra-claims-absolute") {
+			t.Errorf("%s: %v", d, err)
+		}
+	}
+	if l.ClaimsAbsolute() != DefaultClaimsAbsolute {
+		t.Fatal("a refused value changes nothing")
+	}
+}
+
+func TestInfraGroupOnEntraIsAGUID(t *testing.T) {
+	const entra = "https://login.microsoftonline.com/e72914d3-3d19-486e-be11-15c69540e02a/v2.0"
+	const tid = "e72914d3-3d19-486e-be11-15c69540e02a"
+	for entry, ok := range map[string]bool{
+		"group:" + cGroup: true, "group:Rackbook Infra": false, "group:" + cGroup + "x": false, "group:{" + cGroup + "}": false,
+		"app-role:Rackbook.InfraAdmin": true, "a@x.org": true,
+	} {
+		for _, mk := range []func([]string) (*InfraAdmins, error){NewInfraAdmins, NewInfraAuditors} {
+			a, err := mk([]string{entry})
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = a.Pin(entra, cCli, "", tid, 0)
+			if (err == nil) != ok {
+				t.Errorf("%s: %v", entry, err)
+			}
+			if err != nil && !strings.Contains(err.Error(), "GUID") {
+				t.Errorf("%s: %v", entry, err)
+			}
+		}
+	}
+	// other issuers: any group value, and a warning that names may not be unique
+	g, _ := NewInfraAdmins([]string{"group:ops-team"})
+	if err := g.Pin(cIss, cCli, "", cTid, 0); err != nil || !g.WarnGroupNames() {
+		t.Fatalf("%v %v", err, g.WarnGroupNames())
+	}
+	if e, _ := NewInfraAdmins([]string{"group:" + cGroup}); e.Pin(entra, cCli, "", tid, 0) != nil || e.WarnGroupNames() {
+		t.Fatal("a GUID on Entra: no warning")
+	}
+	if r, _ := NewInfraAdmins([]string{"app-role:R"}); r.Pin(cIss, cCli, "", cTid, 0) != nil || r.WarnGroupNames() {
+		t.Fatal("an app role never warns")
 	}
 }

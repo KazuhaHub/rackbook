@@ -92,12 +92,13 @@ RACKBOOK_GITHUB_TOKEN.`,
 	f.String("infra-oidc-client-id", "", "client ID of the sign-in application, pinned like --infra-oidc-issuer; needs --infra-repo")
 	f.String("infra-oidc-identity-claim", "preferred_username", "the ID token claim the administrators' identities are taken from (\"sub\" for subject identities); /infra refuses a session whose identity came from another claim, so auth.oidc.identity_claim in rackbook.yml cannot change who is an administrator; needs --infra-repo")
 	f.String("infra-oidc-tenant", "", "the tenant (tid claim) the administrators sign in from; required for an Entra issuer, and a tenant GUID in --infra-oidc-issuer must equal it; /infra refuses a session from another tenant (allowed_tenants in rackbook.yml is not trusted); needs --infra-repo")
+	f.Duration("infra-claims-absolute", auth.DefaultClaimsAbsolute, "how long after a sign-in the group: or app-role: entry of --infra-admins or --infra-auditors counts (1h to 24h); after that /infra needs a new sign-in. Set here, never read from rackbook.yml")
 	f.Bool("infra-write", false, "turn on the infra editors: one commit per edit on --infra-branch (needs --github-app-id with Contents: write on that repository, and --infra-repo)")
 	f.String("sops-age-key-file", "", "age identity file Rackbook edits the SOPS secrets of --infra-repo with (its own key, a recipient of every file; needs --infra-write, and the sops and age-keygen binaries); empty = the secrets editor is off")
 	f.Duration("infra-write-max-age", auth.DefaultInfraWriteAge, "how recent an administrator's sign-in must be for an infra write (older: sign in again)")
 	f.String("infra-managed-group", "managed", `inventory group whose hosts must each have host_vars and a SOPS file, and that holds every host of every group ("" = no such check)`)
 	f.String("infra-agent-group", "infra_agent", `inventory group that must list exactly the managed hosts, checked only when the inventory has it ("" = no such check)`)
-	f.StringSlice("infra-admins", nil, "exact identities (comma-separated) who may see /infra, and at most one group:<id> or app-role:<value> entry (the syntax of auth.roles; it needs the --infra-oidc-issuer, -client-id and -tenant pins, and counts for auth.session.claims_absolute after the sign-in); they must sign in with --auth oidc (API tokens, MCP and OAuth tokens never count; not read from rackbook.yml)")
+	f.StringSlice("infra-admins", nil, "exact identities (comma-separated) who may see /infra, and at most one group:<id> or app-role:<value> entry (the syntax of auth.roles; it needs the --infra-oidc-issuer, -client-id and -tenant pins, and counts for --infra-claims-absolute after the sign-in); they must sign in with --auth oidc (API tokens, MCP and OAuth tokens never count; not read from rackbook.yml)")
 	f.StringSlice("infra-auditors", nil, "exact identities (comma-separated) who may read /infra but not its secrets and may change nothing; the same rules as --infra-admins, with its own single group:/app-role: entry, independent of the administrators' (OIDC login sessions only, the identity provider pinned by the --infra-oidc-* flags; needs --infra-admins)")
 	f.String("hub-status-file", "", "status.json of the infra hub (infra-hub status -o json), shown under /infra; kept fresh by a timer outside Rackbook (needs --infra-repo)")
 	f.StringSlice("trusted-proxy", nil, "CIDRs (or addresses) of reverse proxies whose CF-Connecting-IP header is believed when rate-limiting failed API-token attempts")
@@ -413,7 +414,7 @@ func newInfra(ctx context.Context, f *pflag.FlagSet, cfg *config.Config, mode st
 	status, _ := f.GetString("hub-status-file")
 	key, _ := f.GetString("infra-ssh-key")
 	if dir == "" {
-		for _, name := range []string{"infra-admins", "infra-auditors", "hub-status-file", "infra-ssh-key", "infra-oidc-issuer", "infra-oidc-client-id", "infra-oidc-identity-claim", "infra-oidc-tenant", "infra-write", "sops-age-key-file", "infra-write-max-age", "infra-managed-group", "infra-agent-group"} {
+		for _, name := range []string{"infra-admins", "infra-auditors", "hub-status-file", "infra-ssh-key", "infra-oidc-issuer", "infra-oidc-client-id", "infra-oidc-identity-claim", "infra-oidc-tenant", "infra-write", "sops-age-key-file", "infra-write-max-age", "infra-claims-absolute", "infra-managed-group", "infra-agent-group"} {
 			if f.Changed(name) {
 				return nil, fmt.Errorf("--%s needs --infra-repo", name)
 			}
@@ -435,8 +436,11 @@ func newInfra(ctx context.Context, f *pflag.FlagSet, cfg *config.Config, mode st
 	if err := ia.Pin(issuer, clientID, claim, tenant, maxAge); err != nil {
 		return nil, err
 	}
-	// a claim entry lapses claims_absolute after the sign-in, the value the login itself runs with
-	ia.SetClaimsAbsolute(cfg.Auth.Session.ClaimsAbsoluteOrDefault())
+	// a claim entry lapses this long after the sign-in: a deployment flag, never rackbook.yml
+	claimsAbs, _ := f.GetDuration("infra-claims-absolute")
+	if err := ia.SetClaimsAbsolute(claimsAbs); err != nil {
+		return nil, err
+	}
 	var infraAuditors *auth.InfraAdmins
 	if f.Changed("infra-auditors") {
 		auditors, _ := f.GetStringSlice("infra-auditors")
@@ -447,7 +451,17 @@ func newInfra(ctx context.Context, f *pflag.FlagSet, cfg *config.Config, mode st
 		if err := infraAuditors.Pin(issuer, clientID, claim, tenant, maxAge); err != nil {
 			return nil, err
 		}
-		infraAuditors.SetClaimsAbsolute(cfg.Auth.Session.ClaimsAbsoluteOrDefault())
+		if err := infraAuditors.SetClaimsAbsolute(claimsAbs); err != nil {
+			return nil, err
+		}
+	}
+	for _, l := range []struct {
+		flag string
+		list *auth.InfraAdmins
+	}{{"--infra-admins", ia}, {"--infra-auditors", infraAuditors}} {
+		if l.list.WarnGroupNames() {
+			logger.Warn(l.flag+" names a group: this issuer is not Entra, so a group name may not be unique and people may be able to create a group with it; prefer an app-role: entry", "entry", l.list.ClaimEntry())
+		}
 	}
 	li := cfg.Auth.Login.OIDC
 	liClaim, _ := li.ClaimsOrDefault()

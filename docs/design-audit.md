@@ -676,7 +676,7 @@ claim lists, as the cookie keeps them, hold the value. Never for tokens, OAuth o
 Access or local accounts; a subject login (`oidc:` ids) never matches a claim entry (as in `auth.roles`). A dropped or cut list
 matches nothing (fail closed).
 
-**Lifetime: only the infra capability lapses.** The entry counts for `claims_absolute` after the sign-in (`OIDCAt`, in the signed
+**Lifetime: only the infra capability lapses.** The entry counts for `--infra-claims-absolute` (1h to 24h, default 24h) after the sign-in (`OIDCAt`, in the signed
 cookie); after that `/infra` answers `403` while the console session goes on. A named identity does not lapse, and wins when both
 apply. This is simpler than ending the whole session: the login service stays unaware of the infra flags, and a person who holds
 their ledger role by name keeps their session. The decision is per request from the cookie and the clock, so a replayed cookie
@@ -690,9 +690,10 @@ it needs, `infra_overage` (`groups`, `app_roles`, or both). Infra commits and in
 comes through a group or app role and when it lapses; `GET /api/admin/roles` has `infraClaims` for the Roles tab note; zh-CN,
 zh-TW and en-US; mock `MOCK_INFRA_VIA` and `MOCK_INFRA_CLAIMS`.
 
-**Deviations.** (1) `claims_absolute` for `/infra` is read once at start from the config, as the login's own is, not live:
-editing `rackbook.yml` cannot lengthen it. (2) The account page shows the infra access only for a group or app role, not for a
-named identity. (3) Auditors and administrators share one lifetime setting. (4) The claim entry is also refused when the tenant pin is
+**Deviations.** (1) The lifetime is a deploy flag, `--infra-claims-absolute`, not the ledger's `auth.session.claims_absolute`: a
+first version read the ledger's value at start, which let a ledger administrator lengthen root access after a restart. Nothing in
+`rackbook.yml` reaches it. (1a) On an Entra issuer a `group:` value must be a GUID; elsewhere a start warning recommends app roles.
+(1b) `infra_*` fields on events are given only to infra administrators and auditors. (2) The account page shows the capability in force (name, group or app role), with a lapse only for a claim; an administrator's line supersedes the auditor's. (3) Auditors and administrators share one lifetime setting. (4) The claim entry is also refused when the tenant pin is
 missing for a non-Entra issuer (the brief's "all pins set"); named identities still need no tenant there. (5) The infra repository
 and its deployment were not touched; the deploy example is in the README only.
 

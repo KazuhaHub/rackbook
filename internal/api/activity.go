@@ -168,7 +168,9 @@ func commitItems(area string, src int, cs []gitstore.ActivityCommit, showState b
 	return out
 }
 
-func eventItems(es []audit.Event, showAddr bool) []*activityItem {
+// showInfra says the caller is an infra administrator or auditor: only they may see how anyone is one (infra_via
+// and the rest), or the list of infra administrators would reach every ledger administrator and auditor.
+func eventItems(es []audit.Event, showAddr, showInfra bool) []*activityItem {
 	out := make([]*activityItem, 0, len(es))
 	for _, e := range es {
 		area := areaAudit
@@ -177,8 +179,11 @@ func eventItems(es []audit.Event, showAddr bool) []*activityItem {
 		}
 		it := &activityItem{Area: area, Kind: e.Event, Event: e.Event, Seq: e.Seq, Identity: e.Identity, Name: e.Name, Method: e.Method,
 			Reason: e.Reason, Code: e.Code, Role: e.Role, Outcome: e.Outcome, Action: e.Action, Host: e.Host, Files: e.Files,
-			Groups: e.Groups, AppRoles: e.AppRoles, InfraVia: e.InfraVia, InfraAuditorVia: e.InfraAuditorVia, InfraOverage: e.InfraOverage, From: e.From, To: e.To, AuditorFrom: e.AuditorFrom, AuditorTo: e.AuditorTo, Cause: e.Cause,
+			Groups: e.Groups, AppRoles: e.AppRoles, From: e.From, To: e.To, AuditorFrom: e.AuditorFrom, AuditorTo: e.AuditorTo, Cause: e.Cause,
 			at: e.Time.UTC().Truncate(time.Second), src: 2}
+		if showInfra {
+			it.InfraVia, it.InfraAuditorVia, it.InfraOverage = e.InfraVia, e.InfraAuditorVia, e.InfraOverage
+		}
 		for _, d := range e.Detail {
 			if v, ok := strings.CutPrefix(d, "token:"); ok {
 				it.Token = v

@@ -542,7 +542,7 @@ export function mockApi(root: string): Plugin {
       version: rolesVersion(roleLists), loads: !rolesDegraded, ...(rolesDegraded ? { problem: 'rackbook.yml: yaml: line 12: did not find expected key' } : {}),
       explicit: true, roles: { admin: a.admin, editor: a.editor, viewer: a.viewer }, auditors: a.auditors, file: 'rackbook.yml',
       writeMode: writeModePR ? 'pr' : 'push', readOnly, sso: true, infra: true,
-      ...(infraClaims ? { infraClaims: { admins: 'app-role:Rackbook.InfraAdmin', auditors: `group:${mockGroup}` } } : {}),
+      ...(infraClaims ? { infraClaims: { admins: 'app-role:Rackbook.InfraAdmin', auditors: `group:${mockGroup}`, claimsAbsolute: 86400 } } : {}),
       authMode: process.env.MOCK_AUTH_MODE ?? 'oidc', editors: (process.env.MOCK_LEGACY_EDITORS ?? '').split(',').map((x) => x.trim()).filter(Boolean), you: rolesCap(roleLists),
     }
   }

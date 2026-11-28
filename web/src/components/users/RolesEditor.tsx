@@ -443,9 +443,8 @@ function Editor({ view, refetch }: { view: RolesView; refetch: () => Promise<unk
           </p>
           {(view.infraClaims?.admins || view.infraClaims?.auditors) && (
             <p className="pl-5.5">
-              {view.infraClaims.admins && <>{R.infraClaimAdmins(view.infraClaims.admins)} </>}
-              {view.infraClaims.auditors && <>{R.infraClaimAuditors(view.infraClaims.auditors)} </>}
-              {R.infraClaimLapse}
+              {view.infraClaims.admins && <>{R.infraClaimAdmins(view.infraClaims.admins, Math.max(1, Math.round(view.infraClaims.claimsAbsolute / 3600)))} </>}
+              {view.infraClaims.auditors && <>{R.infraClaimAuditors(view.infraClaims.auditors, Math.max(1, Math.round(view.infraClaims.claimsAbsolute / 3600)))}</>}
             </p>
           )}
         </div>

@@ -167,7 +167,7 @@ func (s *server) rolesView(r *http.Request) map[string]any {
 	}
 	if s.o.Infra != nil {
 		// the one group or app role each of the two flags names, if any ("group:<id>", "app-role:<value>")
-		claims := map[string]string{}
+		claims := map[string]any{}
 		if e := s.o.Infra.Admins.ClaimEntry(); e != "" {
 			claims["admins"] = e
 		}
@@ -175,6 +175,8 @@ func (s *server) rolesView(r *http.Request) map[string]any {
 			claims["auditors"] = e
 		}
 		if len(claims) > 0 {
+			// how long after a sign-in the entry counts (--infra-claims-absolute), in seconds
+			claims["claimsAbsolute"] = int(s.o.Infra.Admins.ClaimsAbsolute().Seconds())
 			out["infraClaims"] = claims
 		}
 	}

@@ -72,7 +72,7 @@ func (s *server) canInfraAdmin(r *http.Request) bool {
 }
 
 // infraVia is how who is an infra administrator now (identity, group or app_role),
-// or "" when they are not. The claim entry lapses claims_absolute after the sign-in:
+// or "" when they are not. The claim entry lapses --infra-claims-absolute after the sign-in:
 // it is decided here on every request from the signed session, so a replayed cookie
 // gets no more than the original did.
 func (s *server) infraVia(who *auth.Identity) string {
@@ -82,14 +82,25 @@ func (s *server) infraVia(who *auth.Identity) string {
 	return s.o.Infra.Admins.Via(who, s.now())
 }
 
-// stampInfra is a copy of who that carries how they are an infra administrator, for the
-// audit trail of what they do next.
-func (s *server) stampInfra(who *auth.Identity) *auth.Identity {
+// recordedVia is the way the gate admitted who when it stamped them, else (a refusal) what
+// they are now.
+func (s *server) recordedVia(who *auth.Identity) string {
+	if who != nil && who.InfraVia != "" {
+		return who.InfraVia
+	}
+	return s.infraVia(who)
+}
+
+// stampInfra is a copy of who that carries the way the gate admitted them (via, as decided
+// once by infraAdminVia), for the audit trail of what they do next. It is not evaluated
+// again, so the record says what the gate decided: a write admitted just before the claim
+// lapses runs to completion, and is recorded as admitted.
+func stampInfra(who *auth.Identity, via string) *auth.Identity {
 	if who == nil {
 		return nil
 	}
 	c := *who
-	c.InfraVia = s.infraVia(who)
+	c.InfraVia = via
 	return &c
 }
 
@@ -101,11 +112,19 @@ func (s *server) canInfra(r *http.Request) bool {
 
 // infraAdmin gates the secrets and every write: infra administrators only.
 func (s *server) infraAdmin(w http.ResponseWriter, r *http.Request) bool {
-	if !s.canInfraAdmin(r) {
+	_, ok := s.infraAdminVia(w, r)
+	return ok
+}
+
+// infraAdminVia is infraAdmin that also says how the caller was admitted (identity,
+// group or app_role), decided once, at the time of the check.
+func (s *server) infraAdminVia(w http.ResponseWriter, r *http.Request) (string, bool) {
+	via := s.infraVia(s.who(r))
+	if via == "" {
 		writeError(w, http.StatusForbidden, "forbidden", "this is for the infra administrators who signed in with the console login")
-		return false
+		return "", false
 	}
-	return true
+	return via, true
 }
 
 // infraReader gates the read routes: infra administrators and infra auditors.

@@ -59,7 +59,7 @@ func TestInfraAdminByAppRoleSeesAndEdits(t *testing.T) {
 	if code, out, _ := e.do(t, "POST", path, body, admin); code != 200 {
 		t.Fatalf("a fresh administrator by app role: %d %v", code, out)
 	}
-	// the sign-in is older than the write age (12 hours) but inside claims_absolute: the read stays, the write asks to sign in again
+	// the sign-in is older than the write age (12 hours) but inside --infra-claims-absolute: the read stays, the write asks to sign in again
 	old := claimAs("X-App-Roles", claimRole, "X-Signed-In-Age", "50000")
 	if code, _, _ := e.do(t, "GET", "/api/infra/hosts", nil, old); code != 200 {
 		t.Fatalf("read at 14 hours: %d", code)
@@ -69,7 +69,7 @@ func TestInfraAdminByAppRoleSeesAndEdits(t *testing.T) {
 	}
 }
 
-// Past claims_absolute the claim no longer counts: the ledger session may go on, the infra
+// Past --infra-claims-absolute the claim no longer counts: the ledger session may go on, the infra
 // capability does not, and a listed identity is not touched.
 func TestInfraClaimLapsesButTheIdentityDoesNot(t *testing.T) {
 	t.Parallel()
@@ -97,7 +97,7 @@ func TestInfraClaimLapsesButTheIdentityDoesNot(t *testing.T) {
 	}
 	e.now = e.now.Add(25 * time.Hour)
 	if code, _, _ := e.do(t, "GET", "/api/infra/hosts", nil, map[string]string{"X-User": claimUser, "X-App-Roles": claimRole, "X-Signed-In-Age": "90060"}); code != 403 {
-		t.Fatalf("replayed after claims_absolute: %d", code)
+		t.Fatalf("replayed after the claim lifetime: %d", code)
 	}
 }
 

@@ -27,7 +27,9 @@ func infraLists(t *testing.T) func(e *env) *auth.InfraAccess {
 			if err := l.Pin(e.idpS.URL, clientID, "", tenant, 0); err != nil {
 				t.Fatal(err)
 			}
-			l.SetClaimsAbsolute(2 * time.Hour)
+			if err := l.SetClaimsAbsolute(2 * time.Hour); err != nil {
+				t.Fatal(err)
+			}
 		}
 		return &auth.InfraAccess{Admins: admins, Auditors: auditors}
 	}
@@ -52,8 +54,8 @@ func TestLoginEventSaysHowInfraAdminCame(t *testing.T) {
 	if ev := e.kinds("login")[0]; ev.InfraVia != auth.InfraViaIdentity || ev.InfraAuditorVia != "" || ev.InfraOverage != "" {
 		t.Fatalf("%+v", ev)
 	}
-	if acc := account(t, b); acc["infraFrom"] != nil {
-		t.Fatalf("an identity is not shown as a group or role: %v", acc)
+	if acc := account(t, b); acc["infraFrom"] != "identity" || acc["infraEnds"] != nil || acc["infraClaimsAbsolute"] != nil {
+		t.Fatalf("a named administrator has no lapse: %v", acc)
 	}
 
 	// by group
@@ -85,7 +87,7 @@ func TestLoginEventSaysHowInfraAdminCame(t *testing.T) {
 	if ev := e.kinds("login")[2]; ev.InfraVia != "" || ev.InfraAuditorVia != auth.InfraViaAppRole {
 		t.Fatalf("%+v", ev)
 	}
-	if acc := account(t, b); acc["infraFrom"] != "" || acc["infraAuditorFrom"] != "app_role" {
+	if acc := account(t, b); acc["infraFrom"] != "" || acc["infraAuditorFrom"] != "app_role" || acc["infraEnds"] == nil {
 		t.Fatalf("%v", acc)
 	}
 
@@ -135,5 +137,42 @@ func TestLoginEventRecordsAnOverageThatCostInfra(t *testing.T) {
 	e.browser().login("admin", "")
 	if ev := e.kinds("login")[1]; ev.Groups != "overage" || ev.InfraVia != auth.InfraViaIdentity || ev.InfraOverage != "" {
 		t.Fatalf("%+v", ev)
+	}
+}
+
+// An administrator by name who also carries the auditor app role is shown as the administrator by
+// name: no lapse, and no auditor line (superseded).
+func TestAccountShowsTheInfraCapabilityInForce(t *testing.T) {
+	roles := "  roles:\n    admin: [kazuha@kazuha.org]\n    viewer: [\"*@kazuha.org\"]\n"
+	e := newEnv(t, options{nogit: true, roles: roles, infra: infraLists(t)})
+	e.idp.Users["admin"]["roles"] = []string{"Rackbook.InfraAuditor"}
+	b := e.browser()
+	b.login("admin", "")
+	acc := account(t, b)
+	if acc["infraFrom"] != "identity" || acc["infraAuditorFrom"] != "" || acc["infraEnds"] != nil {
+		t.Fatalf("%v", acc)
+	}
+	// an administrator by group who is also an auditor by app role: the administrator's lapse
+	e.idp.Users["editor"]["groups"] = []string{infraGroup}
+	e.idp.Users["editor"]["roles"] = []string{"Rackbook.InfraAuditor"}
+	b = e.browser()
+	b.login("editor", "")
+	if acc := account(t, b); acc["infraFrom"] != "group" || acc["infraAuditorFrom"] != "" || acc["infraEnds"] == nil {
+		t.Fatalf("%v", acc)
+	}
+}
+
+// What rackbook.yml says about session lifetimes does not change how long the infra claim entry counts.
+func TestInfraLapseIgnoresRackbookYml(t *testing.T) {
+	e := newEnv(t, options{nogit: true, roles: "  roles:\n    viewer: [\"*@kazuha.org\"]\n", session: "    claims_absolute: 7d\n", infra: infraLists(t)})
+	e.idp.Users["editor"]["groups"] = []string{infraGroup}
+	b := e.browser()
+	b.login("editor", "")
+	if acc := account(t, b); acc["infraFrom"] != "group" || acc["infraClaimsAbsolute"] != float64(7200) {
+		t.Fatalf("%v", acc)
+	}
+	e.clk.Advance(3 * time.Hour)
+	if acc := account(t, b); acc["infraFrom"] != nil {
+		t.Fatalf("the flag's 2 hours apply, not the file's 7 days: %v", acc)
 	}
 }
