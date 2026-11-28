@@ -644,14 +644,6 @@ func TestPastTheBudgetTimingFollowsARealCheck(t *testing.T) {
 	}
 }
 
-func sqrt(x float64) float64 {
-	z := x / 2
-	for i := 0; i < 40; i++ {
-		z = (z + x/z) / 2
-	}
-	return z
-}
-
 func TestFloodCeiling(t *testing.T) {
 	e := newEnv(t, envOpts{auth: "  throttle: {max: 1000}\n"})
 	b := e.browser(addrA)
