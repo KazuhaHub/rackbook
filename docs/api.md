@@ -309,6 +309,61 @@ Bearer tokens are accepted on `/mcp`, `/api/c/…`, `/api/meta`, `/api/check`, `
 invalid_token` (expired, revoked or unknown) and `429 rate_limited` with
 `Retry-After` after repeated failures from one address.
 
+### Roles (admin)
+
+The role editor of the console (Users → Roles). Administrators on a console session only: `403 forbidden` for
+everyone else (an auditor or an editor included) and for any credential: an API token (the token layer reaches only
+the paths listed above, and the handler refuses a token identity too), and an OAuth or MCPHub access token.
+`POST` is subject to the usual write gates: `403 cross_site` for a cross-site request, `415` for a body that is not
+JSON, `403 read_only` in `--read-only` mode (the preview works there; it writes nothing). A change is a commit to
+`rackbook.yml` through the normal write path (the `Edited-by` and `Edited-via` trailers, the audit `commit` event),
+or, with `write.mode: pr`, a pull request. Design: `docs/design-audit.md`, section 4.
+
+- `GET /api/admin/roles` → `{version, loads, problem?, explicit, roles: {admin, editor, viewer}, auditors, file,
+  writeMode: "push"|"pr", readOnly, sso, infra, you}`. Each list is `[{value, kind, notes}]`: `kind` is
+  `identity`, `domain` (`*@domain`), `any` (`*`), `group`, `app-role`, `oidc`, `mcphub`, `oauth` or `local`
+  (`""` for an entry that does not parse); `notes` are `{level: "error"|"warning", code, message, also?}`: the
+  codes are `empty`, `too_long`, `control_chars`, `invalid` (the parser's message), `wildcard_admin`, `no_sso`,
+  `unknown_issuer`, `no_mcphub`, `local_unavailable`, `also_in` (`also` names the other list), `duplicate`.
+  `version` is a hash of the four lists (not of the file: an unrelated change of `rackbook.yml` leaves it as it
+  was), `loads` is false when the latest `rackbook.yml` does not load (the lists are then those of the last file
+  that did, `problem` says why, and nothing can be saved), `explicit` is false when there is no `auth.roles` block,
+  `sso` is true when `auth.mode` is `oidc`, `infra` says `/infra` is on (its administrators and auditors are set
+  by deployment flags, never here), `you` is the caller's own `{role, auditor, roleFrom, auditorFrom, byIdentity,
+  auditorByIdentity}` (`roleFrom` is a list of `identity`, `group` and `app-role`; `byIdentity` is the role that
+  remains when only entries that name the caller count).
+- `POST /api/admin/roles/preview` `{version, roles: {admin, editor, viewer}, auditors}` (all four lists are
+  required, complete, `[]` for none; entries are trimmed) → `{version, changed, file, diff, subject, entries,
+  warnings: [{list, entry, note}], you: {now, after}, pullRequest, readOnly, refusal?}`. `diff` is the unified
+  diff of `rackbook.yml` that saving would make (made with `yamledit`: comments, key order and layout are kept; empty
+  when nothing changes or an entry is invalid), `subject` the default commit subject, `entries` the new lists
+  described as above, `you.now` and `you.after` the caller's capability before and after, evaluated on their own
+  session (identity and the claims of the sign-in), `pullRequest` whether a save would open a pull request.
+  `warnings` are the notes of the added entries, plus `never_seen` (an added identity or `*@domain` entry that
+  nobody in `audit/identities.json` matches). A change a save would refuse is answered `200` with `refusal:
+  {code, message, entries?}` so that the page can show everything; `409 conflict` (stale `version`),
+  `409 config_degraded`, `400 bad_request` and `422 unsupported` are errors, as below.
+- `POST /api/admin/roles` `{version, roles, auditors, message?}` → `200 {changed, commit, pullRequest, subject, file,
+  version, roles, auditors}`; in pull request mode `{changed, pullRequest: true, pullRequestUrl, subject, file}`
+  and nothing changes until it is merged. `message` replaces the default subject (`roles: admin +a@x, editor -b@x`)
+  (one line, at most 200 characters). Nothing is written when nothing changes (`changed: false`). Refusals, each
+  with `error` and `message`:
+
+| Status | `error` | When |
+|---|---|---|
+| 400 | `bad_request` | a list is missing or null, an unknown key, `version` missing, invalid JSON |
+| 409 | `conflict` | the lists changed since `version`; `current: {version, roles, auditors}` (described entries) |
+| 409 | `config_degraded` | the latest `rackbook.yml` does not load (`problem`). In a deployment with the viewer cap on a broken config the admin gate answers first |
+| 422 | `invalid_entries` | an entry the parser of `rackbook check` refuses, an empty one, one with a control character or over 256 bytes, or more than 1000 entries; `entries` describes each |
+| 422 | `last_admin` | no `admin` entry would remain |
+| 422 | `self_lockout` | the caller would no longer be an admin after the change |
+| 422 | `self_lockout_claims` | the caller would be an admin only through `group:` or `app-role:` entries (an entry that names them is required: an exact identity, `*@domain`, `oidc:` or `*`) |
+| 422 | `no_roles_block` | `rackbook.yml` has no `auth.roles` |
+| 422 | `unsupported` | the layout of a list cannot be edited in place (a flow list over several lines, an alias, a non-string item); `message` names it |
+| 422 | `secret_detected` | as for records |
+| 403 | `read_only`, `forbidden`, `cross_site` | the gates above |
+| 503 | `config_error`, `repo_dirty`, `repo_diverged`, `pull_request_unavailable` | the write path, as for records |
+
 ## Login (`--auth oidc`)
 
 Only with the built-in login (see the README and design-v0.2.md section 2).

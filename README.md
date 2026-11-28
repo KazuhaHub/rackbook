@@ -253,6 +253,58 @@ current config on every request, like the roles, so a change pulled from Git app
 
 For `/infra` the auditors are a separate deploy flag, `--infra-auditors` (see below).
 
+#### Editing roles in the console
+
+An administrator edits the lists in **Users → Roles**: the three role lists and `auth.auditors` as lists of
+entries, each with its kind (a person, `*@domain`, everyone, `group:`, `app-role:`, `oidc:`, `mcphub:`,
+`oauth:`) and a short explanation. Add an entry with a kind and a value (the form checks it as you type, with
+the parser `rackbook check` uses), remove it, or move it between the three roles. **Preview changes** shows the
+unified diff of `rackbook.yml`, what **you** would be afterwards (*Admin (by name)*), and warnings; **Save**
+then makes the change, with an optional commit message. The page is for administrators on a console session
+only: it is hidden for anyone else and the server answers `403` regardless (an auditor or an editor included).
+
+- **One commit, as any other edit.** Saving is a single commit to `rackbook.yml` through the normal write path,
+  with the `Edited-by` and `Edited-via` trailers and the audit `commit` event; the subject is
+  `roles: admin +alice@x, editor -bob@x` unless you write your own. In `write.mode: pr` it opens a pull request
+  instead (the response and the page say so, with the link) and nothing changes until it is merged; with
+  `--read-only` the page can preview but not save. Activity shows the commit like any other change to
+  `rackbook.yml`, and the `role_changed` events that follow are the lazy ones described
+  [below](#roles-from-the-identity-providers-claims): they are written at each affected person's next request.
+- **Comments and layout stay.** The lists are changed in place (`internal/yamledit`): only the lines of the
+  entries that change are touched, the comments, the order of the keys and the style of each list (a block
+  list, or `[a, b]` on one line) stay. A list that ends up empty is written as `key: []`; a key that is missing
+  (`viewer`, `auditors`) is added at the end of its mapping. A layout the console cannot edit safely (a flow list
+  spread over several lines, an anchor or alias, a list whose items are not plain strings) is refused with
+  `422 unsupported` and the name of the list: edit that one by hand. Entries that stay keep their order; new ones
+  go at the end.
+- **What it refuses.** At least one `admin` entry must remain (`last_admin`). **You must still be an admin
+  after the change, and an admin through an entry that names you**: the editor evaluates your own session (your
+  identity and the claims of your sign-in) against the new lists, and refuses with `self_lockout` when you would no
+  longer be an admin (you removed or downgraded your own entry) and with `self_lockout_claims` when you would be an
+  admin only through a `group:` or `app-role:` entry. An entry that names you is an exact identity, `*@domain`,
+  `oidc:` or `*`: those are what an API token of yours and a session past `claims_absolute` are evaluated by
+  (see [API tokens](#api-tokens)), so an admin who is one only by group would be locked out there. One consequence:
+  an admin by group alone can read the page but can save only a change that also adds their own name to `admin`. Invalid
+  entries (`invalid_entries`: the parser's messages, plus no control characters and at most 256 bytes an entry)
+  and a `rackbook.yml` that does not load (`config_degraded`; the lists shown are those of the last file that
+  loaded) are refused too. A stale draft is a `409 conflict`: the page offers to reload.
+- **Version.** `version` is a hash of the four lists, not of the file, so an unrelated edit of `rackbook.yml`
+  (a module setting, a comment) never makes a draft stale, while a change to a list does. The edit is made on the
+  newest tip: if the remote moved meanwhile it is made again there, and checked against the lists as they are
+  then.
+- **Warnings.** An entry that can match nobody here (`group:`, `app-role:` or `oidc:` without single sign-on, an
+  `oauth:` alias that is not in `auth.mcp.trusted_issuers`, `mcphub:` without an MCPHub issuer, `local:`), an
+  administrator wildcard (`*` or `*@domain` in `admin`), an entry also in another role (the highest wins), and, in
+  the preview, an added identity or `*@domain` entry that nobody in `audit/identities.json` matches, which is
+  usually a typo. Group and app role entries cannot be checked: their claims are not kept.
+- **Tokens and grants never reach it.** The API token layer reaches only the record paths, and the handler also
+  refuses a token, an OAuth or an MCPHub credential, so only a person's console session can edit roles.
+- **`/infra`.** Its administrators and auditors come from deployment flags (`--infra-admins`,
+  `--infra-auditors`), not `rackbook.yml`, so the editor does not show or touch them (the page says so).
+
+Local accounts ([design](docs/design-local-accounts.md), not built) will appear as `local:<username>` entries;
+the editor already labels such an entry and warns that it matches nobody yet.
+
 ### Any OAuth provider: MCP and MCPHub
 
 `/mcp` is an OAuth 2.0 **protected resource** (RFC 9728). Users sign in to an
