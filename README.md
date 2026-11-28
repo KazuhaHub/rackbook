@@ -1346,8 +1346,12 @@ and `discard-store` starts over after a lost key while keeping every username us
 back the state directory *together with* the end of the audit log is not detected by the account store itself: enable the
 daily audit anchor or keep a copy of the log elsewhere ([docs/design-local-accounts.md](docs/design-local-accounts.md), 4.7).
 
-**Before you turn sign-in on:** the embedded list of common passwords is a short stand-in (about 270 entries) until the full
-list of the 100 000 most common passwords is added; `TestFullCommonPasswordListIsInPlaceBeforeSignIn` guards it.
+**Local sign-in is closed until the list of common passwords is complete.** The embedded list is a short stand-in (about 270 entries);
+the design asks for the 100 000 most common passwords, and sign-in needs at least 10 000 (`accounts.MinCommonPasswords`). While it is
+shorter: every `/auth/local/*` endpoint answers `503 password_list_incomplete`, `rackbook accounts invite | reset | recover` refuse, the
+console shows single sign-on only, and `rackbook serve --auth login` with a state key refuses to start when there is no single sign-on
+either (with single sign-on it starts and warns). Single sign-on is not affected, and `disable`, `end-sessions` and `unlock` still work.
+Installing the full list in `internal/accounts/commonpasswords.txt` opens it; nothing else changes. There is no flag to use another list.
 
 ## Audit log
 

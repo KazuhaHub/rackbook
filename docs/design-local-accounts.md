@@ -657,11 +657,18 @@ the server enters the fail-closed state of section 10, and it is the **next** at
 `503 audit_unavailable`. Changes (4.3) still write before they answer; only these counters move. So nobody can exhaust the budget to block others: the cost of a made-up name past the budget is a sleeping
 goroutine, bounded by the flood ceiling and the throttle, and the answer is the same as before the budget ran out.
 
-Residual: the hash-only sample follows changes in CPU speed (thermal throttling, a noisy neighbour) only as fast as
-real checks arrive; the queue part is always current. Test: exhaust the
-budget (globally, and for one bucket) with unknown names, then check that an existing account with a wrong password
-and an unknown name get byte-identical answers, and that their response times have the same distribution within the
-variance of one argon2id run (a two-sample Kolmogorov–Smirnov test over 500 samples each, in both CAPTCHA modes).
+**What this guarantees, and what it does not.** An unknown or non-active name past the budget is answered after the queue wait of this
+moment plus a duration drawn from the hash-only sample, then the same answer as a wrong password. So its response time has the distribution
+of a real check's queue wait plus a real argon2id run's time, **to within a fixed offset** of the request's own bookkeeping (a lookup and a
+few counters, microseconds against a hash of tens of milliseconds) and **to within how well the sample follows the machine**: the sample
+follows a change in CPU speed (thermal throttling, a noisy neighbour) only as fast as real checks arrive, while the queue part is always
+current. It does not make the two indistinguishable to an observer who can take thousands of samples with a better clock than the noise;
+the bound is "the variance of one argon2id run" (8.8), and the test asserts exactly that: against a baseline of real checks measured
+against each other under the same conditions (interleaved in random order, more workers than hashing slots so that the queue wait is in
+every sample, 400 samples each), the sleepers may differ no more than the real checks differ among themselves, plus a margin. (The design
+asked for 500 samples with the real parameters; the test uses cheap ones.) Under `sso_only` the same holds for a refusal against an
+administrator's success: it waits for a time drawn around the running estimate of the write the success makes (5.6), and nobody who is
+not an administrator reaches a second-factor check, whether the password was right or wrong.
 
 ### 8.7 Attempts, sets and capacity (when the CAPTCHA is enabled)
 
@@ -1261,6 +1268,24 @@ and the online admin channel with `recover`, `invite`, `reset`, `unlock`, `disab
   (in its untrusted mode, as before) writes every API token as a pending revocation of every account, which the server applies at its
   start. `discard-store` starts a store with no accounts, so every `local:` token and grant has no live account and no role, and a
   username is never reused: nothing can inherit them.
+- **The list of common passwords gates local sign-in at run time.** The embedded list (`internal/accounts/commonpasswords.txt`) is a
+  short stand-in (about 270 entries) until the full list of the 100 000 most common passwords is added. While it has fewer than
+  `accounts.MinCommonPasswords` (10 000) entries: every endpoint under `/auth/local/` answers `503 password_list_incomplete`; the account
+  commands `invite`, `reset` and `recover` refuse (online and offline; `disable`, `end-sessions`, `unlock` and the rest stay open, so a
+  deployment can always restrict); `GET /auth/config` says `local: false`, so the console shows single sign-on only; and `rackbook serve`
+  with `--auth login` and a state key **refuses to start** when no single sign-on is configured either (nobody could sign in), or starts with
+  single sign-on only and a warning. Single sign-on is never affected. The gate and the list are held to each other by
+  `TestFullCommonPasswordListIsInPlaceBeforeSignIn` (`piece4SignInBuilt` is true): the gate is `PasswordListReady()`, which is exactly
+  "the embedded list has at least 10 000 entries", so installing the full list opens sign-in and nothing else needs changing. Production has
+  no flag, file or environment variable for another list; the tests inject a larger one through `localauth.Options.CommonList`,
+  `localauth.AdminEnv.CommonList` and the `testCommonList` variable of `cmd/rackbook`, which are nil in production.
+- **A clock that goes backwards fails closed.** `credentials_valid_after` and the creation times it is compared with are wall-clock
+  times. If the server's clock is set back, an account's `credentials_valid_after` can lie in the future: every API token and OAuth grant of
+  that account created before it (including ones made after the real revocation) is refused until the clock catches up or the credentials
+  are made again, which can only refuse too much, never too little. A clock set forward does the opposite for credentials made in the
+  skipped interval only if they were made after the revocation's own time, which a disabled account cannot do. The rule uses whole
+  seconds (a token made in the second of the revocation is refused), and the OAuth approval time is the server's own clock, not the
+  client's. Keep the clock right (NTP); after a large correction, a reset of the affected accounts makes new credentials valid again.
 - **Re-authentication gates the sensitive actions that make a credential:** creating an API token, saving roles, and approving an
   OAuth/MCP client answer `403 reauth_required` (with `reauth`: the page and the way back) to a local session whose last full
   authentication is older than `auth.local.reauth_window`; the console opens that page and returns. `auth.Authenticator.NeedsReauth`

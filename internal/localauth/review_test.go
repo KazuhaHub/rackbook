@@ -680,8 +680,9 @@ func TestUnderSSOOnlyEveryRefusalWaitsForTheTimeOfASuccessWrite(t *testing.T) {
 		if len(got.slept) != 1 || got.slept[0] < est*3/4 || got.slept[0] > est*5/4 {
 			t.Errorf("%s: slept %v, want one wait around %v", name, got.slept, est)
 		}
-		// right credentials use up their code (the step is stored); no refusal writes an audit line or anything else of its own
-		if got.lines != 0 || (got.wrote && name != "non-admin, right") {
+		// every refusal writes nothing before its answer, a non-admin's right password included: it never reaches a second factor, so no
+		// code is verified and no step is stored
+		if got.lines != 0 || got.wrote {
 			t.Errorf("%s: a refusal wrote %d audit lines and the store (%v) before its answer", name, got.lines, got.wrote)
 		}
 	}
@@ -818,5 +819,45 @@ func TestRefundDoesNothingOnceTheWindowHasRolledOver(t *testing.T) {
 	tb2.Refund(tk)
 	if c := tb2.Pre("b", "alice", 1, 10*time.Minute); c.Throttled {
 		t.Fatal("a success must give its place back inside its window")
+	}
+}
+
+// ---- the gate of the list of common passwords (design 4.2)
+
+func TestLocalSignInIsClosedWhileTheListOfCommonPasswordsIsIncomplete(t *testing.T) {
+	e := newEnv(t, envOpts{mutate: func(o *Options) { o.CommonList = nil }}) // the embedded list: a short stand-in
+	if e.svc.Ready() {
+		t.Fatalf("the embedded list has %d entries: the gate must be closed", accounts.EmbeddedCommonPasswords())
+	}
+	b := e.browser(addrA)
+	for _, p := range []string{"/auth/local/login", "/auth/local/attempt", "/auth/local/reauth", "/auth/local/setup/open", "/auth/local/setup/totp", "/auth/local/setup/passkey", "/auth/local/setup/finish"} {
+		r := b.post(p, `{}`)
+		if r.Status != 503 || r.code() != "password_list_incomplete" {
+			t.Errorf("%s: %d %s", p, r.Status, r.Body)
+		}
+	}
+	// the account commands refuse too: nobody is invited or reset (or recovered) into a sign-in that is closed
+	env := e.svc.AdminEnv()
+	for _, req := range []AdminRequest{{Cmd: "invite", Username: "dana"}, {Cmd: "reset", Username: "dana", Scope: "all"}, {Cmd: "recover", Username: "dana"}} {
+		req.Operator = "ops"
+		if r := env.Do(req); r.OK || r.Code != "password_list_incomplete" || !strings.Contains(r.Error, "common passwords") {
+			t.Errorf("%s: %+v", req.Cmd, r)
+		}
+	}
+	if e.account("dana") != nil {
+		t.Fatal("an account was made while sign-in is closed")
+	}
+	// the commands that only restrict stay open: a deployment must always be able to disable or end sessions
+	e.addAccount("bob")
+	for _, cmd := range []string{"end-sessions", "unlock", "disable"} {
+		if r := env.Do(AdminRequest{Cmd: cmd, Username: "bob", Operator: "ops"}); !r.OK {
+			t.Errorf("%s: %+v", cmd, r)
+		}
+	}
+	// the pages are only documents: they are served, and say nothing of an account
+	// with the list in place everything opens
+	open := newEnv(t, envOpts{})
+	if !open.svc.Ready() {
+		t.Fatal("a list of the size the gate asks for opens it")
 	}
 }

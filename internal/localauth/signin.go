@@ -151,7 +151,7 @@ func (s *Service) signIn(w http.ResponseWriter, r *http.Request) {
 			s.busy(w, f, err)
 			return
 		}
-		if in.Code != "" {
+		if in.Code != "" && !ssoOnly { // under sso_only nobody's code is looked at before the refusal: see below
 			s.store.ProbeTOTP(name, in.Code, now)
 		}
 		if ssoOnly && !s.ssoDelay(w, &f) {
@@ -171,10 +171,25 @@ func (s *Service) signIn(w http.ResponseWriter, r *http.Request) {
 	}
 	s.sample.Add(took, bucket, name)
 	factor := ""
+	// Under sso_only an account that is not an administrator never reaches a second-factor check, whether its password was right or
+	// wrong: both take the same path, a wait and the one answer, and nothing is written, so a right password cannot be told by
+	// the work that follows it (no code is verified, no step is stored).
+	nonAdmin := ssoOnly && !s.isAdmin(name)
 	switch {
+	case ok && nonAdmin:
+		res.releasePassword()
+		f.reason = "sso_required"
+		if !s.ssoDelay(w, &f) {
+			return
+		}
+		res.release()
+		finished = true
+		reply(w, http.StatusForbidden, map[string]string{"error": "sso_required", "message": msgSSORequired})
+		s.afterFailure(f, set, tk, nil) // it counts as a guess in the memory tables and in the aggregate, like any other
+		return
 	case !ok:
 		f.passwordWrong, f.viaPasskey, f.reason = true, passkeyOK, "bad_credentials"
-		if in.Code != "" { // the writer is taken for a wrong password as it is for a right one
+		if in.Code != "" && !ssoOnly { // without sso_only the writer is taken for a wrong password as it is for a right one
 			s.store.ProbeTOTP(name, in.Code, now)
 		}
 	case passkeyOK:
@@ -205,19 +220,7 @@ func (s *Service) signIn(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 5. sso_only, only now that the password and the second factor verified: until here every outcome was the same
-	if ssoOnly && !s.isAdmin(name) {
-		// the same writes an administrator's success makes, so that how long this takes does not say who is one
-		f.reason = "sso_required"
-		if !s.ssoDelay(w, &f) {
-			return
-		}
-		res.release()
-		finished = true
-		reply(w, http.StatusForbidden, map[string]string{"error": "sso_required", "message": msgSSORequired})
-		s.afterFailure(f, set, tk, nil) // it counts as a guess in the memory tables and in the aggregate, like any other
-		return
-	}
+	// 5. sso_only was decided above, right after the password: only an administrator gets as far as a second factor
 	// 6. success: the audit line is written before the session exists (fail closed)
 	role := s.o.Login.LocalRole(name)
 	if role == roles.None {

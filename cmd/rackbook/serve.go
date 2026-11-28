@@ -178,6 +178,16 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	} else if f.Changed("state-key-file") || strings.TrimSpace(os.Getenv("RACKBOOK_STATE_KEY")) != "" {
 		return errors.New("--state-key-file and RACKBOOK_STATE_KEY are for local accounts, which need --auth login")
 	}
+	if stateKey != nil && !accounts.ListReady(testCommonList) {
+		// local sign-in does not open with an incomplete list of common passwords (design-local-accounts.md, 4.2): its routes answer
+		// 503 password_list_incomplete and the account commands refuse. Single sign-on is not affected; with nothing else to sign in
+		// with there is no point in starting.
+		msg := fmt.Sprintf("local sign-in is closed: the list of common passwords has %d entries and at least %d are needed (the full list must be installed in the build)", accounts.EmbeddedCommonPasswords(), accounts.MinCommonPasswords)
+		if !ssoConfigured(cfg) {
+			return errors.New(msg + "; no single sign-on (auth.oidc) is configured either, so nobody could sign in")
+		}
+		logger.Warn(msg + "; single sign-on works, local accounts do not")
+	}
 	if cfg.Auth.MCP.BuiltinIssuer.Enabled && (stateDir == "" || baseURL == "") {
 		return errors.New("auth.mcp.builtin_issuer needs --state-dir (it keeps the grants and the signing key there) and --base-url (the public URL, which is the issuer of its tokens)")
 	}
@@ -298,7 +308,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		if localStore != nil {
 			if localSvc, err = localauth.New(localauth.Options{
 				Store: localStore, Key: stateKey, Audit: auditLog, Login: loginSvc, Config: store.Config, BaseURL: baseURL, Trusted: proxies,
-				SSO: ssoConfigured(cfg), StateDir: stateDir, Logger: logger, GrantAdmin: grantAdmin(store, localStore),
+				SSO: ssoConfigured(cfg), StateDir: stateDir, Logger: logger, GrantAdmin: grantAdmin(store, localStore), CommonList: testCommonList,
 				IsAdmin: func(username string) bool {
 					return authn.Evaluate(&auth.Identity{ID: roles.LocalPrefix + username, Method: auth.MethodLocal}).EffectiveRole() == roles.Admin
 				},
@@ -571,7 +581,7 @@ func newLogin(cfg *config.Config, store *gitstore.Store, prefStore *prefs.Store,
 	}
 	o := login.Options{
 		TrustedProxies: proxies, Login: cfg.Auth.Login, Config: store.Config, BaseURL: baseURL, Key: key, ClientSecret: secret, CAFile: caFile,
-		ReadOnly: readOnly, Logger: logger, Prefs: prefStore, Audit: auditLog, Local: local,
+		ReadOnly: readOnly, Logger: logger, Prefs: prefStore, Audit: auditLog, Local: local, LocalHidden: local != nil && !accounts.ListReady(testCommonList),
 	}
 	if infra != nil {
 		o.Infra = &auth.InfraAccess{Admins: infra.Admins, Auditors: infra.Auditors}

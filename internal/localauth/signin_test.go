@@ -6,9 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math/rand/v2"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -558,18 +560,20 @@ func sortF(x []float64) {
 	}
 }
 
-// Past the dummy-hash budget an unknown name sleeps instead of hashing, and its response times follow the distribution of
-// a real check (a two-sample Kolmogorov-Smirnov test; the design asks for 500 samples each with the real parameters,
-// this runs with cheap ones and fewer).
+// Past the dummy-hash budget an unknown name sleeps instead of hashing. What is guaranteed (design 8.6) is that the answer's time is a real
+// check's queue wait plus a duration drawn from the sample of real runs: the same distribution within the variance of one argon2id run, up
+// to a fixed offset of the request's own bookkeeping. The test measures that against a baseline: three populations, two of real
+// wrong-password checks and one of sleepers, interleaved in random order and run by more workers than there are hashing slots (so the
+// queue wait is in every sample), n = 400 each. The sleepers must differ from the real checks by no more than the real checks
+// differ from each other, plus a margin. (The design asks for 500 samples with the real parameters; this uses cheap ones.)
 func TestPastTheBudgetTimingFollowsARealCheck(t *testing.T) {
 	e := newEnv(t, envOpts{auth: "  throttle: {max: 1000}\n", mutate: func(o *Options) {
 		o.Sleep = time.Sleep
-		o.Hasher = accounts.NewHasherCost(accounts.NewSlots(3, 5*time.Second), 4096, 2, 1)
+		o.Hasher = accounts.NewHasherCost(accounts.NewSlots(3, 30*time.Second), 4096, 2, 1)
 	}})
 	alice := e.addAccount("alice")
-	// the hash-only sample, from real runs of this hasher
 	e.svc.sample = &sample{}
-	for i := 0; i < 64; i++ {
+	for i := 0; i < 64; i++ { // the hash-only sample, from real runs of this hasher
 		d, err := e.svc.hasher.DummyTimed(t.Context(), accounts.ClassNormal, "x")
 		if err != nil {
 			t.Fatal(err)
@@ -579,45 +583,65 @@ func TestPastTheBudgetTimingFollowsARealCheck(t *testing.T) {
 	for i := 0; i < dummyPerMinute; i++ { // the budget of this minute is spent for the whole server
 		e.svc.budget.Take(fmt.Sprintf("x%d", i))
 	}
-	// real checks refresh the sample as they arrive (the design's residual: it follows the machine's speed only as fast as
-	// they do), so the measured runs start after a warm-up in which they have
-	for i := 0; i < 220; i++ {
-		e.login1(e.browser(fmt.Sprintf("198.19.%d.%d", i/200, i%200+1)), alice, "wrong wrong wrong", "")
-	}
-	const n = 150
-	// A noisy machine can make one round differ by chance (the design asks for 500 samples each; this runs fewer, cheaper
-	// hashes), so the test passes when any of three rounds agrees: a real difference in how the two answers are made shows in all.
-	var last string
-	for attempt := 0; attempt < 3; attempt++ {
-		var real, ghost []float64
+	const n = 400
+	const workers = 6 // twice the hashing slots: requests queue, as they do under load
+	type job struct{ kind, i int }
+	var jobs []job
+	for k := 0; k < 3; k++ { // 0 and 1: real checks, 2: sleepers
 		for i := 0; i < n; i++ {
-			b := e.browser(fmt.Sprintf("203.0.%d.%d", i/200, i%200+1))
-			real = append(real, float64(e.login1(b, alice, "wrong wrong wrong", "").Elapsed))
-			b = e.browser(fmt.Sprintf("203.1.%d.%d", i/200, i%200+1))
-			ghost = append(ghost, float64(e.login1(b, &person{name: "ghost"}, "wrong wrong wrong", "").Elapsed))
+			jobs = append(jobs, job{k, i})
 		}
-		// a fixed offset of the request's own work (a lookup, a little bookkeeping) is not what the test is about: the medians must
-		// agree within 15%, and the shapes are compared with the offset taken out; 3.3 * sqrt(2/n) is a critical value far past alpha = 0.00001 (the machine is shared and the test runs beside others under -race; a real difference between the two answers is a D near 1)
-		// (see above)
-		mr, mg := median(real), median(ghost)
-		if diff := mr - mg; diff > 0.15*mr || -diff > 0.15*mr {
-			last = fmt.Sprintf("the medians differ: %.2fms and %.2fms", mr/1e6, mg/1e6)
-			continue
-		}
-		for i := range real {
-			real[i] -= mr
-		}
-		for i := range ghost {
-			ghost[i] -= mg
-		}
-		d, crit := ks(real, ghost), 3.3*sqrt(2.0/float64(n))
-		t.Logf("round %d: D = %.3f (critical %.3f), medians %.2fms and %.2fms", attempt+1, d, crit, mr/1e6, mg/1e6)
-		if d <= crit {
-			return
-		}
-		last = fmt.Sprintf("the response times differ: D = %.3f > %.3f", d, crit)
 	}
-	t.Fatal(last)
+	rand.New(rand.NewPCG(7, 11)).Shuffle(len(jobs), func(i, j int) { jobs[i], jobs[j] = jobs[j], jobs[i] })
+	var mu sync.Mutex
+	var got [3][]float64
+	next := 0
+	var wg sync.WaitGroup
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				mu.Lock()
+				if next >= len(jobs) {
+					mu.Unlock()
+					return
+				}
+				j := jobs[next]
+				next++
+				mu.Unlock()
+				b := e.browser(fmt.Sprintf("10.%d.%d.%d", j.kind+1, j.i/200, j.i%200+1))
+				who := alice
+				if j.kind == 2 {
+					who = &person{name: "ghost"}
+				}
+				d := float64(e.login1(b, who, "wrong wrong wrong", "").Elapsed)
+				mu.Lock()
+				got[j.kind] = append(got[j.kind], d)
+				mu.Unlock()
+			}
+		}()
+	}
+	wg.Wait()
+	realA, realB, ghost := got[0], got[1], got[2]
+	pooled := append(append([]float64(nil), realA...), realB...)
+	mr, mg := median(pooled), median(ghost)
+	if diff := mr - mg; diff > 0.15*mr || -diff > 0.15*mr {
+		t.Fatalf("the medians differ: %.2fms for real checks and %.2fms for sleepers", mr/1e6, mg/1e6)
+	}
+	shift := func(x []float64, by float64) []float64 {
+		out := make([]float64, len(x))
+		for i, v := range x {
+			out[i] = v - by
+		}
+		return out
+	}
+	dRealReal := ks(shift(realA, median(realA)), shift(realB, median(realB)))
+	dGhostReal := ks(shift(ghost, mg), shift(pooled, mr))
+	t.Logf("real vs real D = %.3f, sleepers vs real D = %.3f, medians %.2fms and %.2fms", dRealReal, dGhostReal, mr/1e6, mg/1e6)
+	if dGhostReal > dRealReal+0.12 || dGhostReal > 0.35 {
+		t.Fatalf("the sleepers' times differ from a real check's more than a real check's differ from each other: D = %.3f against a baseline of %.3f", dGhostReal, dRealReal)
+	}
 }
 
 func sqrt(x float64) float64 {

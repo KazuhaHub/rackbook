@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -311,15 +312,42 @@ func TestStoredParametersAtTheCapAreAccepted(t *testing.T) {
 	}
 }
 
-// piece4SignInBuilt is flipped by the piece that turns local sign-in on (piece 4, design 13). Until then the embedded
-// list is the short stand-in that the design doc and README call out; sign-in must not open with it.
-const piece4SignInBuilt = false
+// piece4SignInBuilt says local sign-in exists (piece 4), so the guard test is active. The embedded list is still a short
+// stand-in, and what makes that safe is the runtime gate: while it has fewer than MinCommonPasswords entries, PasswordListReady is false
+// and the server answers 503 password_list_incomplete on every local sign-in and setup route and the command line refuses invite,
+// reset and recover. The test holds the gate and the list to each other, so that neither can change without the other.
+const piece4SignInBuilt = true
 
 func TestFullCommonPasswordListIsInPlaceBeforeSignIn(t *testing.T) {
 	if !piece4SignInBuilt {
-		t.Skip("TODO piece 4: the embedded list is a short stand-in (design-local-accounts.md, \"As built, piece 2\"); set piece4SignInBuilt when sign-in is enabled, and this test then needs the 100 000 most common passwords (at least 10 000 entries)")
+		t.Skip("local sign-in is not built")
 	}
-	if n := len(common()); n < 10_000 {
-		t.Fatalf("the embedded list of common passwords has %d entries, sign-in needs at least 10 000", n)
+	n := len(common())
+	if n != EmbeddedCommonPasswords() {
+		t.Fatal("the count is not the list's")
+	}
+	// the gate agrees with the list, both ways
+	if want := n >= MinCommonPasswords; PasswordListReady() != want {
+		t.Fatalf("the list has %d entries and the gate says ready = %v: sign-in needs at least %d", n, PasswordListReady(), MinCommonPasswords)
+	}
+	if MinCommonPasswords != 10_000 {
+		t.Fatal("the floor of the list is 10 000 entries (design-local-accounts.md, 4.2)")
+	}
+	// an injected list is how tests get a larger one; it never replaces the embedded one by itself
+	if ListReady(nil) != PasswordListReady() {
+		t.Fatal("nil is the embedded list")
+	}
+	big := make([]string, MinCommonPasswords)
+	for i := range big {
+		big[i] = fmt.Sprintf("filler-password-%d", i)
+	}
+	if l := NewCommonList(big...); !ListReady(l) || l.Len() < MinCommonPasswords {
+		t.Fatal("a list of the size the gate asks for is ready")
+	}
+	if err := CheckPassword("filler-password-77", PasswordRules{List: NewCommonList(big...)}); err == nil {
+		t.Fatal("an injected entry must be refused")
+	}
+	if err := CheckPassword("filler-password-77", PasswordRules{}); err != nil {
+		t.Fatalf("the embedded list is the default: %v", err)
 	}
 }

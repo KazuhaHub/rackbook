@@ -92,7 +92,7 @@ func runAdmin(cmd *cobra.Command, req localauth.AdminRequest) error {
 	if err != nil {
 		return err
 	}
-	env := localauth.AdminEnv{Guard: guard,
+	env := localauth.AdminEnv{Guard: guard, CommonList: testCommonList,
 		Store: st, BaseURL: base,
 		InviteTTL: func() time.Duration { return durationFlag(cmd, "invite-ttl", 72*time.Hour) },
 		ResetTTL:  func() time.Duration { return durationFlag(cmd, "reset-ttl", 24*time.Hour) },

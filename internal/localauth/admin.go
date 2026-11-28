@@ -57,6 +57,8 @@ type AdminEnv struct {
 	// Revoker lists and revokes the API tokens and OAuth grants an account owns (5.11). nil: the server is not running (the
 	// offline command line): the revocations are recorded as pending, and the server applies them at its next start.
 	Revoker Revoker
+	// CommonList is the list of common passwords the gate asks about; nil (always, in production) = the embedded one.
+	CommonList *accounts.CommonList
 	// Guard is run inside every disable and remove: it refuses what would leave sso_only without a local administrator.
 	Guard func(st *accounts.State, username string) error
 	// Unlocked is told an account's counters were cleared, so that the memory tables forget it too.
@@ -106,6 +108,10 @@ func (e AdminEnv) Do(req AdminRequest) AdminResponse {
 		if user == "" || !accounts.ValidUsername(user) {
 			return fail1(errors.New("a username matches ^[a-z][a-z0-9._-]{0,31}$"))
 		}
+	}
+	if (req.Cmd == "invite" || req.Cmd == "reset" || req.Cmd == "recover") && !accounts.ListReady(e.CommonList) {
+		return AdminResponse{Error: "local sign-in is not open: the list of common passwords is incomplete (" + fmt.Sprint(accounts.EmbeddedCommonPasswords()) +
+			" entries, " + fmt.Sprint(accounts.MinCommonPasswords) + " are needed), so no account is invited or reset", Code: "password_list_incomplete"}
 	}
 	check := accounts.Check(nil)
 	if e.Guard != nil {
@@ -248,7 +254,7 @@ func (s *Service) AdminEnv() AdminEnv {
 			return s.o.GrantAdmin(contextBackground(), username, operator)
 		},
 		Now:     s.now,
-		Revoker: s.currentRevoker(),
+		Revoker: s.currentRevoker(), CommonList: s.o.CommonList,
 	}
 }
 

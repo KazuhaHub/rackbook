@@ -56,6 +56,9 @@ type Options struct {
 	Logger   *slog.Logger
 	// Captcha is the hook of piece 5; nil = the CAPTCHA is off.
 	Captcha Captcha
+	// CommonList is a list of common passwords for the password rules and for the gate; nil (always, in production) = the embedded
+	// list. Local sign-in opens only when the list has accounts.MinCommonPasswords entries (see Ready).
+	CommonList *accounts.CommonList
 	// SkipCalibration leaves the hash-only sample empty at start (tests fill it themselves).
 	SkipCalibration bool
 }
@@ -185,6 +188,24 @@ func (s *Service) flusher() {
 	}
 }
 
+// Ready says local sign-in is open: the list of common passwords has the entries the design asks for. While it does not, every
+// endpoint under /auth/local/ answers 503 password_list_incomplete, the command line refuses to invite, reset or recover, and the
+// console is told local accounts are not offered; single sign-on is not affected.
+func (s *Service) Ready() bool { return accounts.ListReady(s.o.CommonList) }
+
+const msgListIncomplete = "Local sign-in is not open yet: the list of common passwords that new passwords are checked against is incomplete. An administrator must install the full list."
+
+// gate answers 503 password_list_incomplete instead of the handler while the list is incomplete.
+func (s *Service) gate(h http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !s.Ready() {
+			fail(w, http.StatusServiceUnavailable, "password_list_incomplete", msgListIncomplete)
+			return
+		}
+		h(w, r)
+	}
+}
+
 // Mount registers the pages and endpoints under /auth/local/.
 func (s *Service) Mount(mux routes.Mux, static http.Handler) {
 	page := func(w http.ResponseWriter, r *http.Request) {
@@ -193,13 +214,13 @@ func (s *Service) Mount(mux routes.Mux, static http.Handler) {
 	}
 	mux.HandleFunc("GET /auth/local/setup", page)
 	mux.HandleFunc("GET /auth/local/reauth", page)
-	mux.HandleFunc("POST /auth/local/attempt", s.attempt)
-	mux.HandleFunc("POST /auth/local/login", s.signIn)
-	mux.HandleFunc("POST /auth/local/setup/open", s.setupOpen)
-	mux.HandleFunc("POST /auth/local/setup/totp", s.setupTOTP)
-	mux.HandleFunc("POST /auth/local/setup/passkey", s.setupPasskey)
-	mux.HandleFunc("POST /auth/local/setup/finish", s.setupFinish)
-	mux.HandleFunc("POST /auth/local/reauth", s.reauth)
+	mux.HandleFunc("POST /auth/local/attempt", s.gate(s.attempt))
+	mux.HandleFunc("POST /auth/local/login", s.gate(s.signIn))
+	mux.HandleFunc("POST /auth/local/setup/open", s.gate(s.setupOpen))
+	mux.HandleFunc("POST /auth/local/setup/totp", s.gate(s.setupTOTP))
+	mux.HandleFunc("POST /auth/local/setup/passkey", s.gate(s.setupPasskey))
+	mux.HandleFunc("POST /auth/local/setup/finish", s.gate(s.setupFinish))
+	mux.HandleFunc("POST /auth/local/reauth", s.gate(s.reauth))
 }
 
 // ---- settings

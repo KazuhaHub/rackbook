@@ -429,7 +429,7 @@ func (s *Service) setupFinish(w http.ResponseWriter, r *http.Request) {
 
 	// the new password
 	if scope != accounts.ScopeSecondFactor {
-		if err := accounts.CheckPassword(in.Password, accounts.PasswordRules{MinLen: set.PasswordMinLength, Username: a.Username, Host: s.o.Login.Host()}); err != nil {
+		if err := accounts.CheckPassword(in.Password, accounts.PasswordRules{MinLen: set.PasswordMinLength, Username: a.Username, Host: s.o.Login.Host(), List: s.o.CommonList}); err != nil {
 			s.passwordError(w, err)
 			return
 		}

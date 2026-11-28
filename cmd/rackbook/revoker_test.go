@@ -177,7 +177,7 @@ func TestRevocationEndToEndInEveryWriteModeAndWithAFailingPush(t *testing.T) {
 			if _, err := reg.Lookup(created.Secret); err != nil {
 				t.Fatalf("the token works before: %v", err)
 			}
-			env := localauth.AdminEnv{Store: st, BaseURL: "https://ledger.example.com", Revoker: rv,
+			env := localauth.AdminEnv{CommonList: testCommonList, Store: st, BaseURL: "https://ledger.example.com", Revoker: rv,
 				InviteTTL: func() time.Duration { return 72 * time.Hour }, ResetTTL: func() time.Duration { return 24 * time.Hour }}
 			// the reset records the revocations and applies them: refused from this moment, and nothing waited for git
 			resp := env.Do(localauth.AdminRequest{Cmd: "reset", Username: "alice", Scope: "all", Operator: "ops"})
@@ -276,7 +276,7 @@ func TestCredentialsValidAfterCatchesTokensThatAreNotInTheCheckoutYet(t *testing
 		secret, _ := tokens.Generate()
 		pending := tokens.Token{Name: "in-a-pr", ShownPrefix: tokens.ShownPrefix(secret), Hash: tokens.HashSecret(secret), Scope: tokens.ScopeRead,
 			CreatedBy: "local:alice", CreatedVia: auth.MethodLocal, Created: time.Now().UTC().Truncate(time.Second).Format(time.RFC3339)}
-		env := localauth.AdminEnv{Store: st, Revoker: accountRevoker{registry: reg}, BaseURL: "https://x.example",
+		env := localauth.AdminEnv{CommonList: testCommonList, Store: st, Revoker: accountRevoker{registry: reg}, BaseURL: "https://x.example",
 			InviteTTL: func() time.Duration { return 72 * time.Hour }, ResetTTL: func() time.Duration { return 24 * time.Hour }}
 		time.Sleep(1100 * time.Millisecond)
 		if r := env.Do(localauth.AdminRequest{Cmd: "disable", Username: "alice", Operator: "ops"}); !r.OK {
@@ -357,7 +357,7 @@ func TestCredentialsValidAfterCatchesTokensThatAreNotInTheCheckoutYet(t *testing
 			done <- err
 		}()
 		time.Sleep(1200 * time.Millisecond) // the create has its creation time and waits for the lock
-		env := localauth.AdminEnv{Store: st, Revoker: accountRevoker{registry: reg}, BaseURL: "https://x.example",
+		env := localauth.AdminEnv{CommonList: testCommonList, Store: st, Revoker: accountRevoker{registry: reg}, BaseURL: "https://x.example",
 			InviteTTL: func() time.Duration { return 72 * time.Hour }, ResetTTL: func() time.Duration { return 24 * time.Hour }}
 		if r := env.Do(localauth.AdminRequest{Cmd: "reset", Username: "alice", Scope: "all", Operator: "ops"}); !r.OK {
 			t.Fatalf("%+v", r)

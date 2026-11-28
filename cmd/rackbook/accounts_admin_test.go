@@ -117,7 +117,7 @@ func TestOnlineCommandsGoOverTheAdminChannelWhenAServerRuns(t *testing.T) {
 	l, s := f.open(t)
 	defer l.Close()
 	srv, err := localauth.ServeAdminWith(f.state, f.key, func() localauth.AdminEnv {
-		return localauth.AdminEnv{Store: s, BaseURL: "https://ledger.example.com", InviteTTL: func() time.Duration { return 72 * time.Hour }, ResetTTL: func() time.Duration { return 24 * time.Hour }}
+		return localauth.AdminEnv{CommonList: testCommonList, Store: s, BaseURL: "https://ledger.example.com", InviteTTL: func() time.Duration { return 72 * time.Hour }, ResetTTL: func() time.Duration { return 24 * time.Hour }}
 	}, nil)
 	if err != nil {
 		t.Skip(err)
@@ -191,6 +191,24 @@ func TestOfflineDisableAppliesTheLastAdminGuardUnderSSOOnly(t *testing.T) {
 	// without --config the guard cannot be checked, and the command says so
 	out, err := run(t, f.args("accounts", "remove", "bob", "--yes")...)
 	if err != nil || !strings.Contains(out, "sso_only guard") {
+		t.Fatalf("%v\n%s", err, out)
+	}
+}
+
+// With the embedded list of common passwords (a short stand-in) local sign-in is closed, and the commands that would open an account refuse.
+func TestAccountCommandsRefuseToInviteWhileTheListOfCommonPasswordsIsIncomplete(t *testing.T) {
+	old := testCommonList
+	testCommonList = nil
+	t.Cleanup(func() { testCommonList = old })
+	f := newAccountsFixture(t)
+	for _, c := range [][]string{{"invite", "carol"}, {"reset", "bob", "--scope", "all"}, {"recover", "alice"}} {
+		out, err := run(t, f.args(append([]string{"accounts"}, c...)...)...)
+		if err == nil || !strings.Contains(err.Error(), "list of common passwords is incomplete") || strings.Contains(out, "/auth/local/setup#") {
+			t.Errorf("%v: %v\n%s", c, err, out)
+		}
+	}
+	// what only restricts stays open
+	if out, err := run(t, f.args("accounts", "end-sessions", "bob")...); err != nil {
 		t.Fatalf("%v\n%s", err, out)
 	}
 }

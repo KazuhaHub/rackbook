@@ -303,6 +303,8 @@ type PasswordRules struct {
 	Username string
 	// Host is the host name of --base-url.
 	Host string
+	// List is a list of common passwords to use instead of the embedded one; nil (always, in production) = the embedded list.
+	List *CommonList
 }
 
 // Password rule codes.
@@ -345,6 +347,44 @@ var (
 var folder = cases.Fold()
 
 func fold(s string) string { return folder.String(norm.NFKC.String(s)) }
+
+// MinCommonPasswords is how many entries the list of common passwords must have before local sign-in may open: the design asks
+// for the 100 000 most common, and 10 000 is the floor under which the rule protects nobody.
+const MinCommonPasswords = 10_000
+
+// PasswordListReady says the embedded list of common passwords is complete enough for local sign-in (MinCommonPasswords entries).
+// It is the one gate: the server does not open local sign-in, and the command line does not invite or reset, while it is false.
+func PasswordListReady() bool { return len(common()) >= MinCommonPasswords }
+
+// EmbeddedCommonPasswords is the number of entries of the embedded list.
+func EmbeddedCommonPasswords() int { return len(common()) }
+
+// CommonList is a list of common passwords other than the embedded one. Production code never makes one (the server uses the
+// embedded list alone: there is no flag and no file); it exists so that tests can run sign-in with a list of the size the gate asks for.
+type CommonList struct{ set map[string]bool }
+
+// NewCommonList is the embedded list plus extra entries.
+func NewCommonList(extra ...string) *CommonList {
+	l := &CommonList{set: make(map[string]bool, len(common())+len(extra))}
+	for k := range common() {
+		l.set[k] = true
+	}
+	for _, e := range extra {
+		l.set[fold(e)] = true
+	}
+	return l
+}
+
+// Len is the number of entries.
+func (l *CommonList) Len() int { return len(l.set) }
+
+// ListReady says a list (nil: the embedded one) has the entries the gate asks for.
+func ListReady(l *CommonList) bool {
+	if l == nil {
+		return PasswordListReady()
+	}
+	return l.Len() >= MinCommonPasswords
+}
 
 func common() map[string]bool {
 	commonOnce.Do(func() {
@@ -400,7 +440,11 @@ func CheckPassword(pw string, r PasswordRules) error {
 		return &PasswordError{Code: PwTooLong}
 	}
 	f := folder.String(n)
-	if common()[f] || repeatedUnit(f) {
+	set := common()
+	if r.List != nil {
+		set = r.List.set
+	}
+	if set[f] || repeatedUnit(f) {
 		return &PasswordError{Code: PwCommon}
 	}
 	if u := fold(r.Username); len(u) >= minContained && strings.Contains(f, u) {

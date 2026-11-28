@@ -71,9 +71,12 @@ type Options struct {
 	// Local is the store of local accounts, nil when there are none (no state key). Sessions of
 	// method local verify against it and against nothing else; no route of this package creates one
 	// (the sign-in pages and endpoints are a later piece).
-	Local   LocalSessions
-	Now     func() time.Time
-	Context context.Context // lifetime of the OIDC provider; default Background
+	Local LocalSessions
+	// LocalHidden says local accounts are not offered although there is a store of them: the list of common passwords is incomplete
+	// (design-local-accounts.md, 4.2), so /auth/config says local is false and the console shows single sign-on only.
+	LocalHidden bool
+	Now         func() time.Time
+	Context     context.Context // lifetime of the OIDC provider; default Background
 
 	// ssoPasskeys is a test seam. This Service is the OIDC login, and people who
 	// sign in through OIDC get no passkey sign-in (docs/design-audit.md, section 4),
@@ -603,6 +606,9 @@ func (s *Service) loginPage(w http.ResponseWriter, r *http.Request, static http.
 func (s *Service) publicConfig(w http.ResponseWriter, r *http.Request) {
 	label, name, logo, def := s.o.Login.OIDC.Label, "", false, locale.Default
 	mode := s.signIn().PageMode(s.sso)
+	if s.o.LocalHidden && s.sso && mode == config.LoginLocalOnly {
+		mode = config.LoginSSOFirst // there is no local form to show: the page is the single sign-on button
+	}
 	if s.o.Config != nil {
 		cfg := s.o.Config()
 		label, name, logo, def = cfg.Auth.OIDC.Label, cfg.Branding.Name, cfg.BrandLogo() != nil, cfg.DefaultLocale()
@@ -614,7 +620,7 @@ func (s *Service) publicConfig(w http.ResponseWriter, r *http.Request) {
 		"oidc": s.sso, "provider": "oidc", "passkeys": s.pk != nil,
 		// the sign-in page is shaped by the mode (sso_only is the endpoint's business, not the page's);
 		// local says the local sign-in is offered at all (a state key and a state directory)
-		"mode": mode, "local": s.o.Local != nil,
+		"mode": mode, "local": s.o.Local != nil && !s.o.LocalHidden,
 		"label": label, "name": name, "logo": logo,
 		"locale": locale.Match(r.Header.Get("Accept-Language"), def), "defaultLocale": def,
 	})

@@ -6,6 +6,7 @@ import (
 	"encoding/base32"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
@@ -110,6 +111,7 @@ func newEnv(t *testing.T, o envOpts) *env {
 			return e.authn.Evaluate(&auth.Identity{ID: "local:" + u, Method: auth.MethodLocal}).EffectiveRole() == roles.Admin
 		},
 	}
+	so.CommonList = bigList()
 	if o.mutate != nil {
 		o.mutate(&so)
 	}
@@ -387,4 +389,13 @@ func (f *fakeRevoker) did() []string {
 		out = append(out, "token:"+strings.TrimPrefix(t, "id-"))
 	}
 	return out
+}
+
+// bigList is the embedded list plus enough filler for the gate (accounts.MinCommonPasswords): how tests run local sign-in.
+func bigList() *accounts.CommonList {
+	extra := make([]string, accounts.MinCommonPasswords)
+	for i := range extra {
+		extra[i] = fmt.Sprintf("filler-common-password-%d", i)
+	}
+	return accounts.NewCommonList(extra...)
 }
