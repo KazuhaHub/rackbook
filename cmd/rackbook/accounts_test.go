@@ -3,7 +3,9 @@ package main
 import (
 	"bytes"
 	"encoding/base64"
+	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -117,7 +119,7 @@ func TestAccountsListNeedsTheKeyAndPrintsNoSecret(t *testing.T) {
 		k, _ := statekey.GenerateKey()
 		bad := filepath.Join(t.TempDir(), "bad")
 		os.WriteFile(bad, []byte(k.Base64()), 0o600)
-		if _, err := run(t, "accounts", "list", "--state-dir", f.state, "--state-key-file", bad); err == nil || !strings.Contains(err.Error(), "does not decrypt") {
+		if _, err := run(t, "accounts", "list", "--state-dir", f.state, "--state-key-file", bad); err == nil || !strings.Contains(err.Error(), "needs state key") {
 			t.Fatalf("err = %v", err)
 		}
 	})
@@ -279,7 +281,7 @@ func TestAccountsDiscardStore(t *testing.T) {
 	k, _ := statekey.GenerateKey()
 	newFile := filepath.Join(t.TempDir(), "new.key")
 	os.WriteFile(newFile, []byte(k.Base64()), 0o600)
-	args := []string{"accounts", "discard-store", "--state-dir", f.state, "--state-key-file", newFile}
+	args := []string{"accounts", "discard-store", "--key-is-lost", "--state-dir", f.state, "--state-key-file", newFile}
 	out, err := runWithStdin(t, "no\n", args...)
 	if err == nil || !strings.Contains(out, "alice") || !strings.Contains(out, "bob") {
 		t.Fatalf("%v\n%s", err, out)
@@ -304,7 +306,8 @@ func TestAccountsDiscardStore(t *testing.T) {
 }
 
 func TestServeDoesNotReadTheStateKeyYet(t *testing.T) {
-	// Nothing is reachable from HTTP in this piece: serve has no state-key flag and no account code.
+	// Nothing is reachable from HTTP in this piece. serve has no state-key flag and reads no key; it only builds the
+	// conservative retention pin, which peeks at no encrypted content.
 	for _, name := range []string{"state-key-file", "state-key"} {
 		if newServe().Flags().Lookup(name) != nil {
 			t.Fatalf("serve has --%s", name)
@@ -314,9 +317,121 @@ func TestServeDoesNotReadTheStateKeyYet(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, banned := range []string{"internal/accounts", "STATE_KEY", "statekey"} {
+	for _, banned := range []string{"STATE_KEY", "statekey", "accounts.Open", "accounts.OpenSecrets", "LoadKey"} {
 		if strings.Contains(string(src), banned) {
 			t.Fatalf("serve.go mentions %q", banned)
 		}
 	}
+	if !strings.Contains(string(src), "accounts.NewPin(stateDir, nil)") {
+		t.Fatal("serve must build the retention pin without a key")
+	}
+}
+
+// The HTTP surface (the API, the login, the MCP and OAuth servers and the auth package) must not depend on the
+// account store or the state key: nothing of local accounts is reachable from HTTP in this piece.
+func TestNoHTTPPackageDependsOnTheAccountStore(t *testing.T) {
+	gobin, err := exec.LookPath("go")
+	if err != nil {
+		t.Skip("no go toolchain on PATH")
+	}
+	pkgs := []string{"../../internal/api", "../../internal/login", "../../internal/auth", "../../internal/mcpserver", "../../internal/mcpauth", "../../internal/oauthserver", "../../internal/routes"}
+	cmd := exec.Command(gobin, append([]string{"list", "-deps", "-f", "{{.ImportPath}}"}, pkgs...)...)
+	out, err := cmd.Output()
+	if err != nil {
+		t.Skipf("go list failed: %v", err)
+	}
+	for _, dep := range strings.Fields(string(out)) {
+		if strings.HasSuffix(dep, "/internal/accounts") || strings.HasSuffix(dep, "/internal/statekey") {
+			t.Fatalf("an HTTP-facing package depends on %s", dep)
+		}
+	}
+	if !strings.Contains(string(out), "/internal/audit") {
+		t.Fatal("go list did not list the dependencies (the check would pass for the wrong reason)")
+	}
+}
+
+func TestRekeyGenerateWritesTheKeyDurablyBeforeAnythingIsReencrypted(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		fail func()
+	}{
+		{"file fsync fails", func() { syncKeyFile = func(*os.File) error { return errors.New("fsync failed") } }},
+		{"directory fsync fails", func() { syncKeyDir = func(string) error { return errors.New("dir fsync failed") } }},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f := newAccountsFixture(t)
+			oldFile, oldDir := syncKeyFile, syncKeyDir
+			t.Cleanup(func() { syncKeyFile, syncKeyDir = oldFile, oldDir })
+			c.fail()
+			newFile := filepath.Join(t.TempDir(), "new.key")
+			out, err := run(t, f.args("accounts", "rekey", "--generate", "--new-key-file", newFile)...)
+			if err == nil || !strings.Contains(err.Error(), "nothing was re-encrypted") {
+				t.Fatalf("err = %v\n%s", err, out)
+			}
+			if _, err := os.Lstat(newFile); err == nil {
+				t.Fatal("a key file that could not be made durable was left behind")
+			}
+			ents, _ := os.ReadDir(filepath.Dir(newFile))
+			if len(ents) != 0 {
+				t.Fatalf("temporary files left: %v", ents)
+			}
+			// the store is untouched: the old key still opens it, and no rekey was recorded
+			if out, err := run(t, f.args("accounts", "list")...); err != nil || !strings.Contains(out, "alice") {
+				t.Fatalf("%v\n%s", err, out)
+			}
+			l, _ := audit.Open(filepath.Join(f.state, "audit"), audit.Options{})
+			defer l.Close()
+			l.EachEvent("", func(e audit.Event, _ string) bool {
+				if e.Event == "account_store_rekeyed" {
+					t.Fatal("a rekey was recorded")
+				}
+				return true
+			})
+		})
+	}
+}
+
+func TestAccountsKeyFileThatIsASymlinkIntoTheStateDirIsRefused(t *testing.T) {
+	f := newAccountsFixture(t)
+	inside := filepath.Join(f.state, "real.key")
+	if err := os.WriteFile(inside, []byte(f.key.Base64()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(t.TempDir(), "link.key")
+	if err := os.Symlink(inside, link); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := run(t, "accounts", "list", "--state-dir", f.state, "--state-key-file", link); err == nil || !strings.Contains(err.Error(), "inside --state-dir") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestAccountsDiscardStoreNeedsForceForAKnownKey(t *testing.T) {
+	f := newAccountsFixture(t)
+	k, _ := statekey.GenerateKey()
+	newFile := filepath.Join(t.TempDir(), "new.key")
+	os.WriteFile(newFile, []byte(k.Base64()), 0o600)
+	args := []string{"accounts", "discard-store", "--yes", "--state-dir", f.state, "--state-key-file", newFile}
+	out, err := run(t, args...)
+	if err == nil || !strings.Contains(err.Error(), "--key-is-lost") || !strings.Contains(out, f.key.KID()) || !strings.Contains(out, k.KID()) {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	if out, err := run(t, append(args, "--key-is-lost")...); err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+}
+
+func TestAccountsAcceptRestoreListsTokensFromARepo(t *testing.T) {
+	f := newAccountsFixture(t)
+	repo := t.TempDir()
+	os.MkdirAll(filepath.Join(repo, ".rackbook"), 0o755)
+	os.WriteFile(filepath.Join(repo, ".rackbook", "tokens.yml"), []byte("tokens:\n  - name: ci\n    prefix: rbk_\n    sha256: "+strings.Repeat("ab", 32)+"\n    scope: read\n    created_by: local:root\n    created: 2026-11-01T00:00:00Z\n"), 0o644)
+	names, err := listTokenNames(repo)
+	if err != nil || len(names) != 1 || names[0] != "ci" {
+		t.Fatalf("%v %v", names, err)
+	}
+	if names, err := listTokenNames(t.TempDir()); err != nil || len(names) != 0 {
+		t.Fatalf("no tokens file: %v %v", names, err)
+	}
+	_ = f
 }

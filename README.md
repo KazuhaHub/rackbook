@@ -1178,7 +1178,7 @@ Local accounts beside SSO are being built in pieces ([docs/design-local-accounts
 anything described here. What exists is the foundation under `--state-dir`:
 
 - **The state key**: 32 or more random bytes (`openssl rand -base64 32`), different from the session key. It encrypts
-  `<state-dir>/accounts/accounts.enc` and `<state-dir>/secrets.enc` (AES-256-GCM, a subkey for each file by HKDF) and
+  `<state-dir>/accounts/accounts.enc` and `<state-dir>/secrets.enc` (XChaCha20-Poly1305, a subkey for each file by HKDF) and
   MACs `<state-dir>/accounts/usernames`. It lives **outside** the state directory: in `RACKBOOK_STATE_KEY` (base64) or a
   read-only file given with `--state-key-file`. Back the state directory up and, separately, the key. Without the key
   nothing can be read; a lost key means starting over with `rackbook accounts discard-store`.
@@ -1190,6 +1190,11 @@ anything described here. What exists is the foundation under `--state-dir`:
   `--operator` name.
 - **The audit log** gets `RecordSync` (an event that is on disk before the caller goes on) and a retention pin: `--audit-retention-months`
   never deletes the month of the account store's last change, and a checkpoint moves that pin on.
+
+- **Before sign-in is enabled** (piece 4) the embedded list of common passwords, now a short stand-in, must be replaced by the full list of the 100 000
+  most common passwords; a test guards it. Rolling back the state directory *together with* the end of the audit log is not detected by the account
+  store itself: enable the daily audit anchor or keep a copy of the log elsewhere ([docs/design-local-accounts.md](docs/design-local-accounts.md), 4.7).
+  `rackbook serve` keeps `--audit-retention-months` away from the months that account state may need, even though it does not read the state key yet.
 
 ```sh
 openssl rand -base64 32 > /etc/rackbook/state.key && chmod 0400 /etc/rackbook/state.key   # outside --state-dir

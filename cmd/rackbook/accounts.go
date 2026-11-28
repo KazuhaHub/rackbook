@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -21,6 +22,7 @@ import (
 	"github.com/kazuhahub/rackbook/internal/fsutil"
 	"github.com/kazuhahub/rackbook/internal/login"
 	"github.com/kazuhahub/rackbook/internal/statekey"
+	"github.com/kazuhahub/rackbook/internal/tokens"
 )
 
 // The offline commands of local accounts (docs/design-local-accounts.md, 11.2). They work on the files in
@@ -81,6 +83,7 @@ Afterwards use only the new key; the old one opens nothing.`,
 			if err != nil {
 				return err
 			}
+			defer newKey.Zero()
 			if err := checkSessionKey(cmd, newKey); err != nil {
 				return err
 			}
@@ -115,6 +118,12 @@ that retention deleted (--reset-all-accounts); both put every account into reset
 			if yes, _ := cmd.Flags().GetBool("yes"); !yes {
 				ro.Confirm = func() (bool, error) { return confirm(cmd, "Type yes to apply this: ") }
 			}
+			if repo, _ := cmd.Flags().GetString("repo"); repo != "" {
+				if off.TokenNames, err = listTokenNames(repo); err != nil {
+					return err
+				}
+				off.TokensListed = true
+			}
 			_, err = accounts.AcceptRestore(off, ro)
 			return err
 		},
@@ -122,6 +131,7 @@ that retention deleted (--reset-all-accounts); both put every account into reset
 	restore.Flags().Bool("accept-audit-truncation", false, "accept that the audit log was rolled back or truncated")
 	restore.Flags().Bool("reset-all-accounts", false, "accept that the store's audit month was deleted by retention")
 	restore.Flags().Bool("yes", false, "do not ask for confirmation")
+	restore.Flags().String("repo", "", "a clone of the data repository: its API token names are listed as pending revocations when the audit log cannot be trusted")
 
 	discard := &cobra.Command{
 		Use:   "discard-store",
@@ -143,11 +153,13 @@ everyone again under new usernames and enter the provider secrets again in the c
 					return confirm(cmd, "Type yes to keep these names used and discard the stores: ")
 				}
 			}
-			_, err = accounts.DiscardStore(off, ask)
+			force, _ := cmd.Flags().GetBool("key-is-lost")
+			_, err = accounts.DiscardStore(off, ask, force)
 			return err
 		},
 	}
 	discard.Flags().Bool("yes", false, "do not ask for confirmation")
+	discard.Flags().Bool("key-is-lost", false, "confirm that the key the store was encrypted under (its id is shown) is lost, and that the loaded key is a new one")
 
 	cmd.AddCommand(list, rekey, restore, discard)
 	return cmd
@@ -197,7 +209,11 @@ func outsideStateDir(dir, file string) error {
 	if r, err := filepath.EvalSymlinks(d); err == nil {
 		d = r
 	}
-	if r, err := filepath.EvalSymlinks(filepath.Dir(f)); err == nil {
+	// the file itself may be a symlink into the state directory; one that does not exist yet (a key to be
+	// generated) is resolved by its directory
+	if r, err := filepath.EvalSymlinks(f); err == nil {
+		f = r
+	} else if r, err := filepath.EvalSymlinks(filepath.Dir(f)); err == nil {
 		f = filepath.Join(r, filepath.Base(f))
 	}
 	if rel, err := filepath.Rel(d, f); err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
@@ -236,21 +252,62 @@ func loadNewKey(cmd *cobra.Command, stateDir string) (*statekey.Key, error) {
 		if _, err := rand.Read(b); err != nil {
 			return nil, err
 		}
-		f, err := os.OpenFile(file, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-		if err != nil {
-			return nil, fmt.Errorf("--new-key-file: %w", err)
-		}
-		_, werr := f.WriteString(base64.StdEncoding.EncodeToString(b) + "\n")
-		if cerr := f.Close(); werr == nil {
-			werr = cerr
-		}
-		if werr != nil {
-			os.Remove(file)
-			return nil, werr
+		// the new key is on disk, file and directory entry both, before anything is encrypted under it: a key
+		// that is lost after the store was re-encrypted loses the store
+		if err := writeKeyFileDurably(file, base64.StdEncoding.EncodeToString(b)+"\n"); err != nil {
+			return nil, fmt.Errorf("--new-key-file: the new key could not be written durably, nothing was re-encrypted: %w", err)
 		}
 		fmt.Fprintf(cmd.ErrOrStderr(), "wrote a new state key to %s (mode 0600)\n", file)
 	}
 	return statekey.LoadKey("RACKBOOK_NEW_KEY", "", file)
+}
+
+// test seams for writeKeyFileDurably
+var (
+	syncKeyFile = func(f *os.File) error { return f.Sync() }
+	syncKeyDir  = func(dir string) error {
+		d, err := os.Open(dir)
+		if err != nil {
+			return err
+		}
+		defer d.Close()
+		return d.Sync()
+	}
+)
+
+// writeKeyFileDurably writes content to path, which must not exist, with mode 0600: a temporary file in the same
+// directory is written and fsynced, then linked to its name (a link never replaces a file), and the directory is fsynced.
+// On any failure nothing is left behind.
+func writeKeyFileDurably(path, content string) error {
+	dir := filepath.Dir(path)
+	f, err := os.CreateTemp(dir, ".newkey-*")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	defer os.Remove(tmp)
+	if err := f.Chmod(0o600); err != nil && runtime.GOOS != "windows" {
+		f.Close()
+		return err
+	}
+	_, werr := f.WriteString(content)
+	if werr == nil {
+		werr = syncKeyFile(f)
+	}
+	if cerr := f.Close(); werr == nil {
+		werr = cerr
+	}
+	if werr != nil {
+		return werr
+	}
+	if err := os.Link(tmp, path); err != nil {
+		return err
+	}
+	if err := syncKeyDir(dir); err != nil {
+		os.Remove(path)
+		return err
+	}
+	return nil
 }
 
 // offlineSession prepares an offline command: the state key, the lock of the state directory (so a
@@ -283,5 +340,25 @@ func offlineSession(cmd *cobra.Command) (accounts.Offline, func(), error) {
 		op = "unknown"
 	}
 	off := accounts.Offline{StateDir: dir, Key: key, Log: l, Operator: op, Out: cmd.OutOrStdout(), Logger: logger}
-	return off, func() { l.Close(); unlock() }, nil
+	return off, func() { l.Close(); unlock(); key.Zero() }, nil
+}
+
+// listTokenNames reads the names of every API token of a clone of the data repository. Names only.
+func listTokenNames(repo string) ([]string, error) {
+	b, err := os.ReadFile(filepath.Join(repo, filepath.FromSlash(tokens.File)))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	ts, err := tokens.Parse(b)
+	if err != nil {
+		return nil, fmt.Errorf("%s does not parse: %w", tokens.File, err)
+	}
+	var out []string
+	for _, t := range ts {
+		out = append(out, t.Name)
+	}
+	return out, nil
 }

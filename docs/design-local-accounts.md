@@ -145,6 +145,7 @@ sign-in with a single factor; Rackbook avoids that).
 | **Someone with push access to the data repository** | Settings are in `rackbook.yml`, so push access is admin, as it already is for `auth.roles`. Hard bounds stay in code (the NIST cap ≤ 100, argon2id parameters, lock ≤ 1 week, throttle bounds), and secrets are not in Git. | By design. |
 | **The identity provider fails or is compromised** | Local admins remain (break-glass, 2.1). A compromised provider can sign in anyone matching SSO entries, as today. | |
 | **An offline copy of the state dir** | Accounts and secrets are encrypted, `usernames` is MACed, the admin channel is mutually authenticated and encrypted, all under the state key, which is not in the state dir (section 4, 11.3). A planted or torn file stops the server instead of rolling anything back (4.3). | A copy *with* the key gives argon2id hashes, TOTP secrets, session secrets and the stored provider secrets. Response in 5.10. |
+| **Rolling back the store together with the end of the audit log** | The start compares the store with the log (4.3, 4.4), so an old store beside the current log is a gap. | **Not detected by the account store itself:** someone who can write the state directory can, without the key, put back an older copy of `accounts.enc` *and* cut the audit log back to the same point with `head.json` rewritten to match; the store and the log then agree. The daily anchor (`audit.anchor: daily`, [design-audit.md](design-audit.md) 3.1) catches the cut log once the anchored day is inside the cut, and so does any copy of the log kept outside the state directory (a log collector, `GET /api/activity?format=jsonl`). Run one of them (4.7). |
 | **A stolen session cookie** | `Secure`, `HttpOnly`, `SameSite=Lax`, `__Host-`; fresh authentication for sensitive actions; three failed re-authentications end every session of a local account; *Sign out everywhere* and *Disable* end sessions at once. | Reading and ordinary edits until expiry or revocation. |
 | **A forged local session** | MACed under a key derived from the session key **and** a per-account secret in the encrypted store (section 6). | Someone with both keys and the store holds everything already. |
 | **An insider admin** | A reset replaces only what it names; only a separate, warned *full reset* hands over an account (5.8). Every reset revokes tokens and grants, ends sessions and is shown to the holder. All in the hash-chained audit log. | A full reset lets an admin act as the victim; the victim notices and the log tells the story. |
@@ -177,7 +178,8 @@ decodes to N bytes, need at least 32", "the state key must differ from the sessi
 with distinct `info`: `rackbook accounts v1`, `rackbook secrets v1`, `rackbook usernames v1`, `rackbook admin
 channel v1`, `rackbook attempts v1`. Each encrypted file has a plaintext header `{"v": 1, "alg": "AES-256-GCM",
 "kid": "<8 hex>"}` used as additional authenticated data, a fresh 96-bit nonce, and the ciphertext; everything else
-is inside the AEAD.
+is inside the AEAD. (Built with XChaCha20-Poly1305 and a 192-bit random nonce instead of AES-256-GCM and 96 bits, see
+"As built, piece 2".)
 
 - **Why separate from the session key:** rotating the session key logs everyone out; it must not destroy accounts.
 - **Provisioning:** `openssl rand -base64 32`, kept with the deployment's other secrets (the infra repository's SOPS
@@ -299,6 +301,10 @@ month back by at most about one month past the configured retention, and every d
 - Back up the state dir and, **separately**, the key.
 - Restoring both from the same backup is consistent and is not detected. Cookies issued after the backup are refused,
   but older cookies work again: after any restore run `rackbook accounts end-sessions --all` and review **Users**.
+- **What this does not catch.** If the state directory is rolled back together with the *end of the audit log*, `head.json`
+  rewritten to match, the store and the log agree and the account store cannot tell: it only compares the two. That needs
+  write access to the state directory (and the old files), but not the key. Two things catch it from outside: the daily audit
+  anchor in Git (`audit.anchor: daily`), and any copy of the log kept elsewhere. Enable one when local accounts are on.
 - Lost key: `rackbook accounts discard-store` moves the stores aside, re-MACs `usernames` and records
   `account_store_problem` (`code: discarded`); everyone is invited again under new usernames, and the provider
   secrets are entered again in the console.
@@ -1046,7 +1052,7 @@ and the online admin channel with `recover`, `invite`, `reset`, `unlock`, `disab
 - **The common-password list is short.** The design asks for the 100 000 most common passwords; that list is not in the repository and
   was not downloaded. `internal/accounts/commonpasswords.txt` holds about 270 entries of 12 characters or more (shorter ones are
   refused for their length first), and a password that is one to four characters repeated is refused as well. The file is read
-  with `go:embed`: replacing it with the full list changes nothing else. **This is open until the list is added.**
+  with `go:embed`: replacing it with the full list changes nothing else. **This is open until the list is added, and it must be in place before piece 4 enables sign-in** (see "Review fixes").
 - **"Contains the username or the host name"** applies to names of three characters or more: a one- or two-letter username
   would otherwise be found in nearly every password.
 - **TOTP**: `Store.UseTOTP` verifies and records `last_step` in one counter write under the writer, so one code passes once, also across
@@ -1054,6 +1060,37 @@ and the online admin channel with `recover`, `invite`, `reset`, `unlock`, `disab
 - **argon2id** runs in `Hasher` with three slots (two general, one reserved for `ClassPriority`) and a 5-second queue; the parameters
   are the constants of 4.2 and `NeedsRehash` compares a stored hash with them. The verifier refuses stored parameters beyond sane
   bounds. Nothing calls it yet.
+- **Review fixes (2026-11-28).**
+  - *Gap and untrusted-log recovery.* `accept-restore` re-applies the store-level events in a gap in order: an earlier
+    `account_store_restored`, or an `account_store_problem` with `audit_truncated`, `month_pruned` or `discarded`, resets every account.
+    When the log cannot be trusted (`audit_truncated`, `month_pruned`, or such an earlier event) it also re-applies every
+    restrictive event that is still readable after the store's seq, resets every account, revokes every OAuth grant in
+    `oauth-grants.json`, and writes the names of every API token as pending revocations of every account when `--repo` (a clone of the data repository) lets it
+    list them (otherwise it says to revoke them by hand). Everything is printed. Resetting a disabled account clears its pending link.
+  - *Change events* are recognised by their names (`accountChangeEvents`, `secretsChangeEvents`) and the document's marker; a
+    `change:` detail on any other event counts for nothing, and the writer refuses an event name outside its set.
+  - *Pending files.* An older audited `.pending` is set aside as evidence (4.3 step 5); only one that no retained event names is deleted.
+  - *Temporary files* are created with `O_EXCL` and mode 0600 after the old one (a symlink included) is removed; start removes every
+    `.tmp` of the accounts directory, `secrets.enc.*.tmp` and `oauth-grants.json.tmp`, links included.
+  - *Counters.* `Store.Counter` may change only counter fields (4.2) and the restriction states they drive; anything else is `ErrNotCounterOnly`.
+  - *Retention pin.* A store file that is missing while the log has its change events, or that cannot be read (no key, wrong key), pins the
+    oldest month with a change event of that document. `rackbook serve` has no key yet and builds the pin that way before it opens the log, so
+    `--audit-retention-months` never deletes a month from the oldest account-store change on while files exist; this is the choice made for the
+    time before serve reads the key, and piece 3 or 4 replaces it with the exact month. The pin outranks the "unfinished delete" of `head.json`.
+    A hold that happened before the stores opened is remembered for each store, and each writes its own checkpoint.
+  - *Audit durability.* If the line is written and fsynced but closing the file or the fsync of the directory of a new month file fails, the line
+    keeps its seq (the next append never reuses it) and `RecordSync` returns `ErrNotDurable`; the account writer then stops and leaves `.pending`
+    for the next start to finish.
+  - *Cipher.* XChaCha20-Poly1305 with a random 192-bit nonce replaces AES-256-GCM with 96 bits, because the store is rewritten at every counter and
+    a random 96-bit nonce has a bound near 2^32 messages per key. Nothing was deployed, so no migration is needed. Keys are zeroed when a command ends.
+  - *Passwords.* Stored hashes are refused as corrupt beyond one slot's memory (64 MiB), 6 passes and 8 lanes. The minimum length counts the smaller of
+    the typed and the NFKC-folded length (U+FDFA is one character, not eighteen), the maximum the larger.
+  - *Common-password list.* **The full list (at least 10 000 entries, the design says 100 000) must be in place before piece 4 enables sign-in.** A test,
+    `TestFullCommonPasswordListIsInPlaceBeforeSignIn`, fails below 10 000 entries and is skipped until the constant `piece4SignInBuilt` is set.
+  - *discard-store* shows the key id it tried and the one each file was encrypted under, and refuses unless `--key-is-lost` says that key is lost.
+  - *rekey --generate* writes the key file through a temporary file, fsyncs it, links it into place and fsyncs the directory before anything is
+    re-encrypted; a failure leaves nothing behind. A key file that is a symlink into the state directory is refused.
+  - *wrong_key* messages say which key id each file needs.
 - **New dependency:** none. `golang.org/x/crypto` (argon2) moved from indirect to direct in `go.mod`; `crypto/hkdf` is the standard
   library, and `golang.org/x/text` (`norm`, `cases`) was already a direct dependency.
 

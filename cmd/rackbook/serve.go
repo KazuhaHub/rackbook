@@ -19,6 +19,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 
+	"github.com/kazuhahub/rackbook/internal/accounts"
 	"github.com/kazuhahub/rackbook/internal/ansiblerepo"
 	"github.com/kazuhahub/rackbook/internal/api"
 	"github.com/kazuhahub/rackbook/internal/audit"
@@ -169,7 +170,14 @@ func runServe(cmd *cobra.Command, _ []string) error {
 			return err
 		}
 		defer unlock()
-		if auditLog, err = audit.Open(filepath.Join(stateDir, "audit"), audit.Options{Addr: addrMode, RetentionMonths: retention, Logger: logger, InfraPath: filepath.Join(stateDir, "infra-audit.jsonl")}); err != nil {
+		// Retention runs while the log opens. Account state may exist under --state-dir (the offline
+		// commands made it); serve has no state key yet and cannot read it, so the pin is conservative:
+		// no month from the oldest account or secrets change event on is deleted (design-local-accounts.md, 4.6).
+		pin := accounts.NewPin(stateDir, nil)
+		if m := pin.Month(); m != "" && retention > 0 {
+			logger.Info("audit retention keeps the months from the oldest account-store change on", "from", m)
+		}
+		if auditLog, err = audit.Open(filepath.Join(stateDir, "audit"), audit.Options{Addr: addrMode, RetentionMonths: retention, Logger: logger, Pin: pin, InfraPath: filepath.Join(stateDir, "infra-audit.jsonl")}); err != nil {
 			return err
 		}
 		defer auditLog.Close()
