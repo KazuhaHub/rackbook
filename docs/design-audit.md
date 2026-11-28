@@ -547,7 +547,7 @@ role editor (part 2) and local accounts. Where it differs from the text above:
 - **`claims_absolute`.** Default 24 h; an explicit value must be positive and at most `absolute` (a default under a shorter
   `absolute` just gives way). It is read at start with `idle` and `absolute`. Claims count when "the effective role is higher than the identity entries alone give, or the auditor capability
   exists only through claims": `Identity.FromClaims`, computed by `Authenticator.Evaluate`. An identity entry that grants
-  the same role wins; `*` counts as an identity entry. The rule is `Identity.FromClaims`, computed by `Authenticator.Evaluate`. There is no flag in the cookie any more (a first version had one and it could be replayed
+  the same role wins; `*` counts as an identity entry. There is no flag in the cookie any more (a first version had one and it could be replayed
   or raced): `Service.claimsLimited` decides on every request from the cookie's identity and claims against the
   current config, with the same identity-wins rule, cached per session, claims and config generation for cost only. While the
   config does not load, a session that carries any groups or app roles gets the claims limit (fail safe). `role_changed`'s

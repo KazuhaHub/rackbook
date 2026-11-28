@@ -995,7 +995,7 @@ that is replayed or requests that race cannot escape it, and a config change tak
 group:ops]` losing `alice@x` ends a 30-hour-old session on its next request, and putting `alice@x` back restores the
 normal limit. (The answer is cached in memory per session, claims and config version, for cost only.) While `rackbook.yml`
 does not load, roles are capped at viewer and would hide what claims give, so a session that carries any groups or app
-roles gets the claims limit (fail safe); one that carries none is unaffected. **OAuth grants** made
+roles gets the claims limit (fail safe); one that carries none is unaffected. In a deployment whose provider sends groups, a broken `rackbook.yml` therefore signs out everyone whose sign-in is older than `claims_absolute`, even people who hold their role by name; they can sign in again, and fixing the file does not bring the old sessions back. **OAuth grants** made
 through the built-in authorization server (MCP clients) keep the groups and roles of the sign-in that approved
 them for `claims_absolute`, counted from the earlier of the approving session's sign-in and the approval (so a session that
 signed in 23h59m ago gives its claims about a minute); a grant with no recorded sign-in time has none left. After
