@@ -30,6 +30,11 @@ type Subject struct {
 	Groups []string `json:"groups,omitempty"`
 	// AppRoles is the ID token's roles claim at approval, for app-role: entries.
 	AppRoles []string `json:"app_roles,omitempty"`
+	// SignedIn is when the session that approved the grant signed in. The claims above
+	// are as old as that sign-in, so their bound starts there, or at the grant's creation
+	// if that is earlier (Server.effective). Zero (a grant made before it was recorded)
+	// means the claims no longer count.
+	SignedIn time.Time `json:"signed_in,omitzero"`
 }
 
 // Client is a client registered with RFC 7591.

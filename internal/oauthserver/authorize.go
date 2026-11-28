@@ -64,7 +64,7 @@ func humanSubject(r *http.Request) (Subject, bool) {
 	case auth.MethodToken, auth.MethodOAuth, auth.MethodMCPHub:
 		return Subject{}, false
 	}
-	sub := Subject{ID: roles.FoldASCII(id.ID), Email: id.Email, Name: id.Name, Method: id.Method, Groups: boundGroups(id.Groups), AppRoles: boundAppRoles(id.AppRoles)}
+	sub := Subject{ID: roles.FoldASCII(id.ID), Email: id.Email, Name: id.Name, Method: id.Method, Groups: boundGroups(id.Groups), AppRoles: boundAppRoles(id.AppRoles), SignedIn: id.OIDCAt}
 	return sub, true
 }
 

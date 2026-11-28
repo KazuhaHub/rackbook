@@ -593,6 +593,40 @@ func TestGrantClaimsStopCountingAfterClaimsAbsolute(t *testing.T) {
 			if r := e.refresh(cidEd, r.str("refresh_token")); r.str("error") != "invalid_grant" {
 				t.Fatalf("no identity role left: %s", r.body)
 			}
+			// a grant that ends for want of its claims says so
+			cid2, tok2 := e.login("ed@example.com", "c2")
+			e.setRoles(&roles.Spec{Admin: []string{boss, "app-role:Ops", "group:ops"}})
+			e.clock.advance(25 * time.Hour)
+			if r := e.refresh(cid2, tok2.refresh); r.str("error") != "invalid_grant" || r.str("reason") != "claims_expired" || r.str("error_description") == "" {
+				t.Fatalf("%s", r.body)
+			}
 		})
+	}
+}
+
+// The claims are as old as the sign-in that approved the grant, so their bound starts there: a
+// session that signed in 23h59m ago and approves a grant gives its claims about a minute.
+func TestGrantClaimsAreBoundedFromTheApprovingSignIn(t *testing.T) {
+	e := newEnv(t, opts{})
+	e.claimRoles = "Ops"
+	e.setRoles(&roles.Spec{Admin: []string{"app-role:Ops"}, Viewer: []string{"ed@example.com"}})
+	e.signedIn = e.clock.now().Add(-(24*time.Hour - time.Minute)).UTC().Format(time.RFC3339)
+	cid, tok := e.login("ed@example.com", "c")
+	canWrite := func() bool {
+		for _, g := range e.get("ed@example.com", "/api/account/grants", "X-Test-Signin", e.signedIn).json()["grants"].([]any) {
+			if m := g.(map[string]any); m["id"] == tok.grant {
+				return m["canWrite"] == true
+			}
+		}
+		t.Fatal("not listed")
+		return false
+	}
+	if !canWrite() {
+		t.Fatal("the claim counts for the first minute")
+	}
+	e.clock.advance(2 * time.Minute)
+	r := e.refresh(cid, tok.refresh)
+	if r.StatusCode != 200 || canWrite() {
+		t.Fatalf("after the minute the grant is evaluated by identity alone (viewer): %d %s", r.StatusCode, r.body)
 	}
 }
