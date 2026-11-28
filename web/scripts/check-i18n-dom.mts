@@ -364,6 +364,12 @@ const pages = [
   ...(meta.modules?.[0] ? [`/modules/${meta.modules[0].name}`] : []),
   '/auth/login',
   '/auth/login?error=expired',
+  '/auth/login?local=1',
+  '/auth/local/reauth',
+  '/auth/local/setup',
+  '/auth/local/setup#invite-demo',
+  '/auth/local/setup#reset-password-demo',
+  '/auth/local/setup#reset-factor-demo',
 ]
 
 // Text that comes from the ledger itself (schema titles, record values, notes) is

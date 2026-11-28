@@ -54,8 +54,20 @@ type Options struct {
 	Now      func() time.Time
 	Sleep    func(time.Duration) // a test seam; nil = time.Sleep
 	Logger   *slog.Logger
+	// Captcha is the hook of piece 5; nil = the CAPTCHA is off.
+	Captcha Captcha
 	// SkipCalibration leaves the hash-only sample empty at start (tests fill it themselves).
 	SkipCalibration bool
+}
+
+// Captcha is the hook point of the CAPTCHA (docs/design-local-accounts.md, 8.5; piece 5). It is off: the server gives no
+// implementation, the throttle and the NIST cap always apply, and a throttled network is refused until the window ends.
+// A later piece sets Options.Captcha and the sign-in asks it before the throttle, as 8.1 orders.
+type Captcha interface {
+	// Required says a CAPTCHA must be solved for this attempt now (the trigger of 8.5). name is the typed name.
+	Required(bucket, name string) bool
+	// Verify checks the solve the request carries; an error refuses the attempt (401 captcha_required).
+	Verify(ctx context.Context, attempt, solve, remoteIP string) error
 }
 
 // Service implements the sign-in of local accounts.

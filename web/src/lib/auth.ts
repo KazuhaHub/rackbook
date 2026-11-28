@@ -55,6 +55,10 @@ export type UsersResponse = { users: ManagedUser[]; passkeysEnabled: boolean; pa
 
 export type LoginConfig = {
   oidc: boolean
+  /** how the sign-in page is shaped (auth.login.mode, already degraded to local_only without single sign-on) */
+  mode?: 'dual' | 'sso_first' | 'sso_redirect' | 'local_only'
+  /** local accounts are offered: there is a state key and a state directory */
+  local?: boolean
   passkeys: boolean
   /** text of the sign-in button; empty = the generic one */
   label: string

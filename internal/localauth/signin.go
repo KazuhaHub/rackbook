@@ -33,7 +33,8 @@ func (s *Service) attempt(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusInternalServerError, "internal", "internal error")
 		return
 	}
-	reply(w, http.StatusOK, map[string]any{"attempt": token, "captcha": false, "passkey": opts})
+	needed := s.o.Captcha != nil && s.o.Captcha.Required(bucket, "")
+	reply(w, http.StatusOK, map[string]any{"attempt": token, "captcha": needed, "passkey": opts})
 }
 
 type signInRequest struct {
@@ -42,6 +43,7 @@ type signInRequest struct {
 	Code     string          `json:"code"`
 	Passkey  json.RawMessage `json:"passkey"`
 	Attempt  string          `json:"attempt"`
+	Captcha  string          `json:"captcha"`
 	Return   string          `json:"return"`
 }
 
@@ -97,6 +99,15 @@ func (s *Service) signIn(w http.ResponseWriter, r *http.Request) {
 	if s.tables.Flood(bucket) {
 		s.refuseEarly(w, f, "flood")
 		return
+	}
+	// the CAPTCHA, when one is configured and needed (piece 5): an unsolved one is the same answer for every name
+	if c := s.o.Captcha; c != nil && c.Required(bucket, name) {
+		if err := c.Verify(ctx, in.Attempt, in.Captcha, addr); err != nil {
+			f.reason = "captcha"
+			s.record(f)
+			fail(w, http.StatusUnauthorized, "captcha_required", "Please confirm you are a person.")
+			return
+		}
 	}
 	// a passkey assertion is verified before any hash: nobody can guess with it, so a verified one goes past the
 	// throttle and the locks (8.2, 8.3)

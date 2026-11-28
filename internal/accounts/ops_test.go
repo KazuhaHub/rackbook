@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/kazuhahub/rackbook/internal/audit"
 )
 
 var rootActor = Actor{Identity: "local:root", Name: "Root", Method: "local", Addr: "203.0.113.1"}
@@ -301,4 +303,44 @@ func contains(l []string, s string) bool {
 		}
 	}
 	return false
+}
+
+// A re-authentication proves the password and the second factor again, so it may reset reauth_failures (5.7), and nothing
+// else that a failure raised.
+func TestReauthEventMayResetOnlyReauthFailures(t *testing.T) {
+	e := newEnv(t)
+	s := e.mustOpen()
+	e.setupActive(s, "alice")
+	raise := func(st *State) error {
+		a := st.Accounts["alice"]
+		a.ReauthFailures, a.ConsecutiveFailures = 2, 3
+		return nil
+	}
+	if err := s.Counter(nil, raise); err != nil {
+		t.Fatal(err)
+	}
+	reset := func(st *State) error { st.Accounts["alice"].ReauthFailures = 0; return nil }
+	if err := s.Counter(nil, reset); !errors.Is(err, ErrNotCounterOnly) {
+		t.Fatalf("without an event: %v", err)
+	}
+	other := audit.Event{Event: "reauth", Identity: "local:bob"}
+	if err := s.Counter(&other, reset); !errors.Is(err, ErrNotCounterOnly) {
+		t.Fatalf("a re-authentication of another account: %v", err)
+	}
+	both := func(st *State) error {
+		a := st.Accounts["alice"]
+		a.ReauthFailures, a.ConsecutiveFailures = 0, 0
+		return nil
+	}
+	ev := audit.Event{Event: "reauth", Identity: "local:alice"}
+	if err := s.Counter(&ev, both); !errors.Is(err, ErrNotCounterOnly) {
+		t.Fatalf("a re-authentication must not clear consecutive_failures: %v", err)
+	}
+	ev = audit.Event{Event: "reauth", Identity: "local:alice"}
+	if err := s.Counter(&ev, reset); err != nil {
+		t.Fatalf("%v", err)
+	}
+	if a := s.Snapshot().Accounts["alice"]; a.ReauthFailures != 0 || a.ConsecutiveFailures != 3 {
+		t.Fatalf("%+v", a)
+	}
 }

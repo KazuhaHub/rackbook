@@ -28,6 +28,8 @@ const Expiring = lazy(retryImport(() => import('@/pages/Expiring')))
 const Account = lazy(retryImport(() => import('@/pages/Account')))
 const Users = lazy(retryImport(() => import('@/pages/Users')))
 const Login = lazy(retryImport(() => import('@/pages/Login')))
+const LocalSetup = lazy(retryImport(() => import('@/pages/LocalSetup')))
+const LocalReauth = lazy(retryImport(() => import('@/pages/LocalReauth')))
 const Tokens = lazy(retryImport(() => import('@/pages/Tokens')))
 const AdminGrants = lazy(retryImport(() => import('@/pages/AdminGrants')))
 // the page the built-in authorization server sends the person to
@@ -147,6 +149,26 @@ export default function App() {
                     <ErrorBoundary>
                       <Suspense fallback={<div className="p-8"><PageFallback /></div>}>
                         <Login />
+                      </Suspense>
+                    </ErrorBoundary>
+                  }
+                />
+                <Route
+                  path="/auth/local/setup"
+                  element={
+                    <ErrorBoundary>
+                      <Suspense fallback={<div className="p-8"><PageFallback /></div>}>
+                        <LocalSetup />
+                      </Suspense>
+                    </ErrorBoundary>
+                  }
+                />
+                <Route
+                  path="/auth/local/reauth"
+                  element={
+                    <ErrorBoundary>
+                      <Suspense fallback={<div className="p-8"><PageFallback /></div>}>
+                        <LocalReauth />
                       </Suspense>
                     </ErrorBoundary>
                   }

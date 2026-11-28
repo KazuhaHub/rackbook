@@ -4,6 +4,7 @@ import { useQuery } from '@tanstack/react-query'
 import { CircleAlert, Fingerprint, KeyRound, LogOut, ShieldX } from 'lucide-react'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
+import { LocalSignInForm } from '@/components/LocalSignInForm'
 import { BrandMark } from '@/components/BrandMark'
 import { Skeleton } from '@/components/ui/skeleton'
 import { t } from '@/i18n'
@@ -31,6 +32,7 @@ export default function Login() {
   const [redirecting, setRedirecting] = useState(false)
   const [passkeyState, setPasskeyState] = useState<'idle' | 'working'>('idle')
   const [passkeyError, setPasskeyError] = useState('')
+  const [revealed, setRevealed] = useState(false)
 
   const name = cfg?.name || t.appName
   useEffect(() => {
@@ -39,6 +41,13 @@ export default function Login() {
   useEffect(() => {
     document.title = `${t.auth.login.title} · ${name}`
   }, [name])
+
+  // how the page is shaped (design-local-accounts.md, 2.1 and 12): the mode says what is shown, ?local=1 shows the form
+  // in every mode (the way in for administrators when the provider breaks)
+  const sso = cfg ? cfg.oidc && cfg.mode !== 'local_only' : true
+  const offersLocal = !!cfg?.local
+  const formShown = offersLocal && (!sso || cfg?.mode === 'dual' || cfg?.mode === 'local_only' || params.get('local') === '1' || revealed)
+  const canReveal = offersLocal && sso && !formShown
 
   const start = '/auth/oidc/start' + (ret ? `?return=${encodeURIComponent(ret)}` : '')
   const known = t.auth.login.errors[code]
@@ -107,7 +116,7 @@ export default function Login() {
 
           {isPending ? (
             <Skeleton className="h-9 w-full" />
-          ) : (
+          ) : sso ? (
             <Button
               size="lg"
               className="h-10 w-full"
@@ -116,6 +125,25 @@ export default function Login() {
             >
               <KeyRound />
               {redirecting ? t.auth.login.redirecting : cfg?.label || t.auth.login.oidc}
+            </Button>
+          ) : null}
+
+          {formShown && sso && (
+            <div className="flex items-center gap-3 text-xs text-muted-foreground">
+              <span className="h-px flex-1 bg-border" />
+              {t.auth.login.or}
+              <span className="h-px flex-1 bg-border" />
+            </div>
+          )}
+          {formShown && (
+            <section aria-label={t.auth.local.localTitle} className="space-y-2">
+              {sso && <h2 className="text-sm font-medium">{t.auth.local.localTitle}</h2>}
+              <LocalSignInForm kind="login" ret={ret} autoFocus={!sso} />
+            </section>
+          )}
+          {canReveal && (
+            <Button type="button" variant="ghost" className="w-full" onClick={() => setRevealed(true)}>
+              {t.auth.local.useLocal}
             </Button>
           )}
 

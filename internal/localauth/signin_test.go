@@ -1,8 +1,13 @@
 package localauth
 
 import (
+	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -698,4 +703,127 @@ func TestEveryAnswerIsNoStoreJSON(t *testing.T) {
 		t.Fatalf("%v", r.Header)
 	}
 	_ = http.StatusOK
+}
+
+type fakeCaptcha struct{ required bool }
+
+func (f *fakeCaptcha) Required(bucket, name string) bool { return f.required }
+func (f *fakeCaptcha) Verify(_ context.Context, _, solve, _ string) error {
+	if solve == "right" {
+		return nil
+	}
+	return errors.New("wrong")
+}
+
+// The CAPTCHA is piece 5: off here, with a hook that the sign-in asks before the throttle when one is set.
+func TestCaptchaHookPointIsOffAndAsksBeforeTheThrottleWhenSet(t *testing.T) {
+	e := newEnv(t, envOpts{})
+	alice := e.addAccount("alice")
+	if r := e.browser(addrA).post("/auth/local/attempt", map[string]string{}); r.json()["captcha"] != false {
+		t.Fatalf("%s", r.Body)
+	}
+	if r := e.login1(e.browser(addrA), alice, goodPassword, e.code(alice)); r.Status != 200 {
+		t.Fatalf("with no CAPTCHA configured: %d %s", r.Status, r.Body)
+	}
+	fc := &fakeCaptcha{required: true}
+	e2 := newEnv(t, envOpts{mutate: func(o *Options) { o.Captcha = fc }})
+	alice2 := e2.addAccount("alice")
+	before := e2.svc.sample.seq()
+	r := e2.login1(e2.browser(addrA), alice2, goodPassword, e2.code(alice2))
+	if r.Status != 401 || r.code() != "captcha_required" || e2.svc.sample.seq() != before {
+		t.Fatalf("an unsolved CAPTCHA must refuse before any hash: %d %s", r.Status, r.Body)
+	}
+	if a := e2.browser(addrA).post("/auth/local/attempt", map[string]string{}); a.json()["captcha"] != true {
+		t.Fatalf("%s", a.Body)
+	}
+	ok := e2.browser(addrA).post("/auth/local/login", map[string]string{"username": "alice", "password": goodPassword, "code": e2.code(alice2), "captcha": "right"})
+	if ok.Status != 200 {
+		t.Fatalf("%d %s", ok.Status, ok.Body)
+	}
+}
+
+// Nothing a person types is in a log or an audit event: passwords, codes, typed names of accounts that do not exist.
+func TestNoPasswordOrCodeIsLoggedOrAudited(t *testing.T) {
+	logs := &syncBuf{}
+	e := newEnv(t, envOpts{mutate: func(o *Options) {
+		o.Logger = slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	}})
+	alice := e.addAccount("alice")
+	secret1, secret2 := "typed-password-never-logged", "another-secret-pass-phrase"
+	var codes []string
+	for i := 0; i < 3; i++ {
+		e.login1(e.browser(addrA), alice, secret1, "654321")
+		e.login1(e.browser(addrB), &person{name: "ghostname"}, secret2, "111222")
+		codes = append(codes, "654321", "111222")
+	}
+	b := e.browser(addrA)
+	code := e.code(alice)
+	e.login1(b, alice, goodPassword, code)
+	b.post("/auth/local/reauth", map[string]string{"password": secret1, "code": "999888"})
+	var all strings.Builder
+	all.WriteString(logs.String())
+	for _, ev := range e.events("") {
+		raw, _ := json.Marshal(ev)
+		all.Write(raw)
+	}
+	e.svc.refused.Flush(e.clk.Now(), true)
+	for _, ev := range e.events("") {
+		raw, _ := json.Marshal(ev)
+		all.Write(raw)
+	}
+	for _, s := range append([]string{secret1, secret2, goodPassword, "ghostname", code, "999888"}, codes...) {
+		if strings.Contains(all.String(), s) {
+			t.Fatalf("%q is in a log or an audit event", s)
+		}
+	}
+}
+
+// The page's modes (2.1): sso_redirect goes straight to the provider unless ?local=1 or an error asks for the page, and
+// /auth/config says how to shape it.
+func TestLoginModesShapeThePageAndTheRedirect(t *testing.T) {
+	get := func(e *env, path string) (int, string, string) {
+		r := httptest.NewRequest("GET", path, nil)
+		w := httptest.NewRecorder()
+		e.mux.ServeHTTP(w, r)
+		return w.Code, w.Header().Get("Location"), w.Body.String()
+	}
+	e := newEnv(t, envOpts{sso: true, auth: "  login: {mode: sso_redirect}\n"})
+	if code, loc, _ := get(e, "/auth/login"); code != 303 || loc != "/auth/oidc/start" {
+		t.Fatalf("sso_redirect: %d %q", code, loc)
+	}
+	if code, loc, _ := get(e, "/auth/login?return=%2Frecords%2Fx"); code != 303 || loc != "/auth/oidc/start?return=%2Frecords%2Fx" {
+		t.Fatalf("with a return: %d %q", code, loc)
+	}
+	for _, p := range []string{"/auth/login?local=1", "/auth/login?error=idp_error", "/auth/login?error=logged_out"} {
+		if code, _, body := get(e, p); code != 200 || !strings.Contains(body, "page") {
+			t.Fatalf("%s: %d", p, code)
+		}
+	}
+	_, _, cfg := get(e, "/auth/config")
+	var j map[string]any
+	_ = json.Unmarshal([]byte(cfg), &j)
+	if j["mode"] != "sso_redirect" || j["local"] != true || j["oidc"] != true {
+		t.Fatalf("%v", j)
+	}
+	// without single sign-on every mode is local_only, and nothing redirects
+	e2 := newEnv(t, envOpts{auth: "  login: {mode: sso_redirect}\n"})
+	if code, _, _ := get(e2, "/auth/login"); code != 200 {
+		t.Fatalf("no SSO: %d", code)
+	}
+	_, _, cfg = get(e2, "/auth/config")
+	_ = json.Unmarshal([]byte(cfg), &j)
+	if j["mode"] != "local_only" || j["oidc"] != false {
+		t.Fatalf("%v", j)
+	}
+	for _, m := range []string{"dual", "sso_first", "local_only"} {
+		e3 := newEnv(t, envOpts{sso: true, auth: "  login: {mode: " + m + "}\n"})
+		if code, _, _ := get(e3, "/auth/login"); code != 200 {
+			t.Fatalf("%s: %d", m, code)
+		}
+		_, _, cfg = get(e3, "/auth/config")
+		_ = json.Unmarshal([]byte(cfg), &j)
+		if j["mode"] != m {
+			t.Fatalf("%s: %v", m, j)
+		}
+	}
 }
