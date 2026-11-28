@@ -1328,8 +1328,9 @@ and the online admin channel with `recover`, `invite`, `reset`, `unlock`, `disab
 - **Tests of timing** run the Kolmogorov-Smirnov comparison with cheap argon2id parameters and 150 samples each (`accounts.NewHasherCost`
   is the seam; the server never calls it), with a critical value at alpha = 0.00001 because the machine is shared.
 - **zh-TW** uses 通行密鑰 for a passkey, as the console already did.
-- **`piece4SignInBuilt` stays false.** The full common-password list (at least 10 000 entries) is not in the repository yet
-  (about 270 entries are), so the guard test of piece 2 is still skipped; the constant is to be set when the list is in.
+- **`piece4SignInBuilt` is true, and the full list is still missing.** The full common-password list (at least 10 000 entries) is not in
+  the repository yet (about 270 entries are). The guard test of piece 2 is active and now asserts that the run-time gate (above) agrees
+  with the list instead of failing on its size: local sign-in is closed while the list is short, and opens when it is installed.
 
 ---
 
