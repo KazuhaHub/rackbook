@@ -29,12 +29,14 @@ import (
 	"github.com/kazuhahub/rackbook/internal/config"
 	"github.com/kazuhahub/rackbook/internal/githubapp"
 	"github.com/kazuhahub/rackbook/internal/gitstore"
+	"github.com/kazuhahub/rackbook/internal/localauth"
 	"github.com/kazuhahub/rackbook/internal/login"
 	"github.com/kazuhahub/rackbook/internal/mcpauth"
 	"github.com/kazuhahub/rackbook/internal/mcpserver"
 	"github.com/kazuhahub/rackbook/internal/modules"
 	"github.com/kazuhahub/rackbook/internal/oauthserver"
 	"github.com/kazuhahub/rackbook/internal/prefs"
+	"github.com/kazuhahub/rackbook/internal/roles"
 	"github.com/kazuhahub/rackbook/internal/routes"
 	"github.com/kazuhahub/rackbook/internal/sops"
 	"github.com/kazuhahub/rackbook/internal/statekey"
@@ -176,6 +178,16 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	} else if f.Changed("state-key-file") || strings.TrimSpace(os.Getenv("RACKBOOK_STATE_KEY")) != "" {
 		return errors.New("--state-key-file and RACKBOOK_STATE_KEY are for local accounts, which need --auth login")
 	}
+	if stateKey != nil && !accounts.ListReady(testCommonList) {
+		// local sign-in does not open with an incomplete list of common passwords (design-local-accounts.md, 4.2): its routes answer
+		// 503 password_list_incomplete and the account commands refuse. Single sign-on is not affected; with nothing else to sign in
+		// with there is no point in starting.
+		msg := fmt.Sprintf("local sign-in is closed: the list of common passwords has %d entries and at least %d are needed (the full list must be installed in the build)", accounts.EmbeddedCommonPasswords(), accounts.MinCommonPasswords)
+		if !ssoConfigured(cfg) {
+			return errors.New(msg + "; no single sign-on (auth.oidc) is configured either, so nobody could sign in")
+		}
+		logger.Warn(msg + "; single sign-on works, local accounts do not")
+	}
 	if cfg.Auth.MCP.BuiltinIssuer.Enabled && (stateDir == "" || baseURL == "") {
 		return errors.New("auth.mcp.builtin_issuer needs --state-dir (it keeps the grants and the signing key there) and --base-url (the public URL, which is the issuer of its tokens)")
 	}
@@ -280,19 +292,47 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
-	var loginMount interface {
-		Mount(mux routes.Mux, static http.Handler)
-	}
-	if loginSvc != nil {
-		loginMount = loginSvc
-	}
 	// Bearer credentials on /mcp (OAuth access tokens of the trusted issuers) and
 	// Rackbook API tokens (see docs/api.md); /mcp is an OAuth protected resource.
 	proxies, perr := clientip.ParseCIDRs(trustedProxies(f))
 	if perr != nil {
 		return fmt.Errorf("--trusted-proxy: %w", perr)
 	}
+	// The sign-in of local accounts (pages, endpoints, the admin channel), beside the built-in login.
+	var loginMount interface {
+		Mount(mux routes.Mux, static http.Handler)
+	}
+	var localSvc *localauth.Service
+	if loginSvc != nil {
+		loginMount = loginSvc
+		if localStore != nil {
+			if localSvc, err = localauth.New(localauth.Options{
+				Store: localStore, Key: stateKey, Audit: auditLog, Login: loginSvc, Config: store.Config, BaseURL: baseURL, Trusted: proxies,
+				SSO: ssoConfigured(cfg), StateDir: stateDir, Logger: logger, GrantAdmin: grantAdmin(store, localStore), CommonList: testCommonList,
+				IsAdmin: func(username string) bool {
+					return authn.Evaluate(&auth.Identity{ID: roles.LocalPrefix + username, Method: auth.MethodLocal}).EffectiveRole() == roles.Admin
+				},
+			}); err != nil {
+				return err
+			}
+			defer localSvc.Close()
+			loginMount = mounts{loginSvc, localSvc}
+			adminSrv, err := localSvc.ServeAdmin()
+			if err != nil {
+				return fmt.Errorf("the admin channel of the account commands: %w", err)
+			}
+			defer adminSrv.Close()
+		}
+	}
 	registry := &tokens.Registry{Store: store}
+	// what was revoked for a local account is refused at once, from the store's own list, whatever tokens.yml says yet
+	var revokedGrant func(id, subject string, approved time.Time) bool
+	if localStore != nil {
+		registry.Blocked = func(t tokens.Token) bool { return tokenRevoked(localStore, t) }
+		revokedGrant = func(id, subject string, approved time.Time) bool {
+			return grantRevoked(localStore, id, subject, approved)
+		}
+	}
 	modState := &modules.State{}
 	builtin := cfg.Auth.MCP.BuiltinIssuer.Enabled
 	if dir := stateDir; dir != "" {
@@ -305,20 +345,37 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	}
 	resource := &mcpauth.Resource{Config: store.Config, Auth: authn, Verifier: &oauth.Verifier{}, Tokens: registry, Limiter: &tokens.Limiter{}, TrustedProxies: proxies, Log: logger}
 	var oauthSrv api.OAuthServer
+	var grantsSrv *oauthserver.Server
 	if builtin {
-		srv, err := oauthserver.New(oauthserver.Options{Issuer: baseURL, Resource: cfg.Auth.MCP.Resource, StateDir: stateDir,
+		srv, err := oauthserver.New(oauthserver.Options{Blocked: revokedGrant, Issuer: baseURL, Resource: cfg.Auth.MCP.Resource, StateDir: stateDir,
 			Config: store.Config, Auth: authn, Log: logger, TrustedProxies: proxies, Prefs: prefStore})
 		if err != nil {
 			return err
 		}
 		resource.Builtin, oauthSrv = srv, srv
+		grantsSrv = srv
 	}
 	authn.SetBearer(resource)
 	meta := resource.MetadataHandler()
 	mcpSrv := mcpserver.NewWithOptions(mcpserver.Options{Source: store.Ledger, Version: version, Backend: store, ReadOnly: readOnly, Logger: logger})
+	// What a local account owns outside the account store is revoked with it: the pending revocations of every account are
+	// carried out now, before the server serves, and retried every minute (5.11).
+	if localSvc != nil {
+		rv := accountRevoker{registry: registry}
+		if grantsSrv != nil {
+			rv.grants = grantsSrv
+		}
+		localSvc.SetRevoker(rv)
+		// the local layer (the revocation list) is a local write and is done before the server serves; the record in tokens.yml
+		// is a commit that can fail or wait, and is made in the background
+		if err := localSvc.ApplyAllRevocations(ctx); err != nil {
+			logger.Warn("pending revocations of local accounts could not all be applied; they are retried every minute", "err", err)
+		}
+		go localSvc.RunRevocations(ctx)
+	}
 	var roster api.LocalRoster
 	if localStore != nil {
-		roster = rosterOf{localStore}
+		roster = ssoOnlyRoster{rosterOf{localStore}, localSvc}
 	}
 	handler := api.New(api.Options{
 		Local: roster, Store: store, Auth: authn, ReadOnly: readOnly, BaseURL: baseURL, Web: dist, Logger: logger, RestrictHost: mode == auth.ModeNone, Login: loginMount,
@@ -524,7 +581,7 @@ func newLogin(cfg *config.Config, store *gitstore.Store, prefStore *prefs.Store,
 	}
 	o := login.Options{
 		TrustedProxies: proxies, Login: cfg.Auth.Login, Config: store.Config, BaseURL: baseURL, Key: key, ClientSecret: secret, CAFile: caFile,
-		ReadOnly: readOnly, Logger: logger, Prefs: prefStore, Audit: auditLog, Local: local,
+		ReadOnly: readOnly, Logger: logger, Prefs: prefStore, Audit: auditLog, Local: local, LocalHidden: local != nil && !accounts.ListReady(testCommonList),
 	}
 	if infra != nil {
 		o.Infra = &auth.InfraAccess{Admins: infra.Admins, Auditors: infra.Auditors}

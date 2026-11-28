@@ -48,6 +48,23 @@ type State struct {
 	// Usernames is the store's own copy of every username ever used (4.5).
 	Usernames []string            `json:"usernames"`
 	Accounts  map[string]*Account `json:"accounts"`
+	// Revoked lists the API tokens and OAuth grants revoked for local accounts (5.11). It is the immediate layer of a revocation:
+	// the token registry and the OAuth server consult it on every use, so a listed token or grant is refused whatever Git says.
+	Revoked []RevokedItem `json:"revoked,omitempty"`
+}
+
+// Kinds of RevokedItem.
+const (
+	KindToken = "token" // ID is the SHA-256 hex of the token's secret (what tokens.yml keeps), never its name: a name can be reused
+	KindGrant = "grant" // ID is the OAuth grant id
+)
+
+// RevokedItem is one revoked token or grant.
+type RevokedItem struct {
+	Kind    string    `json:"kind"`
+	ID      string    `json:"id"`
+	Account string    `json:"account"`
+	Time    time.Time `json:"time"`
 }
 
 func (s *State) meta() *Meta { return &s.Meta }
@@ -86,6 +103,11 @@ type Account struct {
 
 	Pending            *Pending    `json:"pending,omitempty"`
 	PendingRevocations Revocations `json:"pending_revocations,omitzero"`
+	// CredentialsValidAfter is the standing rule of the revocation (5.11): an API token whose creator is this account, and an OAuth
+	// grant approved by it, made before this time are refused, whatever the revocation list holds. Every disable, remove, reset and
+	// recover sets it in its own change, so a token that was not in the checkout yet when the list was made (a pull request, a
+	// commit waiting on the Git lock) is caught when it appears.
+	CredentialsValidAfter time.Time `json:"credentials_valid_after,omitzero"`
 
 	LastLogin               *Seen    `json:"last_login,omitempty"`
 	LastSecondFactorFailure *Seen    `json:"last_second_factor_failure,omitempty"`

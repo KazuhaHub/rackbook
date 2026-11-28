@@ -106,13 +106,15 @@ func NeedsRehash(stored string) bool {
 
 // Hash returns the PHC string of the NFKC-normalised password with a fresh 16-byte salt. It runs
 // outside the slots: sign-in code goes through Hasher.
-func hashPassword(pw string) (string, error) {
+func hashPassword(pw string) (string, error) { return hashWith(current, pw) }
+
+func hashWith(p argonParams, pw string) (string, error) {
 	salt := make([]byte, argonSaltLen)
 	if _, err := rand.Read(salt); err != nil {
 		return "", err
 	}
-	sum := argon2.IDKey([]byte(normalise(pw)), salt, current.t, current.m, current.p, argonKeyLen)
-	return encodePHC(current, salt, sum), nil
+	sum := argon2.IDKey([]byte(normalise(pw)), salt, p.t, p.m, p.p, argonKeyLen)
+	return encodePHC(p, salt, sum), nil
 }
 
 // verifyPassword checks pw against a stored PHC string with a constant-time comparison of the tag.
@@ -128,10 +130,9 @@ func verifyPassword(pw, stored string) bool {
 
 var dummySalt = []byte("rackbook-dummy-1")
 
-// burn runs one argon2id at the current parameters on a fixed salt and discards the result: the
-// dummy check of 5.6 step 5.
-func burn(pw string) {
-	sum := argon2.IDKey([]byte(normalise(pw)), dummySalt, current.t, current.m, current.p, argonKeyLen)
+// burnWith runs one argon2id on a fixed salt and discards the result: the dummy check of 5.6 step 5.
+func burnWith(p argonParams, pw string) {
+	sum := argon2.IDKey([]byte(normalise(pw)), dummySalt, p.t, p.m, p.p, argonKeyLen)
 	_ = sum
 }
 
@@ -203,13 +204,31 @@ func (s *Slots) acquire(ctx context.Context, c Class) (func(), error) {
 }
 
 // Hasher runs argon2id in the slots.
-type Hasher struct{ slots *Slots }
+type Hasher struct {
+	slots  *Slots
+	params argonParams
+	custom bool // params were given by NewHasherCost; otherwise the constants of 4.2 are read at each use
+}
 
-// NewHasher uses the default slots.
+// NewHasher uses the default slots and the parameters of 4.2.
 func NewHasher() *Hasher { return &Hasher{slots: NewSlots(DefaultSlots, DefaultQueue)} }
 
-// NewHasherWith uses the given slots.
+// NewHasherWith uses the given slots and the parameters of 4.2.
 func NewHasherWith(s *Slots) *Hasher { return &Hasher{slots: s} }
+
+// NewHasherCost is a hasher whose new hashes use the given cost instead of the constants of 4.2. The server
+// never calls it: it exists so that tests which sign in many times do not run 64 MiB hashes. Verification
+// always uses the parameters stored in the hash.
+func NewHasherCost(s *Slots, memKiB, passes uint32, lanes uint8) *Hasher {
+	return &Hasher{slots: s, params: argonParams{m: memKiB, t: passes, p: lanes}, custom: true}
+}
+
+func (h *Hasher) p() argonParams {
+	if h.custom {
+		return h.params
+	}
+	return current
+}
 
 // Hash hashes a new password. It does not check the rules (CheckPassword does).
 func (h *Hasher) Hash(ctx context.Context, c Class, pw string) (string, error) {
@@ -218,28 +237,60 @@ func (h *Hasher) Hash(ctx context.Context, c Class, pw string) (string, error) {
 		return "", err
 	}
 	defer rel()
-	return hashPassword(pw)
+	return hashWith(h.p(), pw)
 }
 
 // Verify checks pw against a stored hash. rehash says the stored hash is under old parameters.
 func (h *Hasher) Verify(ctx context.Context, c Class, pw, stored string) (ok, rehash bool, err error) {
+	ok, rehash, _, err = h.VerifyTimed(ctx, c, pw, stored)
+	return ok, rehash, err
+}
+
+// VerifyTimed is Verify that also returns how long the argon2id run took inside its slot, the queue not counted:
+// the hash-only sample of the dummy-hash budget (8.6).
+func (h *Hasher) VerifyTimed(ctx context.Context, c Class, pw, stored string) (ok, rehash bool, took time.Duration, err error) {
 	rel, err := h.slots.acquire(ctx, c)
 	if err != nil {
-		return false, false, err
+		return false, false, 0, err
 	}
 	defer rel()
+	start := time.Now()
 	ok = verifyPassword(pw, stored)
-	return ok, ok && NeedsRehash(stored), nil
+	took = time.Since(start)
+	return ok, ok && h.needsRehash(stored), took, nil
+}
+
+func (h *Hasher) needsRehash(stored string) bool {
+	p, err := parsePHC(stored)
+	return err != nil || p.argonParams != h.p() || len(p.salt) != argonSaltLen || len(p.sum) != argonKeyLen
 }
 
 // Dummy runs one argon2id for an account that cannot sign in, so the answer takes as long (5.6).
 func (h *Hasher) Dummy(ctx context.Context, c Class, pw string) error {
+	_, err := h.DummyTimed(ctx, c, pw)
+	return err
+}
+
+// DummyTimed is Dummy that also returns the time of the run inside its slot.
+func (h *Hasher) DummyTimed(ctx context.Context, c Class, pw string) (time.Duration, error) {
+	rel, err := h.slots.acquire(ctx, c)
+	if err != nil {
+		return 0, err
+	}
+	defer rel()
+	start := time.Now()
+	burnWith(h.p(), pw)
+	return time.Since(start), nil
+}
+
+// Wait joins the slot queue as a real check does and releases the slot at once: the wait of this
+// moment, without a hash (the sleeper of the dummy-hash budget, 8.6).
+func (h *Hasher) Wait(ctx context.Context, c Class) error {
 	rel, err := h.slots.acquire(ctx, c)
 	if err != nil {
 		return err
 	}
-	defer rel()
-	burn(pw)
+	rel()
 	return nil
 }
 
@@ -252,6 +303,8 @@ type PasswordRules struct {
 	Username string
 	// Host is the host name of --base-url.
 	Host string
+	// List is a list of common passwords to use instead of the embedded one; nil (always, in production) = the embedded list.
+	List *CommonList
 }
 
 // Password rule codes.
@@ -294,6 +347,44 @@ var (
 var folder = cases.Fold()
 
 func fold(s string) string { return folder.String(norm.NFKC.String(s)) }
+
+// MinCommonPasswords is how many entries the list of common passwords must have before local sign-in may open: the design asks
+// for the 100 000 most common, and 10 000 is the floor under which the rule protects nobody.
+const MinCommonPasswords = 10_000
+
+// PasswordListReady says the embedded list of common passwords is complete enough for local sign-in (MinCommonPasswords entries).
+// It is the one gate: the server does not open local sign-in, and the command line does not invite or reset, while it is false.
+func PasswordListReady() bool { return len(common()) >= MinCommonPasswords }
+
+// EmbeddedCommonPasswords is the number of entries of the embedded list.
+func EmbeddedCommonPasswords() int { return len(common()) }
+
+// CommonList is a list of common passwords other than the embedded one. Production code never makes one (the server uses the
+// embedded list alone: there is no flag and no file); it exists so that tests can run sign-in with a list of the size the gate asks for.
+type CommonList struct{ set map[string]bool }
+
+// NewCommonList is the embedded list plus extra entries.
+func NewCommonList(extra ...string) *CommonList {
+	l := &CommonList{set: make(map[string]bool, len(common())+len(extra))}
+	for k := range common() {
+		l.set[k] = true
+	}
+	for _, e := range extra {
+		l.set[fold(e)] = true
+	}
+	return l
+}
+
+// Len is the number of entries.
+func (l *CommonList) Len() int { return len(l.set) }
+
+// ListReady says a list (nil: the embedded one) has the entries the gate asks for.
+func ListReady(l *CommonList) bool {
+	if l == nil {
+		return PasswordListReady()
+	}
+	return l.Len() >= MinCommonPasswords
+}
 
 func common() map[string]bool {
 	commonOnce.Do(func() {
@@ -349,7 +440,11 @@ func CheckPassword(pw string, r PasswordRules) error {
 		return &PasswordError{Code: PwTooLong}
 	}
 	f := folder.String(n)
-	if common()[f] || repeatedUnit(f) {
+	set := common()
+	if r.List != nil {
+		set = r.List.set
+	}
+	if set[f] || repeatedUnit(f) {
 		return &PasswordError{Code: PwCommon}
 	}
 	if u := fold(r.Username); len(u) >= minContained && strings.Contains(f, u) {

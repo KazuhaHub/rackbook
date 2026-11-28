@@ -599,3 +599,30 @@ func cookieMethod(v string) string {
 	_ = json.Unmarshal(raw, &h)
 	return h.M
 }
+
+// Sensitive actions that make a credential (an API token, the roles, the approval of a client) need a local account that fully
+// authenticated within the window (auth.local.reauth_window, 10 minutes by default): 403 reauth_required, with the page that asks
+// again and brings the person back (design-local-accounts.md, 6).
+func TestSensitiveActionsNeedARecentAuthenticationOfALocalAccount(t *testing.T) {
+	e := newEnv(t, options{local: true, roles: localRoles})
+	e.addLocal("alice", accounts.StateActive)
+	b := e.localBrowser("alice") // authenticated now
+	if r := b.postJSON("/api/admin/tokens", `{"name":"fresh","scope":"read"}`); r.StatusCode != 201 {
+		t.Fatalf("a fresh authentication: %d %s", r.StatusCode, r.Body)
+	}
+	e.clk.Advance(11 * time.Minute)
+	for _, c := range []struct{ name, path, body string }{
+		{"a token", "/api/admin/tokens", `{"name":"stale","scope":"read"}`},
+		{"the roles", "/api/admin/roles", `{"version":"x","roles":{"admin":[],"editor":[],"viewer":[]},"auditors":[]}`},
+	} {
+		r := b.postJSON(c.path, c.body)
+		if r.StatusCode != 403 || !strings.Contains(r.Body, `"reauth_required"`) || !strings.Contains(r.Body, `"reauth":"/auth/local/reauth?return=`) {
+			t.Errorf("%s: %d %s", c.name, r.StatusCode, r.Body)
+		}
+	}
+	// a re-authentication (a new cookie with the time of the full authentication) makes them work again
+	b2 := e.localBrowser("alice")
+	if r := b2.postJSON("/api/admin/tokens", `{"name":"again","scope":"read"}`); r.StatusCode != 201 {
+		t.Fatalf("after re-authenticating: %d %s", r.StatusCode, r.Body)
+	}
+}

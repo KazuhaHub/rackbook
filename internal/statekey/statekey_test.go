@@ -98,7 +98,7 @@ func TestSubkeysAreHKDFWithDistinctInfo(t *testing.T) {
 	for want, p := range map[string]Purpose{
 		"rackbook accounts v1": PurposeAccounts, "rackbook secrets v1": PurposeSecrets,
 		"rackbook usernames v1": PurposeUsernames, "rackbook admin channel v1": PurposeAdminChannel,
-		"rackbook attempts v1": PurposeAttempts,
+		"rackbook attempts v1": PurposeAttempts, "rackbook passkey handle v1": PurposePasskeyHandle,
 	} {
 		if string(p) != want {
 			t.Fatalf("info string %q changed to %q", want, p)

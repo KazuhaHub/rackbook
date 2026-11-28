@@ -183,7 +183,7 @@ func (s *server) tokenStates() map[string]string {
 	if s.o.Tokens == nil {
 		return out
 	}
-	ts, err := s.o.Tokens.List()
+	ts, err := s.o.Tokens.Listed()
 	if err != nil {
 		return out
 	}

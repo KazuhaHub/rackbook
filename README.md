@@ -1194,57 +1194,164 @@ passkey ceremony is rate limited per client (the first `CF-Connecting-IP` /
 
 ## Local accounts
 
-Local accounts beside SSO are being built in pieces ([docs/design-local-accounts.md](docs/design-local-accounts.md)).
-**Local sign-in is coming in piece 4:** there is no sign-in page and no password or TOTP endpoint yet, so nobody can
-hold a local session today. What the server does since piece 3 is everything around the identity:
+Local accounts (a username, a password and a mandatory second factor) sign in **beside** single sign-on, not instead of
+it: `--auth login` offers whichever of SSO and local accounts are configured. The design is
+[docs/design-local-accounts.md](docs/design-local-accounts.md); pieces 1 to 4 are built. The sign-in settings below are
+read from `rackbook.yml` and flags; the CAPTCHA (piece 5), the Sign-in & security console page (piece 6) and My account and
+Users administration (piece 7) are not built yet.
 
-- **`--auth login` with a state key** opens the encrypted account store under `--state-dir` at start, with the full
-  start sequence, and **refuses to start** when it cannot: a wrong or missing key (a state directory that holds account
-  files and no key is refused too), an account store that is missing, older than the audit log or edited, a log that was
-  rolled back. The message names the code and the offline command that applies (`rackbook accounts accept-restore`,
-  `discard-store`, `rekey`). With no state key there are no local accounts and sign-in is single sign-on only; with
-  neither the server does not start. `--audit-retention-months` keeps the exact months the account files need.
-- **Sessions of method `local`.** A local session is the same signed cookie, with the account's session id (`sid`),
-  the time of the last full authentication and the factor, and its MAC key is derived per account
-  (`HKDF-SHA256(session key, salt = the account's session secret, info = "rackbook.session.local.v1" + sid)`). It
-  stops being valid when the account's session id or secret is renewed (a reset, ending sessions, a rekey of the
-  account) and when the account is disabled or removed; a state key alone, or the session key alone, forges nothing.
-  Nothing in the server creates one yet: the sign-in of piece 4 will.
-- **`local:` entries** in `auth.roles` and `auth.auditors` (see [Roles](#roles)), evaluated for a local identity on
-  every path: console sessions, API tokens (the token records `created_via: local` and follows its creator), and OAuth
-  grants and access tokens of the built-in authorization server and of `/mcp`. A token stops working at once when its
-  creator's account is disabled or removed.
-- **The role editor** offers the accounts by name, notes the entries that match nobody, and counts local admins in the
-  last-admin rule (see [Editing roles in the console](#editing-roles-in-the-console)).
-- **Audit.** An audit event may carry `target`, the account an administrator or the command line acted on when that is
-  not the actor (`local:<username>`). It is in the log, in the Activity items and in the JSONL export.
-
-The foundation under `--state-dir`:
-
-- **The state key**: 32 or more random bytes (`openssl rand -base64 32`), different from the session key. It encrypts
-  `<state-dir>/accounts/accounts.enc` and `<state-dir>/secrets.enc` (XChaCha20-Poly1305, a subkey for each file by HKDF) and
-  MACs `<state-dir>/accounts/usernames`. It lives **outside** the state directory: in `RACKBOOK_STATE_KEY` (base64) or a
-  read-only file given with `--state-key-file`. Back the state directory up and, separately, the key. Without the key
-  nothing can be read; a lost key means starting over with `rackbook accounts discard-store`.
-- **The offline commands** `rackbook accounts list | rekey | accept-restore | discard-store` work on those files with
-  the server stopped (`list` only reads). `rekey` moves everything to a new key, `accept-restore` takes a store that was
-  restored from a backup, or an audit log that was rolled back, and puts the affected accounts into a reset instead of
-  trusting them, and `discard-store` starts over after a lost key while keeping every username used (a username is never
-  reused). The commands print no secret and take no password; each writes an audit event with `method: cli` and the
-  `--operator` name.
-- **The audit log** gets `RecordSync` (an event that is on disk before the caller goes on) and a retention pin: `--audit-retention-months`
-  never deletes the month of the account store's last change, and a checkpoint moves that pin on.
-
-- **Before sign-in is enabled** (piece 4) the embedded list of common passwords, now a short stand-in, must be replaced by the full list of the 100 000
-  most common passwords; a test guards it. Rolling back the state directory *together with* the end of the audit log is not detected by the account
-  store itself: enable the daily audit anchor or keep a copy of the log elsewhere ([docs/design-local-accounts.md](docs/design-local-accounts.md), 4.7).
+**What you need.** `--auth login`, `--state-dir`, `--base-url` (https, the relying-party ID of passkeys), a session key,
+and a state key. The state key is 32 or more random bytes (`openssl rand -base64 32`), different from the session key.
+It encrypts `<state-dir>/accounts/accounts.enc` and `<state-dir>/secrets.enc` (XChaCha20-Poly1305, a subkey for each file
+by HKDF), MACs `<state-dir>/accounts/usernames`, and authenticates the admin channel. It lives **outside** the state
+directory: in `RACKBOOK_STATE_KEY` (base64) or a read-only file given with `--state-key-file`. Back the state directory
+up and, separately, the key; a lost key means starting over with `rackbook accounts discard-store`. With no state key
+there are no local accounts and sign-in is single sign-on only; with neither, the server does not start.
 
 ```sh
 openssl rand -base64 32 > /etc/rackbook/state.key && chmod 0400 /etc/rackbook/state.key   # outside --state-dir
-rackbook accounts list --state-dir /var/lib/rackbook --state-key-file /etc/rackbook/state.key
 rackbook serve --auth login --state-dir /var/lib/rackbook --state-key-file /etc/rackbook/state.key \
   --session-key-file /etc/rackbook/session.key --base-url https://ledger.example.com ...
+rackbook accounts recover alice --grant-admin --state-dir /var/lib/rackbook --state-key-file /etc/rackbook/state.key
+# prints a one-time link: https://ledger.example.com/auth/local/setup#<token>
 ```
+
+**Signing in.** `/auth/login` shows the password form, the single sign-on button, or both, by `auth.login.mode`; the form
+asks for the username, the password and the second factor (a 6-digit code, or a passkey) **in one request** and answers
+every failure the same way ("Username, password or code is wrong"): an unknown name, a wrong password, a wrong code, a
+disabled, removed, invited or reset account all give the same status and body after the same work, so a guess never learns
+which part was right. The sign-in, setup and re-authentication pages are documents of their own under `/auth/` with a
+Content-Security-Policy of their own (no `'unsafe-eval'`, no form posted elsewhere).
+
+```yaml
+auth:
+  login:
+    mode: dual          # dual | sso_first | sso_redirect | local_only: what the page shows
+    sso_only: false     # the local endpoint refuses accounts that are not admins (they are always let in)
+  local:
+    password_min_length: 12   # 12..64
+    invite_ttl: 72h           # 1h..14d
+    reset_ttl: 24h            # 1h..7d
+    reauth_window: 10m        # 1m..1h
+  throttle: {max: 10, window: 15m}                             # 1..1000, 1m..24h; always on, per network
+  lock: {enabled: false, duration: 30m, scope: ip_account}    # 1m..7d; ip | ip_account | account
+  nist_cap: 100                                               # 10..100, never above 100
+  twofa_limits: {totp_per_day: 10, passkey_path_per_hour: 10} # 3..20 each
+```
+
+- **Modes.** `dual` shows both; `sso_first` shows the SSO button with "Use a local account" behind a click;
+  `sso_redirect` goes straight to the provider (`/auth/login?local=1` shows the form, the way in for administrators when
+  the provider breaks); `local_only` shows the form. Without a configured SSO provider every mode is `local_only`.
+- **`sso_only`** only means something when the page offers SSO, and it is turned off (with a `settings_problem`
+  `sso_only_without_local_admin` event) while no active local administrator with a second factor exists, so a push to
+  `rackbook.yml` cannot lock everybody out. Under it every failure is `403 sso_required`, and only an administrator whose
+  password and factor verified gets in. Disabling or removing the last local administrator, and editing the last
+  local `admin` entry out of `auth.roles`, is refused while it is on.
+- **The throttle** refuses a network after `max` failures in `window` (a shared office address shares the limit). **Locks** are
+  off by default; when on, reaching the throttle's `max` locks the scope's key: `ip` the network, `ip_account` the account on
+  that network, `account` the account everywhere (anyone who knows the username can keep the owner locked out; the owner can
+  still sign in with a passkey, and an administrator can unlock). A verified passkey goes past the throttle and the locks.
+- **The NIST cap** (SP 800-63B, at most 100 consecutive failures; you can lower it to 10): at `cap - 1` an account becomes
+  `restricted` (a password check only from one of its ten most recent known networks, or after a passkey) and at `cap`
+  `passkey_only`. **Second-factor limits:** ten wrong codes behind a right password in 24 hours stop TOTP for the account; ten
+  wrong passwords after a verified passkey in an hour stop the passkey path.
+- **Hashing.** argon2id (64 MiB, t=3, p=4) in three slots, one reserved for re-authentication and known networks. Unknown
+  and non-active names are answered after a dummy hash too; past 60 dummy hashes a minute for the server or 2 per network,
+  the answer sleeps as long as a real check took (drawn from a sample of real runs) instead, so the budget cannot be
+  exhausted to block others and the timing does not show which names exist.
+- **Aggregated audit events.** Per network and minute the first refusal of each account is a `login_refused` event; the rest
+  are one `login_refused` with `code: summary` and the counts. Nothing a person typed, no password, code or link, and no
+  typed name that is not an account, is ever logged or audited.
+
+**Links and setup.** An administrator (or the command line) invites a person; the link `/auth/local/setup#<token>` has the
+token in the URL fragment, 256 bits, single use, expiring. The page reads it, removes it from the address, and sends
+nothing until the person presses *Continue*, which holds the link for that browser for 30 minutes (another browser gets
+`invite_claimed`). Setup sets a password (12 characters or more, not common, without the username or the host name) and a
+**second factor that is not optional**: an authenticator app (TOTP) or a passkey, in one audited change that makes the
+account active and signs the person in. A reset link says what it deletes: `password` (the person proves their factor, then
+sets a new password), `second_factor` (the person enters the current password, then enrols a new factor) or `all` (a new
+invite). There is no e-mail and no "forgot password": a lost factor is an administrator's reset.
+
+**Re-authentication.** `/auth/local/reauth` is the same one-step form for a person who is signed in; three failures end every
+session of the account. A local account that did not fully authenticate within `auth.local.reauth_window` is answered `403
+reauth_required` when it creates an API token, saves roles or approves an OAuth/MCP client; the console opens the page and comes
+back. (The account administration and settings screens will be gated the same way when they exist.)
+
+**Revocation.** Disabling, removing or resetting an account (any scope), and `recover`, revoke every API token it created and
+every OAuth/MCP grant it approved. The block is the account store's own revocation list, written in the same audited change and
+consulted by the token registry and the OAuth server on every use, so a revoked token or grant is refused at once whatever Git
+does (write mode `pr`, a refused push). The record in `.rackbook/tokens.yml` is a direct commit made afterwards and retried every
+minute; nothing waits for it. The offline command line records the revocations and the server applies them when it starts, before it
+serves. Until a revocation that could not be resolved is done the account cannot be enabled or set up again.
+
+A token or grant is refused by a second rule too, which needs no list: each account keeps `credentials_valid_after`, set by every
+disable, remove, reset and `recover`, and any API token created by the account, or grant approved by it, before that time is refused.
+That catches a token that was only in a pull request, or waiting for the Git lock, when the account was disabled. The token list in
+the console shows such tokens as revoked.
+
+**Restoring the store.** The revocation list is part of the account store, so `rackbook accounts accept-restore` (from a backup) loses
+the revocations made after it, and `discard-store` loses the list altogether. `accept-restore` therefore refuses every API token and
+OAuth grant that any local account made before the restore (`credentials_valid_after` of every account is the restore time) until they
+are made again, and, when the audit log cannot be trusted, also records every API token as a pending revocation. After `discard-store`
+no local account exists, so no `local:` token or grant has a role, and no username can be used again.
+
+**The admin commands.** `rackbook accounts invite | reset | unlock | disable | enable | remove | end-sessions | recover`
+talk to the **running server** over an admin channel (a Unix socket `<state-dir>/admin.sock`, mode 0600, on Linux and macOS;
+a named pipe `\\.\pipe\rackbook-<16 hex of SHA-256 of the state directory>` on Windows that only the server's account and
+Administrators can open and that a second server cannot take). The OS permission is defence in depth: access is by
+possession of the state key, in a mutual handshake (the server proves it holds the key before the client sends anything) and
+AES-256-GCM sealed frames with a counter, so a relay under the same account can neither read nor forge anything. A link is
+printed to your terminal only, a command never takes a password, and each writes an event with `method: cli` and
+`operator:<name>` (`--operator`, default the OS user). With the server stopped they take the state directory's lock and
+work on the files directly, with the same output (pass `--base-url` for a full link).
+
+| Command | What |
+|---|---|
+| `invite <username> [--name ...]` | makes the account and prints its setup link |
+| `reset <username> --scope password\|second_factor\|all`, `reset --all` | issues a reset link: the account is `reset_pending` (no role), its sessions end, its counters and known networks clear; `--all` is for incident response |
+| `unlock <username>` | clears locks and failure counters, lifts `restricted` and `passkey_only` |
+| `disable`, `enable`, `remove <username>` | `disable`, `remove` and `reset --all` ask for confirmation (`--yes` skips it); offline, `disable` and `remove` apply the last-local-administrator guard when `--config` names rackbook.yml. Disable renews the session id and secret, so sessions end at once and an old cookie does not return on enable; remove leaves a tombstone, the name stays used |
+| `end-sessions <username>\|--all` | renews the session id and secret |
+| `recover <username> [--grant-admin]` | the lockout fallback: invites the account if it does not exist, else issues a full reset; `--grant-admin` also commits `local:<username>` to `auth.roles.admin` (online; offline it prints the line to add) |
+| `list`, `rekey`, `accept-restore`, `discard-store` | offline repairs of the store, see below |
+
+What the server does around the identity (since piece 3):
+
+- **`--auth login` with a state key** opens the encrypted account store at start, with the full start sequence, and **refuses
+  to start** when it cannot: a wrong or missing key (a state directory that holds account files and no key is refused
+  too), a store that is missing, older than the audit log or edited, a log that was rolled back. The message names the code
+  and the offline command that applies (`rackbook accounts accept-restore`, `discard-store`, `rekey`).
+  `--audit-retention-months` keeps the exact months the account files need.
+- **Sessions of method `local`** are the same signed cookie, with the account's session id (`sid`), the time of the last full
+  authentication (`aat`) and the factor, and its MAC key is derived per account (`HKDF-SHA256(session key, salt = the
+  account's session secret, info = "rackbook.session.local.v1" + sid)`). A session stops being valid when the account's
+  session id or secret is renewed and when the account is disabled, removed, reset or not set up; a state key alone, or the
+  session key alone, forges nothing. The only code that issues one is `login.Service.IssueLocal`, called after a verified
+  sign-in.
+- **`local:` entries** in `auth.roles` and `auth.auditors` (see [Roles](#roles)), evaluated for a local identity on every path:
+  console sessions, API tokens (`created_via: local`) and OAuth grants and access tokens. Disabling an account stops its tokens
+  at once; they come back if it is enabled again (revoking them at disable and reset is piece 7).
+- **The role editor** offers the accounts by name, notes the entries that match nobody, and counts local admins in the
+  last-admin rule (see [Editing roles in the console](#editing-roles-in-the-console)).
+- **Audit.** Events carry `target` (the account an administrator or the command line acted on): `account_invited`,
+  `account_link_opened`, `account_setup_completed`, `account_reset_issued`, `account_unlocked`, `account_disabled`,
+  `account_enabled`, `account_removed`, `sessions_ended`, `login`, `reauth`, `login_refused`, `account_restricted`,
+  `account_locked`, `account_revocations_applied`, `sign_in_degraded`, `settings_problem`. Every account change and every local sign-in **fails closed**: when the audit log
+  cannot be written the answer is `503 audit_unavailable` and nothing changes.
+
+The offline commands `rackbook accounts list | rekey | accept-restore | discard-store` work on the encrypted files with the
+server stopped (`list` only reads). `rekey` moves everything to a new key, `accept-restore` takes a store that was restored
+from a backup, or an audit log that was rolled back, and puts the affected accounts into a reset instead of trusting them,
+and `discard-store` starts over after a lost key while keeping every username used (a username is never reused). Rolling
+back the state directory *together with* the end of the audit log is not detected by the account store itself: enable the
+daily audit anchor or keep a copy of the log elsewhere ([docs/design-local-accounts.md](docs/design-local-accounts.md), 4.7).
+
+**Local sign-in is closed until the list of common passwords is complete.** The embedded list is a short stand-in (about 270 entries);
+the design asks for the 100 000 most common passwords, and sign-in needs at least 10 000 (`accounts.MinCommonPasswords`). While it is
+shorter: every `/auth/local/*` endpoint answers `503 password_list_incomplete`, `rackbook accounts invite | reset | recover` refuse, the
+console shows single sign-on only, and `rackbook serve --auth login` with a state key refuses to start when there is no single sign-on
+either (with single sign-on it starts and warns). Single sign-on is not affected, and `disable`, `end-sessions` and `unlock` still work.
+Installing the full list in `internal/accounts/commonpasswords.txt` opens it; nothing else changes. There is no flag to use another list.
 
 ## Audit log
 

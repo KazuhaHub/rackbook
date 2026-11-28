@@ -339,6 +339,15 @@ type Auth struct {
 	// in the syntax of a role list. It is not a role and not an admin list.
 	Auditors []string `yaml:"auditors"`
 	MCP      AuthMCP  `yaml:"mcp"`
+
+	// The sign-in settings of local accounts and single sign-on together (signin.go).
+	SignIn      SignIn          `yaml:"login"`
+	Local       LocalSettings   `yaml:"local"`
+	Captcha     CaptchaSettings `yaml:"captcha"`
+	Throttle    Throttle        `yaml:"throttle"`
+	Lock        Lock            `yaml:"lock"`
+	NISTCap     int             `yaml:"nist_cap"`
+	TwoFALimits TwoFALimits     `yaml:"twofa_limits"`
 }
 
 // AuthMCP is the auth.mcp block (MCP over MCPHub tokens).
@@ -836,6 +845,9 @@ func Parse(data []byte, path string) (*Config, error) {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	cfg.Warnings = append(cfg.Warnings, cfg.Auth.Login.warnings(top)...)
+	if w := cfg.Auth.CaptchaIgnoredWarning(); w != "" {
+		cfg.Warnings = append(cfg.Warnings, w)
+	}
 	return cfg, nil
 }
 
@@ -872,6 +884,9 @@ func (c *Config) finish() error {
 		return err
 	}
 	if err := c.Auth.Login.check(); err != nil {
+		return err
+	}
+	if err := c.Auth.checkSignIn(); err != nil {
 		return err
 	}
 	if err := c.Auth.MCP.validate(); err != nil {

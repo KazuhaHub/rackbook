@@ -291,6 +291,11 @@ func (s *Server) consentDecision(w http.ResponseWriter, r *http.Request) {
 		apiError(w, http.StatusBadRequest, "bad_request", "invalid JSON body")
 		return
 	}
+	// approving a client hands out a credential: a local account re-authenticates first (6), before the request is used up, so
+	// that the consent page can be opened again after the re-authentication
+	if body.Approve && s.o.Auth.RequireRecentAuth(w, r) {
+		return
+	}
 	p := s.takePending(body.Req, who, false)
 	if p == nil {
 		apiError(w, http.StatusNotFound, "not_found", "this authorization request has expired or is not yours; start again from the client")

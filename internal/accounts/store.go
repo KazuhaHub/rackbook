@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"sync"
 	"time"
 
 	"github.com/kazuhahub/rackbook/internal/audit"
@@ -42,6 +43,10 @@ type Store struct {
 	eng  *engine[*State]
 	used usedSet
 	dir  string
+
+	revMu  sync.Mutex
+	revFor *State
+	revSet map[string]struct{}
 }
 
 func newStore(o Options) (*Store, error) {
@@ -126,6 +131,78 @@ func (s *Store) loadUsernames(cur *State) error {
 		}
 	}
 	return nil
+}
+
+// IsRevoked says whether the token (by the SHA-256 of its secret) or the grant (by its id) is on the revocation list. It is cheap
+// enough for every request: the set is built once per committed state.
+func (s *Store) IsRevoked(kind, id string) bool {
+	s.eng.mu.RLock()
+	cur := s.eng.cur
+	s.eng.mu.RUnlock()
+	s.revMu.Lock()
+	defer s.revMu.Unlock()
+	if s.revFor != cur {
+		s.revSet = make(map[string]struct{}, len(cur.Revoked))
+		for _, r := range cur.Revoked {
+			s.revSet[r.Kind+"\x00"+r.ID] = struct{}{}
+		}
+		s.revFor = cur
+	}
+	_, ok := s.revSet[kind+"\x00"+id]
+	return ok
+}
+
+// CredentialsValidAfter is the time before which the API tokens and OAuth grants of the local account are refused (zero: none).
+// It is a map lookup under the read lock, cheap enough for every request.
+func (s *Store) CredentialsValidAfter(username string) time.Time {
+	s.eng.mu.RLock()
+	defer s.eng.mu.RUnlock()
+	if a := s.eng.cur.Accounts[username]; a != nil {
+		return a.CredentialsValidAfter
+	}
+	return time.Time{}
+}
+
+// Refuses says whether a credential (an API token, an OAuth grant) made by or for the local account at created is refused by its
+// CredentialsValidAfter. Times in tokens.yml have a granularity of a second, so the rule is read at the next whole second: a token made
+// in the same second as the disable, before it, is caught; the account cannot make one after it, being disabled.
+func (s *Store) Refuses(username string, created time.Time) bool {
+	va := s.CredentialsValidAfter(username)
+	if va.IsZero() {
+		return false
+	}
+	if va.Nanosecond() != 0 {
+		va = va.Truncate(time.Second).Add(time.Second)
+	}
+	return created.Before(va)
+}
+
+// RevokedIDs lists the ids of one kind on the revocation list.
+func (s *Store) RevokedIDs(kind string) []string {
+	var out []string
+	s.Peek(func(st *State) {
+		for _, r := range st.Revoked {
+			if r.Kind == kind {
+				out = append(out, r.ID)
+			}
+		}
+	})
+	return out
+}
+
+// Peek calls fn with the committed state under the read lock, without copying it. fn must not keep the state or
+// change anything in it, and must not call the store.
+func (s *Store) Peek(fn func(st *State)) {
+	s.eng.mu.RLock()
+	defer s.eng.mu.RUnlock()
+	fn(s.eng.cur)
+}
+
+// Lookup returns a copy of one account, or nil.
+func (s *Store) Lookup(username string) *Account {
+	s.eng.mu.RLock()
+	defer s.eng.mu.RUnlock()
+	return s.eng.cur.Account(username)
 }
 
 // Snapshot is a deep copy of the committed state. Changing it changes nothing.
@@ -269,6 +346,21 @@ func (s *Store) UseTOTP(username, code string, now time.Time, ev *audit.Event) e
 	}, nil)
 }
 
+var dummyTOTPSecret = make([]byte, 20)
+
+// ProbeTOTP takes the writer lock and checks a code against the account's secret (a dummy one when there is none), and
+// writes nothing: the work UseTOTP does for a code that fails, for the sign-in that must not tell a wrong password from a
+// right one by how long it holds the writer (5.6, 8.6).
+func (s *Store) ProbeTOTP(username, code string, now time.Time) {
+	s.eng.wmu.Lock()
+	defer s.eng.wmu.Unlock()
+	secret, last := dummyTOTPSecret, int64(0)
+	if a := s.eng.cur.Accounts[username]; a != nil && a.TOTP != nil {
+		secret, last = a.TOTP.Secret, a.TOTP.LastStep
+	}
+	_, _ = VerifyTOTP(secret, code, now, last)
+}
+
 // ErrNotCounterOnly is returned by Counter when its callback changed anything but counters.
 var ErrNotCounterOnly = errors.New("a counter write may change only counter fields; use Change, which is audited")
 
@@ -310,6 +402,13 @@ func signInProof(name string, old, nw *Account, now time.Time, ev *audit.Event) 
 		(old.LastLogin == nil || nw.LastLogin.Time.After(old.LastLogin.Time))
 }
 
+// reauthProof says the counter write carries a re-authentication of this account: a reauth event for local:<name>
+// (counter() appends it with RecordSync in the same write). A re-authentication verifies the password and the second
+// factor again, so it may reset reauth_failures (5.7) and nothing else that a failure raised.
+func reauthProof(name string, ev *audit.Event) bool {
+	return ev != nil && ev.Event == "reauth" && ev.Identity == "local:"+name
+}
+
 // counterMovesForward is the second half of the counter check. What a failed attempt does (a count that grows, a
 // lock that is set, an account that becomes restricted) is a counter write. Undoing it is not, unless the write
 // proves a sign-in (signInProof) or the thing ran out on its own: leaving restricted or passkey_only, lowering
@@ -329,7 +428,10 @@ func counterMovesForward(name string, old, nw *Account, now time.Time, ev *audit
 	if old.State == StatePasskeyOnly && nw.State == StateRestricted {
 		return false
 	}
-	if nw.ConsecutiveFailures < old.ConsecutiveFailures || nw.ReauthFailures < old.ReauthFailures {
+	if nw.ConsecutiveFailures < old.ConsecutiveFailures {
+		return false
+	}
+	if nw.ReauthFailures < old.ReauthFailures && !(reauthProof(name, ev) && nw.ReauthFailures == 0) {
 		return false
 	}
 	for _, w := range []struct {

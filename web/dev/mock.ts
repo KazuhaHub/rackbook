@@ -665,8 +665,13 @@ export function mockApi(root: string): Plugin {
       return true
     }
     if (p === '/auth/config') {
-      return send(res, 200, { oidc: true, provider: 'microsoft', passkeys: false, locale: matchLocale(req.headers['accept-language']), defaultLocale: cfg.i18n?.default ?? 'zh-CN' }), true
+      // MOCK_LOGIN_MODE (dual, sso_first, sso_redirect, local_only) and MOCK_LOCAL=0 shape the sign-in page as the settings do
+      return send(res, 200, {
+        oidc: true, provider: 'microsoft', passkeys: false, mode: process.env.MOCK_LOGIN_MODE ?? 'dual', local: process.env.MOCK_LOCAL !== '0',
+        locale: matchLocale(req.headers['accept-language']), defaultLocale: cfg.i18n?.default ?? 'zh-CN',
+      }), true
     }
+    if (p.startsWith('/auth/local/') && method === 'POST') return localAuthDemo(p, await readBody(req), res), true
     if (p === '/auth/logout') return send(res, 200, { login: '/auth/login?error=logged_out' }), true
     if (!p.startsWith('/api/')) return false
     const parts = p.slice(5).split('/').filter(Boolean).map(decodeURIComponent)
@@ -1110,4 +1115,59 @@ function ruleParams(params: Record<string, unknown>, message: string | undefined
   const tr = Object.fromEntries(Object.entries(i18n ?? {}).flatMap(([l, v]) => (v?.message ? [[l, v.message]] : [])))
   if (Object.keys(tr).length) params.ruleMessageI18n = tr
   return params
+}
+
+
+// A demo of the local sign-in and setup pages (design-local-accounts.md, 12). Sign in as demo / demo-password-1 with the
+// code 123456; every other attempt gets the one answer a failed sign-in gets, whatever was wrong. The links to open at
+// /auth/local/setup#<token>: invite-demo, reset-password-demo, reset-factor-demo, reset-all-demo, invite-norole-demo,
+// expired-demo, claimed-demo (anything else is not valid).
+function localAuthDemo(p: string, body: Record<string, any>, res: ServerResponse) {
+  const send = (r: ServerResponse, status: number, b: unknown) => {
+    r.statusCode = status
+    r.setHeader('Content-Type', 'application/json; charset=utf-8')
+    r.end(JSON.stringify(b))
+  }
+  const fail = (status: number, error: string, extra: Record<string, unknown> = {}) => send(res, status, { error, message: error, ...extra })
+  const sign = (b: Record<string, any>) => b.password === 'demo-password-1' && b.code === '123456'
+  switch (p) {
+    case '/auth/local/attempt':
+      return send(res, 200, { attempt: 'demo-attempt', captcha: false, passkey: { publicKey: { challenge: 'AAAA', rpId: 'localhost', timeout: 60000, userVerification: 'preferred' } } })
+    case '/auth/local/login':
+      if (body.username === 'busy') return fail(503, 'busy')
+      if (body.username === 'throttled') return fail(429, 'too_many_attempts')
+      if (body.username === 'sso') return fail(403, 'sso_required')
+      if (body.username === 'norole') return fail(403, 'no_role')
+      if (body.username === 'demo' && sign(body)) return send(res, 200, { ok: true, return: typeof body.return === 'string' && body.return ? body.return : '/' })
+      return fail(401, 'sign_in_failed')
+    case '/auth/local/reauth':
+      if (sign(body)) return send(res, 200, { ok: true, return: typeof body.return === 'string' && body.return ? body.return : '/' })
+      return fail(401, 'sign_in_failed')
+    case '/auth/local/setup/open': {
+      const t = String(body.token ?? '')
+      const base = { username: 'dana', name: 'Dana', minLength: 12, expires: new Date(Date.now() + 70 * 3600000).toISOString() }
+      const info: Record<string, any> = {
+        'invite-demo': { kind: 'invite', scope: 'all', newPassword: true, currentPassword: false, newFactor: true, proveFactor: false, proveWith: [] },
+        'invite-norole-demo': { kind: 'invite', scope: 'all', newPassword: true, currentPassword: false, newFactor: true, proveFactor: false, proveWith: [] },
+        'reset-password-demo': { kind: 'reset', scope: 'password', newPassword: true, currentPassword: false, newFactor: false, proveFactor: true, proveWith: ['totp', 'passkey'] },
+        'reset-factor-demo': { kind: 'reset', scope: 'second_factor', newPassword: false, currentPassword: true, newFactor: true, proveFactor: false, proveWith: [] },
+        'reset-all-demo': { kind: 'reset', scope: 'all', newPassword: true, currentPassword: false, newFactor: true, proveFactor: false, proveWith: [] },
+      }
+      if (t === 'expired-demo') return fail(410, 'invite_expired')
+      if (t === 'claimed-demo') return fail(409, 'invite_claimed')
+      if (!info[t]) return fail(404, 'invite_invalid')
+      return send(res, 200, { ...base, ...info[t] })
+    }
+    case '/auth/local/setup/totp':
+      return send(res, 200, { enrol: 'demo-enrol', secret: 'JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP', uri: 'otpauth://totp/Rackbook:dana?secret=JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP&issuer=Rackbook' })
+    case '/auth/local/setup/passkey':
+      return send(res, 200, { ceremony: 'demo-ceremony', options: { publicKey: { challenge: 'AAAA', rp: { name: 'Rackbook', id: 'localhost' }, user: { id: 'AAAA', name: 'dana', displayName: 'Dana' }, pubKeyCredParams: [{ type: 'public-key', alg: -7 }], timeout: 60000 } } })
+    case '/auth/local/setup/finish':
+      if (body.password === 'password1234') return send(res, 422, { error: 'password_rules', message: 'common', rule: 'common', min: 12 })
+      if (body.totp && body.totp.code === '000000') return fail(422, 'bad_code')
+      if (body.proof && body.proof.code !== '123456' && !body.proof.passkey) return fail(401, 'sign_in_failed')
+      if (body.current_password === 'wrong-password') return fail(401, 'sign_in_failed')
+      return send(res, 200, { ok: true, signedIn: body.token !== 'invite-norole-demo', return: '/' })
+  }
+  return fail(404, 'not_found')
 }

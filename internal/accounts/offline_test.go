@@ -107,6 +107,12 @@ func TestAcceptRestoreOfAGap(t *testing.T) {
 	if al.State != StateResetPending || al.Pending == nil || al.Pending.Kind != "reset" || al.Pending.Scope != ScopeAll {
 		t.Fatalf("alice = %+v %+v", al.State, al.Pending)
 	}
+	// every account, named or not, refuses the tokens and grants made before the restore (the restored store may lack the revocations)
+	for n, a := range snap.Accounts {
+		if a.CredentialsValidAfter.IsZero() || !s2.Refuses(n, a.CredentialsValidAfter.Add(-time.Minute)) {
+			t.Errorf("%s: credentials_valid_after = %v", n, a.CredentialsValidAfter)
+		}
+	}
 	// every account, named or not, has new session ids and no good buckets
 	for n, a := range snap.Accounts {
 		if len(a.GoodBuckets) != 0 {

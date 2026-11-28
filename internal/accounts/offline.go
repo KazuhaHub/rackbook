@@ -310,7 +310,7 @@ func storeLevel(name string) bool {
 
 // accountOf names the account a change event is about, "" for none.
 func accountOf(ev audit.Event) string {
-	if storeLevel(ev.Event) {
+	if storeLevel(ev.Event) || ev.Event == "account_revocations_applied" { // bookkeeping: it names no change to re-apply
 		return ""
 	}
 	n := strings.TrimPrefix(ev.Target, "local:")
@@ -443,6 +443,9 @@ func (s *Store) applyRestore(o Offline, se *StartError, p *accountsPlan, rep *Re
 		for n, a := range st.Accounts {
 			_ = a.RenewSessions()
 			a.GoodBuckets = nil
+			// the restored store may lack revocations made after its backup (the revocation list is part of it): the API tokens and
+			// OAuth grants every local account made before this moment are refused until they are made again (5.11)
+			a.CredentialsValidAfter = o.now().UTC()
 			if a.State == StateResetPending && a.Pending != nil && a.Pending.IssuedBy == "cli" {
 				rep.ResetNames = append(rep.ResetNames, n)
 			}
@@ -676,4 +679,13 @@ func revokeAllGrantsOffline(stateDir string) (int, error) {
 		return 0, err
 	}
 	return n, writeFile(path, out)
+}
+
+// OpenStore runs the start sequence (4.3) of the account store for an offline command that changes accounts: invite,
+// reset, disable, enable, remove, end-sessions, unlock and recover. A refusal is a *StartError.
+func (o *Offline) OpenStore() (*Store, error) {
+	if err := o.check(); err != nil {
+		return nil, err
+	}
+	return Open(o.options())
 }

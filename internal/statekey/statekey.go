@@ -33,10 +33,12 @@ const (
 	PurposeUsernames    Purpose = "rackbook usernames v1"
 	PurposeAdminChannel Purpose = "rackbook admin channel v1"
 	PurposeAttempts     Purpose = "rackbook attempts v1"
+	// PurposePasskeyHandle keys the HMAC of WebAuthn user handles: not the key of the sealed tokens.
+	PurposePasskeyHandle Purpose = "rackbook passkey handle v1"
 )
 
 // Purposes lists every subkey purpose.
-var Purposes = []Purpose{PurposeAccounts, PurposeSecrets, PurposeUsernames, PurposeAdminChannel, PurposeAttempts}
+var Purposes = []Purpose{PurposeAccounts, PurposeSecrets, PurposeUsernames, PurposeAdminChannel, PurposeAttempts, PurposePasskeyHandle}
 
 const kidInfo = "rackbook key id v1"
 
