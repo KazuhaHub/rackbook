@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useLocation, useNavigate } from 'react-router'
 import { useQueryClient } from '@tanstack/react-query'
 import { CircleAlert, KeyRound, Trash2, Users as UsersIcon } from 'lucide-react'
 import { toast } from 'sonner'
@@ -14,14 +15,56 @@ import {
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
+import { Tabs, TabsContent, TabsIndicator, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { EmptyState, PageHeader } from '@/components/common'
+import { RolesEditor } from '@/components/users/RolesEditor'
 import { roleLabel } from '@/components/layout/UserMenu'
 import { t } from '@/i18n'
 import { apiFetch, errorMessage } from '@/lib/api'
 import { useUsers, type ManagedUser, type Passkey } from '@/lib/auth'
 import { relativeTime } from '@/lib/ledger'
+import { useMeta } from '@/providers/meta'
 
+/** Users: who has signed in (everyone with a role), and Roles, where an administrator edits the role lists. */
 export default function Users() {
+  const U = t.auth.users
+  const { meta } = useMeta()
+  const { pathname } = useLocation()
+  const navigate = useNavigate()
+  const admin = !!meta.user?.canAdmin
+  const tab = admin && /\/roles\/?$/.test(pathname) ? 'roles' : 'people'
+  const header = (
+    <PageHeader icon={<UsersIcon />} title={U.title} description={tab === 'roles' ? t.auth.rolesEditor.description : undefined} />
+  )
+  if (!admin) {
+    return (
+      <div>
+        {header}
+        <People />
+      </div>
+    )
+  }
+  return (
+    <div>
+      {header}
+      <Tabs value={tab} onValueChange={(v) => navigate(v === 'roles' ? '/admin/users/roles' : '/admin/users')}>
+        <TabsList>
+          <TabsIndicator />
+          <TabsTrigger value="people">{t.auth.rolesEditor.tabPeople}</TabsTrigger>
+          <TabsTrigger value="roles">{t.auth.rolesEditor.tabRoles}</TabsTrigger>
+        </TabsList>
+        <TabsContent value="people">
+          <People />
+        </TabsContent>
+        <TabsContent value="roles">
+          <RolesEditor />
+        </TabsContent>
+      </Tabs>
+    </div>
+  )
+}
+
+function People() {
   const U = t.auth.users
   const q = useUsers()
   const qc = useQueryClient()
@@ -45,7 +88,7 @@ export default function Users() {
   const showPasskeys = q.data?.passkeysEnabled === true
   return (
     <div>
-      <PageHeader icon={<UsersIcon />} title={U.title} description={showPasskeys ? U.description : U.descriptionNoPasskeys} />
+      <p className="mb-5 max-w-3xl text-sm text-muted-foreground">{showPasskeys ? U.description : U.descriptionNoPasskeys}</p>
       {q.isPending ? (
         <Skeleton className="h-40 w-full" />
       ) : q.isError ? (

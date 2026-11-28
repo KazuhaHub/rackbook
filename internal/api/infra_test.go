@@ -40,6 +40,13 @@ func (ts testSessions) Identify(w http.ResponseWriter, r *http.Request) (*auth.I
 		m = auth.MethodOIDC
 	}
 	id := &auth.Identity{ID: u, Email: u, Name: u, Method: m}
+	// X-Groups and X-App-Roles are the claims of the sign-in, comma-separated
+	if v := r.Header.Get("X-Groups"); v != "" {
+		id.Groups = strings.Split(v, ",")
+	}
+	if v := r.Header.Get("X-App-Roles"); v != "" {
+		id.AppRoles = strings.Split(v, ",")
+	}
 	if m == auth.MethodOIDC {
 		id.OIDCIssuer, id.OIDCClient, id.OIDCClaim, id.OIDCTenant = testIssuer, testClient, "preferred_username", testTenant
 		if v := r.Header.Get("X-Claim"); v != "" {

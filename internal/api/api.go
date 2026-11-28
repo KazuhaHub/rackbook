@@ -170,13 +170,14 @@ func build(o Options) (http.Handler, []string) {
 	mux.HandleFunc("DELETE /api/c/{collection}/{id}", s.del)
 	s.historyRoutes(mux) // history.go: versions, restore, deleted records
 	mux.HandleFunc("POST /api/admin/accept-remote", s.acceptRemote)
-	s.accountRoutes(mux)  // account.go
-	s.tokenRoutes(mux)    // tokens.go
-	s.typesRoutes(mux)    // types.go
-	s.modulesRoutes(mux)  // modules.go
-	s.brandingRoutes(mux) // branding.go: public
-	s.infraRoutes(mux)    // infra.go: only with Options.Infra
-	s.activityRoutes(mux) // activity.go
+	s.accountRoutes(mux)    // account.go
+	s.tokenRoutes(mux)      // tokens.go
+	s.typesRoutes(mux)      // types.go
+	s.modulesRoutes(mux)    // modules.go
+	s.rolesAdminRoutes(mux) // roles_admin.go: the role editor
+	s.brandingRoutes(mux)   // branding.go: public
+	s.infraRoutes(mux)      // infra.go: only with Options.Infra
+	s.activityRoutes(mux)   // activity.go
 	public := map[string]http.Handler{}
 	for p, h := range o.Public {
 		public[p] = h

@@ -7,6 +7,11 @@
 // MOCK_LOGIN=1 with MOCK_ROLE_FROM=identity|group|app-role (comma-separated) shows where the role comes from on
 // the account page; a role without "identity" is read from claims, so the page shows the claims_absolute note and
 // creating an API token is refused (creator_role_from_claims). The activity feed carries role_changed events.
+// Users → Roles (MOCK_LOGIN=1) edits an in-memory copy of auth.roles: MOCK_WRITE_MODE=pr makes a save open a
+// pull request, MOCK_ROLES_DEGRADED=1 pretends rackbook.yml does not load, MOCK_ROLES_CONFLICT=1 makes the first
+// save a version conflict (so does a commit message with the word "conflict"). Removing the last admin or the
+// caller's own admin entry is refused as the server refuses it. MOCK_AUTH_MODE=none shows the no-sign-in banner and
+// MOCK_LEGACY_EDITORS=a@x,b@x the read-only note about the legacy auth.editors list.
 import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
@@ -15,6 +20,7 @@ import { Ajv2020 } from 'ajv/dist/2020.js'
 import { parse } from 'yaml'
 import type { Plugin } from 'vite'
 import { isCountryCode } from '../src/lib/countries.ts'
+import { entryKey, kindOf } from '../src/lib/rolesDraft.ts'
 
 type Data = Record<string, any>
 type Rec = { id: string; hash: string; data: Data }
@@ -452,6 +458,160 @@ export function mockApi(root: string): Plugin {
     }
   }
 
+  // --- Users → Roles: the lists of auth.roles and auth.auditors, kept in memory -------------------------
+  type RoleLists = { admin: string[]; editor: string[]; viewer: string[]; auditors: string[] }
+  const roleListNames = ['admin', 'editor', 'viewer', 'auditors'] as const
+  const mockGroup = '5a3b9c1e-2d4f-4a6b-8c7d-0e1f2a3b4c5d'
+  const callerGroups = roleFrom.includes('group') ? [mockGroup] : []
+  const callerAppRoles = roleFrom.includes('app-role') ? ['Rackbook.Admin'] : []
+  const writeModePR = process.env.MOCK_WRITE_MODE === 'pr'
+  let rolesConflictLeft = process.env.MOCK_ROLES_CONFLICT === '1' ? 1 : 0
+  const rolesDegraded = process.env.MOCK_ROLES_DEGRADED === '1'
+  let roleLists: RoleLists = {
+    admin: [...(roleFrom.includes('identity') ? [user.id] : []), 'owner@example.com', `group:${mockGroup}`],
+    editor: ['*@example.com', 'app-role:Rackbook.Editor'],
+    viewer: ['guest@example.com', 'oauth:partner:*', 'oidc:00000000-1111-2222-3333-444444444444'],
+    auditors: ['audie@example.com', 'app-role:Rackbook.Auditor'],
+  }
+  const rolesVersion = (l: RoleLists) => createHash('sha256').update(JSON.stringify(l)).digest('hex').slice(0, 16)
+  const fold = (x: string) => x.replace(/[A-Z]/g, (c) => c.toLowerCase())
+  const rolesMatch = (e: string, identityOnly: boolean) => {
+    const k = kindOf(e)
+    const me = fold(user.id)
+    const s = fold(e.trim())
+    switch (k) {
+      case 'any':
+        return true
+      case 'identity':
+        return s === me
+      case 'domain':
+        return me.endsWith(s.slice(1))
+      case 'group':
+        return !identityOnly && callerGroups.includes(s.slice(6).trim())
+      case 'app-role':
+        return !identityOnly && callerAppRoles.includes(e.trim().slice(9).trim())
+      default:
+        return false
+    }
+  }
+  /** The caller's role and auditor flag under some lists, as the server's evaluator gives them. */
+  const rolesCap = (l: RoleLists) => {
+    const roleIn = (identityOnly: boolean) => (['admin', 'editor', 'viewer'] as const).find((n) => l[n].some((e) => rolesMatch(e, identityOnly)))
+    const full = roleIn(false)
+    const auditor = l.auditors.some((e) => rolesMatch(e, false))
+    const from = new Set<string>()
+    for (const e of full ? l[full].filter((x) => rolesMatch(x, false)) : []) from.add(kindOf(e) === 'group' ? 'group' : kindOf(e) === 'app-role' ? 'app-role' : 'identity')
+    const aud = new Set<string>()
+    for (const e of l.auditors.filter((x) => rolesMatch(x, false))) aud.add(kindOf(e) === 'group' ? 'group' : kindOf(e) === 'app-role' ? 'app-role' : 'identity')
+    const byId = roleIn(true)
+    return {
+      role: full ?? (auditor ? 'viewer' : 'none'),
+      auditor,
+      roleFrom: [...from].sort(),
+      auditorFrom: [...aud].sort(),
+      byIdentity: byId ?? (l.auditors.some((e) => rolesMatch(e, true)) ? 'viewer' : 'none'),
+      auditorByIdentity: l.auditors.some((e) => rolesMatch(e, true)),
+    }
+  }
+  const rolesNotes = (e: string, list: string, l: RoleLists) => {
+    const notes: { level: string; code: string; message: string; also?: string }[] = []
+    const k = kindOf(e)
+    if (!e.trim()) notes.push({ level: 'error', code: 'empty', message: 'the entry is empty' })
+    else if (!k) notes.push({ level: 'error', code: 'invalid', message: `${JSON.stringify(e)}: not a valid entry` })
+    else {
+      if (list === 'admin' && (k === 'any' || k === 'domain')) notes.push({ level: 'warning', code: 'wildcard_admin', message: 'everyone this entry matches is an administrator' })
+      if (k === 'oauth' && !fold(e).startsWith('oauth:corp:')) notes.push({ level: 'warning', code: 'unknown_issuer', message: 'no trusted OAuth issuer has this alias' })
+      if (k === 'local') notes.push({ level: 'warning', code: 'local_unavailable', message: 'local accounts are not available' })
+      if (list !== 'auditors') {
+        const other = (['admin', 'editor', 'viewer'] as const).find((n) => n !== list && l[n].some((x) => entryKey(x) === entryKey(e)))
+        if (other) notes.push({ level: 'warning', code: 'also_in', message: `also in ${other}`, also: other })
+      }
+    }
+    return notes
+  }
+  const rolesAnnotate = (l: RoleLists) =>
+    Object.fromEntries(roleListNames.map((n) => [n, l[n].map((e) => ({ value: e, kind: kindOf(e), notes: rolesNotes(e, n, l) }))])) as Record<(typeof roleListNames)[number], { value: string; kind: string; notes: any[] }[]>
+  const rolesView = () => {
+    const a = rolesAnnotate(roleLists)
+    return {
+      version: rolesVersion(roleLists), loads: !rolesDegraded, ...(rolesDegraded ? { problem: 'rackbook.yml: yaml: line 12: did not find expected key' } : {}),
+      explicit: true, roles: { admin: a.admin, editor: a.editor, viewer: a.viewer }, auditors: a.auditors, file: 'rackbook.yml',
+      writeMode: writeModePR ? 'pr' : 'push', readOnly, sso: true, infra: true,
+      authMode: process.env.MOCK_AUTH_MODE ?? 'oidc', editors: (process.env.MOCK_LEGACY_EDITORS ?? '').split(',').map((x) => x.trim()).filter(Boolean), you: rolesCap(roleLists),
+    }
+  }
+  const yamlItem = (s: string) => (/^[*&!|>%@`'",[\]{}#]/.test(s) || /[:#]\s|^\s|\s$/.test(s) ? JSON.stringify(s) : s)
+  const rolesYaml = (l: RoleLists) =>
+    [
+      '# ---- access ----',
+      'auth:',
+      '  mode: oidc',
+      '  roles:',
+      ...(['viewer', 'admin', 'editor'] as const).map((n) => `    ${n}: [${l[n].map(yamlItem).join(', ')}]`),
+      `  auditors: [${l.auditors.map(yamlItem).join(', ')}]   # read the audit log`,
+      '',
+    ].join('\n')
+  /** One hunk with three lines of context: enough for a file this small. */
+  const unifiedDiff = (a: string, b: string) => {
+    if (a === b) return ''
+    const x = a.replace(/\n$/, '').split('\n')
+    const y = b.replace(/\n$/, '').split('\n')
+    let head = 0
+    while (head < x.length && head < y.length && x[head] === y[head]) head++
+    let tail = 0
+    while (tail < x.length - head && tail < y.length - head && x[x.length - 1 - tail] === y[y.length - 1 - tail]) tail++
+    const ctx = 3
+    const from = Math.max(0, head - ctx)
+    const endX = Math.min(x.length, x.length - tail + ctx)
+    const endY = Math.min(y.length, y.length - tail + ctx)
+    const out = ['--- a/rackbook.yml', '+++ b/rackbook.yml', `@@ -${from + 1},${endX - from} +${from + 1},${endY - from} @@`]
+    for (let i = from; i < head; i++) out.push(' ' + x[i])
+    for (let i = head; i < x.length - tail; i++) out.push('-' + x[i])
+    for (let i = head; i < y.length - tail; i++) out.push('+' + y[i])
+    for (let i = x.length - tail; i < endX; i++) out.push(' ' + x[i])
+    return out.join('\n') + '\n'
+  }
+  const rolesSubject = (a: RoleLists, b: RoleLists, message?: string) => {
+    if (message && message.trim()) return message.trim().replace(/\s+/g, ' ').slice(0, 200)
+    const parts: string[] = []
+    for (const n of roleListNames) {
+      const ch = [...b[n].filter((e) => !a[n].includes(e)).map((e) => '+' + e), ...a[n].filter((e) => !b[n].includes(e)).map((e) => '-' + e)]
+      if (ch.length) parts.push(`${n} ${ch.join(' ')}`)
+    }
+    const s = 'roles: ' + parts.join('; ')
+    return s.length > 120 ? s.slice(0, 120) + '…' : s
+  }
+  /** What a save of `next` would do and whether it is allowed (the same rules as internal/rolesedit). */
+  const rolesPlan = (next: RoleLists, message?: string) => {
+    const entries = rolesAnnotate(next)
+    const hasError = roleListNames.some((n) => entries[n].some((e) => e.notes.some((x) => x.level === 'error')))
+    const changed = JSON.stringify(Object.values(next).map((l) => [...l].sort())) !== JSON.stringify(Object.values(roleLists).map((l) => [...l].sort()))
+    const now = rolesCap(roleLists)
+    const after = rolesCap(next)
+    let refusal: { code: string; message: string; entries?: unknown } | undefined
+    if (hasError) refusal = { code: 'invalid_entries', message: 'some entries are not valid', entries }
+    else if (changed && next.admin.length === 0) refusal = { code: 'last_admin', message: 'at least one admin entry must remain' }
+    else if (changed && after.role !== 'admin') refusal = { code: 'self_lockout', message: 'you would no longer be an administrator after this change' }
+    else if (changed && after.byIdentity !== 'admin') refusal = { code: 'self_lockout_claims', message: 'you would be an administrator only through a group or an app role' }
+    const warnings: { list: string; entry: string; note: any }[] = []
+    if (!hasError)
+      for (const n of roleListNames)
+        for (const e of next[n].filter((x) => !roleLists[n].includes(x)))
+          for (const note of entries[n].find((x) => x.value === e)?.notes ?? []) if (note.level === 'warning') warnings.push({ list: n, entry: e, note })
+    const diff = hasError ? '' : unifiedDiff(rolesYaml(roleLists), rolesYaml(next))
+    return { entries, changed, now, after, refusal, warnings, diff, subject: rolesSubject(roleLists, next, message) }
+  }
+  const rolesViewLists = () => {
+    const v = rolesView()
+    return { version: v.version, roles: v.roles, auditors: v.auditors }
+  }
+  const rolesBodyLists = (body: any): RoleLists | undefined => {
+    const r = body?.roles
+    const ok = (v: unknown): v is string[] => Array.isArray(v) && v.every((x) => typeof x === 'string')
+    if (!r || !ok(r.admin) || !ok(r.editor) || !ok(r.viewer) || !ok(body.auditors)) return undefined
+    return { admin: r.admin.map((x: string) => x.trim()), editor: r.editor.map((x: string) => x.trim()), viewer: r.viewer.map((x: string) => x.trim()), auditors: body.auditors.map((x: string) => x.trim()) }
+  }
+
   const send = (res: ServerResponse, status: number, body: unknown) => {
     res.statusCode = status
     res.setHeader('Content-Type', 'application/json; charset=utf-8')
@@ -553,6 +713,45 @@ export function mockApi(root: string): Plugin {
         k.status = 'revoked'
         return send(res, 200, { ok: true }), true
       }
+    }
+    if (head === 'admin' && cname === 'roles') {
+      if (!user.canAdmin) return send(res, 403, { error: 'forbidden', message: 'only administrators signed in on the console may edit roles' }), true
+      if (!rest.length && method === 'GET') return send(res, 200, rolesView()), true
+      const isPreview = rest[0] === 'preview' && method === 'POST'
+      if (method !== 'POST' || (rest.length && !isPreview)) return false
+      const body = await readBody(req)
+      if (rolesDegraded) return send(res, 409, { error: 'config_degraded', message: 'rackbook.yml does not load, so the roles cannot be edited: fix the file first', problem: 'rackbook.yml: yaml: line 12: did not find expected key' }), true
+      if (!isPreview && readOnly) return send(res, 403, { error: 'read_only', message: 'the ledger is read-only' }), true
+      const lists = rolesBodyLists(body)
+      if (!lists) return send(res, 400, { error: 'bad_request', message: 'roles.admin, roles.editor, roles.viewer and auditors are required: complete lists, [] for none' }), true
+      const stale = body.version !== rolesVersion(roleLists)
+      const staleBody = () => {
+        const a = rolesAnnotate(roleLists)
+        return { error: 'conflict', message: 'the roles changed since you opened them; reload and make your change again', current: { version: rolesVersion(roleLists), roles: { admin: a.admin, editor: a.editor, viewer: a.viewer }, auditors: a.auditors } }
+      }
+      if (!isPreview && rolesConflictLeft === 0 && /conflict/i.test(String(body.message ?? ''))) rolesConflictLeft = 1
+      if (!isPreview && rolesConflictLeft > 0) {
+        // somebody else saved first
+        rolesConflictLeft = 0
+        roleLists = { ...roleLists, viewer: [...roleLists.viewer, 'theirs@example.com'] }
+        return send(res, 409, staleBody()), true
+      }
+      if (stale) return send(res, 409, staleBody()), true
+      const plan = rolesPlan(lists, body.message)
+      if (isPreview) {
+        return send(res, 200, {
+          version: rolesVersion(roleLists), changed: plan.changed, file: 'rackbook.yml', diff: plan.diff, subject: plan.subject, entries: plan.entries,
+          warnings: plan.warnings, you: { now: plan.now, after: plan.after }, pullRequest: writeModePR, readOnly,
+          ...(plan.refusal ? { refusal: plan.refusal } : {}),
+        }), true
+      }
+      if (plan.refusal) return send(res, 422, { error: plan.refusal.code, message: plan.refusal.message, ...(plan.refusal.entries ? { entries: plan.refusal.entries } : {}) }), true
+      if (!plan.changed) return send(res, 200, { changed: false, pullRequest: false, subject: plan.subject, file: 'rackbook.yml', commit: '', ...rolesViewLists() }), true
+      if (writeModePR) {
+        return send(res, 200, { changed: true, pullRequest: true, pullRequestUrl: 'https://github.com/example/ledger/pull/42', subject: plan.subject, file: 'rackbook.yml' }), true
+      }
+      roleLists = lists
+      return send(res, 200, { changed: true, pullRequest: false, commit: createHash('sha1').update(String(Date.now())).digest('hex').slice(0, 7), subject: plan.subject, file: 'rackbook.yml', ...rolesViewLists() }), true
     }
     if (head === 'admin' && cname === 'accept-remote' && method === 'POST') {
       const body = await readBody(req)

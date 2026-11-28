@@ -1,7 +1,7 @@
 # Audit history and roles from the identity provider
 
-Status: design, agreed 2026-11-22. Phase 1 (pieces 1 to 5) is built (3.5). Phase 2a is built except the
-console role editor (section 4, "As built, part 1" below); SCIM (2b) comes later. Phase 3 is accepted. The owner's decisions of
+Status: design, agreed 2026-11-22. Phase 1 (pieces 1 to 5) is built (3.5). Phase 2a is built (section 4, "As built",
+parts 1 and 2 below) except local accounts, which have their own design; SCIM (2b) comes later. Phase 3 is accepted. The owner's decisions of
 2026-11-22 are in section 7; local accounts beside SSO, and the sign-in security settings, have their own
 design, [design-local-accounts.md](design-local-accounts.md).
 
@@ -497,7 +497,7 @@ This builds on what exists: the role is computed from the identity and the claim
   entries never match them). Creating a token is refused, with a clear message,
   when the creator's role comes only from groups or app roles. Otherwise the token would silently have no
   role.
-- **Editing roles in the console** (admin, **Users → Roles**; part 2, **not built yet**): the lists in `auth.roles` and
+- **Editing roles in the console** (admin, **Users → Roles**; part 2, **built**, see "As built, part 2" below): the lists in `auth.roles` and
   `auth.auditors`, with a diff preview. Saving is a commit to `rackbook.yml` through `yamledit`, so comments
   and layout are kept and every change by hand is in the history. It refuses to remove the last admin, and
   refuses to remove the editing admin's own admin entry.
@@ -513,8 +513,8 @@ This builds on what exists: the role is computed from the identity and the claim
 
 Done: app roles, overage, no passkeys for SSO identities, `claims_absolute`, `audit/identities.json` with
 `role_changed` and its API, the token rule, and the README, `docs/api.md` and console work for them (account
-page, token refusal, Activity sentences in zh-CN, zh-TW and en-US, the mock API). **Not built:** the console
-role editor (part 2) and local accounts. Where it differs from the text above:
+page, token refusal, Activity sentences in zh-CN, zh-TW and en-US, the mock API). **Not built in part 1:** the console
+role editor (built in part 2, below) and local accounts. Where it differs from the text above:
 
 - **Roles from claims.** `app-role:<value>` is a new entry kind (`internal/roles`), accepted in `auth.roles` and
   `auth.auditors` through the same parser, so `rackbook check` validates it with the same messages (an empty value,
@@ -574,7 +574,67 @@ role editor (part 2) and local accounts. Where it differs from the text above:
   viewer-by-name who is admin by group asking for a write token. A push token needs admin by identity: one made by an admin who is admin only by group is refused with the same code. The auditor capability of a token
   follows identity entries the same way.
 
-Not done in part 1: the role editor; local accounts and the `local:` gate of design-local-accounts.md section 7; reading the audit log or `identities.json` from the CLI or MCP.
+Not done in part 1: the role editor (done in part 2); local accounts and the `local:` gate of design-local-accounts.md section 7; reading the audit log or `identities.json` from the CLI or MCP.
+
+### As built, part 2 (2026-11-28): the role editor
+
+Done: **Users → Roles**, `GET /api/admin/roles`, `POST /api/admin/roles/preview` and `POST /api/admin/roles`
+(`internal/rolesedit`, `internal/api/roles_admin.go`, `yamledit.SetStringList`, `auth.Authenticator.CapabilitiesUnder`,
+`roles.Describe`), the console page and its mock, the tests, README and `docs/api.md`. With it **phase 2a is complete
+except local accounts**, which have their own design ([design-local-accounts.md](design-local-accounts.md)); the editor
+already labels `local:` entries and warns that they match nobody yet (section 7 of that design: marking entries that
+cannot match, and counting only admins who can sign in, come with the accounts). Where it differs from, or adds to, the text above:
+
+- **The rule for the editing admin's own entry, exactly.** After the change, the caller's own session (identity,
+  method, and the groups and app roles of their sign-in) is evaluated against the *new* lists, as `Authenticator`
+  would evaluate it. The save is refused unless the result is `admin` **and** is still `admin` when only entries that
+  name the identity count (an exact entry, `*@domain`, `oidc:`, `*`: the evaluation an API token of theirs, a session
+  past `claims_absolute` and an OAuth grant past it use). Two codes: `self_lockout` (not an admin after the change:
+  they removed or downgraded their own entry) and `self_lockout_claims` (an admin only by `group:` or `app-role:`).
+  The rule is strict: an admin who is one only by group cannot save an unrelated change, only one that also adds a
+  name entry for themselves. A `*@domain` entry that matches them counts as naming them, so a name entry may be traded for a domain entry.
+  The checks run in the order version, entries, `last_admin`, self-lockout; nothing is refused when nothing changes.
+- **`version` is a hash of the four lists, not of the file or a commit.** The design asked for "the blob or commit
+  the lists came from". A file or commit identifier would make every unrelated edit of `rackbook.yml` (a module
+  setting, a comment) a conflict, and the edit is spliced into the newest tip and re-checked there anyway, so what
+  matters is whether the lists moved. The same choice as the module settings (`modsettings.Version`).
+- **Where the checks run.** `rolesedit.Build` plans a change against the config of the tip it is applied to; the
+  write path calls it again on a new tip when a push is rejected, so a remote change of the lists becomes a
+  `409 conflict` rather than a silent overwrite. The caller is evaluated through `CapabilitiesUnder(cfg, …)`, given
+  the config explicitly: reading the store from inside its own write lock deadlocks in `--no-git` mode (found by the
+  test through a real sign-in).
+- **A preview answers `200` for a change a save would refuse**, with `refusal` and everything else it could work out, so that the
+  page shows the diff and "you will be" beside the reason; only a stale version, a degraded config, a bad body and an
+  unsupported layout are errors there.
+- **`message` is the commit subject**, not an addition to it (one line, at most 200 characters); the default is
+  `roles: admin +a, editor -b` cut at 120 characters. There is no `Record:` trailer, as for module settings.
+- **The editor edits lists, not layouts.** `yamledit.SetStringList` keeps what stays and handles block lists and
+  single-line flow lists; it refuses a flow list over several lines, an alias, a null written as `~` and a list of
+  anything but plain one-line strings (`422 unsupported`, the list named). A missing `auth.roles` block is refused
+  (`no_roles_block`: without it nobody is an admin). New entries are appended; the order of the entries that stay is kept.
+- **Tokens and OAuth.** Nothing to build: the token layer already reaches only the record paths (`mcpauth.tokenPath`, its
+  test now lists the two new routes), access tokens work only on `/mcp`, and the handler refuses an identity whose
+  method is token, OAuth or MCPHub as well. This is stricter than the other admin config writes (types), which do
+  not look at the method; the module panel's guard is the model.
+- **Degraded config.** The handler answers `409 config_degraded` and `GET` says `loads: false` with the lists of the
+  last good file. In a full deployment a config that does not load also caps every role at viewer, so an admin gets the
+  `403` of the admin gate before this, and the console's own alert says why; the explicit answer is for the case
+  where the cap is not wired and as a second line.
+- **Warnings** use `audit/identities.json` as the design suggested (an added identity or `*@domain` entry nobody has
+  signed in as), plus what the deployment can match at all (single sign-on, trusted issuers, MCPHub). They are notes, never refusals.
+- **Pull request mode and concurrent role PRs.** The last-admin and self-lockout checks run for each pull request
+  against the tracked branch when it is opened. Two open role pull requests from one version can together remove every
+  admin; whoever merges them must look at them in order. There is no pull request listing in the store, so the
+  `open_role_pr` preview warning was not built. After a PR save the page resets its draft to the server's lists.
+- **Later hardening.** Entries with Unicode format, separator or C1 characters are invalid (`format_chars`); wide entries
+  are warned about in `editor` as well as `admin`, `mcphub:*` and `oauth:<alias>:*` included; the preview runs the secret
+  scan and shows it as a refusal; with `auth.mode: none` anyone who reaches the console edits roles, as for every admin
+  write, and the page says so; the legacy `auth.editors` list is returned and shown read-only.
+- **Infra.** `/infra` administrators and auditors are deploy flags; the editor shows a note and nothing else.
+- **Not done:** local accounts; counting only admins who can sign in for the last-admin rule (needs the accounts);
+  a `role_changed` preview ("these people would change role": the claims of people who are not signed in are not
+  kept, so it cannot be computed); `rackbook` CLI subcommand for the same edit; editing the legacy `auth.editors` list
+  (it is read, and added to the editors, but not shown or changed: remove it by hand).
 
 ## 5. Phase 2b: SCIM (later)
 

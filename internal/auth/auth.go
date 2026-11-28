@@ -205,22 +205,67 @@ func (a *Authenticator) Policy() *roles.Policy {
 	}
 	var spec *roles.Spec
 	var auditors []string
-	editors := append([]string{}, a.cfg.Editors...)
 	if cur != nil {
-		spec = cur.Auth.Roles
-		auditors = cur.Auth.Auditors
-		editors = append(editors, cur.Auth.Editors...)
+		spec, auditors = cur.Auth.Roles, cur.Auth.Auditors
 	}
-	var opt roles.Options
-	if cur != nil {
-		opt.MCPMatchEmail = cur.Auth.MCP.MatchEmail
-	}
-	p, err := roles.CompileAuditors(spec, auditors, opt, editors...)
+	p, err := a.compile(cur, spec, auditors)
 	if err != nil { // config.Load validates, so this is a defensive fallback: deny
 		p, _ = roles.Compile(&roles.Spec{}, roles.Options{})
 	}
 	a.cached.Store(&cachedPolicy{cfg: cur, policy: p})
 	return p
+}
+
+// compile builds a policy from spec and auditors with everything else of the
+// current config (the legacy editors lists and the matching options), so the
+// policy the server runs and one it is asked about are made the same way.
+func (a *Authenticator) compile(cur *config.Config, spec *roles.Spec, auditors []string) (*roles.Policy, error) {
+	editors := append([]string{}, a.cfg.Editors...)
+	var opt roles.Options
+	if cur != nil {
+		editors = append(editors, cur.Auth.Editors...)
+		opt.MCPMatchEmail = cur.Auth.MCP.MatchEmail
+	}
+	return roles.CompileAuditors(spec, auditors, opt, editors...)
+}
+
+// Capabilities is what one subject has under a role policy.
+type Capabilities struct {
+	Role    roles.Role
+	Auditor bool
+	// RoleFrom and AuditorFrom say which kinds of entry grant them (roles.SourceIdentity and so on).
+	RoleFrom, AuditorFrom []string
+	// ByIdentity is the role and the auditor capability that remain when only
+	// entries that name the identity count: what an API token of the subject, a
+	// session past auth.session.claims_absolute and a built-in OAuth grant past it
+	// are evaluated by.
+	ByIdentity     roles.Role
+	AuditorByIdent bool
+}
+
+// CapabilitiesUnder evaluates s as if auth.roles were spec and auth.auditors were
+// auditors, everything else being as cur has it (the config the caller is working
+// with: the authenticator's own config is not read, because the caller may hold the
+// store's lock, which reading it takes). It changes nothing. The viewer floor of an auditor applies, as in Evaluate. It is how the
+// role editor tells an administrator what they would be after a change.
+func (a *Authenticator) CapabilitiesUnder(cur *config.Config, spec *roles.Spec, auditors []string, s roles.Subject) (Capabilities, error) {
+	p, err := a.compile(cur, spec, auditors)
+	if err != nil {
+		return Capabilities{}, err
+	}
+	eval := func(s roles.Subject) (roles.Role, bool) {
+		s.ID = roles.FoldASCII(s.ID)
+		r, aud := p.Evaluate(s), p.IsAuditor(s)
+		if aud && r < roles.Viewer {
+			r = roles.Viewer
+		}
+		return r, aud
+	}
+	var c Capabilities
+	c.Role, c.Auditor = eval(s)
+	c.ByIdentity, c.AuditorByIdent = eval(s.WithoutClaims())
+	c.RoleFrom, c.AuditorFrom = p.Sources(s)
+	return c, nil
 }
 
 // Evaluate sets id.Role from the current auth.roles. An anonymous identity
@@ -300,6 +345,9 @@ func (a *Authenticator) Sources(id *Identity) (role, auditor []string) {
 // reload brings a new auth block (even an equal one), so a caller that has
 // already looked at a person for one generation need not do it again.
 func (a *Authenticator) Generation() any { return a.Policy() }
+
+// Mode is how the server authenticates (ModeNone, ModeOIDC, and so on).
+func (a *Authenticator) Mode() string { return a.cfg.Mode }
 
 // Degraded reports that the latest rackbook.yml failed to load: roles then come
 // from the last good config, capped at viewer.
