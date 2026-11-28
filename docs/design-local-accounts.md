@@ -1231,14 +1231,21 @@ and the online admin channel with `recover`, `invite`, `reset`, `unlock`, `disab
   computed from the store and the roles on each sign-in instead (so that disabling the last local administrator is felt at
   once), and `settings_problem` (`sso_only_without_local_admin`) is written when it first fails. The admin banner is piece 6.
 - **Passwordless passkey sign-in** is not built: `auth.local.passwordless` other than `off` is refused as a config error.
-- **Revoking API tokens and OAuth grants (5.11) is built here, pulled forward from piece 7** because sign-in exposes it. Disable,
-  remove, every reset scope and `recover` record `pending_revocations` in the same change (the marker `*` stands for "every token
-  and grant the account owns when it is applied", beside the names and ids that could be listed, which the event shows), then
-  `localauth.ApplyRevocations` revokes the account's API tokens (a commit to `.rackbook/tokens.yml` through the registry, by
-  creator and `created_via: local`) and its OAuth grants (`oauthserver.Server.GrantsOf`, `RevokeGrant`), and records
-  `account_revocations_applied`. A failure leaves them pending: enable and the completion of a setup are refused (`409
-  revocations_pending`) and the server retries every minute. The offline command line cannot revoke: it records them, and the
-  server applies every account's pending revocations at its start, before it serves.
+- **Revoking API tokens and OAuth grants (5.11) is built here, pulled forward from piece 7** because sign-in exposes it, in two
+  layers. Disable, remove, every reset scope and `recover` record `pending_revocations` in the same change (the marker `*` stands
+  for "every token and grant the account owns when it is applied", beside the names and ids that could be listed, which the event
+  shows). `localauth.ApplyRevocations` then resolves them and, in one audited change (`account_revocations_applied`), writes the
+  **revocation list of the account store** (`State.Revoked`: a token by the SHA-256 of its secret, which a reused name cannot
+  inherit, and a grant by its id) and clears the pending entries. The token registry (`Registry.Blocked`) and the OAuth server
+  (`Options.Blocked`, in every read and in the refresh) consult that list on every use, so a listed token or grant is refused at
+  once, whatever Git, a pull request or the grants file says. That is what "done" means; it does not depend on Git. The **record
+  layer** follows: the token is also revoked in `.rackbook/tokens.yml` with a direct commit (`gitstore.Direct()`, as the passkeys of
+  single sign-on are written: this is Rackbook's own state, and a pull request nobody merges would leave the record alive), and the
+  grant is removed from its state file. A commit or a push that fails is retried at start and every minute
+  (`RunRevocations`, `RecordRevoked`) and nothing waits for it: setup, enable and `recover` do not depend on Git. Only a revocation
+  that cannot be resolved (tokens.yml unreadable) stays pending, and then enable and the completion of a setup are refused (`409
+  revocations_pending`). The offline command line records them as pending and the server applies them at its start, before it
+  serves.
 - **Re-authentication gates the sensitive actions that make a credential:** creating an API token, saving roles, and approving an
   OAuth/MCP client answer `403 reauth_required` (with `reauth`: the page and the way back) to a local session whose last full
   authentication is older than `auth.local.reauth_window`; the console opens that page and returns. `auth.Authenticator.NeedsReauth`
@@ -1262,7 +1269,9 @@ and the online admin channel with `recover`, `invite`, `reset`, `unlock`, `disab
   (`rackbook passkey handle v1`); the admin socket is made in a private directory and moved to its name (no process-wide umask);
   a wrong password takes the account writer like a right one (`Store.ProbeTOTP`); under `sso_only` a non-admin's right credentials
   make the same synced audit write an administrator's sign-in does; `reauth_failures` is cleared when the sessions end and on a full
-  sign-in; the offline `disable` and `remove` apply the last-administrator guard when `--config` names rackbook.yml; `remove`,
+  sign-in; under `sso_only` every refusal of a real attempt makes the one synced audit line and store write an administrator's
+  success makes, before its answer; the current password that proves a second-factor reset is reserved against the account's
+  persistent counter; a ticket of the tables gives back only into the window it was counted in; the offline `disable` and `remove` apply the last-administrator guard when `--config` names rackbook.yml; `remove`,
   `disable` and `reset --all` ask for confirmation (`--yes` skips it).
 - **Administrators act through the command line only.** The `/api/admin/accounts` endpoints and the Users screens are piece 7;
   every command is `account_*` with `method: cli`. The holder's `notices` (reset, disable, enable, unlock) are recorded and not

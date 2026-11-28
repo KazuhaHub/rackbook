@@ -88,6 +88,8 @@ type store struct {
 	path string
 	mu   sync.Mutex
 	data fileData
+	// blocked says a grant is on the revocation list of the local accounts: it is invisible whatever the state file holds.
+	blocked func(id string) bool
 }
 
 func openStore(dir string) (*store, error) {
@@ -154,7 +156,7 @@ func (s *store) mutate(fn func(d *fileData) error) error {
 func (s *store) grant(id string) *Grant {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if g := s.data.Grants[id]; g != nil {
+	if g := s.data.Grants[id]; g != nil && !s.isBlocked(g.ID) {
 		c := *g
 		return &c
 	}
@@ -177,10 +179,12 @@ func (s *store) grants(keep func(*Grant) bool) []Grant {
 	defer s.mu.Unlock()
 	var out []Grant
 	for _, g := range s.data.Grants {
-		if keep(g) {
+		if keep(g) && !s.isBlocked(g.ID) {
 			out = append(out, *g)
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Created.After(out[j].Created) })
 	return out
 }
+
+func (s *store) isBlocked(id string) bool { return s.blocked != nil && s.blocked(id) }

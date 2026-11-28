@@ -315,6 +315,12 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		}
 	}
 	registry := &tokens.Registry{Store: store}
+	// what was revoked for a local account is refused at once, from the store's own list, whatever tokens.yml says yet
+	var revokedGrant func(id string) bool
+	if localStore != nil {
+		registry.Blocked = func(hash string) bool { return localStore.IsRevoked(accounts.KindToken, hash) }
+		revokedGrant = func(id string) bool { return localStore.IsRevoked(accounts.KindGrant, id) }
+	}
 	modState := &modules.State{}
 	builtin := cfg.Auth.MCP.BuiltinIssuer.Enabled
 	if dir := stateDir; dir != "" {
@@ -329,7 +335,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	var oauthSrv api.OAuthServer
 	var grantsSrv *oauthserver.Server
 	if builtin {
-		srv, err := oauthserver.New(oauthserver.Options{Issuer: baseURL, Resource: cfg.Auth.MCP.Resource, StateDir: stateDir,
+		srv, err := oauthserver.New(oauthserver.Options{Blocked: revokedGrant, Issuer: baseURL, Resource: cfg.Auth.MCP.Resource, StateDir: stateDir,
 			Config: store.Config, Auth: authn, Log: logger, TrustedProxies: proxies, Prefs: prefStore})
 		if err != nil {
 			return err
@@ -348,6 +354,8 @@ func runServe(cmd *cobra.Command, _ []string) error {
 			rv.grants = grantsSrv
 		}
 		localSvc.SetRevoker(rv)
+		// the local layer (the revocation list) is a local write and is done before the server serves; the record in tokens.yml
+		// is a commit that can fail or wait, and is made in the background
 		if err := localSvc.ApplyAllRevocations(ctx); err != nil {
 			logger.Warn("pending revocations of local accounts could not all be applied; they are retried every minute", "err", err)
 		}

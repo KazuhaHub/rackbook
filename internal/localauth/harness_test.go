@@ -5,10 +5,12 @@ import (
 	"context"
 	"encoding/base32"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -159,6 +161,8 @@ type browser struct {
 	e       *env
 	cookies map[string]string
 	addr    string
+	// onAnswer is called when the answer is sent, before the work that follows it
+	onAnswer func()
 }
 
 func (e *env) browser(addr string) *browser {
@@ -168,11 +172,15 @@ func (e *env) browser(addr string) *browser {
 type timedRecorder struct {
 	*httptest.ResponseRecorder
 	flushedAt time.Time
+	onAnswer  func()
 }
 
 func (t *timedRecorder) Flush() {
 	if t.flushedAt.IsZero() {
 		t.flushedAt = time.Now()
+		if t.onAnswer != nil {
+			t.onAnswer() // what had been written at the moment the answer was sent
+		}
 	}
 	t.ResponseRecorder.Flush()
 }
@@ -199,7 +207,7 @@ func (b *browser) post(path string, body any) resp {
 	for n, v := range b.cookies {
 		r.AddCookie(&http.Cookie{Name: n, Value: v})
 	}
-	w := &timedRecorder{ResponseRecorder: httptest.NewRecorder()}
+	w := &timedRecorder{ResponseRecorder: httptest.NewRecorder(), onAnswer: b.onAnswer}
 	start := time.Now()
 	b.e.mux.ServeHTTP(w, r)
 	answered := time.Since(start)
@@ -309,13 +317,18 @@ func decodeBase32(s string) ([]byte, error) {
 	return base32.StdEncoding.WithPadding(base32.NoPadding).DecodeString(strings.ToUpper(strings.ReplaceAll(s, " ", "")))
 }
 
-// fakeRevoker owns tokens and grants by account and records what was revoked.
+// fakeRevoker owns tokens and grants by account and records what was revoked. gitFails makes the record layer fail, as a
+// pull request or a refused push does.
 type fakeRevoker struct {
-	mu      sync.Mutex
-	tokens  map[string][]string // account -> token names
-	grants  map[string][]string
-	revoked []string
+	mu       sync.Mutex
+	tokens   map[string][]string // account -> token names
+	grants   map[string][]string
+	revoked  []string // grants removed from their file
+	recorded []string // token ids revoked in tokens.yml
+	gitFails bool
 }
+
+func (f *fakeRevoker) setGitFails(v bool) { f.mu.Lock(); f.gitFails = v; f.mu.Unlock() }
 
 func (f *fakeRevoker) own(user string, tokens, grants []string) {
 	f.mu.Lock()
@@ -333,12 +346,24 @@ func (f *fakeRevoker) Owned(user string) ([]string, []string, error) {
 	return append([]string(nil), f.tokens[user]...), append([]string(nil), f.grants[user]...), nil
 }
 
-func (f *fakeRevoker) RevokeToken(_ context.Context, name string) error {
+func (f *fakeRevoker) TokenIDs(names []string) (map[string]string, error) {
+	out := map[string]string{}
+	for _, n := range names {
+		out[n] = "id-" + n
+	}
+	return out, nil
+}
+
+func (f *fakeRevoker) RecordTokens(_ context.Context, ids []string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.revoked = append(f.revoked, "token:"+name)
-	for u, ts := range f.tokens {
-		f.tokens[u] = without(ts, name)
+	if f.gitFails {
+		return errors.New("git: the push was refused")
+	}
+	for _, id := range ids {
+		if !slices.Contains(f.recorded, id) {
+			f.recorded = append(f.recorded, id)
+		}
 	}
 	return nil
 }
@@ -346,20 +371,25 @@ func (f *fakeRevoker) RevokeToken(_ context.Context, name string) error {
 func (f *fakeRevoker) RevokeGrant(_ context.Context, id string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.revoked = append(f.revoked, "grant:"+id)
-	for u, gs := range f.grants {
-		f.grants[u] = without(gs, id)
-	}
+	f.revoked = append(f.revoked, id)
 	return nil
 }
 
+// did lists what the record layers did: "grant:<id>" and "token:<id>".
 func (f *fakeRevoker) did() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return append([]string(nil), f.revoked...)
+	var out []string
+	for _, g := range f.revoked {
+		out = append(out, "grant:"+g)
+	}
+	for _, t := range f.recorded {
+		out = append(out, "token:"+strings.TrimPrefix(t, "id-"))
+	}
+	return out
 }
 
-func without(in []string, drop string) []string {
+func withoutOne(in []string, drop string) []string {
 	var out []string
 	for _, v := range in {
 		if v != drop {

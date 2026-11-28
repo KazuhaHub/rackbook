@@ -1278,9 +1278,11 @@ reauth_required` when it creates an API token, saves roles or approves an OAuth/
 back. (The account administration and settings screens will be gated the same way when they exist.)
 
 **Revocation.** Disabling, removing or resetting an account (any scope), and `recover`, revoke every API token it created and
-every OAuth/MCP grant it approved. They are recorded in the same audited change and carried out at once when the server runs; the
-offline command line records them and the server carries them out when it starts, before it serves (and retries a failure every
-minute). Until they are done the account cannot be enabled or set up again.
+every OAuth/MCP grant it approved. The block is the account store's own revocation list, written in the same audited change and
+consulted by the token registry and the OAuth server on every use, so a revoked token or grant is refused at once whatever Git
+does (write mode `pr`, a refused push). The record in `.rackbook/tokens.yml` is a direct commit made afterwards and retried every
+minute; nothing waits for it. The offline command line records the revocations and the server applies them when it starts, before it
+serves. Until a revocation that could not be resolved is done the account cannot be enabled or set up again.
 
 **The admin commands.** `rackbook accounts invite | reset | unlock | disable | enable | remove | end-sessions | recover`
 talk to the **running server** over an admin channel (a Unix socket `<state-dir>/admin.sock`, mode 0600, on Linux and macOS;

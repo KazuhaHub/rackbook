@@ -314,7 +314,7 @@ func (s *Server) refresh(w http.ResponseWriter, r *http.Request) {
 	// The new hash is on disk before the answer leaves.
 	if err := s.store.mutate(func(d *fileData) error {
 		cur := d.Grants[gid]
-		if cur == nil || !equalStrings(cur.RefreshHash, h) {
+		if cur == nil || s.store.isBlocked(gid) || !equalStrings(cur.RefreshHash, h) {
 			return errNoChange
 		}
 		cur.Retired = append(cur.Retired, Retired{Hash: h, At: now})

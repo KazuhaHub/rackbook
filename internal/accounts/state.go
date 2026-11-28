@@ -48,6 +48,23 @@ type State struct {
 	// Usernames is the store's own copy of every username ever used (4.5).
 	Usernames []string            `json:"usernames"`
 	Accounts  map[string]*Account `json:"accounts"`
+	// Revoked lists the API tokens and OAuth grants revoked for local accounts (5.11). It is the immediate layer of a revocation:
+	// the token registry and the OAuth server consult it on every use, so a listed token or grant is refused whatever Git says.
+	Revoked []RevokedItem `json:"revoked,omitempty"`
+}
+
+// Kinds of RevokedItem.
+const (
+	KindToken = "token" // ID is the SHA-256 hex of the token's secret (what tokens.yml keeps), never its name: a name can be reused
+	KindGrant = "grant" // ID is the OAuth grant id
+)
+
+// RevokedItem is one revoked token or grant.
+type RevokedItem struct {
+	Kind    string    `json:"kind"`
+	ID      string    `json:"id"`
+	Account string    `json:"account"`
+	Time    time.Time `json:"time"`
 }
 
 func (s *State) meta() *Meta { return &s.Meta }

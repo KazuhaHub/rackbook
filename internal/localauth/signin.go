@@ -68,6 +68,7 @@ type facts struct {
 	passwordWrong      bool // a real password check ran and failed
 	codeWrong          bool // the password was right and the code was not
 	viaPasskey         bool // a verified passkey went past the throttle (passkey_path_failures)
+	audited            bool // the refusal was already written, before the answer (sso_only): the aggregate must not write it again
 	proof              bool // a proof for a reset link: the account is reset_pending, its second-factor counter still counts
 	reauth             bool // a failed re-authentication (5.7): reauth_failures count, three end every session
 }
@@ -153,6 +154,9 @@ func (s *Service) signIn(w http.ResponseWriter, r *http.Request) {
 		if in.Code != "" {
 			s.store.ProbeTOTP(name, in.Code, now)
 		}
+		if ssoOnly && !s.ssoEqualize(w, &f) {
+			return
+		}
 		s.answerFailed(w, ssoOnly)
 		finished = true
 		s.afterFailure(f, set, tk, nil)
@@ -192,6 +196,9 @@ func (s *Service) signIn(w http.ResponseWriter, r *http.Request) {
 		f.reason = "bad_credentials"
 	}
 	if factor == "" {
+		if ssoOnly && !s.ssoEqualize(w, &f) {
+			return
+		}
 		s.answerFailed(w, ssoOnly)
 		finished = true
 		s.afterFailure(f, set, tk, res)
@@ -202,9 +209,7 @@ func (s *Service) signIn(w http.ResponseWriter, r *http.Request) {
 	if ssoOnly && !s.isAdmin(name) {
 		// the same writes an administrator's success makes, so that how long this takes does not say who is one
 		f.reason = "sso_required"
-		ev := audit.Event{Event: "login_refused", Identity: "local:" + name, Method: "local", Reason: "sso_required", Addr: addr}
-		if err := s.store.Counter(&ev, func(*accounts.State) error { return nil }); err != nil {
-			s.counterError(w, f, err)
+		if !s.ssoEqualize(w, &f) {
 			return
 		}
 		res.release()
@@ -334,6 +339,23 @@ func (s *Service) deadEnd(ctx context.Context, bucket string, class accounts.Cla
 	return nil
 }
 
+// ssoEqualize is the write every sso_only outcome makes before its answer (5.6): one synced audit line and one write of the
+// store, which is what an administrator's success does too. Without it the work before the answer would tell an administrator,
+// whose success writes, from a name that is not one or a password that is wrong, which does not. It returns false when the write
+// failed (the answer is then the uniform 503).
+func (s *Service) ssoEqualize(w http.ResponseWriter, f *facts) bool {
+	ev := audit.Event{Event: "login_refused", Method: "local", Reason: f.reason, Addr: f.addr}
+	if f.acct != nil {
+		ev.Identity = "local:" + f.name
+	}
+	if err := s.store.Counter(&ev, func(*accounts.State) error { return nil }); err != nil {
+		s.counterError(w, *f, err)
+		return false
+	}
+	f.audited = true
+	return true
+}
+
 // answerFailed is the one answer of a failed sign-in; under sso_only it is the sso_required answer instead.
 func (s *Service) answerFailed(w http.ResponseWriter, ssoOnly bool) {
 	if ssoOnly {
@@ -400,17 +422,32 @@ func (s *Service) refusalEvent(f facts) audit.Event {
 // write fails the answer already sent stands, and the service is degraded: it refuses every attempt, right or wrong alike,
 // until a write works again.
 func (s *Service) afterFailure(f facts, set config.SignInSettings, tk ticket, res *resv) {
+	if endFor := s.settleFailure(f, set, tk, res); endFor != nil {
+		// the third failed re-authentication ends the account's sessions: a change of its own, made after the counter write and
+		// outside the account's lock, which it does not need (the sessions are ended by renewing the session id, whatever other
+		// attempts are in flight)
+		if err := s.store.EndSessions(accounts.Self(f.name, endFor.Name, f.addr), f.name, "reauth_failed", s.now()); err != nil {
+			s.degrade(err)
+		}
+	}
+}
+
+// settleFailure writes the counters of a failed attempt and releases its reservation. The account's lock is held for the counter
+// decision and the write, and for nothing else: the release of the place has to be one critical section with the write that
+// replaces it, or another attempt could see the place both held and counted (or neither). Only attempts at the same account wait
+// for it. It returns the account when its sessions are now to be ended.
+func (s *Service) settleFailure(f facts, set config.SignInSettings, tk ticket, res *resv) *accounts.Account {
 	now := s.now()
 	ident := ""
 	if f.acct != nil {
 		ident = "local:" + f.name
 	}
-	full := s.refused.Note(now, f.bucket, f.addr, ident, f.reason)
+	full := s.refused.Note(now, f.bucket, f.addr, ident, f.reason) && !f.audited
 	if f.acct == nil {
 		if full {
 			s.o.Audit.Record(s.refusalEvent(f))
 		}
-		return
+		return nil
 	}
 	defer s.guard.lock(f.name)()
 	defer res.releaseLocked()
@@ -421,7 +458,7 @@ func (s *Service) afterFailure(f facts, set config.SignInSettings, tk ticket, re
 		if full {
 			s.o.Audit.Record(s.refusalEvent(f))
 		}
-		return
+		return nil
 	}
 	// the event this write carries: a transition outranks the plain refusal
 	var ev *audit.Event
@@ -430,7 +467,7 @@ func (s *Service) afterFailure(f facts, set config.SignInSettings, tk ticket, re
 		plain.Code = "reauth"
 	}
 	switch {
-	case f.passwordWrong && stateForCount(cur.State, cur.ConsecutiveFailures+1, set.NISTCap) != cur.State:
+	case f.passwordWrong && cur.Live() && stateForCount(cur.State, cur.ConsecutiveFailures+1, set.NISTCap) != cur.State:
 		st := stateForCount(cur.State, cur.ConsecutiveFailures+1, set.NISTCap)
 		ev = &audit.Event{Event: "account_restricted", Identity: ident, Method: "local", Code: st, Addr: f.addr, Detail: []string{"failures:" + itoa(cur.ConsecutiveFailures+1)}}
 	case f.codeWrong && totpAfter(cur, set, now) >= set.TOTPPerDay && totpCount(cur, now) < set.TOTPPerDay:
@@ -450,7 +487,9 @@ func (s *Service) afterFailure(f facts, set config.SignInSettings, tk ticket, re
 		}
 		if f.passwordWrong {
 			a.ConsecutiveFailures++
-			a.State = stateForCount(a.State, a.ConsecutiveFailures, set.NISTCap)
+			if a.Live() { // an account waiting for its setup is counted, and has no state to restrict
+				a.State = stateForCount(a.State, a.ConsecutiveFailures, set.NISTCap)
+			}
 			if f.viaPasskey {
 				incWindow(&a.PasskeyPathFailures, &a.PasskeyWindowStart, now, time.Hour)
 			}
@@ -469,13 +508,12 @@ func (s *Service) afterFailure(f facts, set config.SignInSettings, tk ticket, re
 	})
 	if err != nil {
 		s.degrade(err)
-		return
+		return nil
 	}
 	if f.reauth && cur.ReauthFailures+1 >= MaxReauthFailures {
-		if err := s.store.EndSessions(accounts.Self(f.name, cur.Name, f.addr), f.name, "reauth_failed", now); err != nil {
-			s.degrade(err)
-		}
+		return cur
 	}
+	return nil
 }
 
 func liveLocks(in []accounts.Lock, now time.Time) []accounts.Lock {

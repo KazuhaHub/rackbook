@@ -114,6 +114,8 @@ type opts struct {
 	git         bool   // make the ledger a Git repository (writes become commits)
 	// local is the store of local accounts the authenticator asks (nil = none)
 	local auth.LocalAccounts
+	// blocked is the revocation list of the local accounts, consulted for every grant (nil = none)
+	blocked func(id string) bool
 }
 
 type env struct {
@@ -230,7 +232,7 @@ func (e *env) start(ln net.Listener) {
 	if err != nil {
 		e.t.Fatal(err)
 	}
-	srv, err := oauthserver.New(oauthserver.Options{Issuer: e.base, Resource: e.resource, StateDir: e.dir, Config: e.config, Auth: authn,
+	srv, err := oauthserver.New(oauthserver.Options{Blocked: e.o.blocked, Issuer: e.base, Resource: e.resource, StateDir: e.dir, Config: e.config, Auth: authn,
 		Now: e.clock.now, CIMDClient: cimd, TrustedProxies: proxies, Getenv: func(string) string { return "" }, Prefs: e.prefs})
 	if err != nil {
 		e.t.Fatal(err)

@@ -453,6 +453,8 @@ func TestTheTOTPSeedIsNeverLoggedOrAudited(t *testing.T) {
 
 // ---- revocation (5.11)
 
+func (e *env) revokedNow(kind, id string) bool { return e.store.IsRevoked(kind, id) }
+
 func TestResetRevokesWhatTheAccountOwnsAndTheOldCredentialsAreRefusedAfterSetup(t *testing.T) {
 	e := newEnv(t, envOpts{})
 	e.addAccount("bob")
@@ -462,8 +464,9 @@ func TestResetRevokesWhatTheAccountOwnsAndTheOldCredentialsAreRefusedAfterSetup(
 	if !r.OK || len(r.Links) != 1 {
 		t.Fatalf("%+v", r)
 	}
-	if did := strings.Join(e.rev.did(), " "); !strings.Contains(did, "token:ci-token") || !strings.Contains(did, "grant:grant-1") {
-		t.Fatalf("revoked: %s", did)
+	// the local list is written in the same audited change that clears the pending entries: refused from this moment
+	if !e.revokedNow(accounts.KindToken, "id-ci-token") || !e.revokedNow(accounts.KindGrant, "grant-1") {
+		t.Fatal("the token and the grant must be on the revocation list")
 	}
 	if a := e.account("bob"); !a.PendingRevocations.Empty() {
 		t.Fatalf("applied revocations are cleared: %+v", a.PendingRevocations)
@@ -481,7 +484,14 @@ func TestResetRevokesWhatTheAccountOwnsAndTheOldCredentialsAreRefusedAfterSetup(
 	if !strings.Contains(issued, "tokens:*,ci-token") || !strings.Contains(issued, "grants:*,grant-1") || !strings.Contains(applied, "ci-token") || !strings.Contains(applied, "grant-1") {
 		t.Fatalf("issued %q applied %q", issued, applied)
 	}
-	// set up again: the setup goes through, and the old token and grant are not among the live ones
+	// the record layer follows
+	if err := e.svc.RecordRevoked(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if did := strings.Join(e.rev.did(), " "); !strings.Contains(did, "token:ci-token") || !strings.Contains(did, "grant:grant-1") {
+		t.Fatalf("%s", did)
+	}
+	// set up again: the setup goes through, and the old token and grant are still on the list
 	tok := strings.TrimPrefix(r.Links[0].URL, testBase+"/auth/local/setup#")
 	b := e.browser(addrA)
 	e.open(b, tok)
@@ -489,8 +499,12 @@ func TestResetRevokesWhatTheAccountOwnsAndTheOldCredentialsAreRefusedAfterSetup(
 	if f := b.post("/auth/local/setup/finish", map[string]any{"token": tok, "password": newPassword, "totp": totp}); f.Status != 200 {
 		t.Fatalf("%d %s", f.Status, f.Body)
 	}
-	if names, grants, _ := e.rev.Owned("bob"); len(names) != 0 || len(grants) != 0 {
-		t.Fatalf("the old token and grant are still live: %v %v", names, grants)
+	if !e.revokedNow(accounts.KindToken, "id-ci-token") || !e.revokedNow(accounts.KindGrant, "grant-1") {
+		t.Fatal("the old token or grant came back with the account")
+	}
+	// a new token of the same name is another token, and is not on the list
+	if e.revokedNow(accounts.KindToken, "id-another-secret") {
+		t.Fatal("the list is by the token's own id, not by its name")
 	}
 }
 
@@ -504,18 +518,19 @@ func TestDisableRemoveAndRecoverRevokeToo(t *testing.T) {
 			if !r.OK {
 				t.Fatalf("%+v", r)
 			}
-			if got := strings.Join(e.rev.did(), " "); !strings.Contains(got, "token:t1") || !strings.Contains(got, "token:t2") || !strings.Contains(got, "grant:g1") {
-				t.Fatalf("%s revoked %s", cmd, got)
+			for _, id := range []string{"id-t1", "id-t2"} {
+				if !e.revokedNow(accounts.KindToken, id) {
+					t.Fatalf("%s: %s is not refused", cmd, id)
+				}
 			}
-			if !e.account("bob").PendingRevocations.Empty() {
-				t.Fatal("still pending")
+			if !e.revokedNow(accounts.KindGrant, "g1") || !e.account("bob").PendingRevocations.Empty() {
+				t.Fatalf("%s: the grant is not refused or the revocation is still pending", cmd)
 			}
 		})
 	}
 }
 
-// A failure leaves the revocations pending and the account unable to come back, and a retry finishes them. The offline command
-// line records them and the server applies them at its start.
+// What cannot be listed leaves the revocations pending and the account unable to come back; a retry finishes them.
 func TestPendingRevocationsBlockEnableAndSetupUntilTheyAreApplied(t *testing.T) {
 	e := newEnv(t, envOpts{})
 	e.addAccount("bob")
@@ -527,7 +542,7 @@ func TestPendingRevocationsBlockEnableAndSetupUntilTheyAreApplied(t *testing.T) 
 		t.Fatalf("%+v", r)
 	}
 	if e.account("bob").PendingRevocations.Empty() {
-		t.Fatal("a failed revocation must stay pending")
+		t.Fatal("a revocation that could not be resolved must stay pending")
 	}
 	tok := strings.TrimPrefix(r.Links[0].URL, testBase+"/auth/local/setup#")
 	b := e.browser(addrA)
@@ -540,12 +555,52 @@ func TestPendingRevocationsBlockEnableAndSetupUntilTheyAreApplied(t *testing.T) 
 	if err := e.svc.ApplyAllRevocations(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if !e.account("bob").PendingRevocations.Empty() || !strings.Contains(strings.Join(e.rev.did(), " "), "token:ci") {
-		t.Fatalf("%v", e.rev.did())
+	if !e.account("bob").PendingRevocations.Empty() || !e.revokedNow(accounts.KindToken, "id-ci") {
+		t.Fatal("the retry did not finish")
 	}
 	totp, _ = e.enrolTOTP(b, tok)
 	if f := b.post("/auth/local/setup/finish", map[string]any{"token": tok, "password": newPassword, "totp": totp}); f.Status != 200 {
 		t.Fatalf("after the retry: %d %s", f.Status, f.Body)
+	}
+}
+
+// Git is the record, not the block: a pull request instead of a commit, or a refused push, leaves the token refused all the same,
+// and neither setup, enable nor recover waits for it.
+func TestRevocationDoesNotDependOnGit(t *testing.T) {
+	e := newEnv(t, envOpts{})
+	e.addAccount("bob")
+	e.rev.own("bob", []string{"ci"}, []string{"g"})
+	e.rev.setGitFails(true)
+	r := e.svc.AdminEnv().Do(AdminRequest{Cmd: "recover", Username: "bob", Operator: "ops"})
+	if !r.OK || len(r.Links) != 1 {
+		t.Fatalf("recover with git down: %+v", r)
+	}
+	if !e.revokedNow(accounts.KindToken, "id-ci") || !e.revokedNow(accounts.KindGrant, "g") || !e.account("bob").PendingRevocations.Empty() {
+		t.Fatal("the local list must block the token and the grant whatever git says")
+	}
+	if err := e.svc.RecordRevoked(context.Background()); err == nil {
+		t.Fatal("the record layer should have failed")
+	}
+	tok := strings.TrimPrefix(r.Links[0].URL, testBase+"/auth/local/setup#")
+	b := e.browser(addrA)
+	e.open(b, tok)
+	totp, _ := e.enrolTOTP(b, tok)
+	if f := b.post("/auth/local/setup/finish", map[string]any{"token": tok, "password": newPassword, "totp": totp}); f.Status != 200 {
+		t.Fatalf("setup with git down: %d %s", f.Status, f.Body)
+	}
+	if r := e.svc.AdminEnv().Do(AdminRequest{Cmd: "disable", Username: "bob", Operator: "ops"}); !r.OK {
+		t.Fatalf("%+v", r)
+	}
+	if r := e.svc.AdminEnv().Do(AdminRequest{Cmd: "enable", Username: "bob", Operator: "ops"}); !r.OK {
+		t.Fatalf("enable with git down: %+v", r)
+	}
+	// git comes back: the record is retried and made
+	e.rev.setGitFails(false)
+	if err := e.svc.RecordRevoked(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(strings.Join(e.rev.did(), " "), "token:ci") {
+		t.Fatal("the retry did not record the token")
 	}
 }
 
@@ -554,11 +609,11 @@ type failingRevoker struct {
 	fail bool
 }
 
-func (f *failingRevoker) RevokeToken(ctx context.Context, name string) error {
+func (f *failingRevoker) Owned(user string) ([]string, []string, error) {
 	if f.fail {
-		return errors.New("the commit failed")
+		return nil, nil, errors.New("tokens.yml cannot be read")
 	}
-	return f.fakeRevoker.RevokeToken(ctx, name)
+	return f.fakeRevoker.Owned(user)
 }
 
 func TestOfflineRevocationsAreRecordedAndAppliedAtStart(t *testing.T) {
@@ -582,8 +637,8 @@ func TestOfflineRevocationsAreRecordedAndAppliedAtStart(t *testing.T) {
 	if err := e.svc.ApplyAllRevocations(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.Join(e.rev.did(), " "); !strings.Contains(got, "token:ci") || !strings.Contains(got, "grant:g") {
-		t.Fatalf("%s", got)
+	if !e.revokedNow(accounts.KindToken, "id-ci") || !e.revokedNow(accounts.KindGrant, "g") {
+		t.Fatal("not on the list")
 	}
 	if r := env.Do(AdminRequest{Cmd: "enable", Username: "bob", Operator: "ops"}); !r.OK {
 		t.Fatalf("%+v", r)
@@ -591,3 +646,106 @@ func TestOfflineRevocationsAreRecordedAndAppliedAtStart(t *testing.T) {
 }
 
 var _ = http.StatusOK
+
+// ---- round 2
+
+// Under sso_only every outcome of a real attempt, whichever way it fails, makes the same writes before its answer: one synced audit
+// line and one write of the store, which is what an administrator's success makes as well. So the time before the answer does not say who
+// is an administrator, which names exist or whether a password was right.
+func TestUnderSSOOnlyEveryOutcomeMakesTheSameWritesBeforeItsAnswer(t *testing.T) {
+	e := newEnv(t, envOpts{sso: true, auth: "  login: {sso_only: true}\n  throttle: {max: 1000}\n"})
+	alice, bob := e.addAccount("alice"), e.addAccount("bob")
+	stateFile := e.dir + "/accounts/accounts.enc"
+	type seen struct {
+		lines int64
+		wrote bool
+	}
+	probe := func(do func(b *browser) resp) seen {
+		seq0, _ := e.log.Head()
+		st0, _ := os.Stat(stateFile)
+		b := e.browser(fmt.Sprintf("203.0.113.%d", 30+int(seq0%100)))
+		var s seen
+		b.onAnswer = func() {
+			seq1, _ := e.log.Head()
+			st1, _ := os.Stat(stateFile)
+			s = seen{lines: seq1 - seq0, wrote: !st1.ModTime().Equal(st0.ModTime()) || st1.Size() != st0.Size()}
+		}
+		do(b)
+		e.clk.Advance(time.Second)
+		return s
+	}
+	cases := map[string]func(b *browser) resp{
+		"unknown name":          func(b *browser) resp { return e.login1(b, &person{name: "ghost"}, goodPassword, "123456") },
+		"wrong password":        func(b *browser) resp { return e.login1(b, bob, "wrong wrong wrong", e.code(bob)) },
+		"wrong code":            func(b *browser) resp { return e.login1(b, bob, goodPassword, "000000") },
+		"non-admin, right":      func(b *browser) resp { return e.login1(b, bob, goodPassword, e.code(bob)) },
+		"admin, wrong password": func(b *browser) resp { return e.login1(b, alice, "wrong wrong wrong", e.code(alice)) },
+		"admin, right":          func(b *browser) resp { return e.login1(b, alice, goodPassword, e.code(alice)) },
+	}
+	var want seen
+	first := true
+	for _, name := range []string{"admin, right", "unknown name", "wrong password", "wrong code", "non-admin, right", "admin, wrong password"} {
+		got := probe(cases[name])
+		if first {
+			want, first = got, false
+			if want.lines != 1 || !want.wrote {
+				t.Fatalf("an administrator's success writes one audit line and the store: %+v", want)
+			}
+			continue
+		}
+		if got != want {
+			t.Errorf("%s: %+v before the answer, an administrator's success makes %+v", name, got, want)
+		}
+	}
+}
+
+// The current password that proves a second-factor reset is reserved against the account's persistent counter before it is checked.
+func TestParallelCurrentPasswordProofsAreBoundByTheAccountCounter(t *testing.T) {
+	e := newEnv(t, envOpts{auth: "  nist_cap: 10\n  throttle: {max: 1000}\n"})
+	e.addAccount("bob")
+	tok, _ := e.store.Reset(accounts.CLI("t"), "bob", accounts.ResetOptions{Scope: accounts.ScopeSecondFactor, TTL: 24 * time.Hour}, e.clk.Now())
+	b := e.browser(addrA)
+	e.open(b, tok)
+	before := e.svc.sample.seq()
+	rs := parallel(60, func(i int) resp {
+		bb := e.browser(addrA)
+		bb.cookies = map[string]string{HoldCookie: b.cookies[HoldCookie]}
+		return bb.post("/auth/local/setup/finish", map[string]any{"token": tok, "current_password": fmt.Sprintf("not the password %d", i)})
+	})
+	if count(rs, 200) != 0 {
+		t.Fatal("a wrong password passed")
+	}
+	// the runs counted are the checks (at most 10) and the dummy hashes of the refusals the budget allows (2 for this network)
+	if n := e.svc.sample.seq() - before; n > 10+dummyPerBucketMinute {
+		t.Fatalf("%d hashes: more passwords were checked than the cap allows", n)
+	}
+	if got := e.account("bob"); got.ConsecutiveFailures != 10 || got.State != accounts.StateResetPending {
+		t.Fatalf("%+v", got)
+	}
+	// with the cap spent the right password is refused too, link or not
+	if r := b.post("/auth/local/setup/finish", map[string]any{"token": tok, "current_password": goodPassword}); r.Status == 200 {
+		t.Fatal("the account's counter did not hold")
+	}
+}
+
+// A ticket gives back only into the window it was counted in.
+func TestRefundDoesNothingOnceTheWindowHasRolledOver(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0)
+	tb := newTables(func() time.Time { return now })
+	lock := lockSetting{}
+	old, _ := tb.Begin("b", "alice", 5, 10*time.Minute, lock, true)
+	now = now.Add(11 * time.Minute) // the window ended
+	fresh, _ := tb.Begin("b", "alice", 5, 10*time.Minute, lock, true)
+	_ = fresh
+	tb.Refund(old) // the old attempt's success must not forgive a failure of the new window
+	if c := tb.Pre("b", "alice", 1, 10*time.Minute); !c.Throttled {
+		t.Fatal("the failure of the new window was given back by a ticket of the old one")
+	}
+	// the same window: a success gives its place back
+	tb2 := newTables(func() time.Time { return now })
+	tk, _ := tb2.Begin("b", "alice", 1, 10*time.Minute, lock, true)
+	tb2.Refund(tk)
+	if c := tb2.Pre("b", "alice", 1, 10*time.Minute); c.Throttled {
+		t.Fatal("a success must give its place back inside its window")
+	}
+}

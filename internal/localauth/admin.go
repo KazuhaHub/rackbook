@@ -287,12 +287,20 @@ func LastAdminGuard(ssoOnly func() bool, isAdmin func(string) bool) func(st *acc
 	}
 }
 
-// Revoker lists and revokes what an account owns outside the store: the API tokens it created (a commit to .rackbook/tokens.yml)
-// and the OAuth grants of the built-in authorization server and of /mcp.
+// Revoker finds and revokes what an account owns outside the store: the API tokens it created and the OAuth grants it approved.
+// A revocation has two layers (5.11). The local one is the store's revocation list, which the token registry and the OAuth server
+// consult on every use: it is written first, in the audited change, and does not depend on Git. The record layer follows: the
+// token is also revoked in .rackbook/tokens.yml, with a direct commit, which may fail (a pull request, a failed push) and is retried
+// in the background; nothing waits for it.
 type Revoker interface {
 	// Owned lists the names of the active API tokens created by local:<username> and the ids of its OAuth grants.
 	Owned(username string) (tokens, grants []string, err error)
-	RevokeToken(ctx context.Context, name string) error
+	// TokenIDs returns, for each name that is a token, the SHA-256 of its secret: the identity the revocation list uses (a name can
+	// be reused by a later token).
+	TokenIDs(names []string) (map[string]string, error)
+	// RecordTokens revokes in tokens.yml the tokens with these ids that are not revoked there yet.
+	RecordTokens(ctx context.Context, ids []string) error
+	// RevokeGrant removes a grant from the OAuth server's state file (a local file).
 	RevokeGrant(ctx context.Context, id string) error
 }
 
@@ -308,8 +316,9 @@ func (e AdminEnv) revocation(user string) accounts.Revocations {
 	return rev
 }
 
-// revoke carries out the revocations pending for the account and says what happened. Without a Revoker, or when one fails, they
-// stay pending: the server applies them at its next start and retries every minute.
+// revoke carries out the revocations pending for the account and says what happened. Without a Revoker, or when listing fails,
+// they stay pending: the server applies them at its next start and retries every minute. The record in tokens.yml is made in the
+// background and nobody waits for it.
 func (e AdminEnv) revoke(by accounts.Actor, user string, out *AdminResponse) {
 	if e.Revoker == nil {
 		out.Lines = append(out.Lines, "the API tokens and app connections of "+user+" are recorded to be revoked: the server does it when it starts")
@@ -320,12 +329,14 @@ func (e AdminEnv) revoke(by accounts.Actor, user string, out *AdminResponse) {
 		out.Lines = append(out.Lines, fmt.Sprintf("revoking the API tokens and app connections of %s failed (%v): they stay pending and are retried every minute", user, err))
 		return
 	}
-	out.Lines = append(out.Lines, fmt.Sprintf("revoked %d API tokens and %d app connections of %s", n, m, user))
+	out.Lines = append(out.Lines, fmt.Sprintf("revoked %d API tokens and %d app connections of %s: refused from now on", n, m, user))
+	go func() { _ = RecordRevoked(context.Background(), e.Store, e.Revoker) }()
 }
 
-// ApplyRevocations carries out the pending revocations of one account: every token and grant the AllOwned marker stands for, and
-// the names and ids listed. It revokes first and records afterwards, so a failure leaves them pending and a retry revokes again
-// (revoking is idempotent). It returns how many tokens and grants it revoked.
+// ApplyRevocations carries out the pending revocations of one account. It resolves the AllOwned marker and the names, writes the
+// local revocation list and clears the pending entries in one audited change (that is what makes them done), and then removes
+// the grants from the OAuth server's state file. Whether the record in tokens.yml can be made does not matter here (RecordRevoked).
+// It returns how many tokens and grants were revoked.
 func ApplyRevocations(ctx context.Context, st *accounts.Store, rv Revoker, by accounts.Actor, user string) (tokens, grants int, err error) {
 	a := st.Lookup(user)
 	if a == nil || a.PendingRevocations.Empty() {
@@ -345,27 +356,46 @@ func ApplyRevocations(ctx context.Context, st *accounts.Store, rv Revoker, by ac
 			ids = append(slices.Clone(pend.Grants), og...)
 		}
 	}
-	for _, n := range slices.Compact(slices.Sorted(slices.Values(names))) {
-		if n == accounts.AllOwned {
-			continue
-		}
-		if err := rv.RevokeToken(ctx, n); err != nil {
-			return tokens, grants, err
-		}
-		tokens++
+	names = slices.Compact(slices.Sorted(slices.Values(without(names, []string{accounts.AllOwned}))))
+	ids = slices.Compact(slices.Sorted(slices.Values(without(ids, []string{accounts.AllOwned}))))
+	hashes, err := rv.TokenIDs(names)
+	if err != nil {
+		return 0, 0, err
 	}
-	for _, g := range slices.Compact(slices.Sorted(slices.Values(ids))) {
-		if g == accounts.AllOwned {
-			continue
+	now := time.Now()
+	var items []accounts.RevokedItem
+	for _, n := range names {
+		if h := hashes[n]; h != "" {
+			items = append(items, accounts.RevokedItem{Kind: accounts.KindToken, ID: h, Account: user, Time: now.UTC()})
+			tokens++
 		}
-		if err := rv.RevokeGrant(ctx, g); err != nil {
-			return tokens, grants, err
-		}
+	}
+	for _, g := range ids {
+		items = append(items, accounts.RevokedItem{Kind: accounts.KindGrant, ID: g, Account: user, Time: now.UTC()})
 		grants++
 	}
 	done := accounts.Revocations{Tokens: slices.Clone(pend.Tokens), Grants: slices.Clone(pend.Grants)}
 	done.Tokens, done.Grants = append(done.Tokens, names...), append(done.Grants, ids...)
-	return tokens, grants, st.RevocationsApplied(by, user, done)
+	if err := st.RevocationsApplied(by, user, done, items); err != nil {
+		return 0, 0, err
+	}
+	// from here on the token and the grant are refused (the list). Taking a grant out of its file is a local write, and the list
+	// holds if it fails.
+	for _, g := range ids {
+		_ = rv.RevokeGrant(ctx, g)
+	}
+	return tokens, grants, nil
+}
+
+// RecordRevoked makes the record layer of every revoked token: it revokes in tokens.yml the tokens on the revocation list that
+// are not revoked there. It may fail (a pull request instead of a commit, a push that is refused, no network) without anything
+// else depending on it, since the list already blocks the token; it is retried at start and every minute.
+func RecordRevoked(ctx context.Context, st *accounts.Store, rv Revoker) error {
+	ids := st.RevokedIDs(accounts.KindToken)
+	if len(ids) == 0 {
+		return nil
+	}
+	return rv.RecordTokens(ctx, ids)
 }
 
 // SetRevoker gives the service what it needs to revoke tokens and grants; call it before ApplyAllRevocations.
@@ -398,8 +428,25 @@ func (s *Service) ApplyAllRevocations(ctx context.Context) error {
 	return first
 }
 
-// RunRevocations retries ApplyAllRevocations every minute until ctx ends.
+// RecordRevoked makes the record in tokens.yml of every revoked token (see the function of that name).
+func (s *Service) RecordRevoked(ctx context.Context) error {
+	rv := s.currentRevoker()
+	if rv == nil {
+		return nil
+	}
+	return RecordRevoked(ctx, s.store, rv)
+}
+
+// RunRevocations retries the pending revocations and the record in tokens.yml now and then every minute, until ctx ends. Neither
+// blocks sign-in, setup, enable or recover.
 func (s *Service) RunRevocations(ctx context.Context) {
+	step := func() {
+		_ = s.ApplyAllRevocations(ctx)
+		if err := s.RecordRevoked(ctx); err != nil {
+			s.log.Warn("revoked API tokens could not be recorded in tokens.yml yet; they are refused all the same and the record is retried", "err", err)
+		}
+	}
+	step()
 	t := time.NewTicker(time.Minute)
 	defer t.Stop()
 	for {
@@ -407,7 +454,17 @@ func (s *Service) RunRevocations(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			_ = s.ApplyAllRevocations(ctx)
+			step()
 		}
 	}
+}
+
+func without(from, remove []string) []string {
+	var out []string
+	for _, v := range from {
+		if !slices.Contains(remove, v) {
+			out = append(out, v)
+		}
+	}
+	return out
 }

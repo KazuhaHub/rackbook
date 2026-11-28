@@ -84,6 +84,9 @@ type Options struct {
 	// Prefs holds each person's console language, for the pages this server
 	// shows; nil = the browser's language only.
 	Prefs *prefs.Store
+	// Blocked, when set, says a grant (by id) is on the revocation list of the local accounts (design-local-accounts.md, 5.11):
+	// the grant is refused at once, whether or not its state file entry could be removed.
+	Blocked func(id string) bool
 }
 
 // Server is the authorization server.
@@ -140,6 +143,7 @@ func New(o Options) (*Server, error) {
 	if s.store, err = openStore(o.StateDir); err != nil {
 		return nil, err
 	}
+	s.store.blocked = o.Blocked
 	s.pruneExpired()
 	s.cimd = newCIMDFetcher(o.CIMDClient, s.now, s.log)
 	s.regLimit = &tokens.Limiter{Max: registerPerWindow, Window: registerWindow, Now: s.now}

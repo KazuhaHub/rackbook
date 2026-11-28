@@ -3,9 +3,11 @@ package main
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 
 	"github.com/kazuhahub/rackbook/internal/auth"
+	"github.com/kazuhahub/rackbook/internal/gitstore"
 	"github.com/kazuhahub/rackbook/internal/roles"
 	"github.com/kazuhahub/rackbook/internal/tokens"
 )
@@ -41,12 +43,40 @@ func (r accountRevoker) Owned(username string) (names, grantIDs []string, err er
 	return names, grantIDs, nil
 }
 
-func (r accountRevoker) RevokeToken(ctx context.Context, name string) error {
-	_, err := r.registry.Revoke(ctx, name, revokerWho)
-	if errors.Is(err, tokens.ErrMissing) {
-		return nil // already gone
+// TokenIDs gives each name its token's id: the SHA-256 of the secret that tokens.yml keeps.
+func (r accountRevoker) TokenIDs(names []string) (map[string]string, error) {
+	ts, err := r.registry.List()
+	if err != nil {
+		return nil, err
 	}
-	return err
+	out := map[string]string{}
+	for _, t := range ts {
+		if slices.Contains(names, t.Name) {
+			out[t.Name] = t.Hash
+		}
+	}
+	return out, nil
+}
+
+// RecordTokens is the record layer: it revokes in tokens.yml the tokens with these ids that are not revoked there yet. It is a
+// direct commit to the tracked branch even in write.mode pr (the passkeys of single sign-on do the same: this is Rackbook's own
+// state, not ledger data, and a pull request nobody merges would leave the token alive in the record). A commit or a push that
+// fails is returned and retried; the revocation list already blocks the token.
+func (r accountRevoker) RecordTokens(ctx context.Context, ids []string) error {
+	ts, err := r.registry.List()
+	if err != nil {
+		return err
+	}
+	var first error
+	for _, t := range ts {
+		if t.Revoked != "" || !slices.Contains(ids, t.Hash) {
+			continue
+		}
+		if _, err := r.registry.Revoke(ctx, t.Name, revokerWho, gitstore.Direct()); err != nil && !errors.Is(err, tokens.ErrMissing) && first == nil {
+			first = err
+		}
+	}
+	return first
 }
 
 func (r accountRevoker) RevokeGrant(_ context.Context, id string) error {

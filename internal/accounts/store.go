@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"sync"
 	"time"
 
 	"github.com/kazuhahub/rackbook/internal/audit"
@@ -42,6 +43,10 @@ type Store struct {
 	eng  *engine[*State]
 	used usedSet
 	dir  string
+
+	revMu  sync.Mutex
+	revFor *State
+	revSet map[string]struct{}
 }
 
 func newStore(o Options) (*Store, error) {
@@ -126,6 +131,38 @@ func (s *Store) loadUsernames(cur *State) error {
 		}
 	}
 	return nil
+}
+
+// IsRevoked says whether the token (by the SHA-256 of its secret) or the grant (by its id) is on the revocation list. It is cheap
+// enough for every request: the set is built once per committed state.
+func (s *Store) IsRevoked(kind, id string) bool {
+	s.eng.mu.RLock()
+	cur := s.eng.cur
+	s.eng.mu.RUnlock()
+	s.revMu.Lock()
+	defer s.revMu.Unlock()
+	if s.revFor != cur {
+		s.revSet = make(map[string]struct{}, len(cur.Revoked))
+		for _, r := range cur.Revoked {
+			s.revSet[r.Kind+"\x00"+r.ID] = struct{}{}
+		}
+		s.revFor = cur
+	}
+	_, ok := s.revSet[kind+"\x00"+id]
+	return ok
+}
+
+// RevokedIDs lists the ids of one kind on the revocation list.
+func (s *Store) RevokedIDs(kind string) []string {
+	var out []string
+	s.Peek(func(st *State) {
+		for _, r := range st.Revoked {
+			if r.Kind == kind {
+				out = append(out, r.ID)
+			}
+		}
+	})
+	return out
 }
 
 // Peek calls fn with the committed state under the read lock, without copying it. fn must not keep the state or

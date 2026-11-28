@@ -193,3 +193,21 @@ func (s *Service) reserveTOTP(name string, r *resv, set config.SignInSettings) (
 	s.guard.add(name, func(f *inflight) { f.totp++ })
 	return r, true
 }
+
+// reserveProofPassword reserves one wrong-password place of the account's persistent counter (consecutive_failures, bounded by the
+// NIST cap) before the current password is checked as the proof of a second-factor reset (5.8). The account is waiting for its
+// setup, so there is no state to restrict: the cap is the limit. False: it is spent, and no password is checked.
+func (s *Service) reserveProofPassword(name string, set config.SignInSettings) (*resv, bool) {
+	defer s.guard.lock(name)()
+	a := s.store.Lookup(name)
+	if a == nil {
+		return nil, false
+	}
+	in := s.guard.get(name)
+	if a.ConsecutiveFailures+in.pwd >= set.NISTCap {
+		return nil, false
+	}
+	r := &resv{g: s.guard, name: name, pwd: true}
+	s.guard.add(name, func(f *inflight) { f.pwd++ })
+	return r, true
+}

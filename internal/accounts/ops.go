@@ -114,15 +114,22 @@ func revDetail(rev Revocations) []string {
 	return d
 }
 
-// RevocationsApplied records that the revocations in done were carried out, and removes them from the account's
-// pending ones. A pending entry that is the AllOwned marker is removed by done holding it.
-func (s *Store) RevocationsApplied(by Actor, username string, done Revocations) error {
+// RevocationsApplied is the local layer of a revocation (5.11): in one audited change it adds the revoked tokens and grants to
+// the store's revocation list, which the token registry and the OAuth server consult on every use, and removes them from the
+// account's pending revocations. Writing the list is what makes a revocation done: it does not depend on Git, so a token is
+// refused at once whatever a pull request or a failed push says. The record in tokens.yml follows (RevokedIDs).
+func (s *Store) RevocationsApplied(by Actor, username string, done Revocations, items []RevokedItem) error {
 	_, err := s.Change(by.ev("account_revocations_applied", username, "", revDetail(done)...), func(st *State) error {
 		a := st.Accounts[username]
 		if a == nil {
 			return ErrNoSuchUser
 		}
 		a.PendingRevocations = Revocations{Tokens: without(a.PendingRevocations.Tokens, done.Tokens), Grants: without(a.PendingRevocations.Grants, done.Grants)}
+		for _, it := range items {
+			if !slices.ContainsFunc(st.Revoked, func(r RevokedItem) bool { return r.Kind == it.Kind && r.ID == it.ID }) {
+				st.Revoked = append(st.Revoked, it)
+			}
+		}
 		return nil
 	})
 	return err

@@ -380,6 +380,16 @@ func (s *Service) setupFinish(w http.ResponseWriter, r *http.Request) {
 	// what the person must prove
 	switch scope {
 	case accounts.ScopeSecondFactor: // the current password, then a new factor
+		// the place in the account's persistent counter is reserved before the password is checked, as for a sign-in
+		var held bool
+		if res, held = s.reserveProofPassword(a.Username, set); !held {
+			if err := s.deadEnd(ctx, f.bucket, cls); err != nil {
+				s.busy(w, f, err)
+				return
+			}
+			proofFailed(false)
+			return
+		}
 		ok, _, took, err := s.hasher.VerifyTimed(ctx, cls, in.CurrentPassword, a.Password)
 		if err != nil {
 			s.busy(w, f, err)
@@ -387,9 +397,11 @@ func (s *Service) setupFinish(w http.ResponseWriter, r *http.Request) {
 		}
 		s.sample.Add(took, f.bucket, a.Username)
 		if !ok || a.Password == "" {
+			f.passwordWrong = true // it counts in the account's counter, with the place reserved above
 			proofFailed(false)
 			return
 		}
+		res.releasePassword()
 	case accounts.ScopePassword: // an existing factor, then a new password
 		passed, tried := false, false
 		if p := in.Proof; p != nil {

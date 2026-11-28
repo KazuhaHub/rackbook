@@ -148,3 +148,31 @@ func TestGrantsOfAnIdentityAreRevokedWithTheAccount(t *testing.T) {
 		t.Fatalf("a grant that is gone is not an error: %v", err)
 	}
 }
+
+// The revocation list of the local accounts blocks a grant at once, with its entry still in the state file: the access token,
+// the refresh and the account's grant list all stop seeing it (design-local-accounts.md, 5.11).
+func TestAGrantOnTheRevocationListIsRefusedWhateverTheStateFileHolds(t *testing.T) {
+	t.Parallel()
+	var mu sync.Mutex
+	blocked := map[string]bool{}
+	fl := &fakeLocal{active: map[string]bool{"alice": true}}
+	e := newEnv(t, opts{local: fl, blocked: func(id string) bool { mu.Lock(); defer mu.Unlock(); return blocked[id] }})
+	e.setRoles(&roles.Spec{Admin: []string{"local:alice"}})
+	e.method = "local"
+	client, tok := e.login("local:alice", "Alice's client")
+	if r := e.mcpStatus(tok.access); r.StatusCode != http.StatusOK {
+		t.Fatalf("before: %d", r.StatusCode)
+	}
+	mu.Lock()
+	blocked[tok.grant] = true
+	mu.Unlock()
+	if r := e.mcpStatus(tok.access); r.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("an access token of a blocked grant: %d %s", r.StatusCode, r.body)
+	}
+	if r := e.refresh(client, tok.refresh); r.StatusCode == http.StatusOK {
+		t.Fatal("a refresh of a blocked grant was accepted")
+	}
+	if got := e.srv.GrantsOf("local:alice"); len(got) != 0 {
+		t.Fatalf("a blocked grant is listed: %v", got)
+	}
+}

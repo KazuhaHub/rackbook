@@ -25,6 +25,9 @@ type Registry struct {
 	// UsePath is a JSON file that keeps the last use of each token across
 	// restarts (serve --state-dir). Empty = in memory only.
 	UsePath string
+	// Blocked, when set, says a token (by the SHA-256 of its secret) is on the revocation list of the local accounts: Lookup
+	// refuses it at once, before and whatever the commit to tokens.yml does.
+	Blocked func(hash string) bool
 
 	mu     sync.Mutex
 	raw    []byte
@@ -67,7 +70,11 @@ func (r *Registry) Lookup(secret string) (*Token, error) {
 	if err != nil {
 		return nil, err
 	}
-	return Match(ts, secret, r.now())
+	t, err := Match(ts, secret, r.now())
+	if err == nil && r.Blocked != nil && r.Blocked(t.Hash) {
+		return nil, ErrRevoked // revoked for a local account (design-local-accounts.md, 5.11), whatever tokens.yml says yet
+	}
+	return t, err
 }
 
 // Touch records a use of the token. With UsePath the file is rewritten when
@@ -244,11 +251,11 @@ func ApplyRevoke(old []byte, name, by string, now time.Time) ([]byte, error) {
 }
 
 // Revoke revokes a token on behalf of who.
-func (r *Registry) Revoke(ctx context.Context, name string, who *auth.Identity) (*gitstore.StateResult, error) {
+func (r *Registry) Revoke(ctx context.Context, name string, who *auth.Identity, opts ...gitstore.StateOption) (*gitstore.StateResult, error) {
 	name = strings.TrimSpace(name)
 	return r.Store.MutateStateFile(ctx, File, "rackbook(auth): revoke token "+name, who, func(old []byte, _ bool) ([]byte, error) {
 		return ApplyRevoke(old, name, who.IDOrEmpty(), r.now())
-	})
+	}, opts...)
 }
 
 // creatorMethod is the login method worth recording: only those whose

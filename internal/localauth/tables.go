@@ -159,6 +159,8 @@ type ticket struct {
 	nk                               [16]byte
 	pair, name                       bool
 	lockedIP, lockedPair, lockedName bool
+	// the windows the attempt was counted in: a window that has rolled over since is not the one to give back to
+	bStart, pStart, nStart time.Time
 }
 
 // AccountLock says this attempt's failure reached the throttle's max for the name with scope account: the lock belongs in the
@@ -204,6 +206,7 @@ func (t *tables) Begin(bucket, name string, max int, window time.Duration, lock 
 	b.live(now, window)
 	b.fails++
 	b.last = now
+	tk.bStart = b.start
 	if lock.Enabled && lock.Scope == "ip" && b.fails >= max && !b.locked(now) {
 		b.lockUntil, tk.lockedIP = now.Add(lock.Duration), true
 	}
@@ -223,7 +226,7 @@ func (t *tables) Begin(bucket, name string, max int, window time.Duration, lock 
 		p.live(now, window)
 		p.fails++
 		p.last = now
-		tk.pair = true
+		tk.pair, tk.pStart = true, p.start
 		if lock.Enabled && lock.Scope == "ip_account" && p.fails >= max && !p.locked(now) {
 			p.lockUntil, tk.lockedPair = now.Add(lock.Duration), true
 		}
@@ -243,7 +246,7 @@ func (t *tables) Begin(bucket, name string, max int, window time.Duration, lock 
 		n.live(now, window)
 		n.fails++
 		n.last = now
-		tk.name = true
+		tk.name, tk.nStart = true, n.start
 		if lock.Enabled && lock.Scope == "account" && n.fails >= max && !n.locked(now) {
 			n.lockUntil, tk.lockedName = now.Add(lock.Duration), true
 		}
@@ -260,7 +263,9 @@ func (t *tables) Refund(tk ticket) {
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if r := t.buck[tk.bucket]; r != nil {
+	// only into the window the attempt was counted in: a row whose window has rolled over (or was evicted and made again) is
+	// another count, and this attempt is not in it
+	if r := t.buck[tk.bucket]; r != nil && r.start.Equal(tk.bStart) {
 		if r.fails > 0 {
 			r.fails--
 		}
@@ -268,13 +273,13 @@ func (t *tables) Refund(tk ticket) {
 			r.lockUntil = time.Time{}
 		}
 	}
-	if _, ok := t.pair[tk.pk]; ok {
+	if p, ok := t.pair[tk.pk]; ok && tk.pair && p.start.Equal(tk.pStart) {
 		delete(t.pair, tk.pk)
 		if t.pairsOf[tk.bucket]--; t.pairsOf[tk.bucket] <= 0 {
 			delete(t.pairsOf, tk.bucket)
 		}
 	}
-	if r := t.name[tk.nk]; r != nil {
+	if r := t.name[tk.nk]; r != nil && tk.name && r.start.Equal(tk.nStart) {
 		if r.fails > 0 {
 			r.fails--
 		}
