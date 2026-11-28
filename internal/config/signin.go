@@ -209,3 +209,20 @@ func (a Auth) CaptchaIgnoredWarning() string {
 	}
 	return "auth.captcha is not built yet and is ignored: the throttle and the NIST cap apply, and a throttled network is refused until the window ends"
 }
+
+// PageMode is the login mode the sign-in page is shaped by (2.1): without a configured single sign-on
+// provider every mode degrades to local_only, because there is nothing to redirect to and an administrator could
+// not undo it from inside the product. "Configured" never means "healthy": a provider outage changes nothing here.
+func (s SignInSettings) PageMode(sso bool) string {
+	if !sso {
+		return LoginLocalOnly
+	}
+	return s.Mode
+}
+
+// SSOOnlyConfigured says sso_only is on and means something: it is inert unless the page actually offers single
+// sign-on, so it is inert under local_only and without a configured provider (2.1). Whether a local administrator
+// exists, which decides if it is enforced, is the sign-in service's to say.
+func (s SignInSettings) SSOOnlyConfigured(sso bool) bool {
+	return s.SSOOnly && sso && s.PageMode(sso) != LoginLocalOnly
+}

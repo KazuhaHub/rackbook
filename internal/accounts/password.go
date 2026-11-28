@@ -211,9 +211,6 @@ type Hasher struct {
 	slots  *Slots
 	params argonParams
 	custom bool // params were given by NewHasherCost; otherwise the constants of 4.2 are read at each use
-	// onHash, when set, is told how long each argon2id run took inside its slot (the queue is not in it):
-	// the hash-only sample of the dummy-hash budget (8.6).
-	onHash func(time.Duration)
 }
 
 // NewHasher uses the default slots and the parameters of 4.2.
@@ -229,22 +226,11 @@ func NewHasherCost(s *Slots, memKiB, passes uint32, lanes uint8) *Hasher {
 	return &Hasher{slots: s, params: argonParams{m: memKiB, t: passes, p: lanes}, custom: true}
 }
 
-// OnHash sets the function told the time of each run. Call it before the hasher is used.
-func (h *Hasher) OnHash(f func(time.Duration)) { h.onHash = f }
-
 func (h *Hasher) p() argonParams {
 	if h.custom {
 		return h.params
 	}
 	return current
-}
-
-func (h *Hasher) timed(f func()) {
-	start := time.Now()
-	f()
-	if h.onHash != nil {
-		h.onHash(time.Since(start))
-	}
 }
 
 // Hash hashes a new password. It does not check the rules (CheckPassword does).
@@ -254,21 +240,27 @@ func (h *Hasher) Hash(ctx context.Context, c Class, pw string) (string, error) {
 		return "", err
 	}
 	defer rel()
-	var out string
-	var herr error
-	h.timed(func() { out, herr = hashWith(h.p(), pw) })
-	return out, herr
+	return hashWith(h.p(), pw)
 }
 
 // Verify checks pw against a stored hash. rehash says the stored hash is under old parameters.
 func (h *Hasher) Verify(ctx context.Context, c Class, pw, stored string) (ok, rehash bool, err error) {
+	ok, rehash, _, err = h.VerifyTimed(ctx, c, pw, stored)
+	return ok, rehash, err
+}
+
+// VerifyTimed is Verify that also returns how long the argon2id run took inside its slot, the queue not counted:
+// the hash-only sample of the dummy-hash budget (8.6).
+func (h *Hasher) VerifyTimed(ctx context.Context, c Class, pw, stored string) (ok, rehash bool, took time.Duration, err error) {
 	rel, err := h.slots.acquire(ctx, c)
 	if err != nil {
-		return false, false, err
+		return false, false, 0, err
 	}
 	defer rel()
-	h.timed(func() { ok = verifyPassword(pw, stored) })
-	return ok, ok && h.needsRehash(stored), nil
+	start := time.Now()
+	ok = verifyPassword(pw, stored)
+	took = time.Since(start)
+	return ok, ok && h.needsRehash(stored), took, nil
 }
 
 func (h *Hasher) needsRehash(stored string) bool {
@@ -278,13 +270,20 @@ func (h *Hasher) needsRehash(stored string) bool {
 
 // Dummy runs one argon2id for an account that cannot sign in, so the answer takes as long (5.6).
 func (h *Hasher) Dummy(ctx context.Context, c Class, pw string) error {
+	_, err := h.DummyTimed(ctx, c, pw)
+	return err
+}
+
+// DummyTimed is Dummy that also returns the time of the run inside its slot.
+func (h *Hasher) DummyTimed(ctx context.Context, c Class, pw string) (time.Duration, error) {
 	rel, err := h.slots.acquire(ctx, c)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	defer rel()
-	h.timed(func() { burnWith(h.p(), pw) })
-	return nil
+	start := time.Now()
+	burnWith(h.p(), pw)
+	return time.Since(start), nil
 }
 
 // Wait joins the slot queue as a real check does and releases the slot at once: the wait of this

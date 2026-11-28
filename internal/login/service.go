@@ -558,8 +558,29 @@ var loginErrors = map[string]int{
 	"bad_callback": http.StatusOK, "claims": http.StatusOK, "session_too_large": http.StatusOK, "logged_out": http.StatusOK, "passkey": http.StatusOK,
 }
 
+// signIn is the sign-in settings of the current rackbook.yml (the defaults when there is no config function).
+func (s *Service) signIn() config.SignInSettings {
+	if s.o.Config != nil {
+		return s.o.Config().Auth.SignInSettings()
+	}
+	return config.SignInDefaults()
+}
+
 func (s *Service) loginPage(w http.ResponseWriter, r *http.Request, static http.Handler) {
 	code := r.URL.Query().Get("error")
+	// sso_redirect goes straight to the provider; ?local=1 shows the form (the way in for administrators when the
+	// provider breaks), and so does any error, so that a failed redirect cannot loop.
+	if code == "" && r.URL.Query().Get("local") != "1" && s.sso && s.signIn().PageMode(s.sso) == config.LoginSSORedirect {
+		if _, err := s.readSession(r); err != nil {
+			to := "/auth/oidc/start"
+			if ret := SafeReturn(r.URL.Query().Get("return")); ret != "/" {
+				to += "?return=" + url.QueryEscape(ret)
+			}
+			w.Header().Set("Cache-Control", "no-store")
+			http.Redirect(w, r, to, http.StatusSeeOther)
+			return
+		}
+	}
 	status, known := loginErrors[code]
 	if code == "" {
 		// An already logged-in user goes straight on.
@@ -581,6 +602,7 @@ func (s *Service) loginPage(w http.ResponseWriter, r *http.Request, static http.
 
 func (s *Service) publicConfig(w http.ResponseWriter, r *http.Request) {
 	label, name, logo, def := s.o.Login.OIDC.Label, "", false, locale.Default
+	mode := s.signIn().PageMode(s.sso)
 	if s.o.Config != nil {
 		cfg := s.o.Config()
 		label, name, logo, def = cfg.Auth.OIDC.Label, cfg.Branding.Name, cfg.BrandLogo() != nil, cfg.DefaultLocale()
@@ -590,6 +612,9 @@ func (s *Service) publicConfig(w http.ResponseWriter, r *http.Request) {
 	// "provider" stays for older consoles; it no longer names the IdP.
 	writeJSON(w, http.StatusOK, map[string]any{
 		"oidc": s.sso, "provider": "oidc", "passkeys": s.pk != nil,
+		// the sign-in page is shaped by the mode (sso_only is the endpoint's business, not the page's);
+		// local says the local sign-in is offered at all (a state key and a state directory)
+		"mode": mode, "local": s.o.Local != nil,
 		"label": label, "name": name, "logo": logo,
 		"locale": locale.Match(r.Header.Get("Accept-Language"), def), "defaultLocale": def,
 	})

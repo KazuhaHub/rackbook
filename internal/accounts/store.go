@@ -128,6 +128,21 @@ func (s *Store) loadUsernames(cur *State) error {
 	return nil
 }
 
+// Peek calls fn with the committed state under the read lock, without copying it. fn must not keep the state or
+// change anything in it, and must not call the store.
+func (s *Store) Peek(fn func(st *State)) {
+	s.eng.mu.RLock()
+	defer s.eng.mu.RUnlock()
+	fn(s.eng.cur)
+}
+
+// Lookup returns a copy of one account, or nil.
+func (s *Store) Lookup(username string) *Account {
+	s.eng.mu.RLock()
+	defer s.eng.mu.RUnlock()
+	return s.eng.cur.Account(username)
+}
+
 // Snapshot is a deep copy of the committed state. Changing it changes nothing.
 func (s *Store) Snapshot() *State { return s.eng.snapshot() }
 
@@ -310,6 +325,13 @@ func signInProof(name string, old, nw *Account, now time.Time, ev *audit.Event) 
 		(old.LastLogin == nil || nw.LastLogin.Time.After(old.LastLogin.Time))
 }
 
+// reauthProof says the counter write carries a re-authentication of this account: a reauth event for local:<name>
+// (counter() appends it with RecordSync in the same write). A re-authentication verifies the password and the second
+// factor again, so it may reset reauth_failures (5.7) and nothing else that a failure raised.
+func reauthProof(name string, ev *audit.Event) bool {
+	return ev != nil && ev.Event == "reauth" && ev.Identity == "local:"+name
+}
+
 // counterMovesForward is the second half of the counter check. What a failed attempt does (a count that grows, a
 // lock that is set, an account that becomes restricted) is a counter write. Undoing it is not, unless the write
 // proves a sign-in (signInProof) or the thing ran out on its own: leaving restricted or passkey_only, lowering
@@ -329,7 +351,10 @@ func counterMovesForward(name string, old, nw *Account, now time.Time, ev *audit
 	if old.State == StatePasskeyOnly && nw.State == StateRestricted {
 		return false
 	}
-	if nw.ConsecutiveFailures < old.ConsecutiveFailures || nw.ReauthFailures < old.ReauthFailures {
+	if nw.ConsecutiveFailures < old.ConsecutiveFailures {
+		return false
+	}
+	if nw.ReauthFailures < old.ReauthFailures && !(reauthProof(name, ev) && nw.ReauthFailures == 0) {
 		return false
 	}
 	for _, w := range []struct {
