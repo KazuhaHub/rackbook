@@ -389,12 +389,3 @@ func (f *fakeRevoker) did() []string {
 	return out
 }
 
-func withoutOne(in []string, drop string) []string {
-	var out []string
-	for _, v := range in {
-		if v != drop {
-			out = append(out, v)
-		}
-	}
-	return out
-}
