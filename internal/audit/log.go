@@ -24,6 +24,8 @@ type Options struct {
 	// InfraPath is the old infra-audit.jsonl to copy into the log (see
 	// MigrateInfra); "" = none. Open does it before anything else can append.
 	InfraPath string
+	// Pin, when set, names months retention must keep (design-local-accounts.md, 4.6).
+	Pin RetentionPin
 
 	migrateStop func(copied int) bool // test seam: true stops the copy as a crash would
 }

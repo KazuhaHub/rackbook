@@ -17,22 +17,25 @@ type Event struct {
 	Time     time.Time `json:"time"`
 	Event    string    `json:"event"`
 	Identity string    `json:"identity,omitempty"`
-	Name     string    `json:"name,omitempty"`
-	Method   string    `json:"method,omitempty"`
-	Role     string    `json:"role,omitempty"`
-	Addr     string    `json:"addr,omitempty"`
-	Reason   string    `json:"reason,omitempty"`
-	Code     string    `json:"code,omitempty"`
-	Area     string    `json:"area,omitempty"`
-	Repo     string    `json:"repo,omitempty"`
-	Hash     string    `json:"hash,omitempty"`
-	Record   string    `json:"record,omitempty"`
-	Action   string    `json:"action,omitempty"`
-	Outcome  string    `json:"outcome,omitempty"`
-	Host     string    `json:"host,omitempty"`
-	Key      string    `json:"key,omitempty"`
-	Files    []string  `json:"files,omitempty"`
-	Detail   []string  `json:"detail,omitempty"`
+	// Target is the account an administrator, or the offline CLI, acted on, when that is not
+	// the actor ("local:<username>"; design-local-accounts.md, section 10).
+	Target  string   `json:"target,omitempty"`
+	Name    string   `json:"name,omitempty"`
+	Method  string   `json:"method,omitempty"`
+	Role    string   `json:"role,omitempty"`
+	Addr    string   `json:"addr,omitempty"`
+	Reason  string   `json:"reason,omitempty"`
+	Code    string   `json:"code,omitempty"`
+	Area    string   `json:"area,omitempty"`
+	Repo    string   `json:"repo,omitempty"`
+	Hash    string   `json:"hash,omitempty"`
+	Record  string   `json:"record,omitempty"`
+	Action  string   `json:"action,omitempty"`
+	Outcome string   `json:"outcome,omitempty"`
+	Host    string   `json:"host,omitempty"`
+	Key     string   `json:"key,omitempty"`
+	Files   []string `json:"files,omitempty"`
+	Detail  []string `json:"detail,omitempty"`
 	// Groups and AppRoles are "overage" on a login whose groups or roles claim was
 	// cut off: the identity provider sent no groups at all (Entra, past 200 groups),
 	// or more than the session keeps. The sign-in succeeded without the lost values.
