@@ -14,13 +14,43 @@ import (
 // CF-Connecting-IP header. The header is never trusted otherwise. IPv6
 // addresses are bucketed by /64, because one host controls a whole /64.
 func Of(r *http.Request, trusted []netip.Prefix) string {
+	return Bucket(r, trusted, 64)
+}
+
+// Bucket is Of with the IPv6 prefix length of the bucket chosen by the caller: the sign-in protection
+// of local accounts uses /48 (docs/design-local-accounts.md, 8), the rate limits /64. IPv4 is always the
+// full address. v6bits outside 1..128 means 64.
+func Bucket(r *http.Request, trusted []netip.Prefix, v6bits int) string {
+	addr, ok := parse(r, trusted)
+	if !ok {
+		return rawHost(r)
+	}
+	return bucket(addr, v6bits)
+}
+
+// Addr is the client address by the same trusted-proxy rules, not bucketed: what a CAPTCHA provider is
+// told (remoteIP) and what the audit log keeps before its own truncation. An address that does not parse
+// is returned as the connection gave it.
+func Addr(r *http.Request, trusted []netip.Prefix) string {
+	addr, ok := parse(r, trusted)
+	if !ok {
+		return rawHost(r)
+	}
+	return addr.String()
+}
+
+func rawHost(r *http.Request) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		host = r.RemoteAddr
 	}
-	addr, err := netip.ParseAddr(strings.Trim(host, "[]"))
+	return host
+}
+
+func parse(r *http.Request, trusted []netip.Prefix) (netip.Addr, bool) {
+	addr, err := netip.ParseAddr(strings.Trim(rawHost(r), "[]"))
 	if err != nil {
-		return host
+		return netip.Addr{}, false
 	}
 	addr = addr.Unmap()
 	for _, p := range trusted {
@@ -33,12 +63,15 @@ func Of(r *http.Request, trusted []netip.Prefix) string {
 			break
 		}
 	}
-	return bucket(addr)
+	return addr, true
 }
 
-func bucket(a netip.Addr) string {
+func bucket(a netip.Addr, v6bits int) string {
 	if a.Is6() {
-		if p, err := a.Prefix(64); err == nil {
+		if v6bits < 1 || v6bits > 128 {
+			v6bits = 64
+		}
+		if p, err := a.Prefix(v6bits); err == nil {
 			return p.String()
 		}
 	}

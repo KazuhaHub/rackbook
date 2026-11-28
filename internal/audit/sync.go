@@ -139,3 +139,15 @@ func eachLine(f *os.File, month string, fn func(Event, string) bool) (bool, erro
 		}
 	}
 }
+
+// Writable says the log can take another line: it is not in its failed state (a write failed and the partial
+// line could not be removed). A nil log is not writable. The sign-in of local accounts asks before it
+// starts an attempt and answers 503 audit_unavailable when it is not (design-local-accounts.md, 10).
+func (l *Log) Writable() bool {
+	if l == nil {
+		return false
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.failed == ""
+}
