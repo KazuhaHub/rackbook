@@ -388,4 +388,3 @@ func (f *fakeRevoker) did() []string {
 	}
 	return out
 }
-
