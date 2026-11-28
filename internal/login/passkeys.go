@@ -327,7 +327,8 @@ func (p *passkeys) loginFinish(w http.ResponseWriter, r *http.Request) {
 		refused("no_role", id)
 		return
 	}
-	if _, _, err := p.s.issue(w, id, auth.MethodPasskey, base64.RawURLEncoding.EncodeToString(res.Credential.ID)); err != nil {
+	sess, _, err := p.s.issue(w, id, auth.MethodPasskey, base64.RawURLEncoding.EncodeToString(res.Credential.ID))
+	if err != nil {
 		fail(http.StatusInternalServerError, "session_too_large", "the session does not fit a cookie", "identity", id.ID)
 		refused("session_too_large", id)
 		return
@@ -335,6 +336,7 @@ func (p *passkeys) loginFinish(w http.ResponseWriter, r *http.Request) {
 	p.s.log.Info("login", "identity", id.ID, "method", auth.MethodPasskey, "remote", r.RemoteAddr)
 	p.s.record(r, audit.Event{Event: "login", Identity: id.ID, Name: id.Name, Method: auth.MethodPasskey, Role: role.String()})
 	p.s.observeRole(r, id, audit.CauseSignIn, true)
+	p.s.markObserved(sess)
 	writeJSON(w, http.StatusOK, map[string]string{"return": SafeReturn(r.URL.Query().Get("return"))})
 }
 
@@ -534,11 +536,11 @@ func (s *Service) account(w http.ResponseWriter, r *http.Request) {
 		rf, af := s.authn.Sources(who)
 		out["roleFrom"], out["auditorFrom"] = nonNil(rf), nonNil(af)
 	}
-	if sess, err := s.readSession(r); err == nil && sess.FromClaims {
+	if sess, err := s.readSession(r); err == nil && s.claimsLimited(sess) {
 		// the role (or the auditor capability) was read from the claims at sign-in, so a
 		// removal at the provider is seen at the next sign-in and at the latest when the session ends
-		out["claimsAbsolute"] = int(sess.absoluteLimit(s.absolute, s.claimsAbsolute).Seconds())
-		out["sessionEnds"] = time.Unix(sess.Issued, 0).Add(sess.absoluteLimit(s.absolute, s.claimsAbsolute)).UTC().Format(time.RFC3339)
+		out["claimsAbsolute"] = int(s.limitOf(sess).Seconds())
+		out["sessionEnds"] = time.Unix(sess.Issued, 0).Add(s.limitOf(sess)).UTC().Format(time.RFC3339)
 	}
 	if s.pk != nil {
 		if sess, err := s.readSession(r); err == nil && sess.Method == auth.MethodOIDC && sess.OIDCAt != 0 {

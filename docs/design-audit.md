@@ -522,7 +522,7 @@ role editor (part 2) and local accounts. Where it differs from the text above:
   ids are GUIDs, app role values are names that Entra, Keycloak and Authentik keep apart by case. The prefix is not
   case-sensitive. Only the top-level `roles` claim is read. A subject login (`identity: subject`) still matches only
   `oidc:` entries, as with groups. Built-in OAuth grants carry the roles claim next to the groups, so an MCP client
-  of an app-role person works. The claims of a grant are a snapshot of the approving sign-in, and they stop counting `claims_absolute` after the approval (`Server.effective`, from the grant's `created` time; a grant with none has none left, no migration): the grant is then evaluated by identity entries alone, like an API token, so a role removed at the provider cannot outlive that bound by refreshing (groups and app roles alike). A person with no identity entry ends the grant at the next refresh.
+  of an app-role person works. The claims of a grant are a snapshot of the approving sign-in, and they stop counting `claims_absolute` after the approval (`Server.effective`, counted from the earlier of the approving session's sign-in, stored on the grant, and the grant's `created`; a grant with neither has no claims left, no migration; the refresh that ends because of it answers `claims_expired`): the grant is then evaluated by identity entries alone, like an API token, so a role removed at the provider cannot outlive that bound by refreshing (groups and app roles alike). A person with no identity entry ends the grant at the next refresh.
 - **Caps and cookie.** Both lists are capped at the first 40 values and 700 bytes (one shared helper, `roles.BoundClaim`, for
   the session and the grants). Two full lists did not fit the old 2 048-byte cookie limit, so the whole `Set-Cookie` header
   (name, value and attributes) may be 4 096 bytes, the session is encoded without HTML escaping, and each list has an
@@ -545,14 +545,13 @@ role editor (part 2) and local accounts. Where it differs from the text above:
   with `identity: subject` is gone (passkeys are ignored). Without OIDC `auth.passkeys` is still an error, as before.
   `rackbook.yml` warnings are a new `Config.Warnings`, printed by `rackbook check`.
 - **`claims_absolute`.** Default 24 h; an explicit value must be positive and at most `absolute` (a default under a shorter
-  `absolute` just gives way). It is read at start with `idle` and `absolute`. The flag is stored in the session (`fc`) and
-  decided at sign-in as "the effective role is higher than the identity entries alone give, or the auditor capability
+  `absolute` just gives way). It is read at start with `idle` and `absolute`. Claims count when "the effective role is higher than the identity entries alone give, or the auditor capability
   exists only through claims": `Identity.FromClaims`, computed by `Authenticator.Evaluate`. An identity entry that grants
-  the same role wins; `*` counts as an identity entry. Sessions issued before the upgrade keep the normal limit. The flag is decided again, one way, at the first request after a
-  config change (`observeConfig`), with the cookie issued again, so `admin: [alice@x, group:ops]` losing `alice@x` makes the
-  session end `claims_absolute` after it was issued; it is never decided while the config does not load (roles are capped
-  at viewer then, which would hide the claims), and a sign-in under a degraded config is not marked as looked at, so the first
-  look after it loads decides it.
+  the same role wins; `*` counts as an identity entry. The rule is `Identity.FromClaims`, computed by `Authenticator.Evaluate`. There is no flag in the cookie any more (a first version had one and it could be replayed
+  or raced): `Service.claimsLimited` decides on every request from the cookie's identity and claims against the
+  current config, with the same identity-wins rule, cached per session, claims and config generation for cost only. While the
+  config does not load, a session that carries any groups or app roles gets the claims limit (fail safe). `role_changed`'s
+  lazy look marks a session as looked at only after its event is written.
 - **`identities.json`.** In `audit/` beside the chain (the retention and verification code ignore it), `{version,
   identities: {id: {name, role, auditor, lastSignIn, method}}}`, mode 0600, replaced atomically, 5 000 entries (about 750 KB), the
   oldest sign-in evicted first. The event is appended before the file is rewritten, so a crash repeats an event rather than

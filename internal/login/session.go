@@ -56,21 +56,20 @@ func boundAppRoles(in []string) (out []string, truncated bool) { return roles.Bo
 // session is the signed payload of the session cookie. It holds no role: the
 // role is evaluated from auth.roles on every request.
 type session struct {
-	V          int      `json:"v"`
-	ID         string   `json:"id"`
-	Name       string   `json:"name,omitempty"`
-	Method     string   `json:"m"`
-	Issued     int64    `json:"iat"`
-	Seen       int64    `json:"seen"`
-	OIDCAt     int64    `json:"oidc,omitempty"` // when the user last logged in with OIDC (passkey enrolment)
-	Iss        string   `json:"iss,omitempty"`  // oidc sessions: the issuer that authenticated the login; a session from another issuer is refused
-	Clm        string   `json:"clm,omitempty"`  // oidc sessions: the claim the identity came from ("sub" for a subject identity); checked by /infra
-	Tid        string   `json:"tid,omitempty"`  // oidc sessions: the ID token's tenant (tid), lower case; checked by /infra
-	Cli        string   `json:"cli,omitempty"`  // oidc sessions: the client ID of that login (checked by /infra, which pins it)
-	Groups     []string `json:"grp,omitempty"`  // oidc sessions: the ID token's groups claim (bounded), for group: role entries
-	Roles      []string `json:"rol,omitempty"`  // oidc sessions: the ID token's roles claim (bounded), for app-role: role entries
-	FromClaims bool     `json:"fc,omitempty"`   // oidc sessions: the role or auditor capability depended on groups or app roles at sign-in (auth.session.claims_absolute applies)
-	Cred       string   `json:"cred,omitempty"` // passkey sessions: the credential id used, so deleting it ends the session
+	V      int      `json:"v"`
+	ID     string   `json:"id"`
+	Name   string   `json:"name,omitempty"`
+	Method string   `json:"m"`
+	Issued int64    `json:"iat"`
+	Seen   int64    `json:"seen"`
+	OIDCAt int64    `json:"oidc,omitempty"` // when the user last logged in with OIDC (passkey enrolment)
+	Iss    string   `json:"iss,omitempty"`  // oidc sessions: the issuer that authenticated the login; a session from another issuer is refused
+	Clm    string   `json:"clm,omitempty"`  // oidc sessions: the claim the identity came from ("sub" for a subject identity); checked by /infra
+	Tid    string   `json:"tid,omitempty"`  // oidc sessions: the ID token's tenant (tid), lower case; checked by /infra
+	Cli    string   `json:"cli,omitempty"`  // oidc sessions: the client ID of that login (checked by /infra, which pins it)
+	Groups []string `json:"grp,omitempty"`  // oidc sessions: the ID token's groups claim (bounded), for group: role entries
+	Roles  []string `json:"rol,omitempty"`  // oidc sessions: the ID token's roles claim (bounded), for app-role: role entries
+	Cred   string   `json:"cred,omitempty"` // passkey sessions: the credential id used, so deleting it ends the session
 }
 
 type codec struct {
@@ -120,10 +119,11 @@ func (c codec) open(v string) (session, error) {
 	return s, nil
 }
 
-// absoluteLimit is the absolute lifetime of s: claimsAbsolute for a session whose
-// role came from claims, if that is shorter than the normal limit.
-func (s session) absoluteLimit(absolute, claimsAbsolute time.Duration) time.Duration {
-	if s.FromClaims && claimsAbsolute > 0 && claimsAbsolute < absolute {
+// absoluteLimit is the absolute lifetime of a session: claimsAbsolute when claims
+// contribute to its role (Service.claimsLimited decides, on every request), if that
+// is shorter than the normal limit.
+func absoluteLimit(absolute, claimsAbsolute time.Duration, claims bool) time.Duration {
+	if claims && claimsAbsolute > 0 && claimsAbsolute < absolute {
 		return claimsAbsolute
 	}
 	return absolute

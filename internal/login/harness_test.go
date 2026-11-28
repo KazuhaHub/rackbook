@@ -365,3 +365,31 @@ func (e *env) rewriteRoles(block string) {
 func writeFile(p, s string) error { return os.WriteFile(p, []byte(s), 0o600) }
 
 func testState(v string) authoidc.State { return authoidc.State{Value: v} }
+
+// setRoles replaces the auth.roles block (and what follows it) as a change that reaches the server the
+// way a real one does: pushed to the remote from another clone and pulled, when the env has a remote;
+// else by rewriting the file.
+func (e *env) setRoles(block string) {
+	e.t.Helper()
+	if e.bare == "" {
+		e.rewriteRoles(block)
+		return
+	}
+	root := e.t.TempDir()
+	git(e.t, root, "clone", "--quiet", e.bare, "c")
+	p := filepath.Join(root, "c", "rackbook.yml")
+	b, _ := os.ReadFile(p)
+	s := string(b)
+	i := strings.Index(s, "  roles:\n")
+	if i < 0 {
+		e.t.Fatal("no roles block")
+	}
+	if err := os.WriteFile(p, []byte(s[:i]+block), 0o644); err != nil {
+		e.t.Fatal(err)
+	}
+	git(e.t, filepath.Join(root, "c"), "commit", "--quiet", "-am", "roles")
+	git(e.t, filepath.Join(root, "c"), "push", "--quiet", "origin", "main")
+	if err := e.store.Pull(context.Background()); err != nil {
+		e.t.Fatal(err)
+	}
+}

@@ -131,6 +131,18 @@ func TestRefusedSignInCountsAsAChangeAndMovesTheLastSignIn(t *testing.T) {
 	if got := l.Identities()[0]; got.Role != "none" || !got.LastSignIn.Equal(clk.t) || got.LastSignIn.Equal(first) {
 		t.Fatalf("a refused sign-in moves the last sign-in time: %+v", got)
 	}
+	// a repeat refusal leaves the state as it is and does not touch the file
+	p := filepath.Join(dir, "identities.json")
+	before, _ := os.Stat(p)
+	clk.t = clk.t.Add(time.Minute)
+	if l.ObserveRole(RoleObservation{Identity: "a@example.com", Role: "none", Cause: CauseSignIn, Refused: true}) {
+		t.Fatal("no change, no event")
+	}
+	after, _ := os.Stat(p)
+	if !os.SameFile(before, after) || !before.ModTime().Equal(after.ModTime()) {
+		t.Fatal("a repeat refusal must not rewrite the file")
+	}
+	clk.t = clk.t.Add(-time.Minute)
 	// a session from before it cannot bring the old role back as a change
 	clk.t = clk.t.Add(time.Minute)
 	if l.ObserveRole(RoleObservation{Identity: "a@example.com", Role: "editor", Cause: CauseConfig, Session: first}) {

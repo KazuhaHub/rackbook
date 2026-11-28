@@ -988,16 +988,20 @@ be positive and at most `absolute`; `rackbook check` reports a value that is not
 a shorter `absolute` simply gives way to it. Like `idle` and `absolute` it is read at start. **My account**
 says where the role comes from (*account name*, *a group*, *an app role*) and, for a claims session, when it
 ends at the latest. Removing someone *by name* in `rackbook.yml` applies at the next pull, unless a domain,
-group or app-role entry also matches them. A session issued before an upgrade has the normal limit until it
-ends. If a config change makes the claims the only source of a role (`admin: [alice@x, group:ops]` loses `alice@x`),
-the first request of an open session after that decides it again: the session is marked as a claims session, one way,
-and its cookie is issued again, so it ends `claims_absolute` after it was issued (never decided while `rackbook.yml`
-does not load, because roles are then capped at viewer; the first look after it loads does). **OAuth grants** made
+group or app-role entry also matches them. The limit is decided on **every request**, from what the signed cookie carries (the identity, its groups and app
+roles) against the current config, with the sign-in's rule: if claims contribute to the role or the auditor capability,
+the session ends `claims_absolute` after it was issued. Nothing is stored in the cookie about that decision, so a cookie
+that is replayed or requests that race cannot escape it, and a config change takes effect at once: `admin: [alice@x,
+group:ops]` losing `alice@x` ends a 30-hour-old session on its next request, and putting `alice@x` back restores the
+normal limit. (The answer is cached in memory per session, claims and config version, for cost only.) While `rackbook.yml`
+does not load, roles are capped at viewer and would hide what claims give, so a session that carries any groups or app
+roles gets the claims limit (fail safe); one that carries none is unaffected. **OAuth grants** made
 through the built-in authorization server (MCP clients) keep the groups and roles of the sign-in that approved
-them for `claims_absolute` after the approval (a grant with no recorded approval time has none left); after
+them for `claims_absolute`, counted from the earlier of the approving session's sign-in and the approval (so a session that
+signed in 23h59m ago gives its claims about a minute); a grant with no recorded sign-in time has none left. After
 that the grant is evaluated by identity entries alone, like an API token, so a role removed at the provider cannot
 outlive that bound by refreshing: a viewer by name falls back to viewer, and a person with no identity entry at all
-ends the grant at the next refresh. This applies to groups as well as app roles.
+ends the grant at the next refresh (`invalid_grant` with `reason: claims_expired` and a description in the caller's language). This applies to groups as well as app roles.
 
 **`audit/identities.json` and `role_changed`.** For every person who has signed in, Rackbook keeps in
 `<state-dir>/audit/identities.json` (mode 0600, replaced atomically through a temp file, fsync and rename)

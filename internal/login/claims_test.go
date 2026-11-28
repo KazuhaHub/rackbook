@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -369,8 +370,8 @@ func TestClaimsAbsoluteAppliesOnlyToClaimDerivedRoles(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if sess.FromClaims != want {
-			t.Fatalf("%s: FromClaims %v, want %v", u, sess.FromClaims, want)
+		if got := e.svc.claimsLimited(sess); got != want {
+			t.Fatalf("%s: claims-limited %v, want %v", u, got, want)
 		}
 	}
 	alive := func(u string) bool { st, _ := users[u].meta(); return st == 200 }
@@ -517,51 +518,54 @@ func TestIdentitiesFileAndRoleChangedAtSignIn(t *testing.T) {
 }
 
 func TestRoleChangedLazilyAfterAConfigChange(t *testing.T) {
-	const before = "  roles:\n    admin: [kazuha@kazuha.org]\n    editor: [ed@kazuha.org]\n    viewer: [guest@example.com]\n"
-	e := newEnv(t, options{nogit: true, roles: before})
-	ed, guest := e.browser(), e.browser()
-	ed.login("editor", "")
-	guest.login("viewer", "")
-	for i := 0; i < 3; i++ {
-		ed.meta()
-		guest.meta()
-	}
-	if n := len(e.kinds("role_changed")); n != 0 {
-		t.Fatalf("nothing changed: %d", n)
-	}
-	// rackbook.yml changes: ed is demoted, guest is promoted. Nobody has asked for anything yet.
-	e.rewriteRoles("  roles:\n    admin: [kazuha@kazuha.org, guest@example.com]\n    viewer: [ed@kazuha.org]\n")
-	if n := len(e.kinds("role_changed")); n != 0 {
-		t.Fatalf("it is lazy: %d events before anybody comes back", n)
-	}
-	// ed comes back (three requests); guest never does
-	for i := 0; i < 3; i++ {
-		if got := roleOfMeta(t, ed); got != "viewer" {
-			t.Fatal(got)
+	eachStore(t, func(t *testing.T, o options) {
+		const before = "  roles:\n    admin: [kazuha@kazuha.org]\n    editor: [ed@kazuha.org]\n    viewer: [guest@example.com]\n"
+		o.roles = before
+		e := newEnv(t, o)
+		ed, guest := e.browser(), e.browser()
+		ed.login("editor", "")
+		guest.login("viewer", "")
+		for i := 0; i < 3; i++ {
+			ed.meta()
+			guest.meta()
 		}
-	}
-	evs := e.kinds("role_changed")
-	if len(evs) != 1 {
-		t.Fatalf("written once, only for the person who came back: %+v", evs)
-	}
-	if ev := evs[0]; ev.Identity != "ed@kazuha.org" || ev.From != "editor" || ev.To != "viewer" || ev.Cause != audit.CauseConfig {
-		t.Fatalf("%+v", ev)
-	}
-	// the stored role moved on, so a sign-in afterwards writes nothing again
-	e.browser().login("editor", "")
-	if n := len(e.kinds("role_changed")); n != 1 {
-		t.Fatalf("%d", n)
-	}
-	rec := e.identitiesFile()["identities"].(map[string]any)
-	if rec["ed@kazuha.org"].(map[string]any)["role"] != "viewer" || rec["guest@example.com"].(map[string]any)["role"] != "viewer" {
-		t.Fatalf("people who never come back are not recomputed: %v", rec)
-	}
-	// guest returns later, after another change: only then is the difference seen
-	guest.meta()
-	evs = e.kinds("role_changed")
-	if len(evs) != 2 || evs[1].Identity != "guest@example.com" || evs[1].From != "viewer" || evs[1].To != "admin" || evs[1].Cause != audit.CauseConfig {
-		t.Fatalf("%+v", evs)
-	}
+		if n := len(e.kinds("role_changed")); n != 0 {
+			t.Fatalf("nothing changed: %d", n)
+		}
+		// rackbook.yml changes: ed is demoted, guest is promoted. Nobody has asked for anything yet.
+		e.setRoles("  roles:\n    admin: [kazuha@kazuha.org, guest@example.com]\n    viewer: [ed@kazuha.org]\n")
+		if n := len(e.kinds("role_changed")); n != 0 {
+			t.Fatalf("it is lazy: %d events before anybody comes back", n)
+		}
+		// ed comes back (three requests); guest never does
+		for i := 0; i < 3; i++ {
+			if got := roleOfMeta(t, ed); got != "viewer" {
+				t.Fatal(got)
+			}
+		}
+		evs := e.kinds("role_changed")
+		if len(evs) != 1 {
+			t.Fatalf("written once, only for the person who came back: %+v", evs)
+		}
+		if ev := evs[0]; ev.Identity != "ed@kazuha.org" || ev.From != "editor" || ev.To != "viewer" || ev.Cause != audit.CauseConfig {
+			t.Fatalf("%+v", ev)
+		}
+		// the stored role moved on, so a sign-in afterwards writes nothing again
+		e.browser().login("editor", "")
+		if n := len(e.kinds("role_changed")); n != 1 {
+			t.Fatalf("%d", n)
+		}
+		rec := e.identitiesFile()["identities"].(map[string]any)
+		if rec["ed@kazuha.org"].(map[string]any)["role"] != "viewer" || rec["guest@example.com"].(map[string]any)["role"] != "viewer" {
+			t.Fatalf("people who never come back are not recomputed: %v", rec)
+		}
+		// guest returns later, after another change: only then is the difference seen
+		guest.meta()
+		evs = e.kinds("role_changed")
+		if len(evs) != 2 || evs[1].Identity != "guest@example.com" || evs[1].From != "viewer" || evs[1].To != "admin" || evs[1].Cause != audit.CauseConfig {
+			t.Fatalf("%+v", evs)
+		}
+	})
 }
 
 func TestRoleChangedFollowsTheAuditorFlag(t *testing.T) {
@@ -725,78 +729,133 @@ func TestRoleChangedEventShapeInTheLog(t *testing.T) {
 	}
 }
 
-// The claims flag is decided at sign-in, and again at the first look after rackbook.yml
-// changed: when the identity entry that also granted the role goes, the session becomes
-// a claims session, one way, from its own issue time.
-func TestClaimsFlagIsSetLaterWhenTheIdentityEntryGoes(t *testing.T) {
-	e := newEnv(t, options{nogit: true, roles: "  roles:\n    admin: [kazuha@kazuha.org, \"group:ops\"]\n"})
-	e.idp.Users["admin"]["groups"] = []string{"ops"}
-	b := e.browser()
-	b.login("admin", "")
-	flag := func() bool {
-		s, err := e.svc.codec.open(b.cookie(SessionCookie).Value)
-		if err != nil {
-			t.Fatal(err)
+// How long a session lives is decided on every request from what its cookie carries and the
+// config as it is now, so no cookie, old or replayed or raced, escapes it. Each test runs without
+// Git (the store re-reads the file) and with it (a pushed change, pulled: a new config generation).
+func eachStore(t *testing.T, f func(t *testing.T, o options)) {
+	t.Run("git", func(t *testing.T) { f(t, options{remote: true}) })
+	t.Run("nogit", func(t *testing.T) { f(t, options{nogit: true}) })
+}
+
+// keepAlive advances the clock by d in steps shorter than the idle limit, with activity.
+func keepAlive(e *env, d time.Duration, bs ...*browser) {
+	for left := d; left > 0; left -= 5 * time.Hour {
+		e.clk.Advance(min(left, 5*time.Hour))
+		for _, b := range bs {
+			b.meta()
 		}
-		return s.FromClaims
-	}
-	if flag() {
-		t.Fatal("the identity entry also grants the role: normal limit")
-	}
-	e.clk.Advance(10 * time.Hour)
-	b.meta()
-	e.rewriteRoles("  roles:\n    admin: [\"group:ops\"]\n")
-	if got := roleOfMeta(t, b); got != "admin" || !flag() {
-		t.Fatalf("role %s, flag %v: the first look under the new config must set the flag and issue the cookie again", got, flag())
-	}
-	// 10h after sign-in plus 15h: the absolute limit is issued+24h, not issued+7d
-	e.clk.Advance(5 * time.Hour)
-	if st, _ := b.meta(); st != 200 {
-		t.Fatalf("%d", st)
-	}
-	e.clk.Advance(10 * time.Hour)
-	if st, _ := b.meta(); st != 401 {
-		t.Fatalf("the session must end 24h after it was issued: %d", st)
-	}
-	// putting the entry back does not unset it for a session already marked (one way): a new session is normal
-	e.rewriteRoles("  roles:\n    admin: [kazuha@kazuha.org, \"group:ops\"]\n")
-	b2 := e.browser()
-	b2.login("admin", "")
-	if s, _ := e.svc.codec.open(b2.cookie(SessionCookie).Value); s.FromClaims {
-		t.Fatal("a new session is normal again")
 	}
 }
 
-// Under a degraded config roles are capped at viewer, which hides what the claims give: the
-// flag is not decided then, and the first look under a config that loads decides it.
-func TestClaimsFlagIsNotDecidedWhileTheConfigDoesNotLoad(t *testing.T) {
-	e := newEnv(t, options{nogit: true, roles: "  roles:\n    admin: [\"group:ops\"]\n    viewer: [kazuha@kazuha.org]\n"})
+func TestReplayedCookieCannotEscapeTheClaimsLimit(t *testing.T) {
+	eachStore(t, func(t *testing.T, o options) {
+		o.roles = "  roles:\n    admin: [kazuha@kazuha.org, \"group:ops\"]\n"
+		e := newEnv(t, o)
+		e.idp.Users["admin"]["groups"] = []string{"ops"}
+		b := e.browser()
+		b.login("admin", "")
+		keepAlive(e, 30*time.Hour, b) // the identity entry also grants admin: the normal limit, so far
+		if st, _ := b.meta(); st != 200 {
+			t.Fatalf("%d", st)
+		}
+		latest := b.cookie(SessionCookie).Value // the last cookie the browser holds
+		// alice goes: the role now comes only from the group
+		e.setRoles("  roles:\n    admin: [\"group:ops\"]\n")
+		if st, _ := b.meta(); st != 401 {
+			t.Fatalf("a 30h-old session whose role is now only a group's must end: %d", st)
+		}
+		// the same cookie sent again, by anyone, any number of times
+		for i := 0; i < 3; i++ {
+			r := e.browser()
+			r.setCookie(SessionCookie, latest)
+			if st, _ := r.meta(); st != 401 {
+				t.Fatalf("replay %d: %d", i, st)
+			}
+		}
+		// the identity entry comes back: the same cookie lives by the normal limit again
+		e.setRoles("  roles:\n    admin: [kazuha@kazuha.org, \"group:ops\"]\n")
+		r := e.browser()
+		r.setCookie(SessionCookie, latest)
+		if st, _ := r.meta(); st != 200 {
+			t.Fatalf("with the entry back the normal limit applies again: %d", st)
+		}
+	})
+}
+
+func TestConcurrentRequestsWithAnOldCookieAreAllRefused(t *testing.T) {
+	eachStore(t, func(t *testing.T, o options) {
+		o.roles = "  roles:\n    admin: [kazuha@kazuha.org, \"group:ops\"]\n"
+		e := newEnv(t, o)
+		e.idp.Users["admin"]["groups"] = []string{"ops"}
+		b := e.browser()
+		b.login("admin", "")
+		keepAlive(e, 30*time.Hour, b)
+		old := b.cookie(SessionCookie).Value
+		e.setRoles("  roles:\n    admin: [\"group:ops\"]\n")
+		var wg sync.WaitGroup
+		codes := make([]int, 12)
+		for i := range codes {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				r := e.browser()
+				r.setCookie(SessionCookie, old)
+				codes[i], _ = r.meta()
+			}()
+		}
+		wg.Wait()
+		for i, c := range codes {
+			if c != 401 {
+				t.Fatalf("request %d: %d", i, c)
+			}
+		}
+	})
+}
+
+// While the config does not load roles are capped at viewer: a session that carries claims is
+// limited by claims_absolute (fail safe), one that carries none is not.
+func TestDegradedConfigAppliesTheClaimsLimitToSessionsWithClaims(t *testing.T) {
+	e := newEnv(t, options{nogit: true, roles: "  roles:\n    admin: [kazuha@kazuha.org, \"group:ops\"]\n    editor: [ed@kazuha.org]\n"})
 	e.idp.Users["admin"]["groups"] = []string{"ops"}
+	withClaims, without := e.browser(), e.browser()
+	withClaims.login("admin", "")
+	without.login("editor", "")
+	keepAlive(e, 25*time.Hour, withClaims, without)
+	if st, _ := withClaims.meta(); st != 200 {
+		t.Fatalf("the identity entry grants the role: normal limit: %d", st)
+	}
 	p := filepath.Join(e.dir, "rackbook.yml")
 	good, _ := os.ReadFile(p)
 	if err := os.WriteFile(p, []byte("collections: [not valid"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	if st, _ := without.meta(); st != 200 {
+		t.Fatalf("a session without claims is unaffected: %d", st)
+	}
+	if st, _ := withClaims.meta(); st != 401 {
+		t.Fatalf("under a degraded config a session with claims gets the claims limit: %d", st)
+	}
+	_ = os.WriteFile(p, good, 0o644)
+}
+
+// The auditor capability follows the same rule as the role: an admin who is an auditor only by group
+// has no auditor flag on the token, and one whose whole role comes from the groups cannot make a token.
+func TestTokenAndTheAuditorCapabilityFromClaims(t *testing.T) {
+	e := newEnv(t, options{roles: "  roles:\n    admin: [kazuha@kazuha.org, \"group:ops\"]\n  auditors: [\"group:audit\"]\n"})
+	e.idp.Users["admin"]["groups"] = []string{"audit"} // admin by name, auditor by group only
 	b := e.browser()
-	if r := b.login("admin", ""); r.StatusCode != 303 || r.Loc() != "/" {
-		t.Fatalf("%d %q", r.StatusCode, r.Loc())
+	b.login("admin", "")
+	r := b.postJSON("/api/admin/tokens", `{"name":"t1","scope":"read"}`)
+	if r.StatusCode != 201 {
+		t.Fatalf("%d %s", r.StatusCode, r.Body)
 	}
-	flag := func() bool {
-		s, _ := e.svc.codec.open(b.cookie(SessionCookie).Value)
-		return s.FromClaims
+	if strings.Contains(r.Body, `"creatorAuditor":true`) {
+		t.Fatalf("the capability must not ride on a claim: %s", r.Body)
 	}
-	if flag() {
-		t.Fatal("not decided on capped roles")
-	}
-	b.meta() // still degraded: nothing is decided
-	if flag() {
-		t.Fatal("still not")
-	}
-	if err := os.WriteFile(p, good, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	b.meta() // the store notices the good file on this request
-	if got := roleOfMeta(t, b); got != "admin" || !flag() {
-		t.Fatalf("role %s, flag %v: the first look under a config that loads decides it", got, flag())
+	e.idp.Users["editor"]["groups"] = []string{"ops", "audit"} // role and capability from groups only
+	b2 := e.browser()
+	b2.login("editor", "")
+	if r := b2.postJSON("/api/admin/tokens", `{"name":"t2","scope":"read"}`); r.StatusCode != 403 || !strings.Contains(r.Body, "creator_role_from_claims") {
+		t.Fatalf("%d %s", r.StatusCode, r.Body)
 	}
 }

@@ -167,7 +167,7 @@ func (s *Service) oidcCallback(w http.ResponseWriter, r *http.Request) {
 		s.loginFail(w, r, "no_role", "")
 		return
 	}
-	_, cut, err := s.issue(w, id, auth.MethodOIDC, "")
+	sess, cut, err := s.issue(w, id, auth.MethodOIDC, "")
 	if err != nil {
 		// even without its groups and roles the session does not fit a cookie: say so, never loop
 		s.log.Error("login refused: the session does not fit a cookie", "identity", id.ID, "err", err)
@@ -180,6 +180,7 @@ func (s *Service) oidcCallback(w http.ResponseWriter, r *http.Request) {
 	s.log.Info("login", "identity", id.ID, "method", auth.MethodOIDC, "remote", r.RemoteAddr)
 	s.record(r, audit.Event{Event: "login", Identity: id.ID, Name: id.Name, Method: auth.MethodOIDC, Role: role.String(), Groups: overageNote(ov.groups), AppRoles: overageNote(ov.appRoles)})
 	s.observeRole(r, ev, audit.CauseSignIn, true)
+	s.markObserved(sess)
 	http.Redirect(w, r, SafeReturn(entry.ret), http.StatusSeeOther)
 }
 

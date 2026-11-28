@@ -143,6 +143,12 @@ func (s *identityStore) load(l *Log) {
 	}
 }
 
+// A note on who can write here: the identity, the role names and the session time of an observation come from a
+// verified ID token or a signed cookie, so the only way to put a false entry or a false role_changed into the
+// file is a forged identity token, which already means the identity provider is lost. The worst it does is
+// poison this memory of last roles (and the audit log with events that are true to what was presented); it grants
+// no access, because the role is always computed from the config, never read from this file.
+//
 // observe is ObserveRole under the store's lock. The event is appended before
 // the file is rewritten: after a crash between the two, the next look writes the
 // event again, which is better than never.
@@ -173,11 +179,13 @@ func (s *identityStore) observe(l *Log, o RoleObservation) (changed bool, err er
 			From: prev.Role, To: o.Role, AuditorFrom: &af, AuditorTo: &at, Cause: o.Cause})
 		changed = true
 	}
-	if o.Refused {
+	if o.Refused && changed {
 		next.LastSignIn = l.opts.Now().UTC().Truncate(time.Second)
 	}
-	if existed && !o.SignedIn && !o.Refused && !changed {
-		return false, nil // nothing to store
+	if existed && !o.SignedIn && !changed {
+		// nothing to store: a repeat refusal (or a look under the same role) rewrites and syncs no file. A
+		// person with no role who keeps trying is the case: their stored role is already "none".
+		return false, nil
 	}
 	s.m[o.Identity] = next
 	s.evict(o.Identity)

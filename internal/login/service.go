@@ -7,8 +7,10 @@ package login
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -94,6 +96,9 @@ type Service struct {
 	prov    *authoidc.Provider
 	provErr error
 	provTry time.Time
+
+	limitMu    sync.Mutex
+	limitCache map[string]limitEntry // claimsLimited, per session, claims and config generation
 
 	checkedMu sync.Mutex
 	checked   map[string]any // session key -> the role policy generation it was last looked at under
@@ -288,7 +293,7 @@ func (s *Service) readSession(r *http.Request) (session, error) {
 	if err != nil {
 		return session{}, err
 	}
-	if err := sess.check(s.now(), s.idle, sess.absoluteLimit(s.absolute, s.claimsAbsolute)); err != nil {
+	if err := sess.check(s.now(), s.idle, s.limitOf(sess)); err != nil {
 		return session{}, err
 	}
 	if sess.Method == auth.MethodOIDC && sess.Iss != s.o.Login.OIDC.Issuer {
@@ -325,13 +330,13 @@ func (s *Service) Identify(w http.ResponseWriter, r *http.Request) (*auth.Identi
 	now := s.now()
 	if w != nil && now.Sub(time.Unix(sess.Seen, 0)) >= refreshEvery {
 		sess.Seen = now.Unix()
-		s.setSession(w, sess)
+		// the one Set-Cookie of this response; what was sent (claims trimmed to fit) is what counts
+		if sent, _, _, err := s.setSession(w, sess); err == nil {
+			sess = sent
+		}
 	}
 	s.users.touch(sess.ID, sess.Name, sess.Method, sess.Groups, sess.Roles, now)
-	sess, err = s.observeConfig(w, sess)
-	if err != nil {
-		return nil, unauth(err)
-	}
+	s.observeConfig(sess)
 	return identityOf(sess), nil
 }
 
@@ -355,7 +360,7 @@ func identityOf(sess session) *auth.Identity {
 // list lost values. With both lists empty and still too long it is errCookieTooLarge.
 func (s *Service) fit(sess session) (out session, value string, maxAge int, cutGroups, cutRoles bool, err error) {
 	for {
-		left := time.Unix(sess.Issued, 0).Add(sess.absoluteLimit(s.absolute, s.claimsAbsolute)).Sub(s.now())
+		left := time.Unix(sess.Issued, 0).Add(s.limitOf(sess)).Sub(s.now())
 		maxAge = max(1, int(left.Seconds()))
 		if value, err = s.codec.seal(sess); err != nil {
 			return sess, "", 0, cutGroups, cutRoles, err
@@ -399,20 +404,12 @@ func (s *Service) issue(w http.ResponseWriter, id *auth.Identity, method, cred s
 		// already bounded at sign-in; bounding again keeps the cookie small whatever the caller passes
 		sess.Groups, _ = boundGroups(id.Groups)
 		sess.Roles, _ = boundAppRoles(id.AppRoles)
-		// id.FromClaims was set by the evaluation that decided the role: a role an
-		// identity entry grants keeps the normal absolute lifetime
-		sess.FromClaims = id.FromClaims
 	}
 	sess, cg, cr, err := s.setSession(w, sess)
 	if err != nil {
 		return sess, overage{}, err
 	}
 	s.users.touch(id.ID, id.Name, method, sess.Groups, sess.Roles, s.now())
-	if s.authn != nil && !s.authn.Degraded() {
-		// the sign-in has just looked at this person under the current config (not while it
-		// does not load: the claims flag was decided on capped roles, observeConfig decides it again)
-		s.markChecked(sess, s.authn.Generation())
-	}
 	return sess, overage{groups: cg, appRoles: cr}, nil
 }
 
@@ -633,6 +630,13 @@ func (s *Service) observeRole(r *http.Request, id *auth.Identity, cause string, 
 	})
 }
 
+// alreadyChecked reports that sess was looked at under the config generation gen.
+func (s *Service) alreadyChecked(sess session, gen any) bool {
+	s.checkedMu.Lock()
+	defer s.checkedMu.Unlock()
+	return s.checked[sessionKey(sess.ID, sess.Issued)] == gen
+}
+
 // markChecked remembers that sess was looked at under the config generation gen.
 // It reports false when it already was, so the caller can skip the look.
 func (s *Service) markChecked(sess session, gen any) bool {
@@ -652,40 +656,81 @@ func (s *Service) markChecked(sess session, gen any) bool {
 // observeConfig is the lazy half of role_changed: when rackbook.yml has changed
 // since this session was last looked at, the role it has now is compared with the
 // stored one, once. A person who never comes back is not recomputed (their claims
-// are not kept). The cost on every other request is one map lookup.
-//
-// It also decides again whether claims contribute to the role. The flag is first
-// decided at sign-in, but a config change can make the claims the only source
-// (`admin: [alice@x, group:ops]` loses alice@x): the flag is then set, one way, and
-// the cookie is issued again, so the absolute limit becomes the shorter claims_absolute
-// from the session's own issue time. It is never decided while the config does not
-// load: roles are then capped at viewer, which would hide what the claims give. The
-// first look after it loads decides it (a sign-in under a degraded config leaves the
-// session unmarked and unchecked for that reason).
-func (s *Service) observeConfig(w http.ResponseWriter, sess session) (session, error) {
+// are not kept). The cost on every other request is one map lookup. The session is
+// marked as looked at only after the comparison, and its event if any, are done, so
+// a failure in between is looked at again, never lost.
+func (s *Service) observeConfig(sess session) {
 	if s.authn == nil || s.authn.Degraded() {
-		return sess, nil
+		return
 	}
-	if !s.markChecked(sess, s.authn.Generation()) {
-		return sess, nil
+	gen := s.authn.Generation()
+	if s.alreadyChecked(sess, gen) {
+		return
 	}
 	id := s.evaluate(identityOf(sess))
-	if id.FromClaims && !sess.FromClaims && sess.Method == auth.MethodOIDC {
-		sess.FromClaims = true
-		if err := sess.check(s.now(), s.idle, sess.absoluteLimit(s.absolute, s.claimsAbsolute)); err != nil {
-			return sess, err
-		}
-		if w != nil {
-			s.setSession(w, sess)
-		}
-	}
 	if s.o.Audit != nil {
 		s.o.Audit.ObserveRole(audit.RoleObservation{
 			Identity: id.ID, Name: id.Name, Method: id.Method, Role: id.EffectiveRole().String(), Auditor: id.IsAuditor(),
 			Cause: audit.CauseConfig, Session: time.Unix(sess.Issued, 0),
 		})
 	}
-	return sess, nil
+	s.markChecked(sess, gen)
+}
+
+// markObserved marks a session the sign-in has just compared with identities.json.
+func (s *Service) markObserved(sess session) {
+	if s.authn != nil && !s.authn.Degraded() {
+		s.markChecked(sess, s.authn.Generation())
+	}
+}
+
+// claimsLimited says claims contribute to the role or the auditor capability of the
+// session, so that it lives claims_absolute and not absolute. It is decided from what
+// the signed cookie carries (the identity, its groups and app roles) against the
+// CURRENT config, on every request, with the sign-in's rule: an identity entry that
+// grants the same role wins. Nothing in the cookie says how it was decided, so an old
+// cookie that is replayed, or requests that race, get the same answer.
+//
+// A session that carries no groups and no app roles is never claims-limited. While the
+// config does not load (roles are then capped at viewer, which would hide what claims
+// give) a session that carries any is limited: it fails safe. The answer is cached per
+// session, claims and config generation, for cost only: a new config is a new
+// generation, a degraded config is never cached, and an entry never outlives its
+// generation, so the cache cannot make a limit looser than the evaluation would.
+func (s *Service) claimsLimited(sess session) bool {
+	if sess.Method != auth.MethodOIDC || (len(sess.Groups) == 0 && len(sess.Roles) == 0) {
+		return false
+	}
+	if s.authn == nil || s.authn.Degraded() {
+		return true
+	}
+	gen := s.authn.Generation()
+	h := sha256.Sum256([]byte(strings.Join(sess.Groups, "\x00") + "\x01" + strings.Join(sess.Roles, "\x00")))
+	key := sessionKey(sess.ID, sess.Issued) + "|" + hex.EncodeToString(h[:8])
+	s.limitMu.Lock()
+	e, ok := s.limitCache[key]
+	s.limitMu.Unlock()
+	if ok && e.gen == gen {
+		return e.limited
+	}
+	limited := s.evaluate(identityOf(sess)).FromClaims
+	s.limitMu.Lock()
+	if s.limitCache == nil || len(s.limitCache) >= maxCheckedSessions {
+		s.limitCache = map[string]limitEntry{}
+	}
+	s.limitCache[key] = limitEntry{gen: gen, limited: limited}
+	s.limitMu.Unlock()
+	return limited
+}
+
+type limitEntry struct {
+	gen     any
+	limited bool
+}
+
+// limitOf is the absolute lifetime of sess under the current config.
+func (s *Service) limitOf(sess session) time.Duration {
+	return absoluteLimit(s.absolute, s.claimsAbsolute, s.claimsLimited(sess))
 }
 
 // roleOf evaluates the role of an identity from the current config.
