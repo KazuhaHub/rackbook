@@ -34,7 +34,7 @@ export default function Users() {
   const admin = !!meta.user?.canAdmin
   const tab = admin && /\/roles\/?$/.test(pathname) ? 'roles' : 'people'
   const header = (
-    <PageHeader icon={<UsersIcon />} title={U.title} description={tab === 'roles' ? t.auth.rolesEditor.description : U.description} />
+    <PageHeader icon={<UsersIcon />} title={U.title} description={tab === 'roles' ? t.auth.rolesEditor.description : undefined} />
   )
   if (!admin) {
     return (

@@ -158,6 +158,10 @@ func (s *server) rolesView(r *http.Request) map[string]any {
 		"writeMode": cfg.Write.Mode,
 		"readOnly":  s.o.ReadOnly,
 		"sso":       cfg.Auth.Mode == "oidc",
+		// authMode "none" means nobody signs in: whoever reaches the console is an admin here, as for every admin write
+		"authMode": s.o.Auth.Mode(),
+		// the v0.1 auth.editors list: read as editor entries, never changed here
+		"editors": nonNilStrings(cfg.Auth.Editors),
 		// the /infra administrators and auditors are set by the deployment (flags), not here
 		"infra": s.o.Infra != nil,
 	}

@@ -39,6 +39,10 @@ export type RolesView = {
   writeMode: 'push' | 'pr'
   readOnly: boolean
   sso: boolean
+  /** how the server authenticates; 'none' = nobody signs in */
+  authMode: string
+  /** the v0.1 auth.editors list: read as editors, never changed here */
+  editors: string[]
   /** /infra administrators and auditors exist (they are set by the deployment, not here) */
   infra: boolean
   you?: RolesCap

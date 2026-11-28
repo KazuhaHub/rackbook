@@ -320,15 +320,15 @@ JSON, `403 read_only` in `--read-only` mode (the preview works there; it writes 
 or, with `write.mode: pr`, a pull request. Design: `docs/design-audit.md`, section 4.
 
 - `GET /api/admin/roles` → `{version, loads, problem?, explicit, roles: {admin, editor, viewer}, auditors, file,
-  writeMode: "push"|"pr", readOnly, sso, infra, you}`. Each list is `[{value, kind, notes}]`: `kind` is
+  writeMode: "push"|"pr", readOnly, sso, authMode, editors, infra, you}`. Each list is `[{value, kind, notes}]`: `kind` is
   `identity`, `domain` (`*@domain`), `any` (`*`), `group`, `app-role`, `oidc`, `mcphub`, `oauth` or `local`
   (`""` for an entry that does not parse); `notes` are `{level: "error"|"warning", code, message, also?}`: the
-  codes are `empty`, `too_long`, `control_chars`, `invalid` (the parser's message), `wildcard_admin`, `no_sso`,
+  codes are `empty`, `too_long`, `control_chars`, `format_chars` (zero-width, bidi and other Unicode format characters, line and paragraph separators, C1 controls), `invalid` (the parser's message), `wildcard_admin`, `wildcard_editor` (for `*`, `*@domain`, `mcphub:*`, `oauth:<alias>:*`), `no_sso`,
   `unknown_issuer`, `no_mcphub`, `local_unavailable`, `also_in` (`also` names the other list), `duplicate`.
   `version` is a hash of the four lists (not of the file: an unrelated change of `rackbook.yml` leaves it as it
   was), `loads` is false when the latest `rackbook.yml` does not load (the lists are then those of the last file
   that did, `problem` says why, and nothing can be saved), `explicit` is false when there is no `auth.roles` block,
-  `sso` is true when `auth.mode` is `oidc`, `infra` says `/infra` is on (its administrators and auditors are set
+  `sso` is true when `auth.mode` is `oidc`, `authMode` is how the server authenticates (`none` = nobody signs in, so anyone who reaches the console is an admin), `editors` the legacy `auth.editors` list (read as editors, never changed here), `infra` says `/infra` is on (its administrators and auditors are set
   by deployment flags, never here), `you` is the caller's own `{role, auditor, roleFrom, auditorFrom, byIdentity,
   auditorByIdentity}` (`roleFrom` is a list of `identity`, `group` and `app-role`; `byIdentity` is the role that
   remains when only entries that name the caller count).
@@ -360,7 +360,7 @@ or, with `write.mode: pr`, a pull request. Design: `docs/design-audit.md`, secti
 | 422 | `self_lockout_claims` | the caller would be an admin only through `group:` or `app-role:` entries (an entry that names them is required: an exact identity, `*@domain`, `oidc:` or `*`) |
 | 422 | `no_roles_block` | `rackbook.yml` has no `auth.roles` |
 | 422 | `unsupported` | the layout of a list cannot be edited in place (a flow list over several lines, an alias, a non-string item); `message` names it |
-| 422 | `secret_detected` | as for records |
+| 422 | `secret_detected` | the secret scan blocks a value; also a `refusal` of the preview |
 | 403 | `read_only`, `forbidden`, `cross_site` | the gates above |
 | 503 | `config_error`, `repo_dirty`, `repo_diverged`, `pull_request_unavailable` | the write path, as for records |
 

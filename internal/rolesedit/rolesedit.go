@@ -29,6 +29,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/kazuhahub/rackbook/internal/config"
@@ -144,8 +145,10 @@ const (
 	NoteEmpty         = "empty"
 	NoteTooLong       = "too_long"
 	NoteControl       = "control_chars"
+	NoteFormat        = "format_chars"
 	NoteInvalid       = "invalid"
 	NoteWildcardAdmin = "wildcard_admin"
+	NoteWildcardEdit  = "wildcard_editor"
 	NoteNoSSO         = "no_sso"
 	NoteUnknownIssuer = "unknown_issuer"
 	NoteNoMCPHub      = "no_mcphub"
@@ -222,6 +225,13 @@ func (a Annotated) HasError() bool {
 	return false
 }
 
+// invisibleRune is a character an entry must not hold: Unicode format characters
+// (zero-width, bidi overrides and isolates, BOM), line and paragraph separators,
+// and the C1 controls (including U+0085). They make two entries that look alike differ.
+func invisibleRune(r rune) bool {
+	return unicode.In(r, unicode.Cf, unicode.Zl, unicode.Zp) || (r >= 0x80 && r <= 0x9f)
+}
+
 const (
 	maxEntryBytes = 256
 	maxListLen    = 1000
@@ -253,6 +263,8 @@ func Annotate(cfg *config.Config, l Lists) Annotated {
 				e.Notes = append(e.Notes, Note{Level: LevelError, Code: NoteTooLong, Message: fmt.Sprintf("an entry is at most %d bytes", maxEntryBytes)})
 			case strings.ContainsFunc(s, func(r rune) bool { return r < 0x20 || r == 0x7f }):
 				e.Notes = append(e.Notes, Note{Level: LevelError, Code: NoteControl, Message: "an entry has no control characters"})
+			case strings.ContainsFunc(s, invisibleRune):
+				e.Notes = append(e.Notes, Note{Level: LevelError, Code: NoteFormat, Message: "an entry has no invisible or direction-changing characters (zero-width, bidi, line and paragraph separators)"})
 			case err != nil:
 				e.Notes = append(e.Notes, Note{Level: LevelError, Code: NoteInvalid, Message: err.Error()})
 			default:
@@ -291,8 +303,14 @@ func nonNilEntries(e []Entry) []Entry {
 func kindNotes(cfg *config.Config, list string, info roles.EntryInfo) []Note {
 	var out []Note
 	w := func(code, msg string) { out = append(out, Note{Level: LevelWarning, Code: code, Message: msg}) }
-	if list == ListAdmin && (info.Kind == roles.KindAny || info.Kind == roles.KindDomain) {
+	// an entry that matches a whole class of people: *, *@domain, mcphub:* and oauth:<alias>:*
+	wide := info.Kind == roles.KindAny || info.Kind == roles.KindDomain ||
+		(info.Kind == roles.KindMCPHub && info.Value == "*") || (info.Kind == roles.KindOAuth && strings.HasSuffix(info.Value, ":*"))
+	switch {
+	case wide && list == ListAdmin:
 		w(NoteWildcardAdmin, "everyone this entry matches is an administrator")
+	case wide && list == ListEditor:
+		w(NoteWildcardEdit, "everyone this entry matches can edit records")
 	}
 	switch info.Kind {
 	case roles.KindGroup, roles.KindAppRole, roles.KindOIDC:
@@ -373,6 +391,7 @@ const (
 	CodeLastAdmin         = "last_admin"
 	CodeSelfLockout       = "self_lockout"
 	CodeSelfLockoutClaims = "self_lockout_claims"
+	CodeSecret            = "secret_detected"
 )
 
 // Refusal is a change that is not allowed, with the code the API answers by.
@@ -535,6 +554,13 @@ func Build(cfg *config.Config, req Request) (*Plan, error) {
 	p.Out = out
 	p.Diff = types.UnifiedDiff(p.File, string(src), string(out))
 	p.Subject = subject(cur, next, req.Message)
+	// the scan every write runs, so that a preview shows a refusal before Save does
+	if p.Refusal == nil {
+		sc := cfg.SecretScanner()
+		if bad, _ := secretscan.Split(secretscan.Introduced(sc.ScanYAML(p.File, src), sc.ScanYAML(p.File, out))); len(bad) > 0 {
+			p.Refusal = &Refusal{Code: CodeSecret, Message: (&secretscan.Error{Findings: bad}).Error()}
+		}
+	}
 	return p, nil
 }
 

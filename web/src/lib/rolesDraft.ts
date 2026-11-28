@@ -19,8 +19,13 @@ const foldASCII = (s: string) => s.replace(/[A-Z]/g, (c) => c.toLowerCase())
 // eslint-disable-next-line no-control-regex
 const control = /[\u0000-\u001f\u007f]/
 
+// Unicode format characters (zero-width, bidi overrides and isolates, BOM), line and paragraph separators and
+// the C1 controls: the server refuses an entry that holds one, so two entries that look alike never differ.
+const invisible = /[\p{Cf}\p{Zl}\p{Zp}\u0080-\u009f]/u
+
 /** The kind of an entry as the parser reads it; '' when it does not parse. */
 export function kindOf(entry: string): EntryKind | '' {
+  if (invisible.test(entry) || control.test(entry)) return ''
   const trimmed = entry.trim()
   if (/^app-role:/i.test(trimmed)) {
     const v = trimmed.slice('app-role:'.length).trim()
@@ -53,11 +58,12 @@ export function entryKey(entry: string): string {
   return /^app-role:/i.test(t) ? 'app-role:' + t.slice('app-role:'.length).trim() : foldASCII(t)
 }
 
-export type BuildError = 'empty' | 'spaces' | 'wildcard' | 'domain' | 'oauth' | 'control' | 'invalid'
+export type BuildError = 'empty' | 'spaces' | 'wildcard' | 'domain' | 'oauth' | 'control' | 'invisible' | 'invalid'
 
 /** The entry text for a kind and what the person typed, or what is wrong with it. */
 export function buildEntry(kind: EntryKind, input: string): { value: string } | { error: BuildError } {
   const v = input.trim()
+  if (invisible.test(v)) return { error: 'invisible' }
   let value: string
   switch (kind) {
     case 'any':

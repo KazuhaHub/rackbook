@@ -257,8 +257,8 @@ For `/infra` the auditors are a separate deploy flag, `--infra-auditors` (see be
 
 An administrator edits the lists in **Users → Roles**: the three role lists and `auth.auditors` as lists of
 entries, each with its kind (a person, `*@domain`, everyone, `group:`, `app-role:`, `oidc:`, `mcphub:`,
-`oauth:`) and a short explanation. Add an entry with a kind and a value (the form checks it as you type, with
-the parser `rackbook check` uses), remove it, or move it between the three roles. **Preview changes** shows the
+`oauth:`) and a short explanation. Add an entry with a kind and a value (the form gives quick hints as you type; the
+server's parser, the one `rackbook check` uses, decides on preview and save), remove it, or move it between the three roles. **Preview changes** shows the
 unified diff of `rackbook.yml`, what **you** would be afterwards (*Admin (by name)*), and warnings; **Save**
 then makes the change, with an optional commit message. The page is for administrators on a console session
 only: it is hidden for anyone else and the server answers `403` regardless (an auditor or an editor included).
@@ -294,9 +294,21 @@ only: it is hidden for anyone else and the server answers `403` regardless (an a
   then.
 - **Warnings.** An entry that can match nobody here (`group:`, `app-role:` or `oidc:` without single sign-on, an
   `oauth:` alias that is not in `auth.mcp.trusted_issuers`, `mcphub:` without an MCPHub issuer, `local:`), an
-  administrator wildcard (`*` or `*@domain` in `admin`), an entry also in another role (the highest wins), and, in
+  wide entries in `admin` or `editor` (`*`, `*@domain`, `mcphub:*`, `oauth:<alias>:*`), an entry also in another role (the highest wins), and, in
   the preview, an added identity or `*@domain` entry that nobody in `audit/identities.json` matches, which is
   usually a typo. Group and app role entries cannot be checked: their claims are not kept.
+- **Pull request mode.** Last-admin and self-lockout are checked for each pull request against the tracked
+  branch as it is when the request is made. Two role pull requests opened from the same version can together remove
+  every admin, or the last admin entry that names someone. Whoever merges role pull requests must look at them in
+  order (the second needs a fresh look after the first is merged). Rackbook does not list open pull requests, so the
+  preview cannot warn that another one is open.
+- **Preview shows every refusal.** That includes a value the secret scan blocks (`secret_detected`), and entries
+  with invisible or direction-changing Unicode characters (zero-width, bidi overrides, line separators) are invalid.
+- **`auth.mode: none`.** With no sign-in, whoever can reach the console is an administrator, here as for every other
+  admin write (data types, modules, tokens); the page shows a warning banner. Put a proxy or a real sign-in in front
+  before relying on roles.
+- **Legacy `auth.editors`.** The v0.1 list still makes its entries editors. The page lists them read-only
+  (`GET` returns `editors`): change them in `rackbook.yml` by hand.
 - **Tokens and grants never reach it.** The API token layer reaches only the record paths, and the handler also
   refuses a token, an OAuth or an MCPHub credential, so only a person's console session can edit roles.
 - **`/infra`.** Its administrators and auditors come from deployment flags (`--infra-admins`,

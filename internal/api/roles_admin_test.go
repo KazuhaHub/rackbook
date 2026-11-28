@@ -3,6 +3,7 @@ package api_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -685,6 +686,10 @@ func TestRolesWhoMayUseTheEditor(t *testing.T) {
 			if name != "nobody" && m["error"] != "forbidden" {
 				t.Errorf("%s %s %s: %v", name, c.method, c.path, m)
 			}
+			// a person with no role at all is stopped by the sign-in layer (the test session's no_role answer), before the handler
+			if name == "nobody" && strings.TrimSpace(fmt.Sprint(m["_body"])) != "no role" {
+				t.Errorf("%s %s %s: %v", name, c.method, c.path, m)
+			}
 		}
 	}
 	if sh(t, e.server, "rev-parse", "HEAD") != head {
@@ -761,5 +766,57 @@ func TestRolesWithoutARolesBlock(t *testing.T) {
 	e := newRolesEnv(t, rolesOpts{yml: "\n# no auth block\n"})
 	if code, m, _ := e.do(t, "GET", "/api/admin/roles", nil, as(adminU)); code != 403 {
 		t.Fatalf("%d %v", code, m)
+	}
+}
+
+// The three credentials the sign-in layer lets past as an administrator (the test bearer
+// plays the token layer and returns an admin-role identity of each method) are refused by
+// the handler itself: the same identity is an administrator everywhere else.
+func TestRolesHandlerRefusesCredentialIdentitiesThatAreAdmins(t *testing.T) {
+	t.Parallel()
+	e := newRolesEnv(t, rolesOpts{})
+	ver, l := e.read(t)
+	head := sh(t, e.server, "rev-parse", "HEAD")
+	for _, kind := range []string{"token", "oauth", "mcphub"} {
+		hdr := map[string]string{"Authorization": "Bearer " + kind}
+		code, m, _ := e.do(t, "GET", "/api/meta", nil, hdr)
+		if code != 200 || m["user"].(map[string]any)["canAdmin"] != true {
+			t.Fatalf("%s is not an administrator elsewhere: %d %v", kind, code, m)
+		}
+		for _, c := range []struct{ method, path string }{{"GET", "/api/admin/roles"}, {"POST", "/api/admin/roles/preview"}, {"POST", "/api/admin/roles"}} {
+			var b any
+			if c.method == "POST" {
+				b = rolesBody(ver, with(l, "viewer", "x@example.com"))
+			}
+			code, m, _ := e.do(t, c.method, c.path, b, hdr)
+			if code != 403 || m["error"] != "forbidden" || !strings.Contains(m["message"].(string), "signed in on the console") {
+				t.Errorf("%s %s %s: %d %v", kind, c.method, c.path, code, m)
+			}
+		}
+	}
+	if sh(t, e.server, "rev-parse", "HEAD") != head {
+		t.Fatal("a credential committed")
+	}
+}
+
+func TestRolesViewCarriesAuthModeAndLegacyEditors(t *testing.T) {
+	t.Parallel()
+	// no Auth option: auth mode none, whoever reaches the console is let in as the fixed editor
+	dir := testutil.CopyExample(t)
+	p := filepath.Join(dir, "rackbook.yml")
+	b, _ := os.ReadFile(p)
+	if err := os.WriteFile(p, append(b, []byte(rolesYML+"  editors: [old@example.com]\n")...), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f := newFixtureWithConfigSource(t, "Boss <boss@example.com>", dir)
+	code, m, _ := f.do(t, "GET", "/api/admin/roles", nil, nil)
+	if code != 200 || m["authMode"] != "none" || len(m["editors"].([]any)) != 1 || m["editors"].([]any)[0] != "old@example.com" {
+		t.Fatalf("%d %v", code, m)
+	}
+	// with sign-in the mode is not none, and an empty legacy list is an empty array
+	e := newRolesEnv(t, rolesOpts{})
+	_, m, _ = e.do(t, "GET", "/api/admin/roles", nil, as(adminU))
+	if m["authMode"] != "oidc" || len(m["editors"].([]any)) != 0 {
+		t.Fatalf("%v", m)
 	}
 }

@@ -513,6 +513,11 @@ eq('typed and cleared again is not a decision', unresolvedHidden(['/token'], {},
   eq('entryKey keeps the case of an app role', entryKey('App-Role: Rackbook.Admin'), 'app-role:Rackbook.Admin')
   eq('entryKey of two app roles apart by case', entryKey('app-role:a') === entryKey('app-role:A'), false)
 
+  for (const ch of ['\u202e', '\u202a', '\u2066', '\u2069', '\u200b', '\u200c', '\u200d', '\ufeff', '\u2028', '\u2029', '\u0085', '\u009f']) {
+    eq(`kindOf refuses U+${ch.charCodeAt(0).toString(16)}`, kindOf(`boss${ch}@example.com`), '')
+    eq(`build refuses U+${ch.charCodeAt(0).toString(16)}`, buildEntry('identity', `boss${ch}@example.com`), { error: 'invisible' })
+  }
+  eq('kindOf keeps ordinary non-ASCII', kindOf('李雷@example.com'), 'identity')
   eq('build identity', buildEntry('identity', ' a@b.org '), { value: 'a@b.org' })
   eq('build identity with a space', buildEntry('identity', 'a b'), { error: 'spaces' })
   eq('build identity with a wildcard', buildEntry('identity', '*@b.org'), { error: 'wildcard' })

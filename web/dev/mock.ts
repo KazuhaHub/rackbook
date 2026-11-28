@@ -10,7 +10,8 @@
 // Users → Roles (MOCK_LOGIN=1) edits an in-memory copy of auth.roles: MOCK_WRITE_MODE=pr makes a save open a
 // pull request, MOCK_ROLES_DEGRADED=1 pretends rackbook.yml does not load, MOCK_ROLES_CONFLICT=1 makes the first
 // save a version conflict (so does a commit message with the word "conflict"). Removing the last admin or the
-// caller's own admin entry is refused as the server refuses it.
+// caller's own admin entry is refused as the server refuses it. MOCK_AUTH_MODE=none shows the no-sign-in banner and
+// MOCK_LEGACY_EDITORS=a@x,b@x the read-only note about the legacy auth.editors list.
 import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
@@ -535,7 +536,8 @@ export function mockApi(root: string): Plugin {
     return {
       version: rolesVersion(roleLists), loads: !rolesDegraded, ...(rolesDegraded ? { problem: 'rackbook.yml: yaml: line 12: did not find expected key' } : {}),
       explicit: true, roles: { admin: a.admin, editor: a.editor, viewer: a.viewer }, auditors: a.auditors, file: 'rackbook.yml',
-      writeMode: writeModePR ? 'pr' : 'push', readOnly, sso: true, infra: true, you: rolesCap(roleLists),
+      writeMode: writeModePR ? 'pr' : 'push', readOnly, sso: true, infra: true,
+      authMode: process.env.MOCK_AUTH_MODE ?? 'oidc', editors: (process.env.MOCK_LEGACY_EDITORS ?? '').split(',').map((x) => x.trim()).filter(Boolean), you: rolesCap(roleLists),
     }
   }
   const yamlItem = (s: string) => (/^[*&!|>%@`'",[\]{}#]/.test(s) || /[:#]\s|^\s|\s$/.test(s) ? JSON.stringify(s) : s)

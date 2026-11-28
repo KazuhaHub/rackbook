@@ -622,6 +622,14 @@ cannot match, and counting only admins who can sign in, come with the accounts).
   where the cap is not wired and as a second line.
 - **Warnings** use `audit/identities.json` as the design suggested (an added identity or `*@domain` entry nobody has
   signed in as), plus what the deployment can match at all (single sign-on, trusted issuers, MCPHub). They are notes, never refusals.
+- **Pull request mode and concurrent role PRs.** The last-admin and self-lockout checks run for each pull request
+  against the tracked branch when it is opened. Two open role pull requests from one version can together remove every
+  admin; whoever merges them must look at them in order. There is no pull request listing in the store, so the
+  `open_role_pr` preview warning was not built. After a PR save the page resets its draft to the server's lists.
+- **Later hardening.** Entries with Unicode format, separator or C1 characters are invalid (`format_chars`); wide entries
+  are warned about in `editor` as well as `admin`, `mcphub:*` and `oauth:<alias>:*` included; the preview runs the secret
+  scan and shows it as a refusal; with `auth.mode: none` anyone who reaches the console edits roles, as for every admin
+  write, and the page says so; the legacy `auth.editors` list is returned and shown read-only.
 - **Infra.** `/infra` administrators and auditors are deploy flags; the editor shows a note and nothing else.
 - **Not done:** local accounts; counting only admins who can sign in for the last-admin rule (needs the accounts);
   a `role_changed` preview ("these people would change role": the claims of people who are not signed in are not

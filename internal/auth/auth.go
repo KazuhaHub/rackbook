@@ -346,6 +346,9 @@ func (a *Authenticator) Sources(id *Identity) (role, auditor []string) {
 // already looked at a person for one generation need not do it again.
 func (a *Authenticator) Generation() any { return a.Policy() }
 
+// Mode is how the server authenticates (ModeNone, ModeOIDC, and so on).
+func (a *Authenticator) Mode() string { return a.cfg.Mode }
+
 // Degraded reports that the latest rackbook.yml failed to load: roles then come
 // from the last good config, capped at viewer.
 func (a *Authenticator) Degraded() bool { return a.cfg.Degraded != nil && a.cfg.Degraded() }

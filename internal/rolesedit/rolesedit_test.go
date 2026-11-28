@@ -93,7 +93,7 @@ func TestAnnotateNotesWhatTheDeploymentCannotMatch(t *testing.T) {
 		"admin/BOSS@example.com":     {"warning:duplicate", "warning:also_in"},
 		"admin/boss@example.com":     {"warning:also_in"},
 		"editor/mcphub:alice":        {"warning:no_mcphub"},
-		"editor/oauth:corp:*":        {"warning:unknown_issuer"},
+		"editor/oauth:corp:*":        {"warning:wildcard_editor", "warning:unknown_issuer"},
 		"editor/local:alice":         {"warning:local_unavailable"},
 		"editor/app-role:A":          {"warning:no_sso"},
 		"viewer/":                    {"error:empty"},
@@ -261,5 +261,81 @@ func TestApplyWritesOnlyWhenAllowedAndChanged(t *testing.T) {
 	var ve *VersionError
 	if _, err := Apply(fresh, Request{Version: ver, Lists: cur}); !errors.As(err, &ve) {
 		t.Fatal("the old version must not apply on the new file:", err)
+	}
+}
+
+func TestWildcardsInAdminAndEditorListsAreWarnedAbout(t *testing.T) {
+	t.Parallel()
+	cfg := load(t, block)
+	a := Annotate(cfg, Lists{
+		Admin:  []string{"*", "*@example.com", "mcphub:*", "oauth:corp:*", "mcphub:alice", "oauth:corp:bob"},
+		Editor: []string{"*", "*@example.com", "mcphub:*", "oauth:corp:*", "mcphub:alice"},
+		Viewer: []string{"*", "mcphub:*"},
+	})
+	has := func(list, value, code string) bool {
+		for _, n := range notes(a, list, value) {
+			if n == "warning:"+code {
+				return true
+			}
+		}
+		return false
+	}
+	for _, v := range []string{"*", "*@example.com", "mcphub:*", "oauth:corp:*"} {
+		if !has("admin", v, NoteWildcardAdmin) || !has("editor", v, NoteWildcardEdit) {
+			t.Errorf("%s: %v %v", v, notes(a, "admin", v), notes(a, "editor", v))
+		}
+		if has("viewer", v, NoteWildcardAdmin) || has("viewer", v, NoteWildcardEdit) {
+			t.Errorf("a viewer wildcard is not warned about: %s", v)
+		}
+	}
+	for _, v := range []string{"mcphub:alice", "oauth:corp:bob"} {
+		if has("admin", v, NoteWildcardAdmin) || has("editor", v, NoteWildcardEdit) {
+			t.Errorf("%s names one person", v)
+		}
+	}
+}
+
+func TestInvisibleAndDirectionCharactersAreRefused(t *testing.T) {
+	t.Parallel()
+	cfg := load(t, block)
+	for name, ch := range map[string]string{
+		"RLO": "\u202e", "LRE": "\u202a", "PDF": "\u202c", "isolate": "\u2066", "PDI": "\u2069", "ZWSP": "\u200b", "ZWNJ": "\u200c", "ZWJ": "\u200d",
+		"BOM": "\ufeff", "LS": "\u2028", "PS": "\u2029", "NEL": "\u0085", "C1": "\u009f",
+	} {
+		v := "boss" + ch + "@example.com"
+		a := Annotate(cfg, Lists{Admin: []string{v}})
+		if got := notes(a, "admin", v); !slices.Equal(got, []string{"error:format_chars"}) {
+			t.Errorf("%s: %v", name, got)
+		}
+	}
+	// ordinary non-ASCII is fine, and the plain control characters keep their own note
+	a := Annotate(cfg, Lists{Admin: []string{"李雷@example.com", "a\tb@example.com"}})
+	if got := notes(a, "admin", "李雷@example.com"); len(got) != 0 {
+		t.Errorf("%v", got)
+	}
+	if got := notes(a, "admin", "a\tb@example.com"); !slices.Equal(got, []string{"error:control_chars"}) {
+		t.Errorf("%v", got)
+	}
+}
+
+func TestPreviewRefusesASecretLikeEntry(t *testing.T) {
+	t.Parallel()
+	cfg := load(t, block)
+	cur, _ := Current(cfg)
+	secret := "ghp_" + strings.Repeat("aB3dE6gH9j", 3) + "abcdef"
+	p, err := Build(cfg, Request{Version: Version(cur), Lists: Lists{Admin: []string{"boss@example.com"}, Viewer: []string{"guest@example.com", secret}, Auditors: []string{"audie@example.com"}}})
+	if err != nil || p.Refusal == nil || p.Refusal.Code != CodeSecret {
+		t.Fatalf("%v %+v", err, p)
+	}
+	if strings.Contains(p.Refusal.Message, secret) {
+		t.Fatal("the refusal repeats the value")
+	}
+	// Apply refuses it too and writes nothing
+	before, _ := os.ReadFile(cfg.Path)
+	if _, err := Apply(cfg, Request{Version: Version(cur), Lists: Lists{Admin: []string{"boss@example.com"}, Viewer: []string{secret}}}); err == nil {
+		t.Fatal("applied")
+	}
+	if after, _ := os.ReadFile(cfg.Path); string(after) != string(before) {
+		t.Fatal("wrote the file")
 	}
 }

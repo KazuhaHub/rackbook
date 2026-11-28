@@ -305,7 +305,9 @@ function Editor({ view, refetch }: { view: RolesView; refetch: () => Promise<unk
       setMessage('')
       if (r.pullRequest) {
         // nothing changes until the pull request is merged: the draft stays as the person left it
+        // and so the draft goes back to the server's lists: saving again would open a second pull request
         setOpened({ url: r.pullRequestUrl ?? '' })
+        setDraft(base)
         toast.success(R.savedPR)
         return
       }
@@ -350,6 +352,29 @@ function Editor({ view, refetch }: { view: RolesView; refetch: () => Promise<unk
         <Alert>
           <Info />
           <AlertDescription>{R.readOnly}</AlertDescription>
+        </Alert>
+      )}
+      {view.authMode === 'none' && (
+        <Alert variant="destructive">
+          <TriangleAlert />
+          <AlertTitle>{R.authNoneTitle}</AlertTitle>
+          <AlertDescription>{R.authNoneBody}</AlertDescription>
+        </Alert>
+      )}
+      {view.editors.length > 0 && (
+        <Alert>
+          <Info />
+          <AlertTitle>{R.legacyTitle}</AlertTitle>
+          <AlertDescription>
+            {R.legacyBody}
+            <ul className="mt-1 space-y-0.5">
+              {view.editors.map((e) => (
+                <li key={e} className="font-mono text-xs break-all">
+                  {e}
+                </li>
+              ))}
+            </ul>
+          </AlertDescription>
         </Alert>
       )}
       {conflict && (
