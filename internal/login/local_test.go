@@ -289,11 +289,26 @@ func TestLocalSessionStopsWithTheAccount(t *testing.T) {
 	if st, _ := b.meta(); st != 200 {
 		t.Errorf("a new session after the renewal: %d", st)
 	}
-	// the old cookie is cleared by the answer, not kept
+	// the old cookie is cleared by the answer, not kept, and every refusal looks the same to the client
 	old := e.browser()
 	old.setCookie(SessionCookie, cookies["bob"])
-	if r := old.get("/api/meta"); r.StatusCode != 401 {
+	r := old.get("/api/meta")
+	if r.StatusCode != 401 {
 		t.Fatalf("%d", r.StatusCode)
+	}
+	cleared := false
+	for _, c := range r.Cookies() {
+		if c.Name == SessionCookie && c.MaxAge < 0 && c.Value == "" {
+			cleared = true
+		}
+	}
+	if !cleared {
+		t.Fatal("the answer does not clear the cookie of an account that was removed")
+	}
+	forged := e.browser()
+	forged.setCookie(SessionCookie, cookies["erin"][:len(cookies["erin"])-4]+"AAAA")
+	if r2 := forged.get("/api/meta"); r2.StatusCode != r.StatusCode || r2.Body != r.Body {
+		t.Fatalf("a forged cookie is answered differently from a revoked one: %d %s / %d %s", r2.StatusCode, r2.Body, r.StatusCode, r.Body)
 	}
 }
 
@@ -335,7 +350,7 @@ func TestOIDCIdentityNamedLikeALocalAccountIsRefusedAndMatchesNothing(t *testing
 
 // the sign-in is not here: no route issues a session of a local account
 func TestNoRouteIssuesALocalSession(t *testing.T) {
-	e := newEnv(t, options{local: true, roles: localRoles, passkeys: true})
+	e := newEnv(t, options{local: true, oauth: true, roles: localRoles, passkeys: true})
 	e.addLocal("alice", accounts.StateActive)
 	e.addLocal("bob", accounts.StateActive)
 	pats := api.RoutePatterns(e.apiOpts)
@@ -381,8 +396,9 @@ func TestNoRouteIssuesALocalSession(t *testing.T) {
 					if c.Name != SessionCookie || c.MaxAge < 0 || c.Value == "" {
 						continue
 					}
-					if s, err := e.svc.codec.open(c.Value); err == nil && s.Method == auth.MethodLocal {
-						t.Errorf("%s %s (as %s) set a local session for %s", method, path, who, s.ID)
+					// whatever a route sets, valid or not: a payload that says local is a local session issued
+					if m := cookieMethod(c.Value); m == auth.MethodLocal {
+						t.Errorf("%s %s (as %s) set a session cookie with a local payload", method, path, who)
 					}
 				}
 			}
@@ -568,4 +584,18 @@ func TestRoleEditorWithLocalAdmins(t *testing.T) {
 	if r := e.localBrowser("bob").get("/api/admin/roles"); r.StatusCode != 403 {
 		t.Fatalf("%d", r.StatusCode)
 	}
+}
+
+// cookieMethod is the method a session cookie's payload claims, whether or not its signature holds.
+func cookieMethod(v string) string {
+	p, _, _ := strings.Cut(v, ".")
+	raw, err := base64.RawURLEncoding.DecodeString(p)
+	if err != nil {
+		return ""
+	}
+	var h struct {
+		M string `json:"m"`
+	}
+	_ = json.Unmarshal(raw, &h)
+	return h.M
 }

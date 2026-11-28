@@ -5,6 +5,7 @@ import (
 	"crypto/hkdf"
 	"crypto/hmac"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -180,6 +181,10 @@ func (c codec) open(v string) (session, error) {
 	// Which key checks the signature depends on the method the payload claims, and nothing in it is
 	// believed before the signature is: a payload that says "local" is checked with its account's key
 	// alone, one that says anything else with the session key alone, so neither can borrow the other.
+	// For a local payload the key is derived from the claimed sid and the account's current secret, so
+	// the MAC is checked first and a wrong or old sid simply gives a bad MAC. A bad MAC, an unknown or
+	// not-live account and a sid that is no longer the account's all give the same error, so the client
+	// learns nothing about which it was.
 	var head struct {
 		Method string `json:"m"`
 		ID     string `json:"id"`
@@ -194,14 +199,12 @@ func (c codec) open(v string) (session, error) {
 			return session{}, errBadCookie
 		}
 		sid, secret, live := c.local.LiveSession(name)
-		if !live || sid != head.Sid {
-			// verified below only for a session that still has a live account with this id; a forgery
-			// and a session of an account that was reset, disabled or removed are told apart by nobody
-			return session{}, errRevoked
+		if !live {
+			return session{}, errBadCookie
 		}
-		key, err := c.localKey(secret, sid)
+		key, err := c.localKey(secret, head.Sid)
 		clear(secret)
-		if err != nil || !hmac.Equal(want, localMAC(key, p)) {
+		if err != nil || !hmac.Equal(want, localMAC(key, p)) || subtle.ConstantTimeCompare([]byte(sid), []byte(head.Sid)) != 1 {
 			return session{}, errBadCookie
 		}
 	} else if !hmac.Equal(want, c.mac(p)) {

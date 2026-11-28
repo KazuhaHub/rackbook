@@ -158,3 +158,31 @@ func (stubSessions) Identify(http.ResponseWriter, *http.Request) (*Identity, err
 func (stubSessions) Public(*http.Request) bool                            { return false }
 func (stubSessions) Reject(http.ResponseWriter, *http.Request, error)     {}
 func (stubSessions) NoRole(http.ResponseWriter, *http.Request, *Identity) {}
+
+func TestSourcesOfALocalAccountFollowTheLiveGate(t *testing.T) {
+	t.Parallel()
+	store := &fakeLocal{active: map[string]bool{"alice": true, "carol": true}}
+	a := localAuth(t, store)
+	id := &Identity{ID: "local:alice", Method: MethodLocal}
+	if r, _ := a.Sources(id); len(r) != 1 || r[0] != roles.SourceIdentity {
+		t.Fatalf("%v", r)
+	}
+	if r, aud := a.Sources(&Identity{ID: "local:carol", Method: MethodLocal}); len(aud) != 1 || len(r) != 1 {
+		t.Fatalf("%v %v", r, aud)
+	}
+	store.set("alice", false)
+	store.set("carol", false)
+	for _, n := range []string{"local:alice", "local:carol"} {
+		if r, aud := a.Sources(&Identity{ID: n, Method: MethodLocal}); len(r) != 0 || len(aud) != 0 {
+			t.Errorf("%s: %v %v", n, r, aud)
+		}
+	}
+	// a look-alike of another method shows none either, and the role editor's view agrees
+	if r, aud := a.Sources(&Identity{ID: "local:alice", Method: MethodOIDC}); len(r) != 0 || len(aud) != 0 {
+		t.Errorf("%v %v", r, aud)
+	}
+	c, _ := a.CapabilitiesUnder(&config.Config{}, &roles.Spec{Admin: []string{"local:alice"}}, nil, roles.Subject{ID: "local:alice", Method: MethodLocal})
+	if len(c.RoleFrom) != 0 {
+		t.Errorf("%v", c.RoleFrom)
+	}
+}

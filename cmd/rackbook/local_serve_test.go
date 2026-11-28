@@ -54,7 +54,7 @@ func TestServeLoginFlagsAreChecked(t *testing.T) {
 			"inside --state-dir"},
 		"the state key is the session key": {fx.state, []string{"--state-key-file", fx.keyFile, "--session-key-file", session},
 			"must differ from the session key"},
-		"a state key with another auth mode": {fx.state, nil, "--state-key-file is for local accounts"},
+		"a state key with another auth mode": {fx.state, nil, "are for local accounts"},
 	} {
 		args := serveArgs(t, c.state, c.args...)
 		if c.state == "" {
@@ -137,5 +137,26 @@ func TestServeOpensTheAccountStoreWithTheRightKey(t *testing.T) {
 	// a nil audit log is refused: the changes of the store are audited before they are made
 	if _, err := openAccounts(fx.state, key, nil, pin, nil); err == nil {
 		t.Fatal("opened without an audit log")
+	}
+}
+
+// The state key in the environment is for --auth login alone, and is removed from the process environment once
+// it is read, so that git and anything else the server starts does not inherit it.
+func TestStateKeyEnvironmentVariableIsRefusedElsewhereAndUnsetOnceRead(t *testing.T) {
+	fx := newAccountsFixture(t)
+	t.Setenv("RACKBOOK_STATE_KEY", fx.key.Base64())
+	args := []string{"serve", "--listen", "127.0.0.1:0", "--config", filepath.Join(testutil.CopyExample(t), "rackbook.yml"), "--no-git", "--auth", "none"}
+	if _, err := run(t, args...); err == nil || !strings.Contains(err.Error(), "RACKBOOK_STATE_KEY are for local accounts") {
+		t.Fatalf("%v", err)
+	}
+	if os.Getenv("RACKBOOK_STATE_KEY") == "" {
+		t.Fatal("a refused start must not have read the key")
+	}
+	key, err := loadStateKey(newServe().Flags(), fx.state)
+	if err != nil || key == nil || !key.Equal(fx.key) {
+		t.Fatalf("%v", err)
+	}
+	if v, ok := os.LookupEnv("RACKBOOK_STATE_KEY"); ok {
+		t.Fatalf("the state key is still in the environment (%d bytes)", len(v))
 	}
 }

@@ -290,7 +290,7 @@ func (a *Authenticator) CapabilitiesUnder(cur *config.Config, spec *roles.Spec, 
 	var c Capabilities
 	c.Role, c.Auditor = eval(s)
 	c.ByIdentity, c.AuditorByIdent = eval(s.WithoutClaims())
-	c.RoleFrom, c.AuditorFrom = p.Sources(s)
+	c.RoleFrom, c.AuditorFrom = a.policySources(p, s)
 	return c, nil
 }
 
@@ -366,6 +366,15 @@ func (a *Authenticator) policyRole(p *roles.Policy, s roles.Subject) (roles.Role
 	return p.Evaluate(s), p.IsAuditor(s)
 }
 
+// policySources is p.Sources(s) behind the same live gate as policyRole: a local identity that has no
+// role because its account is not live shows no source either.
+func (a *Authenticator) policySources(p *roles.Policy, s roles.Subject) (role, auditor []string) {
+	if r, aud := a.policyRole(p, s); r == roles.None && !aud && (strings.HasPrefix(roles.FoldASCII(s.ID), roles.LocalPrefix) || s.Method == MethodLocal) {
+		return nil, nil
+	}
+	return p.Sources(s)
+}
+
 // fromClaims says the role or the auditor capability of s, as evaluated, depends
 // on its groups or app roles: evaluated by identity alone, the role would be lower
 // or the capability would be absent. A role an identity entry also grants is not
@@ -382,7 +391,7 @@ func (a *Authenticator) fromClaims(s roles.Subject, role roles.Role, auditor boo
 // SourceAppRole) grant id its role and its auditor capability now. The account
 // page shows it as "Role from".
 func (a *Authenticator) Sources(id *Identity) (role, auditor []string) {
-	return a.Policy().Sources(id.Subject())
+	return a.policySources(a.Policy(), id.Subject())
 }
 
 // Generation identifies the role policy now in force. It changes when a config

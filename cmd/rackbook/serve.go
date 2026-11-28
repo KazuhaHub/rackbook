@@ -173,8 +173,8 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		if stateKey, err = loadStateKey(f, stateDir); err != nil {
 			return err
 		}
-	} else if f.Changed("state-key-file") {
-		return errors.New("--state-key-file is for local accounts, which need --auth login")
+	} else if f.Changed("state-key-file") || strings.TrimSpace(os.Getenv("RACKBOOK_STATE_KEY")) != "" {
+		return errors.New("--state-key-file and RACKBOOK_STATE_KEY are for local accounts, which need --auth login")
 	}
 	if cfg.Auth.MCP.BuiltinIssuer.Enabled && (stateDir == "" || baseURL == "") {
 		return errors.New("auth.mcp.builtin_issuer needs --state-dir (it keeps the grants and the signing key there) and --base-url (the public URL, which is the issuer of its tokens)")
@@ -259,7 +259,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	}
 	if mode == auth.ModeOIDC {
 		caFile, _ := f.GetString("oidc-ca-file")
-		if loginSvc, err = newLogin(cfg, store, prefStore, baseURL, caFile, stateKey != nil, local, f, readOnly, auditLog, infra, logger); err != nil {
+		if loginSvc, err = newLogin(cfg, store, prefStore, baseURL, caFile, stateKey, local, f, readOnly, auditLog, infra, logger); err != nil {
 			return err
 		}
 		acfg.Sessions = loginSvc
@@ -449,6 +449,7 @@ func loadStateKey(f *pflag.FlagSet, stateDir string) (*statekey.Key, error) {
 		}
 	}
 	key, err := statekey.LoadKey("RACKBOOK_STATE_KEY", env, file)
+	os.Unsetenv("RACKBOOK_STATE_KEY") // read once; it is not passed on to git or anything else the server starts
 	if err != nil {
 		return nil, err
 	}
@@ -492,16 +493,25 @@ func openAccounts(stateDir string, key *statekey.Key, log *audit.Log, pin *accou
 // newLogin builds the built-in login for --auth login: the OIDC client secret
 // comes only from RACKBOOK_OIDC_CLIENT_SECRET (and is needed only when single sign-on is configured),
 // the session key from RACKBOOK_SESSION_KEY or --session-key-file.
-func newLogin(cfg *config.Config, store *gitstore.Store, prefStore *prefs.Store, baseURL, caFile string, haveStateKey bool, local login.LocalSessions, f *pflag.FlagSet, readOnly bool, auditLog *audit.Log, infra *api.InfraOptions, logger *slog.Logger) (*login.Service, error) {
+func newLogin(cfg *config.Config, store *gitstore.Store, prefStore *prefs.Store, baseURL, caFile string, stateKey *statekey.Key, local login.LocalSessions, f *pflag.FlagSet, readOnly bool, auditLog *audit.Log, infra *api.InfraOptions, logger *slog.Logger) (*login.Service, error) {
 	keyFile, _ := f.GetString("session-key-file")
 	key, err := login.LoadSessionKey(os.Getenv("RACKBOOK_SESSION_KEY"), keyFile)
 	if err != nil {
 		return nil, err
 	}
-	if !haveStateKey && !ssoConfigured(cfg) {
+	// the session key is read here for good: the state key must differ from it (loadStateKey checked it early
+	// when the session key was given then; this is the check that cannot be missed)
+	if stateKey != nil {
+		if err := stateKey.DistinctFrom(key); err != nil {
+			return nil, err
+		}
+	}
+	os.Unsetenv("RACKBOOK_SESSION_KEY") // read; child processes (git) and /proc/<pid>/environ readers need not see it
+	if stateKey == nil && !ssoConfigured(cfg) {
 		return nil, errors.New("--auth login needs single sign-on (auth.oidc in rackbook.yml) or local accounts (--state-dir with the state key in RACKBOOK_STATE_KEY or --state-key-file): neither is available")
 	}
 	secret := os.Getenv("RACKBOOK_OIDC_CLIENT_SECRET")
+	os.Unsetenv("RACKBOOK_OIDC_CLIENT_SECRET")
 	if ssoConfigured(cfg) && secret == "" {
 		return nil, errors.New("--auth login needs the client secret in RACKBOOK_OIDC_CLIENT_SECRET when auth.oidc is configured (it is never read from rackbook.yml)")
 	}

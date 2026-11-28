@@ -30,6 +30,7 @@ import (
 	"github.com/kazuhahub/rackbook/internal/gitstore"
 	"github.com/kazuhahub/rackbook/internal/login/testidp"
 	"github.com/kazuhahub/rackbook/internal/mcpauth"
+	"github.com/kazuhahub/rackbook/internal/oauthserver"
 	"github.com/kazuhahub/rackbook/internal/prefs"
 	"github.com/kazuhahub/rackbook/internal/statekey"
 	"github.com/kazuhahub/rackbook/internal/testutil"
@@ -92,6 +93,7 @@ type options struct {
 	passkeys bool // auth.passkeys on, and the passkey code built (the seam of Options.ssoPasskeys)
 	// passkeysIgnored is auth.passkeys on as a deployment writes it: ignored under OIDC.
 	passkeysIgnored bool
+	oauth           bool // the built-in authorization server (auth.mcp.builtin_issuer), so that its routes are mounted
 	local           bool // local accounts: a state directory, a state key and an open account store
 	remote          bool // data repo with a bare origin
 	nogit           bool
@@ -187,6 +189,9 @@ func newEnv(t *testing.T, o options) *env {
 		t.Fatal(err)
 	}
 	block := "\nauth:\n  mode: oidc\n  oidc:\n    issuer: " + e.idpS.URL + "\n    client_id: " + clientID + "\n    allowed_tenants: " + tenants + "\n" + o.oidc + "  passkeys: " + pk + "\n  session:\n    idle: 12h\n    absolute: 7d\n" + o.session + roles + o.cfgExtras
+	if o.oauth {
+		block += "  mcp:\n    resource: " + e.base + "/mcp\n    builtin_issuer:\n      enabled: true\n"
+	}
 	if err := os.WriteFile(cfgPath, append(b, []byte(block)...), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -258,9 +263,19 @@ func newEnv(t *testing.T, o options) *env {
 	e.svc.Bind(authn)
 	reg := &tokens.Registry{Store: st}
 	// API tokens and OAuth access tokens: the same bearer authentication the server wires
-	authn.SetBearer(&mcpauth.Resource{Config: st.Config, Auth: authn, Verifier: &oauth.Verifier{}, Tokens: reg, Limiter: &tokens.Limiter{}})
+	res := &mcpauth.Resource{Config: st.Config, Auth: authn, Verifier: &oauth.Verifier{}, Tokens: reg, Limiter: &tokens.Limiter{}}
+	var oauthSrv api.OAuthServer
+	if o.oauth {
+		srv, err := oauthserver.New(oauthserver.Options{Issuer: e.base, Resource: e.base + "/mcp", StateDir: t.TempDir(), Config: st.Config, Auth: authn, Now: e.clk.Now,
+			Getenv: func(string) string { return "" }, Prefs: ps})
+		if err != nil {
+			t.Fatal(err)
+		}
+		res.Builtin, oauthSrv = srv, srv
+	}
+	authn.SetBearer(res)
 	web := fstest.MapFS{"index.html": {Data: []byte("<!doctype html><title>console</title>")}, "favicon.svg": {Data: []byte("<svg xmlns=\"http://www.w3.org/2000/svg\"/>")}}
-	e.apiOpts = api.Options{Store: st, Auth: authn, BaseURL: e.base, Web: web, Logger: logger, Login: e.svc, Prefs: ps, Audit: al, Tokens: reg}
+	e.apiOpts = api.Options{Store: st, Auth: authn, BaseURL: e.base, Web: web, Logger: logger, Login: e.svc, Prefs: ps, Audit: al, Tokens: reg, OAuth: oauthSrv}
 	if e.local != nil {
 		e.apiOpts.Local = testRoster{e.local}
 	}
