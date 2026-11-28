@@ -4,6 +4,9 @@
 // MOCK_PROBLEMS=1 seeds records that fail validation. MOCK_ROLE=admin|editor|viewer|auditor|auditor-editor
 // picks whose view the demo shows (auditor = viewer plus the auditor capability, auditor-editor = editor plus it);
 // MOCK_INFRA_AUDITOR=1 makes the user an infra auditor (read-only /infra, no secrets) instead of an infra admin.
+// MOCK_LOGIN=1 with MOCK_INFRA_VIA=group|app-role makes the account page show /infra access (administrator, or auditor
+// with MOCK_INFRA_AUDITOR=1) through a group or an app role, with the note on when it lapses; MOCK_INFRA_CLAIMS=1 shows the
+// group and app role the /infra flags name in the note of the Users → Roles tab.
 // MOCK_LOGIN=1 with MOCK_ROLE_FROM=identity|group|app-role (comma-separated) shows where the role comes from on
 // the account page; a role without "identity" is read from claims, so the page shows the claims_absolute note and
 // creating an API token is refused (creator_role_from_claims). The activity feed carries role_changed events.
@@ -312,6 +315,8 @@ export function mockApi(root: string): Plugin {
     { name: 'ci-bot', prefix: 'rbk_Ab12Cd34', scope: 'read', createdBy: 'boss@example.com', created: new Date(Date.now() - 12 * 86400000).toISOString(), status: 'active', creatorRole: 'admin', warnings: [], lastUsed: new Date(Date.now() - 3600000).toISOString() },
   ]
   const infraAuditor = process.env.MOCK_INFRA_AUDITOR === '1'
+  const infraVia = ({ group: 'group', 'app-role': 'app_role' } as Record<string, string>)[process.env.MOCK_INFRA_VIA ?? '']
+  const infraClaims = process.env.MOCK_INFRA_CLAIMS === '1'
   const roleOf = mockRole.startsWith('auditor') ? (mockRole === 'auditor-editor' ? 'editor' : 'viewer') : mockRole
   const user = readOnly
     ? { id: 'viewer@example.com', email: 'viewer@example.com', name: 'viewer', role: 'viewer', authMethod: 'none', canEdit: false, canAdmin: false, canInfra: false }
@@ -537,6 +542,7 @@ export function mockApi(root: string): Plugin {
       version: rolesVersion(roleLists), loads: !rolesDegraded, ...(rolesDegraded ? { problem: 'rackbook.yml: yaml: line 12: did not find expected key' } : {}),
       explicit: true, roles: { admin: a.admin, editor: a.editor, viewer: a.viewer }, auditors: a.auditors, file: 'rackbook.yml',
       writeMode: writeModePR ? 'pr' : 'push', readOnly, sso: true, infra: true,
+      ...(infraClaims ? { infraClaims: { admins: 'app-role:Rackbook.InfraAdmin', auditors: `group:${mockGroup}` } } : {}),
       authMode: process.env.MOCK_AUTH_MODE ?? 'oidc', editors: (process.env.MOCK_LEGACY_EDITORS ?? '').split(',').map((x) => x.trim()).filter(Boolean), you: rolesCap(roleLists),
     }
   }
@@ -672,6 +678,9 @@ export function mockApi(root: string): Plugin {
         ...(userLocale ? { locale: userLocale } : {}), passkeysEnabled: false, canEnrol: false, passkeys: [],
         roleFrom, auditorFrom: 'auditor' in user ? ['group'] : [],
         ...(fromClaims ? { claimsAbsolute: 86400, sessionEnds: new Date(Date.now() + 20 * 3600000).toISOString() } : {}),
+        ...(infraVia && user.canInfra
+          ? { [infraAuditor ? 'infraAuditorFrom' : 'infraFrom']: infraVia, infraClaimsAbsolute: 86400, infraEnds: new Date(Date.now() + 20 * 3600000).toISOString() }
+          : {}),
       }), true
     }
     if (login && head === 'account' && cname === 'passkeys' && method === 'DELETE') {

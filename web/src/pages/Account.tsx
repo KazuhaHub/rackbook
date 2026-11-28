@@ -130,6 +130,23 @@ export default function Account() {
               </Field>
             )}
             {acc && kinds(acc.auditorFrom) && <Field label={A.auditorFrom}>{kinds(acc.auditorFrom)}</Field>}
+            {acc && (acc.infraFrom || acc.infraAuditorFrom) && (
+              <Field label={A.infraFrom}>
+                <span data-testid="infra-from">
+                  {[
+                    acc.infraFrom ? A.infraFromKinds[acc.infraFrom]?.admin : '',
+                    acc.infraAuditorFrom ? A.infraFromKinds[acc.infraAuditorFrom]?.auditor : '',
+                  ]
+                    .filter(Boolean)
+                    .join(t.common.listSep)}
+                </span>
+                {acc.infraClaimsAbsolute && acc.infraEnds ? (
+                  <p className="mt-1.5 text-xs text-muted-foreground">
+                    {A.infraAccessNote(Math.max(1, Math.round(acc.infraClaimsAbsolute / 3600)), new Date(acc.infraEnds).toLocaleString())}
+                  </p>
+                ) : null}
+              </Field>
+            )}
             <Field label={A.method}>{t.auth.method[method] ?? method}</Field>
           </dl>
         </CardContent>

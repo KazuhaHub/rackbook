@@ -25,6 +25,12 @@ export type Account = {
   /** the role was read from claims at sign-in: seconds this session lasts at most, and when it ends */
   claimsAbsolute?: number
   sessionEnds?: string
+  /** /infra through the group or app role of --infra-admins / --infra-auditors: group or app_role ('' or absent = not that way) */
+  infraFrom?: string
+  infraAuditorFrom?: string
+  /** when that access lapses (ISO time) and how many seconds after sign-in it lasts */
+  infraEnds?: string
+  infraClaimsAbsolute?: number
 }
 
 export type ManagedUser = {

@@ -85,6 +85,12 @@ const messages = {
       auditorFrom: '稽核員來自',
       roleFromKinds: { identity: '你的帳號（名稱或網域）', group: '群組', 'app-role': '應用程式角色' } as Record<string, string>,
       claimsNote: (hours: number) => `這個角色是登入時從身分提供者提供的群組或應用程式角色讀到的。在那邊被移除後，下次登入就會生效，最遲在你登入後 ${hours} 小時，這次工作階段結束時生效（auth.session.claims_absolute）。你授權給 MCP 用戶端的存取也一樣：核准後過了這段時間，就只依你的帳號名稱對應的角色運作。`,
+      infraFrom: '基礎設施存取',
+      infraFromKinds: {
+        group: { admin: '管理員，透過群組', auditor: '稽核員（唯讀），透過群組' },
+        app_role: { admin: '管理員，透過應用程式角色', auditor: '稽核員（唯讀），透過應用程式角色' },
+      } as Record<string, Record<string, string>>,
+      infraAccessNote: (hours: number, ends: string) => `你對 /infra 的這項存取，是登入時從身分提供者提供的群組或應用程式角色讀到的，從那時起有效 ${hours} 小時（auth.session.claims_absolute），到 ${ends} 為止，即使你的其餘工作階段仍會繼續。在那邊被移除後，下次登入就會生效，最遲到那個時間生效。寫入還需要最近登入過。`,
       passkeys: '通行密鑰',
       passkeysHint: '用指紋、臉部或裝置 PIN 登入，不必再經過單一登入。通行密鑰只是登入方式之一，遺失後仍可用單一登入。',
       passkeysEmpty: '尚未建立通行密鑰',
@@ -249,6 +255,9 @@ const messages = {
       conflictBody: '有人儲存或拉取了對這些名單的變更。請重新載入，從目前的名單重新開始；你的草稿會被捨棄。',
       reload: '重新載入',
       infraNote: '/infra 的管理員和稽核員由部署時的命令列參數決定，不在這裡設定。',
+      infraClaimAdmins: (entry: string) => `凡以 ${entry} 登入的人，同時也是 /infra 的管理員（--infra-admins）。`,
+      infraClaimAuditors: (entry: string) => `凡以 ${entry} 登入的人，同時也是 /infra 的唯讀稽核員（--infra-auditors）。`,
+      infraClaimLapse: '這項存取遵循 auth.session.claims_absolute：把人從群組或應用程式角色移除後，下次登入就會生效，最遲在其登入後經過這段時間時生效。',
       authNoneTitle: '尚未啟用登入',
       authNoneBody: '認證模式為 none 時，能連到主控台的人都會被視為管理員，這裡和其他管理員操作一樣。請先啟用登入，再仰賴這些角色。',
       legacyTitle: '舊版編輯者名單',
@@ -1079,6 +1088,14 @@ const messages = {
       overage: {
         groups: '身分提供者給的群組太多，超出的部分沒有使用',
         appRoles: '身分提供者給的應用程式角色太多，超出的部分沒有使用',
+      },
+      infra: {
+        admin: { identity: '基礎設施管理員（依名稱）', group: '基礎設施管理員（透過群組）', app_role: '基礎設施管理員（透過應用程式角色）' } as Record<string, string>,
+        auditor: { identity: '基礎設施稽核員（依名稱）', group: '基礎設施稽核員（透過群組）', app_role: '基礎設施稽核員（透過應用程式角色）' } as Record<string, string>,
+        overage: {
+          groups: '身分提供者給的群組太多，/infra 用的那個群組沒能使用',
+          app_roles: '身分提供者給的應用程式角色太多，/infra 用的那個應用程式角色沒能使用',
+        } as Record<string, string>,
       },
       writeRefused: (area: string, code: string) => `寫入遭拒（${area}）${code ? `：${code}` : ''}`,
       codes: {

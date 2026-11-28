@@ -89,6 +89,12 @@ const messages = {
       auditorFrom: 'Auditor from',
       roleFromKinds: { identity: 'your account (name or domain)', group: 'a group', 'app-role': 'an app role' } as Record<string, string>,
       claimsNote: (hours: number) => `This role was read from your identity provider’s groups or app roles when you signed in. If you are removed there, it takes effect when you next sign in, and at the latest when this session ends, ${hours} ${pick(hours, 'hour', 'hours')} after you signed in (auth.session.claims_absolute). Access you gave to MCP clients follows the same rule: a given time after you approved it, it works only with the role you have by name.`,
+      infraFrom: 'Infra access',
+      infraFromKinds: {
+        group: { admin: 'Administrator, through a group', auditor: 'Auditor (read-only), through a group' },
+        app_role: { admin: 'Administrator, through an app role', auditor: 'Auditor (read-only), through an app role' },
+      } as Record<string, Record<string, string>>,
+      infraAccessNote: (hours: number, ends: string) => `This /infra access was read from your identity provider’s groups or app roles when you signed in, and it lasts ${hours} ${pick(hours, 'hour', 'hours')} from then (auth.session.claims_absolute), until ${ends}, even if the rest of your session goes on. If you are removed there, it takes effect when you next sign in, and at the latest when that time comes. Writes also need a recent sign-in.`,
       passkeys: 'Passkeys',
       passkeysHint: 'Sign in with a fingerprint, face or device PIN, without going through single sign-on. A passkey is just one way to sign in; if you lose it, you can still use single sign-on.',
       passkeysEmpty: 'No passkeys yet',
@@ -253,6 +259,9 @@ const messages = {
       conflictBody: 'Someone saved or pulled a change to these lists. Reload to start again from the current lists; your draft is dropped.',
       reload: 'Reload',
       infraNote: 'The administrators and auditors of /infra are set by the deployment (command-line flags), not here.',
+      infraClaimAdmins: (entry: string) => `Everyone who signs in with ${entry} is also an /infra administrator (--infra-admins).`,
+      infraClaimAuditors: (entry: string) => `Everyone who signs in with ${entry} is also a read-only /infra auditor (--infra-auditors).`,
+      infraClaimLapse: 'That access follows auth.session.claims_absolute: removing someone from the group or app role takes effect at their next sign-in, and at the latest when that time after their sign-in has passed.',
       authNoneTitle: 'Sign-in is not enabled',
       authNoneBody: 'With auth mode none, everyone who can reach the console is treated as an admin, here as for every other admin action. Turn on sign-in before relying on these roles.',
       legacyTitle: 'Legacy editors list',
@@ -1085,6 +1094,14 @@ const messages = {
       overage: {
         groups: 'the identity provider sent too many groups; the ones past the limit were not used',
         appRoles: 'the identity provider sent too many app roles; the ones past the limit were not used',
+      },
+      infra: {
+        admin: { identity: 'infra administrator by name', group: 'infra administrator through a group', app_role: 'infra administrator through an app role' } as Record<string, string>,
+        auditor: { identity: 'infra auditor by name', group: 'infra auditor through a group', app_role: 'infra auditor through an app role' } as Record<string, string>,
+        overage: {
+          groups: 'the group for /infra could not be used because the identity provider sent too many groups',
+          app_roles: 'the app role for /infra could not be used because the identity provider sent too many app roles',
+        } as Record<string, string>,
       },
       writeRefused: (area: string, code: string) => `write refused (${area})${code ? `: ${code}` : ''}`,
       codes: {

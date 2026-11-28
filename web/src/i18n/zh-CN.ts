@@ -84,6 +84,12 @@ const messages = {
       auditorFrom: '审计员来自',
       roleFromKinds: { identity: '你的账号（名称或域名）', group: '用户组', 'app-role': '应用角色' } as Record<string, string>,
       claimsNote: (hours: number) => `这个角色是登录时从身份提供方提供的用户组或应用角色里读到的。在那边被移出后，下次登录就会生效，最迟在你登录后 ${hours} 小时，本次会话结束时生效（auth.session.claims_absolute）。你授权给 MCP 客户端的访问也一样：批准后过了这段时间，它只按你的账号名称对应的角色工作。`,
+      infraFrom: '基础设施访问',
+      infraFromKinds: {
+        group: { admin: '管理员，通过用户组', auditor: '审计员（只读），通过用户组' },
+        app_role: { admin: '管理员，通过应用角色', auditor: '审计员（只读），通过应用角色' },
+      } as Record<string, Record<string, string>>,
+      infraAccessNote: (hours: number, ends: string) => `你对 /infra 的这项访问，是登录时从身份提供方提供的用户组或应用角色里读到的，从那时起有效 ${hours} 小时（auth.session.claims_absolute），到 ${ends} 为止，即使你的其余会话还在继续。在那边被移出后，下次登录就会生效，最迟到那个时间生效。写入还需要最近登录过。`,
       passkeys: '通行密钥',
       passkeysHint: '用指纹、面容或设备 PIN 登录，无需再经过单点登录。通行密钥只是登录方式之一，丢失后仍可用单点登录。',
       passkeysEmpty: '还没有通行密钥',
@@ -248,6 +254,9 @@ const messages = {
       conflictBody: '有人保存或拉取了对这些名单的改动。请重新加载，从当前名单重新开始；你的草稿会被丢弃。',
       reload: '重新加载',
       infraNote: '/infra 的管理员和审计员由部署时的命令行参数决定，不在这里设置。',
+      infraClaimAdmins: (entry: string) => `凡以 ${entry} 登录的人，同时也是 /infra 的管理员（--infra-admins）。`,
+      infraClaimAuditors: (entry: string) => `凡以 ${entry} 登录的人，同时也是 /infra 的只读审计员（--infra-auditors）。`,
+      infraClaimLapse: '这项访问遵循 auth.session.claims_absolute：把人从用户组或应用角色里移出后，下次登录就会生效，最迟在其登录后经过这段时间时生效。',
       authNoneTitle: '未启用登录',
       authNoneBody: '认证模式为 none 时，能访问控制台的人都被当作管理员，这里和其他管理员操作一样。请先启用登录，再依赖这些角色。',
       legacyTitle: '旧的编辑者名单',
@@ -1079,6 +1088,14 @@ const messages = {
       overage: {
         groups: '身份提供方给的用户组太多，超出的部分没有使用',
         appRoles: '身份提供方给的应用角色太多，超出的部分没有使用',
+      },
+      infra: {
+        admin: { identity: '基础设施管理员（按名称）', group: '基础设施管理员（通过用户组）', app_role: '基础设施管理员（通过应用角色）' } as Record<string, string>,
+        auditor: { identity: '基础设施审计员（按名称）', group: '基础设施审计员（通过用户组）', app_role: '基础设施审计员（通过应用角色）' } as Record<string, string>,
+        overage: {
+          groups: '身份提供方给的用户组太多，/infra 用的那个用户组没能使用',
+          app_roles: '身份提供方给的应用角色太多，/infra 用的那个应用角色没能使用',
+        } as Record<string, string>,
       },
       writeRefused: (area: string, code: string) => `写入被拒绝（${area}）${code ? `：${code}` : ''}`,
       codes: {

@@ -154,7 +154,8 @@ for (const [port, url] of [[PORT, `${BASE}/`], [DEBUG_PORT, `http://127.0.0.1:${
 }
 const vite = spawn(path.join(root, 'node_modules', '.bin', 'vite'), ['--mode', 'mock', '--host', '127.0.0.1', '--port', String(PORT), '--strictPort'], {
   cwd: root,
-  env: { ...process.env, MOCK_LOGIN: '1' },
+  // MOCK_INFRA_*: the account page shows /infra access through an app role, the Roles tab the claim entries
+  env: { ...process.env, MOCK_LOGIN: '1', MOCK_INFRA_VIA: 'app-role', MOCK_INFRA_CLAIMS: '1' },
   stdio: 'ignore',
   detached: true,
 })

@@ -3,6 +3,23 @@ import type { ActivityItem } from './activity.ts'
 
 const detailValue = (it: ActivityItem, key: string) => it.detail?.find((d) => d.startsWith(key))?.slice(key.length)
 
+/** What an event says about /infra: how the person was an administrator or auditor, and what an overage cost them. */
+function infraNotes(it: ActivityItem): string[] {
+  const e = t.activity.events.infra
+  const lost = (it.infra_overage ?? '').split(',').filter(Boolean).map((k) => e.overage[k] ?? k)
+  return [
+    it.infra_via && e.admin[it.infra_via] ? e.admin[it.infra_via] : '',
+    it.infra_auditor_via && e.auditor[it.infra_auditor_via] ? e.auditor[it.infra_auditor_via] : '',
+    ...lost,
+  ].filter(Boolean)
+}
+
+/** A sentence for an infra event, with how the person was an administrator when that was not by name. */
+function withInfra(s: string, it: ActivityItem): string {
+  const via = it.infra_via && it.infra_via !== 'identity' ? t.activity.events.infra.admin[it.infra_via] : ''
+  return via ? `${s}${t.common.colon}${via}` : s
+}
+
 /** An audit event as a sentence without its subject (the row shows who). */
 export function eventSentence(it: ActivityItem): string {
   const e = t.activity.events
@@ -11,6 +28,7 @@ export function eventSentence(it: ActivityItem): string {
   switch (it.kind) {
     case 'login': {
       const notes = [it.groups === 'overage' ? e.overage.groups : '', it.app_roles === 'overage' ? e.overage.appRoles : ''].filter(Boolean)
+      notes.push(...infraNotes(it))
       return e.login(role, method) + (notes.length ? `${t.common.colon}${notes.join(t.common.clauseSep)}` : '')
     }
     case 'logout':
@@ -25,11 +43,11 @@ export function eventSentence(it: ActivityItem): string {
     case 'write_refused':
       return e.writeRefused(it.area === 'infra' ? t.activity.filters.area.infra : t.activity.filters.area.ledger, e.codes[it.code ?? ''] ?? it.code ?? '')
     case 'secret_revealed':
-      return e.secretRevealed(it.host ?? '')
+      return withInfra(e.secretRevealed(it.host ?? ''), it)
     case 'secret_reveal_refused':
-      return e.secretRevealRefused(it.host ?? '')
+      return withInfra(e.secretRevealRefused(it.host ?? ''), it)
     case 'reencrypted':
-      return e.reencrypted(it.host ?? '')
+      return withInfra(e.reencrypted(it.host ?? ''), it)
     case 'accept_remote':
       return e.acceptRemote
     case 'history_rewritten':
