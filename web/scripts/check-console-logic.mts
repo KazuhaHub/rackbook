@@ -45,6 +45,7 @@ import { eventSentence } from '../src/lib/eventSentence.ts'
 import { activateLocale } from '../src/i18n/index.ts'
 import { countryName, flagEmoji, subdivisionCountry } from '../src/lib/countryDisplay.ts'
 import { COUNTRY_CODES } from '../src/lib/countries.ts'
+import { ADD_KINDS, addEntry, buildEntry, draftChanges, entryKey, hasEntry, kindOf, moveEntry, removeEntry, rolesBody, sameDraft, type Draft } from '../src/lib/rolesDraft.ts'
 
 let failed = 0
 function eq(name: string, got: unknown, want: unknown) {
@@ -498,6 +499,52 @@ eq('typed and cleared again is not a decision', unresolvedHidden(['/token'], {},
     for (const [name, item, want] of cases) if (want[loc] !== undefined) eq(`event ${name} (${loc})`, eventSentence(item as Parameters<typeof eventSentence>[0]), want[loc])
   }
   await activateLocale('zh-CN')
+}
+
+// the role editor's draft (Users → Roles): what an entry is, what the add form builds, and how a draft is edited
+{
+  for (const [entry, kind] of [
+    ['boss@example.com', 'identity'], ['  Boss@Example.com ', 'identity'], ['*@Team.Example.com', 'domain'], ['*', 'any'], ['group:AbC-1', 'group'],
+    ['app-role:Rackbook.Admin', 'app-role'], ['APP-ROLE:x', 'app-role'], ['oidc:sub-1', 'oidc'], ['mcphub:alice', 'mcphub'], ['mcphub:*', 'mcphub'],
+    ['oauth:corp:bob', 'oauth'], ['oauth:corp:*', 'oauth'], ['local:alice', 'local'],
+    ['', ''], ['a*b@x.org', ''], ['*@', ''], ['*@a@b', ''], ['group:', ''], ['oauth:x', ''], ['oauth::bob', ''], ['app-role:', ''], ['app-role:A*', ''], ['oidc:', ''], ['mcphub:', ''],
+  ] as const) eq(`kindOf ${JSON.stringify(entry)}`, kindOf(entry), kind)
+  eq('entryKey folds ASCII', entryKey(' Boss@Example.COM '), 'boss@example.com')
+  eq('entryKey keeps the case of an app role', entryKey('App-Role: Rackbook.Admin'), 'app-role:Rackbook.Admin')
+  eq('entryKey of two app roles apart by case', entryKey('app-role:a') === entryKey('app-role:A'), false)
+
+  eq('build identity', buildEntry('identity', ' a@b.org '), { value: 'a@b.org' })
+  eq('build identity with a space', buildEntry('identity', 'a b'), { error: 'spaces' })
+  eq('build identity with a wildcard', buildEntry('identity', '*@b.org'), { error: 'wildcard' })
+  eq('build empty', buildEntry('identity', '  '), { error: 'empty' })
+  eq('build domain', buildEntry('domain', '@Team.org'), { value: '*@Team.org' })
+  eq('build domain with a star', buildEntry('domain', '*@team.org'), { value: '*@team.org' })
+  eq('build domain with two at signs', buildEntry('domain', 'a@b.org'), { error: 'domain' })
+  eq('build any', buildEntry('any', 'ignored'), { value: '*' })
+  eq('build group', buildEntry('group', ' 5a3b '), { value: 'group:5a3b' })
+  eq('build app role keeps the case', buildEntry('app-role', 'Rackbook.Admin'), { value: 'app-role:Rackbook.Admin' })
+  eq('build app role with a wildcard', buildEntry('app-role', 'a*'), { error: 'wildcard' })
+  eq('build mcphub everyone', buildEntry('mcphub', '*'), { value: 'mcphub:*' })
+  eq('build oidc', buildEntry('oidc', 'sub-1'), { value: 'oidc:sub-1' })
+  eq('build oauth', buildEntry('oauth', 'corp:bob'), { value: 'oauth:corp:bob' })
+  eq('build oauth without a user', buildEntry('oauth', 'corp'), { error: 'oauth' })
+  eq('every kind of the add form builds something that parses', ADD_KINDS.map((k) => ('value' in buildEntry(k, k === 'oauth' ? 'a:b' : k === 'domain' ? 'x.org' : 'v') ? kindOf((buildEntry(k, k === 'oauth' ? 'a:b' : k === 'domain' ? 'x.org' : 'v') as { value: string }).value) : 'fail')), ADD_KINDS)
+
+  const base: Draft = { admin: ['boss@example.com', 'group:ops'], editor: ['*@team.org'], viewer: ['guest@example.com'], auditors: ['audie@example.com'] }
+  eq('has an entry by its key', hasEntry(base, 'admin', 'BOSS@example.com'), true)
+  eq('add', addEntry(base, 'viewer', 'new@example.com').viewer, ['guest@example.com', 'new@example.com'])
+  eq('add twice is one', addEntry(addEntry(base, 'viewer', 'new@example.com'), 'viewer', 'NEW@example.com').viewer, ['guest@example.com', 'new@example.com'])
+  eq('add leaves the base alone', base.viewer, ['guest@example.com'])
+  eq('remove', removeEntry(base, 'admin', 'group:ops').admin, ['boss@example.com'])
+  const moved = moveEntry(base, 'editor', 'viewer', '*@team.org')
+  eq('move', [moved.editor, moved.viewer], [[], ['guest@example.com', '*@team.org']])
+  eq('move to the same list', moveEntry(base, 'admin', 'admin', 'group:ops'), base)
+  eq('the same draft in another order is the same', sameDraft(base, { ...base, admin: ['group:ops', 'boss@example.com'] }), true)
+  eq('a different draft', sameDraft(base, moved), false)
+  eq('changes', draftChanges(base, moved), [{ list: 'editor', op: 'remove', value: '*@team.org' }, { list: 'viewer', op: 'add', value: '*@team.org' }])
+  eq('no changes', draftChanges(base, base), [])
+  eq('request body', rolesBody('v1', base, '  hello '), { version: 'v1', roles: { admin: base.admin, editor: base.editor, viewer: base.viewer }, auditors: base.auditors, message: 'hello' })
+  eq('request body without a message', 'message' in rolesBody('v1', base, '  '), false)
 }
 
 if (failed) process.exit(1)

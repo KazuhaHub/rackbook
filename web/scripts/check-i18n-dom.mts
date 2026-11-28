@@ -345,6 +345,7 @@ const pages = [
   '/activity',
   '/account',
   '/admin/users',
+  '/admin/users/roles',
   '/admin/tokens',
   '/admin/grants',
   '/types',

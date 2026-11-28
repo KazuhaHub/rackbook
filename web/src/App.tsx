@@ -100,6 +100,7 @@ function RefineApp() {
           <Route path="expiring" element={<Expiring />} />
           <Route path="account" element={<Account />} />
           <Route path="admin/users" element={<Users />} />
+          <Route path="admin/users/roles" element={<Users />} />
           <Route path="admin/tokens" element={<Tokens />} />
           <Route path="admin/grants" element={<AdminGrants />} />
           <Route path="modules" element={<Modules />} />
