@@ -20,6 +20,7 @@ import { GrantsList } from '@/components/GrantsList'
 import { PageHeader } from '@/components/common'
 import { roleLabel } from '@/components/layout/UserMenu'
 import { t } from '@/i18n'
+import { formatDateTime } from '@/i18n/format'
 import { apiFetch, errorMessage } from '@/lib/api'
 import { hasSession, isSSO, logout, useAccount, type Passkey } from '@/lib/auth'
 import { relativeTime } from '@/lib/ledger'
@@ -142,12 +143,12 @@ export default function Account() {
                 </span>
                 {acc.infraAuditorRemains && acc.infraEnds ? (
                   <p className="mt-1.5 text-xs text-muted-foreground" data-testid="infra-auditor-remains">
-                    {A.infraAuditorRemains(new Date(acc.infraEnds).toLocaleString())}
+                    {A.infraAuditorRemains(formatDateTime(acc.infraEnds))}
                   </p>
                 ) : null}
                 {acc.infraClaimsAbsolute && acc.infraEnds ? (
                   <p className="mt-1.5 text-xs text-muted-foreground">
-                    {A.infraAccessNote(Math.max(1, Math.round(acc.infraClaimsAbsolute / 3600)), new Date(acc.infraEnds).toLocaleString())}
+                    {A.infraAccessNote(Math.max(1, Math.round(acc.infraClaimsAbsolute / 3600)), formatDateTime(acc.infraEnds))}
                   </p>
                 ) : null}
               </Field>
