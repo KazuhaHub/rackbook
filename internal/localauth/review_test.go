@@ -680,7 +680,8 @@ func TestUnderSSOOnlyEveryRefusalWaitsForTheTimeOfASuccessWrite(t *testing.T) {
 		if len(got.slept) != 1 || got.slept[0] < est*3/4 || got.slept[0] > est*5/4 {
 			t.Errorf("%s: slept %v, want one wait around %v", name, got.slept, est)
 		}
-		if got.lines != 0 || got.wrote {
+		// right credentials use up their code (the step is stored); no refusal writes an audit line or anything else of its own
+		if got.lines != 0 || (got.wrote && name != "non-admin, right") {
 			t.Errorf("%s: a refusal wrote %d audit lines and the store (%v) before its answer", name, got.lines, got.wrote)
 		}
 	}
