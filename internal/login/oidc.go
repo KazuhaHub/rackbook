@@ -25,6 +25,10 @@ func (s *Service) loginFail(w http.ResponseWriter, r *http.Request, code, ret st
 // oidcStart begins the authorization-code flow: it stores the protocol state
 // in memory, binds it to this browser with a cookie, and redirects to the IdP.
 func (s *Service) oidcStart(w http.ResponseWriter, r *http.Request) {
+	if !s.sso {
+		writeErr(w, http.StatusNotFound, "sso_off", "single sign-on is not configured")
+		return
+	}
 	ret := SafeReturn(r.URL.Query().Get("return"))
 	if !s.limit.allow(clientip.Of(r, s.trusted)) {
 		s.log.Warn("login start rate limited", "remote", clientip.Of(r, s.trusted))
@@ -77,6 +81,10 @@ func oneParam(q url.Values, k string) (string, bool) {
 //  6. a role is required (else 403, logged);
 //  7. the session is issued and the browser goes to the stored return path.
 func (s *Service) oidcCallback(w http.ResponseWriter, r *http.Request) {
+	if !s.sso {
+		writeErr(w, http.StatusNotFound, "sso_off", "single sign-on is not configured")
+		return
+	}
 	w.Header().Set("Cache-Control", "no-store")
 	var bindID string
 	if c, err := r.Cookie(LoginCookie); err == nil {
@@ -259,6 +267,10 @@ func (s *Service) identityFromClaims(a *authoidc.Assertion) (*auth.Identity, str
 	if strings.HasPrefix(strings.ToLower(ident), SubjectPrefix) {
 		// The oidc: prefix names subject identities only; a claim must not be able to forge one.
 		return nil, "", overage{}, errors.New("claim " + idClaim + " must not start with " + SubjectPrefix)
+	}
+	if strings.HasPrefix(roles.FoldASCII(ident), roles.LocalPrefix) {
+		// local:<username> is the identity of a local account; a claim must not be able to look like one
+		return nil, "", overage{}, errors.New("claim " + idClaim + " must not start with " + roles.LocalPrefix)
 	}
 	if strings.EqualFold(ident, auth.AnchorIdentity) {
 		// the identity of the audit anchor's commit belongs to Rackbook itself

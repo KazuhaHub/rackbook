@@ -67,7 +67,11 @@ type Options struct {
 	// Infra is the --infra-admins and --infra-auditors lists (nil = no /infra). The login
 	// only asks them how a person is an infra administrator, for the login event and the
 	// account page; it never decides /infra access.
-	Infra   *auth.InfraAccess
+	Infra *auth.InfraAccess
+	// Local is the store of local accounts, nil when there are none (no state key). Sessions of
+	// method local verify against it and against nothing else; no route of this package creates one
+	// (the sign-in pages and endpoints are a later piece).
+	Local   LocalSessions
 	Now     func() time.Time
 	Context context.Context // lifetime of the OIDC provider; default Background
 
@@ -95,6 +99,9 @@ type Service struct {
 	redirect       string
 	client         *http.Client
 	authn          *auth.Authenticator
+	// sso says single sign-on is configured (auth.oidc has an issuer). Without it the service is
+	// local accounts alone: no OIDC provider, and /auth/oidc/* answers 404.
+	sso bool
 
 	pmu     sync.Mutex
 	prov    *authoidc.Provider
@@ -119,14 +126,19 @@ func New(o Options) (*Service, error) {
 	if len(o.Key) < 32 {
 		return nil, errors.New("login: the session key must be at least 32 bytes")
 	}
-	if err := o.Login.OIDC.Check(); err != nil {
-		return nil, err
+	sso := o.Login.OIDC.Issuer != "" || o.Login.OIDC.ClientID != ""
+	if sso {
+		if err := o.Login.OIDC.Check(); err != nil {
+			return nil, err
+		}
+	} else if o.Local == nil {
+		return nil, errors.New("login: neither single sign-on (auth.oidc) nor local accounts (a state key) is available")
 	}
 	base, err := url.Parse(o.BaseURL)
 	if err != nil || base.Scheme != "https" || base.Host == "" || (base.Path != "" && base.Path != "/") || base.RawQuery != "" || base.Fragment != "" {
 		return nil, fmt.Errorf("--base-url must be the https origin of the console (e.g. https://ledger.example.com) for --auth oidc, got %q", o.BaseURL)
 	}
-	s := &Service{o: o, log: o.Logger, now: o.Now, base: &url.URL{Scheme: "https", Host: base.Host}}
+	s := &Service{o: o, log: o.Logger, now: o.Now, base: &url.URL{Scheme: "https", Host: base.Host}, sso: sso}
 	if s.log == nil {
 		s.log = slog.New(slog.DiscardHandler)
 	}
@@ -139,7 +151,7 @@ func New(o Options) (*Service, error) {
 	if w := o.Login.OIDC.IdentityClaimWarning(); w != "" {
 		s.log.Warn(w)
 	}
-	s.codec = codec{key: o.Key}
+	s.codec = codec{key: o.Key, local: o.Local}
 	s.idle, s.absolute = o.Login.Session.IdleOrDefault(), o.Login.Session.AbsoluteOrDefault()
 	s.claimsAbsolute = o.Login.Session.ClaimsAbsoluteOrDefault()
 	s.pending = newPendingStore(s.now)
@@ -191,6 +203,9 @@ func (s *Service) Bind(a *auth.Authenticator) { s.authn = a }
 // Warm tries OIDC discovery now and logs the result, so a wrong issuer shows
 // up at startup. It never fails the server.
 func (s *Service) Warm() {
+	if !s.sso {
+		return
+	}
 	if _, err := s.provider(); err != nil {
 		s.log.Warn("OIDC discovery failed; will retry on the next login", "issuer", s.o.Login.OIDC.Issuer, "err", err)
 		return
@@ -199,6 +214,9 @@ func (s *Service) Warm() {
 }
 
 func (s *Service) provider() (*authoidc.Provider, error) {
+	if !s.sso {
+		return nil, errNoSSO
+	}
 	s.pmu.Lock()
 	defer s.pmu.Unlock()
 	if s.prov != nil {
@@ -398,6 +416,11 @@ func (s *Service) setSession(w http.ResponseWriter, sess session) (session, bool
 
 // issue starts a session for id and returns it.
 func (s *Service) issue(w http.ResponseWriter, id *auth.Identity, method, cred string) (session, overage, error) {
+	if method == auth.MethodLocal {
+		// A local session needs the account's session id and a verified sign-in; this path has neither, and
+		// no route may create one (the sign-in of local accounts is a later piece).
+		return session{}, overage{}, errors.New("a local session cannot be issued here")
+	}
 	now := s.now().Unix()
 	sess := session{ID: id.ID, Name: id.Name, Method: method, Issued: now, Seen: now, Cred: cred}
 	if method == auth.MethodOIDC {
@@ -566,7 +589,7 @@ func (s *Service) publicConfig(w http.ResponseWriter, r *http.Request) {
 	w.Header().Add("Vary", "Accept-Language")
 	// "provider" stays for older consoles; it no longer names the IdP.
 	writeJSON(w, http.StatusOK, map[string]any{
-		"oidc": true, "provider": "oidc", "passkeys": s.pk != nil,
+		"oidc": s.sso, "provider": "oidc", "passkeys": s.pk != nil,
 		"label": label, "name": name, "logo": logo,
 		"locale": locale.Match(r.Header.Get("Accept-Language"), def), "defaultLocale": def,
 	})

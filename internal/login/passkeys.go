@@ -631,6 +631,9 @@ func (s *Service) adminUsers(w http.ResponseWriter, r *http.Request) {
 	for _, id := range order {
 		e := byID[id]
 		who := &auth.Identity{ID: e.ID, Method: auth.MethodOIDC, Email: emailOf(e.ID), Groups: e.groups, AppRoles: e.appRoles}
+		if e.Method == auth.MethodLocal {
+			who = &auth.Identity{ID: e.ID, Method: auth.MethodLocal}
+		}
 		e.Role, e.Auditor = s.roleOf(who).String(), s.auditorOf(who)
 		users = append(users, *e)
 	}

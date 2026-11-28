@@ -21,13 +21,17 @@ import (
 	"testing/fstest"
 	"time"
 
+	"github.com/kazuhahub/rackbook/internal/accounts"
 	"github.com/kazuhahub/rackbook/internal/api"
 	"github.com/kazuhahub/rackbook/internal/audit"
 	"github.com/kazuhahub/rackbook/internal/auth"
+	"github.com/kazuhahub/rackbook/internal/auth/oauth"
 	"github.com/kazuhahub/rackbook/internal/config"
 	"github.com/kazuhahub/rackbook/internal/gitstore"
 	"github.com/kazuhahub/rackbook/internal/login/testidp"
+	"github.com/kazuhahub/rackbook/internal/mcpauth"
 	"github.com/kazuhahub/rackbook/internal/prefs"
+	"github.com/kazuhahub/rackbook/internal/statekey"
 	"github.com/kazuhahub/rackbook/internal/testutil"
 	"github.com/kazuhahub/rackbook/internal/tokens"
 )
@@ -66,6 +70,10 @@ type env struct {
 	logs    *logBuf
 	audit   string      // directory of the audit log every Service of the env writes to
 	apiOpts api.Options // what the handler was built from (to list its routes)
+	// local accounts (options.local): the open store, its state directory and key
+	local    *accounts.Store
+	stateDir string
+	stateKey *statekey.Key
 }
 
 type logBuf struct {
@@ -84,6 +92,7 @@ type options struct {
 	passkeys bool // auth.passkeys on, and the passkey code built (the seam of Options.ssoPasskeys)
 	// passkeysIgnored is auth.passkeys on as a deployment writes it: ignored under OIDC.
 	passkeysIgnored bool
+	local           bool // local accounts: a state directory, a state key and an open account store
 	remote          bool // data repo with a bare origin
 	nogit           bool
 	roles           string // YAML under auth:
@@ -223,6 +232,10 @@ func newEnv(t *testing.T, o options) *env {
 		Login: cfg.Auth.Login, BaseURL: e.base, Key: testKey, ClientSecret: clientSecret,
 		Config: st.Config, HTTPClient: e.idpS.Client(), ReadOnly: o.readOnly, Logger: logger, Now: e.clk.Now,
 	}
+	if o.local {
+		e.openLocal(al)
+		lo.Local = e.local
+	}
 	lo.ssoPasskeys = o.passkeys
 	if o.infra != nil {
 		lo.Infra = o.infra(e)
@@ -234,13 +247,23 @@ func newEnv(t *testing.T, o options) *env {
 	if err != nil {
 		t.Fatal(err)
 	}
-	authn, err := auth.New(context.Background(), auth.Config{Mode: auth.ModeOIDC, Sessions: e.svc, Config: st.Config, Degraded: func() bool { return st.ConfigProblem() != "" }})
+	acfg := auth.Config{Mode: auth.ModeOIDC, Sessions: e.svc, Config: st.Config, Degraded: func() bool { return st.ConfigProblem() != "" }}
+	if e.local != nil {
+		acfg.Local = e.local
+	}
+	authn, err := auth.New(context.Background(), acfg)
 	if err != nil {
 		t.Fatal(err)
 	}
 	e.svc.Bind(authn)
+	reg := &tokens.Registry{Store: st}
+	// API tokens and OAuth access tokens: the same bearer authentication the server wires
+	authn.SetBearer(&mcpauth.Resource{Config: st.Config, Auth: authn, Verifier: &oauth.Verifier{}, Tokens: reg, Limiter: &tokens.Limiter{}})
 	web := fstest.MapFS{"index.html": {Data: []byte("<!doctype html><title>console</title>")}, "favicon.svg": {Data: []byte("<svg xmlns=\"http://www.w3.org/2000/svg\"/>")}}
-	e.apiOpts = api.Options{Store: st, Auth: authn, BaseURL: e.base, Web: web, Logger: logger, Login: e.svc, Prefs: ps, Audit: al, Tokens: &tokens.Registry{Store: st}}
+	e.apiOpts = api.Options{Store: st, Auth: authn, BaseURL: e.base, Web: web, Logger: logger, Login: e.svc, Prefs: ps, Audit: al, Tokens: reg}
+	if e.local != nil {
+		e.apiOpts.Local = testRoster{e.local}
+	}
 	handler := api.New(e.apiOpts)
 	h.Store(&handler)
 	return e
