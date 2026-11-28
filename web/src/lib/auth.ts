@@ -29,6 +29,8 @@ export type Account = {
   infraFrom?: string
   infraAuditorFrom?: string
   /** only when it rests on a group or app role: when it lapses (ISO time) and how many seconds after sign-in it lasts */
+  /** an administrator by group or app role who is also an auditor by name: read-only access remains when it lapses */
+  infraAuditorRemains?: boolean
   infraEnds?: string
   infraClaimsAbsolute?: number
 }

@@ -95,6 +95,7 @@ const messages = {
         group: { admin: 'Administrator, through a group', auditor: 'Auditor (read-only), through a group' },
         app_role: { admin: 'Administrator, through an app role', auditor: 'Auditor (read-only), through an app role' },
       } as Record<string, Record<string, string>>,
+      infraAuditorRemains: (ends: string) => `Read-only /infra access by name remains after ${ends}.`,
       infraAccessNote: (hours: number, ends: string) => `This /infra access was read from your identity provider’s groups or app roles when you signed in, and it lasts ${hours} ${pick(hours, 'hour', 'hours')} from then (--infra-claims-absolute), until ${ends}, even if the rest of your session goes on. If you are removed there, it takes effect when you next sign in, and at the latest when that time comes. Writes also need a recent sign-in.`,
       passkeys: 'Passkeys',
       passkeysHint: 'Sign in with a fingerprint, face or device PIN, without going through single sign-on. A passkey is just one way to sign in; if you lose it, you can still use single sign-on.',

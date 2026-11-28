@@ -95,7 +95,7 @@ func (a *InfraAdmins) Pin(issuer, clientID, claim, tenant string, writeAge time.
 	}
 	a.entra = false
 	if u, err := url.Parse(issuer); err == nil {
-		entra := u.Host == "login.microsoftonline.com" || u.Host == "sts.windows.net" || strings.HasSuffix(u.Host, ".b2clogin.com")
+		entra := isEntraIssuer(u)
 		a.entra = entra
 		if entra && a.claimKind == roles.KindGroup && !guidFull.MatchString(a.claimValue) {
 			return fmt.Errorf("%s: group:%s is not a group object ID (a GUID): with an Entra issuer a group is named by its ID, because display names are not unique and people can often create groups; use the GUID, or better an app-role: entry", a.flagName(), a.claimValue)
@@ -195,7 +195,7 @@ func (a *InfraAdmins) SetClaimsAbsolute(d time.Duration) error {
 }
 
 // WarnGroupNames is true when the list's claim entry is a group and the pinned issuer is not
-// Entra, so the group value is a name that may not be unique (server start warns).
+// recognised as Entra, so the group value is a name that may not be unique (server start warns).
 func (a *InfraAdmins) WarnGroupNames() bool {
 	return a != nil && a.claimKind == roles.KindGroup && !a.entra
 }
@@ -338,3 +338,21 @@ func (c *InfraAccess) Overage(id *Identity, now time.Time, cutGroups, cutRoles b
 	}
 	return ""
 }
+
+// isEntraIssuer recognises the issuer hosts of Microsoft Entra: the public, US government and China
+// clouds, the legacy sts.windows.net, and External ID (ciamlogin.com) and B2C tenants. The host is
+// matched without regard to case and an explicit :443 is ignored; any other port is not Entra.
+func isEntraIssuer(u *url.URL) bool {
+	if p := u.Port(); p != "" && p != "443" {
+		return false
+	}
+	h := strings.ToLower(u.Hostname())
+	switch h {
+	case "login.microsoftonline.com", "login.microsoftonline.us", "login.chinacloudapi.cn", "login.partner.microsoftonline.cn", "sts.windows.net":
+		return true
+	}
+	return strings.HasSuffix(h, ".b2clogin.com") || strings.HasSuffix(h, ".ciamlogin.com")
+}
+
+// IsEntra says the pinned issuer is recognised as Microsoft Entra.
+func (a *InfraAdmins) IsEntra() bool { return a != nil && a.entra }

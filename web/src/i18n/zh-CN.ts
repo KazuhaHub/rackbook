@@ -90,6 +90,7 @@ const messages = {
         group: { admin: '管理员，通过用户组', auditor: '审计员（只读），通过用户组' },
         app_role: { admin: '管理员，通过应用角色', auditor: '审计员（只读），通过应用角色' },
       } as Record<string, Record<string, string>>,
+      infraAuditorRemains: (ends: string) => `${ends} 之后，仍按名称保留 /infra 的只读访问。`,
       infraAccessNote: (hours: number, ends: string) => `你对 /infra 的这项访问，是登录时从身份提供方提供的用户组或应用角色里读到的，从那时起有效 ${hours} 小时（--infra-claims-absolute），到 ${ends} 为止，即使你的其余会话还在继续。在那边被移出后，下次登录就会生效，最迟到那个时间生效。写入还需要最近登录过。`,
       passkeys: '通行密钥',
       passkeysHint: '用指纹、面容或设备 PIN 登录，无需再经过单点登录。通行密钥只是登录方式之一，丢失后仍可用单点登录。',

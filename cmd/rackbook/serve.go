@@ -460,7 +460,7 @@ func newInfra(ctx context.Context, f *pflag.FlagSet, cfg *config.Config, mode st
 		list *auth.InfraAdmins
 	}{{"--infra-admins", ia}, {"--infra-auditors", infraAuditors}} {
 		if l.list.WarnGroupNames() {
-			logger.Warn(l.flag+" names a group: this issuer is not Entra, so a group name may not be unique and people may be able to create a group with it; prefer an app-role: entry", "entry", l.list.ClaimEntry())
+			logger.Warn(l.flag+" names a group: this issuer is not recognised as Microsoft Entra, so a group name may not be unique and people may be able to create a group with it; prefer an app-role: entry", "entry", l.list.ClaimEntry())
 		}
 	}
 	li := cfg.Auth.Login.OIDC

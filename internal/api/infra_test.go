@@ -47,6 +47,11 @@ func (ts testSessions) Identify(w http.ResponseWriter, r *http.Request) (*auth.I
 	if v := r.Header.Get("X-App-Roles"); v != "" {
 		id.AppRoles = strings.Split(v, ",")
 	}
+	if r.Header.Get("X-Cap") != "" {
+		// as the login keeps them in the session cookie: at most 40 values, 700 bytes
+		id.Groups, _ = roles.BoundClaim(id.Groups, true)
+		id.AppRoles, _ = roles.BoundClaim(id.AppRoles, false)
+	}
 	if m == auth.MethodOIDC {
 		id.OIDCIssuer, id.OIDCClient, id.OIDCClaim, id.OIDCTenant = testIssuer, testClient, "preferred_username", testTenant
 		if v := r.Header.Get("X-Claim"); v != "" {

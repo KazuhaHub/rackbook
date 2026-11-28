@@ -91,6 +91,7 @@ const messages = {
         group: { admin: '管理員，透過群組', auditor: '稽核員（唯讀），透過群組' },
         app_role: { admin: '管理員，透過應用程式角色', auditor: '稽核員（唯讀），透過應用程式角色' },
       } as Record<string, Record<string, string>>,
+      infraAuditorRemains: (ends: string) => `${ends} 之後，仍依名稱保留 /infra 的唯讀存取。`,
       infraAccessNote: (hours: number, ends: string) => `你對 /infra 的這項存取，是登入時從身分提供者提供的群組或應用程式角色讀到的，從那時起有效 ${hours} 小時（--infra-claims-absolute），到 ${ends} 為止，即使你的其餘工作階段仍會繼續。在那邊被移除後，下次登入就會生效，最遲到那個時間生效。寫入還需要最近登入過。`,
       passkeys: '通行密鑰',
       passkeysHint: '用指紋、臉部或裝置 PIN 登入，不必再經過單一登入。通行密鑰只是登入方式之一，遺失後仍可用單一登入。',

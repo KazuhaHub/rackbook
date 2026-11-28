@@ -176,3 +176,32 @@ func TestInfraLapseIgnoresRackbookYml(t *testing.T) {
 		t.Fatalf("the flag's 2 hours apply, not the file's 7 days: %v", acc)
 	}
 }
+
+// An administrator by group who is also an auditor by name: the page says the read-only access remains.
+func TestAccountSaysANamedAuditorRemainsAfterTheClaimLapses(t *testing.T) {
+	roles := "  roles:\n    viewer: [\"*@kazuha.org\"]\n"
+	e := newEnv(t, options{nogit: true, roles: roles, infra: func(e *env) *auth.InfraAccess {
+		admins, _ := auth.NewInfraAdmins([]string{"group:" + infraGroup})
+		auditors, _ := auth.NewInfraAuditors([]string{"ed@kazuha.org"})
+		for _, l := range []*auth.InfraAdmins{admins, auditors} {
+			if err := l.Pin(e.idpS.URL, clientID, "", tenant, 0); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return &auth.InfraAccess{Admins: admins, Auditors: auditors}
+	}})
+	e.idp.Users["editor"]["groups"] = []string{infraGroup}
+	b := e.browser()
+	b.login("editor", "")
+	acc := account(t, b)
+	if acc["infraFrom"] != "group" || acc["infraAuditorFrom"] != "" || acc["infraAuditorRemains"] != true || acc["infraEnds"] == nil {
+		t.Fatalf("%v", acc)
+	}
+	// without the group they are the auditor by name, with nothing to lapse
+	e.idp.Users["editor"]["groups"] = []string{"other"}
+	b = e.browser()
+	b.login("editor", "")
+	if acc := account(t, b); acc["infraFrom"] != "" || acc["infraAuditorFrom"] != "identity" || acc["infraAuditorRemains"] != nil || acc["infraEnds"] != nil {
+		t.Fatalf("%v", acc)
+	}
+}

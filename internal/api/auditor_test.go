@@ -331,7 +331,7 @@ func TestInfraRouteClasses(t *testing.T) {
 		{"admin app role, other tenant", map[string]string{"X-User": claimU, "X-App-Roles": adminRole, "X-Tenant": "tenant-2"}},
 		{"admin app role, other client", map[string]string{"X-User": claimU, "X-App-Roles": adminRole, "X-Client": "other-app"}},
 		{"admin app role by passkey", map[string]string{"X-User": claimU, "X-App-Roles": adminRole, "X-Method": auth.MethodPasskey}},
-		{"claims cut at the cap (the value was past it)", map[string]string{"X-User": claimU, "X-Groups": fillers(40, "g"), "X-App-Roles": fillers(40, "r")}},
+		{"claims cut at the cap (the value is past it, so capping removes it)", map[string]string{"X-User": claimU, "X-Cap": "1", "X-Groups": fillers(40, "g") + "," + auditGroup, "X-App-Roles": fillers(40, "r") + "," + adminRole}},
 		{"claims dropped by an overage", map[string]string{"X-User": claimU}},
 		{"API token with the claim values", map[string]string{"Authorization": "Bearer token", "X-Groups": auditGroup, "X-App-Roles": adminRole}},
 		{"OAuth grant with the claim values", map[string]string{"Authorization": "Bearer oauth", "X-Groups": auditGroup, "X-App-Roles": adminRole}},

@@ -140,6 +140,11 @@ export default function Account() {
                     .filter(Boolean)
                     .join(t.common.listSep)}
                 </span>
+                {acc.infraAuditorRemains && acc.infraEnds ? (
+                  <p className="mt-1.5 text-xs text-muted-foreground" data-testid="infra-auditor-remains">
+                    {A.infraAuditorRemains(new Date(acc.infraEnds).toLocaleString())}
+                  </p>
+                ) : null}
                 {acc.infraClaimsAbsolute && acc.infraEnds ? (
                   <p className="mt-1.5 text-xs text-muted-foreground">
                     {A.infraAccessNote(Math.max(1, Math.round(acc.infraClaimsAbsolute / 3600)), new Date(acc.infraEnds).toLocaleString())}

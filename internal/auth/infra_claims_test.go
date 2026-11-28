@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -339,5 +340,38 @@ func TestInfraGroupOnEntraIsAGUID(t *testing.T) {
 	}
 	if r, _ := NewInfraAdmins([]string{"app-role:R"}); r.Pin(cIss, cCli, "", cTid, 0) != nil || r.WarnGroupNames() {
 		t.Fatal("an app role never warns")
+	}
+}
+
+func TestEntraIssuerHosts(t *testing.T) {
+	for issuer, want := range map[string]bool{
+		"https://login.microsoftonline.com/t/v2.0":        true,
+		"https://LOGIN.MicrosoftOnline.com:443/t/v2.0":    true,
+		"https://login.microsoftonline.us/t/v2.0":         true,
+		"https://login.chinacloudapi.cn/t/v2.0":           true,
+		"https://login.partner.microsoftonline.cn/t/v2.0": true,
+		"https://sts.windows.net/t/":                      true,
+		"https://x.b2clogin.com/x/v2.0":                   true,
+		"https://contoso.ciamlogin.com/t/v2.0":            true,
+		"https://login.microsoftonline.com:8443/t/v2.0":   false,
+		"https://login.microsoftonline.com.evil.test/":    false,
+		"https://evilciamlogin.com/":                      false,
+		"https://idp.test":                                false,
+	} {
+		u, _ := url.Parse(issuer)
+		if got := isEntraIssuer(u); got != want {
+			t.Errorf("%s: %v, want %v", issuer, got, want)
+		}
+	}
+	// the rules that follow from it: a tenant is required and a group must be a GUID
+	for _, issuer := range []string{"https://login.microsoftonline.us/x/v2.0", "https://login.chinacloudapi.cn/x/v2.0", "https://login.partner.microsoftonline.cn/x/v2.0", "https://contoso.ciamlogin.com/x/v2.0", "https://LOGIN.microsoftonline.com:443/x/v2.0"} {
+		g, _ := NewInfraAdmins([]string{"group:ops-team"})
+		if err := g.Pin(issuer, cCli, "", cTid, 0); err == nil || !strings.Contains(err.Error(), "GUID") {
+			t.Errorf("%s: %v", issuer, err)
+		}
+		a, _ := NewInfraAdmins([]string{"a@x.org"})
+		if err := a.Pin(issuer, cCli, "", "", 0); err == nil || !strings.Contains(err.Error(), "tenant") {
+			t.Errorf("%s: %v", issuer, err)
+		}
 	}
 }

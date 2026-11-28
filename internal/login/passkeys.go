@@ -543,7 +543,12 @@ func (s *Service) account(w http.ResponseWriter, r *http.Request) {
 		admin, aud := s.o.Infra.Via(who, now)
 		l := s.o.Infra.Admins
 		if admin != "" {
-			aud = "" // superseded: the administrator's capability is the one in force
+			// superseded: the administrator's capability is the one in force; a named auditor
+			// stays when an administrator by group or app role lapses, and the page says so
+			if aud == auth.InfraViaIdentity && admin != auth.InfraViaIdentity {
+				out["infraAuditorRemains"] = true
+			}
+			aud = ""
 		} else {
 			l = s.o.Infra.Auditors
 		}

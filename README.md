@@ -783,7 +783,7 @@ change**, or an app role assigned by named Entra administrators, never a broad o
 group's owners and the people who may assign the role few. Prefer an app role (readable names, no group limits).
 
 **Lifetime.** The entry counts for `--infra-claims-absolute` (default and longest 24 h, shortest 1 h) after the sign-in; it is a
-deployment flag and `rackbook.yml` (`auth.session.*`) has no say in it. A person who is an infra administrator **only** through the entry is one for `claims_absolute` after
+deployment flag and `rackbook.yml` (`auth.session.*`) has no say in it. A person who is an infra administrator **only** through the entry is one for `--infra-claims-absolute` after
 the sign-in, even if their console session goes on (for example because they hold their ledger role by name); then
 `/infra` answers `403` until they sign in again, which reads the claims again. So a removal at Entra takes effect at
 their next sign-in and at the latest `--infra-claims-absolute` after the last one. A write already admitted when the time passes
