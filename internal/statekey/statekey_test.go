@@ -120,12 +120,12 @@ func TestSealOpenRoundTripAndHeader(t *testing.T) {
 	if err := json.Unmarshal(sealed, &f); err != nil {
 		t.Fatal(err)
 	}
-	if f["v"] != float64(1) || f["alg"] != "AES-256-GCM" || len(f["kid"].(string)) != 8 {
+	if f["v"] != float64(1) || f["alg"] != "XChaCha20-Poly1305" || len(f["kid"].(string)) != 8 {
 		t.Fatalf("header = %v", f)
 	}
 	nonce, _ := base64.StdEncoding.DecodeString(f["nonce"].(string))
-	if len(nonce) != 12 {
-		t.Fatalf("nonce is %d bytes, want 12", len(nonce))
+	if len(nonce) != 24 {
+		t.Fatalf("nonce is %d bytes, want 24", len(nonce))
 	}
 	got, err := Open(k, PurposeAccounts, sealed)
 	if err != nil || !bytes.Equal(got, pt) {

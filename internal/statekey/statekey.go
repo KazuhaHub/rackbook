@@ -4,7 +4,6 @@
 package statekey
 
 import (
-	"crypto/aes"
 	"crypto/cipher"
 	"crypto/hkdf"
 	"crypto/hmac"
@@ -18,6 +17,8 @@ import (
 	"fmt"
 	"os"
 	"strings"
+
+	"golang.org/x/crypto/chacha20poly1305"
 )
 
 // MinLen is the shortest state key.
@@ -162,7 +163,10 @@ type Header struct {
 	KID string `json:"kid"`
 }
 
-const algName = "AES-256-GCM"
+// algName is XChaCha20-Poly1305 with a random 192-bit nonce per file (the design text says AES-256-GCM
+// with a 96-bit nonce; a 96-bit random nonce is safe only for about 2^32 messages under one key, and
+// an account store is rewritten on every counter, so the longer nonce takes the question away).
+const algName = "XChaCha20-Poly1305"
 
 type file struct {
 	Header
@@ -194,14 +198,10 @@ func aad(h Header) []byte {
 }
 
 func gcm(k *Key, p Purpose) (cipher.AEAD, error) {
-	blk, err := aes.NewCipher(k.Sub(p))
-	if err != nil {
-		return nil, err
-	}
-	return cipher.NewGCM(blk)
+	return chacha20poly1305.NewX(k.Sub(p))
 }
 
-// Seal encrypts plaintext under the subkey of p with a fresh 96-bit nonce. The result is
+// Seal encrypts plaintext under the subkey of p with a fresh 192-bit nonce. The result is
 // the file's content: a JSON header (the AAD), the nonce and the ciphertext.
 func Seal(k *Key, p Purpose, plaintext []byte) ([]byte, error) {
 	g, err := gcm(k, p)
