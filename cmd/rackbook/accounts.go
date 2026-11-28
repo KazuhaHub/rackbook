@@ -343,11 +343,20 @@ func offlineSession(cmd *cobra.Command) (accounts.Offline, func(), error) {
 	return off, func() { l.Close(); unlock(); key.Zero() }, nil
 }
 
-// listTokenNames reads the names of every API token of a clone of the data repository. Names only.
+// listTokenNames reads the names of every API token of a clone of the data repository. Names only. It is an
+// error, never an empty list, when the directory is missing, is not a Git checkout or has no tokens file: an
+// empty list would hide the warning to revoke the tokens by hand.
 func listTokenNames(repo string) ([]string, error) {
+	st, err := os.Stat(repo)
+	if err != nil || !st.IsDir() {
+		return nil, fmt.Errorf("--repo %s is not a directory: pass a clone of the data repository, or leave --repo out and revoke the API tokens by hand", repo)
+	}
+	if _, err := os.Lstat(filepath.Join(repo, ".git")); err != nil {
+		return nil, fmt.Errorf("--repo %s is not a Git checkout (no .git): pass a clone of the data repository, or leave --repo out and revoke the API tokens by hand", repo)
+	}
 	b, err := os.ReadFile(filepath.Join(repo, filepath.FromSlash(tokens.File)))
 	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
+		return nil, fmt.Errorf("--repo %s has no %s: it is not the data repository, or its checkout is out of date; pull it, or leave --repo out and revoke the API tokens by hand", repo, tokens.File)
 	}
 	if err != nil {
 		return nil, err

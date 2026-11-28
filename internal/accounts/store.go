@@ -285,8 +285,44 @@ func counterFieldsOnly(e *engine[*State]) func(cur, next *State) error {
 		if err1 != nil || err2 != nil || string(ja) != string(jb) {
 			return ErrNotCounterOnly
 		}
+		now := e.c.Now()
+		for n, old := range cur.Accounts {
+			if !counterMovesForward(old, next.Accounts[n], now) {
+				return ErrNotCounterOnly
+			}
+		}
 		return nil
 	}
+}
+
+// counterMovesForward is the second half of the counter check. What a failed attempt does (a count that grows, a
+// lock that is set, an account that becomes restricted) is a counter write. Undoing it is not, unless it comes
+// with a recorded success (last_login advanced) or the lock has run out on its own: leaving restricted or
+// passkey_only, lowering consecutive_failures and removing a live lock all need the audited path (unlock, a
+// reset) otherwise. TOTP last_step only grows, so a replayed code cannot be made fresh again.
+func counterMovesForward(old, nw *Account, now time.Time) bool {
+	if old.TOTP != nil && nw.TOTP != nil && nw.TOTP.LastStep < old.TOTP.LastStep {
+		return false
+	}
+	succeeded := nw.LastLogin != nil && (old.LastLogin == nil || nw.LastLogin.Time.After(old.LastLogin.Time))
+	if succeeded {
+		return true
+	}
+	if (old.State == StateRestricted || old.State == StatePasskeyOnly) && nw.State == StateActive {
+		return false
+	}
+	if old.State == StatePasskeyOnly && nw.State == StateRestricted {
+		return false
+	}
+	if nw.ConsecutiveFailures < old.ConsecutiveFailures {
+		return false
+	}
+	for _, l := range old.Locks {
+		if l.Until.After(now) && !slices.ContainsFunc(nw.Locks, func(k Lock) bool { return k.Scope == l.Scope && k.Until.Equal(l.Until) }) {
+			return false // a lock that is still running was removed
+		}
+	}
+	return true
 }
 
 func maskCounters(s *State) *State {

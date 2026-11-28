@@ -332,13 +332,17 @@ func TestServeDoesNotReadTheStateKeyYet(t *testing.T) {
 func TestNoHTTPPackageDependsOnTheAccountStore(t *testing.T) {
 	gobin, err := exec.LookPath("go")
 	if err != nil {
-		t.Skip("no go toolchain on PATH")
+		t.Fatalf("no go toolchain on PATH: this check must run, not be skipped: %v", err)
 	}
 	pkgs := []string{"../../internal/api", "../../internal/login", "../../internal/auth", "../../internal/mcpserver", "../../internal/mcpauth", "../../internal/oauthserver", "../../internal/routes"}
 	cmd := exec.Command(gobin, append([]string{"list", "-deps", "-f", "{{.ImportPath}}"}, pkgs...)...)
 	out, err := cmd.Output()
 	if err != nil {
-		t.Skipf("go list failed: %v", err)
+		var stderr string
+		if ee, ok := err.(*exec.ExitError); ok {
+			stderr = string(ee.Stderr)
+		}
+		t.Fatalf("go list failed, so the dependency check did not run: %v %s", err, stderr)
 	}
 	for _, dep := range strings.Fields(string(out)) {
 		if strings.HasSuffix(dep, "/internal/accounts") || strings.HasSuffix(dep, "/internal/statekey") {
@@ -425,13 +429,43 @@ func TestAccountsAcceptRestoreListsTokensFromARepo(t *testing.T) {
 	f := newAccountsFixture(t)
 	repo := t.TempDir()
 	os.MkdirAll(filepath.Join(repo, ".rackbook"), 0o755)
+	os.MkdirAll(filepath.Join(repo, ".git"), 0o755)
 	os.WriteFile(filepath.Join(repo, ".rackbook", "tokens.yml"), []byte("tokens:\n  - name: ci\n    prefix: rbk_\n    sha256: "+strings.Repeat("ab", 32)+"\n    scope: read\n    created_by: local:root\n    created: 2026-11-01T00:00:00Z\n"), 0o644)
 	names, err := listTokenNames(repo)
 	if err != nil || len(names) != 1 || names[0] != "ci" {
 		t.Fatalf("%v %v", names, err)
 	}
-	if names, err := listTokenNames(t.TempDir()); err != nil || len(names) != 0 {
-		t.Fatalf("no tokens file: %v %v", names, err)
-	}
 	_ = f
+}
+
+func TestAcceptRestoreRefusesARepoThatCannotListTheTokens(t *testing.T) {
+	f := newAccountsFixture(t)
+	notGit := t.TempDir()
+	os.MkdirAll(filepath.Join(notGit, ".rackbook"), 0o755)
+	os.WriteFile(filepath.Join(notGit, ".rackbook", "tokens.yml"), []byte("tokens: []\n"), 0o644)
+	noTokens := t.TempDir()
+	os.MkdirAll(filepath.Join(noTokens, ".git"), 0o755)
+	for name, c := range map[string]struct{ repo, want string }{
+		"missing":       {filepath.Join(t.TempDir(), "nope"), "is not a directory"},
+		"not a clone":   {notGit, "not a Git checkout"},
+		"no tokens.yml": {noTokens, "has no .rackbook/tokens.yml"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := listTokenNames(c.repo); err == nil || !strings.Contains(err.Error(), c.want) || !strings.Contains(err.Error(), "revoke the API tokens by hand") {
+				t.Fatalf("err = %v", err)
+			}
+			out, err := run(t, f.args("accounts", "accept-restore", "--yes", "--repo", c.repo)...)
+			if err == nil || !strings.Contains(err.Error(), c.want) {
+				t.Fatalf("the command must fail, not go on without the list: %v\n%s", err, out)
+			}
+		})
+	}
+	// a clone whose tokens file exists but is empty is fine: the list is empty on purpose
+	ok := t.TempDir()
+	os.MkdirAll(filepath.Join(ok, ".git"), 0o755)
+	os.MkdirAll(filepath.Join(ok, ".rackbook"), 0o755)
+	os.WriteFile(filepath.Join(ok, ".rackbook", "tokens.yml"), []byte("tokens: []\n"), 0o644)
+	if names, err := listTokenNames(ok); err != nil || len(names) != 0 {
+		t.Fatalf("%v %v", names, err)
+	}
 }

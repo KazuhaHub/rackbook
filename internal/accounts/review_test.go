@@ -357,3 +357,164 @@ func TestPartialRekeyNamesTheKeyEachFileNeeds(t *testing.T) {
 	e.restart()
 	e.mustOpen()
 }
+
+func TestAcceptRestoreOfSecretsClearsEverythingAfterAGlobalReset(t *testing.T) {
+	setup := func(t *testing.T) (*env, *Secrets, []byte) {
+		e := newEnv(t)
+		sec, _ := e.openSecrets()
+		mustApply(t, sec, Update{Set: map[string]string{SecretCaptcha: "captcha-v", SecretOIDCClient: "oidc-v"}, Issuer: "https://i.example", ClientID: "c"})
+		return e, sec, readFile(t, SecretsPath(e.dir))
+	}
+	none := func(t *testing.T, e *env) {
+		t.Helper()
+		e.restart()
+		sec, err := e.openSecrets()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if st := sec.Status(); st.HasCaptchaSecret || st.HasOIDCClientSecret {
+			t.Fatalf("a secret came back: %+v", st)
+		}
+	}
+	for _, g := range []struct{ name, event, code string }{
+		{"a reset after a truncated log", "account_store_problem", "audit_truncated"},
+		{"a reset after a pruned month", "account_store_problem", "month_pruned"},
+		{"a discard", "account_store_problem", "discarded"},
+		{"an earlier restore", "account_store_restored", ""},
+	} {
+		t.Run(g.name, func(t *testing.T) {
+			e, sec, backup := setup(t)
+			// the global reset cleared every secret (as accept-restore does), under a marker of either document
+			if _, err := sec.eng.commit(audit.Event{Event: g.event, Code: g.code, Method: "cli"}, func(d *SecretsState) error {
+				d.Secrets = map[string]*SecretEntry{}
+				return nil
+			}, nil, nil); err != nil {
+				t.Fatal(err)
+			}
+			os.WriteFile(SecretsPath(e.dir), backup, 0o600) // the older secrets.enc is put back
+			e.restart()
+			if _, err := e.openSecrets(); startCode(t, err) != CodeGap {
+				t.Fatalf("err = %v", err)
+			}
+			off, out := e.offline()
+			if _, err := AcceptRestore(off, RestoreOptions{}); err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(out.String(), "every secret is cleared") {
+				t.Fatalf("output:\n%s", out)
+			}
+			none(t, e)
+		})
+	}
+	t.Run("the global event is the accounts store's own", func(t *testing.T) {
+		e, sec, backup := setup(t)
+		mustApply(t, sec, Update{Clear: []string{SecretCaptcha, SecretOIDCClient}})
+		e.mustInvite(e.mustOpen(), "alice")
+		// an account-side reset, with only the accounts marker, after the secrets backup
+		s := e.mustOpen()
+		s.Change(audit.Event{Event: "account_store_problem", Code: "audit_truncated"}, func(*State) error { return nil })
+		os.WriteFile(SecretsPath(e.dir), backup, 0o600)
+		e.restart()
+		off, _ := e.offline()
+		if _, err := AcceptRestore(off, RestoreOptions{}); err != nil {
+			t.Fatal(err)
+		}
+		none(t, e)
+	})
+	t.Run("an untrusted log, then an older secrets.enc, then accept-restore again", func(t *testing.T) {
+		e, _, backup := setup(t)
+		e.mustInvite(e.mustOpen(), "alice")
+		e.log.Close()
+		os.RemoveAll(e.auditDir()) // the log is gone
+		e.startLog()
+		off, _ := e.offline()
+		if _, err := AcceptRestore(off, RestoreOptions{AcceptAuditTruncation: true}); err != nil {
+			t.Fatal(err)
+		}
+		none(t, e) // everything cleared
+		os.WriteFile(SecretsPath(e.dir), backup, 0o600)
+		e.restart()
+		off, _ = e.offline()
+		if _, err := AcceptRestore(off, RestoreOptions{AcceptAuditTruncation: true, ResetAllAccounts: true}); err != nil {
+			t.Fatal(err)
+		}
+		none(t, e)
+	})
+}
+
+func TestCounterCannotLoosenWithoutASuccess(t *testing.T) {
+	e := newEnv(t)
+	s := e.mustOpen()
+	e.mustInvite(s, "alice")
+	e.activate(s, "alice")
+	t0 := e.clk.Now()
+	tighten := func(st *State) error {
+		a := st.Accounts["alice"]
+		a.ConsecutiveFailures = 5
+		a.State = StateRestricted
+		a.Locks = []Lock{{Scope: "account", Until: t0.Add(time.Hour)}}
+		a.TOTP.LastStep = 100
+		return nil
+	}
+	if err := s.Counter(nil, tighten); err != nil {
+		t.Fatalf("tightening is a counter write: %v", err)
+	}
+	refused := map[string]func(*State){
+		"last_step goes back":          func(st *State) { st.Accounts["alice"].TOTP.LastStep = 99 },
+		"restricted to active":         func(st *State) { st.Accounts["alice"].State = StateActive },
+		"a live lock is removed":       func(st *State) { st.Accounts["alice"].Locks = nil },
+		"consecutive_failures lowered": func(st *State) { st.Accounts["alice"].ConsecutiveFailures = 0 },
+	}
+	for name, fn := range refused {
+		if err := s.Counter(nil, func(st *State) error { fn(st); return nil }); !errors.Is(err, ErrNotCounterOnly) {
+			t.Errorf("%s: err = %v", name, err)
+		}
+	}
+	// passkey_only may not become restricted by a counter either
+	s.Counter(nil, func(st *State) error { st.Accounts["alice"].State = StatePasskeyOnly; return nil })
+	if err := s.Counter(nil, func(st *State) error { st.Accounts["alice"].State = StateRestricted; return nil }); !errors.Is(err, ErrNotCounterOnly) {
+		t.Errorf("passkey_only to restricted: %v", err)
+	}
+	// growing counters, a later last_step and a new lock are fine
+	if err := s.Counter(nil, func(st *State) error {
+		a := st.Accounts["alice"]
+		a.ConsecutiveFailures, a.TOTP.LastStep = 6, 101
+		a.Locks = append(a.Locks, Lock{Scope: "ip", Until: t0.Add(time.Hour)})
+		return nil
+	}); err != nil {
+		t.Fatalf("moving forward: %v", err)
+	}
+	// with a recorded success everything may be undone
+	e.clk.Set(t0.Add(time.Minute))
+	if err := s.Counter(nil, func(st *State) error {
+		a := st.Accounts["alice"]
+		a.State, a.ConsecutiveFailures, a.Locks = StateActive, 0, nil
+		a.LastLogin = &Seen{Time: e.clk.Now(), Addr: "203.0.113.0"}
+		return nil
+	}); err != nil {
+		t.Fatalf("after a success: %v", err)
+	}
+	// a last_login that does not advance is no success
+	s.Counter(nil, func(st *State) error {
+		st.Accounts["alice"].State = StateRestricted
+		st.Accounts["alice"].ConsecutiveFailures = 3
+		return nil
+	})
+	if err := s.Counter(nil, func(st *State) error {
+		a := st.Accounts["alice"]
+		a.State, a.ConsecutiveFailures = StateActive, 0
+		a.LastLogin = &Seen{Time: e.clk.Now()} // the same time as before
+		return nil
+	}); !errors.Is(err, ErrNotCounterOnly) {
+		t.Fatalf("a last_login that did not advance: %v", err)
+	}
+	// a lock that has run out may be dropped
+	e.clk.Set(t0.Add(3 * time.Hour))
+	s.Counter(nil, func(st *State) error {
+		st.Accounts["alice"].Locks = []Lock{{Scope: "ip", Until: t0.Add(2 * time.Hour)}}
+		return nil
+	})
+	if err := s.Counter(nil, func(st *State) error { st.Accounts["alice"].Locks = nil; return nil }); err != nil {
+		t.Fatalf("an expired lock: %v", err)
+	}
+}

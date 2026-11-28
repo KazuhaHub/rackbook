@@ -171,7 +171,14 @@ func AcceptRestore(o Offline, ro RestoreOptions) (*RestoreReport, error) {
 	}
 	var secNames []string
 	if secErr != nil {
-		secNames = secretNames(secErr, rep.Secrets)
+		globalSince, gerr := globalResetAfter(o.Log, secErr.Doc.(*SecretsState).AuditSeq)
+		if gerr != nil {
+			return nil, fmt.Errorf("audit log: %w", gerr)
+		}
+		secNames = secretNames(secErr, rep.Secrets, globalSince)
+		if globalSince && rep.Secrets == "gap" {
+			o.printf("  a global reset lies between the backup and now: every secret is cleared\n")
+		}
 		o.printf("%s: %s\n", secretsFile, secErr.Msg)
 		for _, ev := range gapEvents(secErr) {
 			o.printf("  seq %d  %s  %s\n", ev.Seq, ev.Time.Format(time.RFC3339), ev.Event)
@@ -494,12 +501,26 @@ func (s *Store) applyRestore(o Offline, se *StartError, p *accountsPlan, rep *Re
 	return nil
 }
 
+// globalResetAfter says whether the retained log holds, after seq, a global reset of any document: an
+// account_store_restored, or an account_store_problem with audit_truncated, month_pruned or discarded. Whatever its
+// change marker, it means the log or the stores were not trusted then, and a restored older secrets.enc must not
+// bring back what that reset cleared.
+func globalResetAfter(l *audit.Log, seq int64) (bool, error) {
+	found := false
+	err := l.EachEvent("", func(ev audit.Event, _ string) bool {
+		found = ev.Seq > seq && isGlobalReset(ev)
+		return !found
+	})
+	return found, err
+}
+
 // secretNames are the secrets accept-restore clears for the secrets store: those named by the events after it
-// (a clear after the backup must not be undone by it), or all of them when the log cannot be trusted.
-func secretNames(se *StartError, kind string) []string {
+// (a clear after the backup must not be undone by it), or all of them when the log cannot be trusted or a global
+// reset lies between the backup and now.
+func secretNames(se *StartError, kind string, global bool) []string {
 	st := se.Doc.(*SecretsState)
 	var names []string
-	if kind != "gap" {
+	if kind != "gap" || global {
 		for n := range st.Secrets {
 			names = append(names, n)
 		}

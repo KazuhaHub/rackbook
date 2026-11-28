@@ -559,7 +559,13 @@ func (e *engine[D]) hook(step string) error {
 	return e.c.Hook(step)
 }
 
-// commit is a change (4.3). The caller holds wmu. fn edits a copy of the committed state; prep
+// commit is a change (4.3). The caller holds wmu.
+//
+// If the audit line is written but the log reports audit.ErrNotDurable (the close of the file, or the fsync of the
+// directory of a new month file, failed), the line has its seq and the change is as good as audited: commit stops
+// there, leaves .pending, refuses every later write (ErrStoreFailed) and answers with ErrAuditUnavailable, but the
+// change MAY STILL COMPLETE at the next start, which finishes it from .pending ("recovered"). The caller must not
+// tell the person the change failed for good. fn edits a copy of the committed state; prep
 // may refuse it; ev is the audit event, to which the change id is added.
 func (e *engine[D]) commit(ev audit.Event, fn func(D) error, prep func(cur, next D) error, after func(next D) error) (int64, error) {
 	if e.failed != nil {

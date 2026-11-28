@@ -1091,6 +1091,12 @@ and the online admin channel with `recover`, `invite`, `reset`, `unlock`, `disab
   - *rekey --generate* writes the key file through a temporary file, fsyncs it, links it into place and fsyncs the directory before anything is
     re-encrypted; a failure leaves nothing behind. A key file that is a symlink into the state directory is refused.
   - *wrong_key* messages say which key id each file needs.
+  - *Second review.* For `secrets.enc`, `accept-restore` clears every secret when the log cannot be trusted, and also when the retained log holds,
+    after the backup's seq, an `account_store_restored` or an `account_store_problem` (`audit_truncated`, `month_pruned`, `discarded`) whatever its
+    marker, so an older `secrets.enc` put back later never brings back what an earlier reset cleared. `--repo` is an error, not a silent
+    omission, when it is missing, is not a Git checkout or has no `.rackbook/tokens.yml`. A counter write may not lower `last_step`, and may
+    not leave `restricted` or `passkey_only`, lower `consecutive_failures` or remove a running lock unless `last_login` advanced in the same write
+    (an expired lock may be dropped); otherwise it needs the audited path. If the audit line is written but `ErrNotDurable` comes back, the change may still complete at the next start.
 - **New dependency:** none. `golang.org/x/crypto` (argon2) moved from indirect to direct in `go.mod`; `crypto/hkdf` is the standard
   library, and `golang.org/x/text` (`norm`, `cases`) was already a direct dependency.
 
