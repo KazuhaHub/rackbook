@@ -105,7 +105,7 @@ func (s *server) rolesRequest(w http.ResponseWriter, r *http.Request) (rolesedit
 		return rolesedit.Request{}, false
 	}
 	l.Auditors = *b.Auditors
-	return rolesedit.Request{Version: b.Version, Lists: l, Message: b.Message, Evaluate: s.callerEvaluator(r), Identities: s.signedInIdentities()}, true
+	return rolesedit.Request{Version: b.Version, Lists: l, Message: b.Message, Evaluate: s.callerEvaluator(r), Identities: s.signedInIdentities(), Local: s.localView()}, true
 }
 
 // callerEvaluator evaluates the person making the request, on their own session,
@@ -122,6 +122,19 @@ func (s *server) callerEvaluator(r *http.Request) rolesedit.Evaluator {
 			ByIdentity: c.ByIdentity.String(), AuditorByIdentity: c.AuditorByIdent,
 		}, nil
 	}
+}
+
+// localView is what the role editor knows of local accounts: whether they are available and the
+// state of each one.
+func (s *server) localView() rolesedit.Local {
+	if s.o.Local == nil {
+		return rolesedit.Local{}
+	}
+	l := rolesedit.Local{Available: true, States: map[string]string{}}
+	for _, a := range s.o.Local.Roster() {
+		l.States[a.Username] = a.State
+	}
+	return l
 }
 
 // signedInIdentities are the identities audit/identities.json knows, if there is
@@ -146,7 +159,8 @@ func (s *server) rolesView(r *http.Request) map[string]any {
 	cfg := s.o.Store.Config()
 	problem := s.o.Store.ConfigProblem()
 	cur, explicit := rolesedit.Current(cfg)
-	ann := rolesedit.Annotate(cfg, cur)
+	local := s.localView()
+	ann := rolesedit.AnnotateLocal(cfg, cur, local)
 	out := map[string]any{
 		"version":  rolesedit.Version(cur),
 		"loads":    problem == "",
@@ -179,6 +193,13 @@ func (s *server) rolesView(r *http.Request) map[string]any {
 			claims["claimsAbsolute"] = int(s.o.Infra.Admins.ClaimsAbsolute().Seconds())
 			out["infraClaims"] = claims
 		}
+	}
+	// local accounts, offered by name for local: entries; the accounts' sign-in details never come here
+	if s.o.Local != nil {
+		accts := s.o.Local.Roster()
+		out["local"] = map[string]any{"available": true, "accounts": accts}
+	} else {
+		out["local"] = map[string]any{"available": false, "accounts": []LocalAccount{}}
 	}
 	if problem != "" {
 		out["problem"] = problem

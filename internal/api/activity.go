@@ -98,8 +98,11 @@ type activityItem struct {
 	State string `json:"state,omitempty"`
 
 	// Audit events.
-	Seq     int64    `json:"seq,omitempty"`
-	Event   string   `json:"event,omitempty"`
+	Seq   int64  `json:"seq,omitempty"`
+	Event string `json:"event,omitempty"`
+	// Target is the account an administrator or the command line acted on, when that is not the actor
+	// ("local:<username>").
+	Target  string   `json:"target,omitempty"`
 	Reason  string   `json:"reason,omitempty"`
 	Code    string   `json:"code,omitempty"`
 	Role    string   `json:"role,omitempty"`
@@ -177,7 +180,7 @@ func eventItems(es []audit.Event, showAddr, showInfra bool) []*activityItem {
 		if e.Area == areaInfra {
 			area = areaInfra
 		}
-		it := &activityItem{Area: area, Kind: e.Event, Event: e.Event, Seq: e.Seq, Identity: e.Identity, Name: e.Name, Method: e.Method,
+		it := &activityItem{Area: area, Kind: e.Event, Event: e.Event, Seq: e.Seq, Identity: e.Identity, Target: e.Target, Name: e.Name, Method: e.Method,
 			Reason: e.Reason, Code: e.Code, Role: e.Role, Outcome: e.Outcome, Action: e.Action, Host: e.Host, Files: e.Files,
 			Groups: e.Groups, AppRoles: e.AppRoles, From: e.From, To: e.To, AuditorFrom: e.AuditorFrom, AuditorTo: e.AuditorTo, Cause: e.Cause,
 			at: e.Time.UTC().Truncate(time.Second), src: 2}

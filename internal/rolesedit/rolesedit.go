@@ -11,7 +11,10 @@
 //     (conflict);
 //  2. every entry must pass the parser that rackbook check uses, plus the
 //     editor's own limits (invalid_entries);
-//  3. at least one admin entry must remain (last_admin);
+//  3. at least one admin entry must remain, and one that somebody can sign in
+//     through: a local: entry counts only while local accounts are available and
+//     the account (or, for local:*, some account) is not disabled or removed
+//     (last_admin);
 //  4. the person saving must still be an admin afterwards, evaluated on their
 //     own session (self_lockout), and an admin through an entry that names them
 //     (an identity, *@domain, oidc: or *), not only through a group or an app
@@ -142,20 +145,22 @@ const (
 // Note codes. The console words each one in the three languages; Message is the
 // English text.
 const (
-	NoteEmpty         = "empty"
-	NoteTooLong       = "too_long"
-	NoteControl       = "control_chars"
-	NoteFormat        = "format_chars"
-	NoteInvalid       = "invalid"
-	NoteWildcardAdmin = "wildcard_admin"
-	NoteWildcardEdit  = "wildcard_editor"
-	NoteNoSSO         = "no_sso"
-	NoteUnknownIssuer = "unknown_issuer"
-	NoteNoMCPHub      = "no_mcphub"
-	NoteLocal         = "local_unavailable"
-	NoteAlsoIn        = "also_in"
-	NoteDuplicate     = "duplicate"
-	NoteNeverSeen     = "never_seen"
+	NoteEmpty          = "empty"
+	NoteTooLong        = "too_long"
+	NoteControl        = "control_chars"
+	NoteFormat         = "format_chars"
+	NoteInvalid        = "invalid"
+	NoteWildcardAdmin  = "wildcard_admin"
+	NoteWildcardEdit   = "wildcard_editor"
+	NoteNoSSO          = "no_sso"
+	NoteUnknownIssuer  = "unknown_issuer"
+	NoteNoMCPHub       = "no_mcphub"
+	NoteLocal          = "local_unavailable"
+	NoteLocalNoAccount = "local_no_account"
+	NoteLocalInactive  = "local_inactive"
+	NoteAlsoIn         = "also_in"
+	NoteDuplicate      = "duplicate"
+	NoteNeverSeen      = "never_seen"
 )
 
 // Note is something to know about one entry.
@@ -237,9 +242,55 @@ const (
 	maxListLen    = 1000
 )
 
+// The states of an account the editor tells apart (the same strings as internal/accounts, which a test holds
+// together; this package does not import it, so that nothing HTTP-facing depends on the account store).
+const (
+	stateDisabled = "disabled"
+	stateRemoved  = "removed"
+)
+
+// Local says what the deployment has of local accounts (docs/design-local-accounts.md, 7). The zero
+// value is "none": local: entries then match nobody.
+type Local struct {
+	// Available is true when the state key is loaded and the account store is open.
+	Available bool
+	// States is the state of every account by username (active, restricted, passkey_only, invited, reset_pending, disabled, removed), removed ones included.
+	States map[string]string
+}
+
+// usable says an account can sign in now or once its setup is done: it exists and is not disabled
+// or removed.
+func (l Local) usable(state string) bool {
+	return state != "" && state != stateDisabled && state != stateRemoved
+}
+
+// canSignIn says the entry, which parsed as info, can match somebody who can sign in here. Entries
+// of every kind but local: are taken to; a local: entry needs local accounts and an account.
+func (l Local) canSignIn(info roles.EntryInfo) bool {
+	if info.Kind != roles.KindLocal {
+		return true
+	}
+	if !l.Available {
+		return false
+	}
+	if info.Value == "*" {
+		for _, st := range l.States {
+			if l.usable(st) {
+				return true
+			}
+		}
+		return false
+	}
+	return l.usable(l.States[info.Value])
+}
+
 // Annotate describes every entry of l against cfg (what the deployment can
-// match at all). Entries are taken as written; use Clean first for input.
-func Annotate(cfg *config.Config, l Lists) Annotated {
+// match at all). Entries are taken as written; use Clean first for input. Local accounts are
+// taken to be unavailable; AnnotateLocal says otherwise.
+func Annotate(cfg *config.Config, l Lists) Annotated { return AnnotateLocal(cfg, l, Local{}) }
+
+// AnnotateLocal is Annotate for a deployment that has local as its local accounts.
+func AnnotateLocal(cfg *config.Config, l Lists, local Local) Annotated {
 	var out Annotated
 	// where each entry (by its key) is listed, to say "also in editor"
 	where := map[string][]string{}
@@ -269,7 +320,7 @@ func Annotate(cfg *config.Config, l Lists) Annotated {
 				e.Notes = append(e.Notes, Note{Level: LevelError, Code: NoteInvalid, Message: err.Error()})
 			default:
 				e.Kind = info.Kind
-				e.Notes = append(e.Notes, kindNotes(cfg, n, info)...)
+				e.Notes = append(e.Notes, kindNotes(cfg, n, info, local)...)
 				if seen[info.Key] {
 					e.Notes = append(e.Notes, Note{Level: LevelWarning, Code: NoteDuplicate, Message: "listed twice in this list"})
 				}
@@ -300,11 +351,11 @@ func nonNilEntries(e []Entry) []Entry {
 
 // kindNotes are the warnings that depend on the kind of entry and on what the
 // deployment has: an entry that can match nobody here, or too many people.
-func kindNotes(cfg *config.Config, list string, info roles.EntryInfo) []Note {
+func kindNotes(cfg *config.Config, list string, info roles.EntryInfo, local Local) []Note {
 	var out []Note
 	w := func(code, msg string) { out = append(out, Note{Level: LevelWarning, Code: code, Message: msg}) }
 	// an entry that matches a whole class of people: *, *@domain, mcphub:* and oauth:<alias>:*
-	wide := info.Kind == roles.KindAny || info.Kind == roles.KindDomain ||
+	wide := info.Kind == roles.KindAny || info.Kind == roles.KindDomain || (info.Kind == roles.KindLocal && info.Value == "*") ||
 		(info.Kind == roles.KindMCPHub && info.Value == "*") || (info.Kind == roles.KindOAuth && strings.HasSuffix(info.Value, ":*"))
 	switch {
 	case wide && list == ListAdmin:
@@ -327,7 +378,17 @@ func kindNotes(cfg *config.Config, list string, info roles.EntryInfo) []Note {
 			w(NoteUnknownIssuer, fmt.Sprintf("no trusted OAuth issuer has the alias %q (auth.mcp.trusted_issuers)", alias))
 		}
 	case roles.KindLocal:
-		w(NoteLocal, "local accounts are not available, so this entry matches nobody")
+		switch st, has := local.States[info.Value]; {
+		case !local.Available:
+			w(NoteLocal, "local accounts are not available, so this entry matches nobody")
+		case info.Value == "*":
+		case !has:
+			w(NoteLocalNoAccount, "no local account has this name, so this entry matches nobody yet")
+		case st == stateRemoved:
+			w(NoteLocalInactive, "this account was removed and its name cannot be used again, so this entry matches nobody")
+		case st == stateDisabled:
+			w(NoteLocalInactive, "this account is disabled, so this entry matches nobody until it is enabled")
+		}
 	}
 	return out
 }
@@ -431,6 +492,8 @@ type Request struct {
 	Message string
 	// Evaluate evaluates the caller; see Evaluator.
 	Evaluate Evaluator
+	// Local says what the deployment has of local accounts (the zero value: none).
+	Local Local
 	// Identities are the identities that signed in (audit/identities.json), folded
 	// to lower case, for a warning on an added entry that matches nobody of them.
 	// Nil when there is no record to look at.
@@ -482,7 +545,7 @@ func Build(cfg *config.Config, req Request) (*Plan, error) {
 		return nil, &VersionError{Current: Annotate(cfg, cur), Lists: cur, Version: ver}
 	}
 	next := Clean(req.Lists)
-	p := &Plan{Version: ver, Before: cur, After: next, Entries: Annotate(cfg, next), File: relConfig(cfg)}
+	p := &Plan{Version: ver, Before: cur, After: next, Entries: AnnotateLocal(cfg, next, req.Local), File: relConfig(cfg)}
 	p.Changed = !sameLists(cur, next)
 	if req.Evaluate != nil {
 		spec, aud := cur.Spec()
@@ -504,9 +567,17 @@ func Build(cfg *config.Config, req Request) (*Plan, error) {
 		return p, nil
 	}
 	p.Warnings = addedWarnings(cur, next, p.Entries, req.Identities)
-	// 3. the last admin. Nothing is refused when nothing changes: there is nothing to save.
-	if p.Changed && len(next.Admin) == 0 {
-		p.Refusal = &Refusal{Code: CodeLastAdmin, Message: "at least one admin entry must remain: without one nobody could edit the roles again"}
+	// 3. the last admin. Nothing is refused when nothing changes: there is nothing to save. The rule counts
+	// admin entries through which somebody can sign in: a local: entry counts only with local accounts and an
+	// account that is not disabled or removed. A list that has none of those already is not refused for an
+	// edit that leaves it so (a change to the editors, say), only one that takes the last one away.
+	if p.Changed {
+		switch {
+		case len(next.Admin) == 0:
+			p.Refusal = &Refusal{Code: CodeLastAdmin, Message: "at least one admin entry must remain: without one nobody could edit the roles again"}
+		case signable(next.Admin, req.Local) == 0 && signable(cur.Admin, req.Local) > 0:
+			p.Refusal = &Refusal{Code: CodeLastAdmin, Message: "no admin entry would be left that anyone can sign in through (a local: entry needs an account that is not disabled or removed): without one nobody could edit the roles again"}
+		}
 	}
 	// 4. the person who saves
 	if req.Evaluate != nil {
@@ -562,6 +633,17 @@ func Build(cfg *config.Config, req Request) (*Plan, error) {
 		}
 	}
 	return p, nil
+}
+
+// signable counts the entries of an admin list through which somebody can sign in.
+func signable(list []string, local Local) int {
+	n := 0
+	for _, s := range list {
+		if info, err := roles.Describe(s); err == nil && local.canSignIn(info) {
+			n++
+		}
+	}
+	return n
 }
 
 func firstError(a Annotated) string {
